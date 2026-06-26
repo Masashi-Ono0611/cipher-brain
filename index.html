@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0098EA">
+<meta name="color-scheme" content="light">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<title>Cipher Brain — your second brain, encrypted and impossible to take down</title>
+<meta name="description" content="Cipher Brain encrypts your AI second brain on the client — only you hold the key — then stores it on TON's censorship-resistant stack. Post-AGI cognitive sovereignty, built on ton-mesh-harness.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ton:#0098EA; --ton-deep:#0077C0; --ton-tint:#E6F6FE;
+    --ink:#11151A; --muted:#5B6B78; --faint:#95A3AE;
+    --line:#E4EAEF; --bg:#FFFFFF; --surface:#F5F9FC;
+    --green:#1A7F4B; --green-tint:#EAF6EF; --green-line:#BFE3CE;
+    --amber:#8A6D1B; --amber-tint:#FBF3DD; --amber-line:#E7D4A0;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html{-webkit-font-smoothing:antialiased;}
+  body{
+    background:linear-gradient(180deg,#E8F6FE 0%,#FFFFFF 240px);
+    color:var(--ink);
+    font-family:"Geist","Noto Sans JP","Hiragino Sans",-apple-system,Arial,sans-serif;
+    line-height:1.6; font-size:16px;
+  }
+  .wrap{max-width:940px; margin:0 auto; padding:0 28px 100px;}
+  .mono{font-family:"Geist Mono",ui-monospace,Menlo,monospace;}
+
+  /* ---------- hero ---------- */
+  header{padding:72px 0 52px; border-bottom:1px solid var(--line);}
+  .hero-row{display:flex; align-items:center; gap:44px; flex-wrap:wrap;}
+  .hero-text{flex:1 1 440px; min-width:0;}
+  .hero-mascot{flex:0 0 auto; margin-left:auto;}
+  .hero-mascot img{display:block; width:172px; height:172px;}
+  @media(max-width:620px){ .hero-mascot{margin:0 auto;} .hero-mascot img{width:128px; height:128px;} }
+  .kicker{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--ton); font-weight:600; margin-bottom:22px;}
+  h1{font-size:70px; font-weight:800; letter-spacing:-.035em; line-height:1.02; margin-bottom:22px;}
+  h1 .accent{color:var(--ton);}
+  .tagline{font-size:27px; font-weight:500; letter-spacing:-.015em; line-height:1.32; max-width:720px;}
+  .tagline strong{color:var(--ton); font-weight:700;}
+  .sub{font-size:16.5px; color:var(--muted); margin-top:20px; max-width:690px;}
+  .sub code{color:var(--ton-deep);}
+  .sub b{color:var(--ink); font-weight:600;}
+  /* ---------- section scaffold ---------- */
+  section{padding:62px 0; border-bottom:1px solid var(--line);}
+  .label{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--faint); font-weight:600; margin-bottom:16px;}
+  .label .n{color:var(--ton);}
+  h2{font-size:35px; font-weight:700; letter-spacing:-.025em; line-height:1.18; margin-bottom:18px;}
+  .lead{font-size:17.5px; color:var(--muted); max-width:740px;}
+  .lead strong{color:var(--ink); font-weight:600;}
+  .lead code{color:var(--ton-deep); font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:.92em;}
+
+  /* ---------- diagram frame ---------- */
+  .fig{margin:38px 0 8px; background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:30px 26px;}
+  .fig svg{display:block; width:100%; height:auto;}
+  .fig-cap{font-size:13px; color:var(--faint); margin-top:16px; text-align:center; font-family:"Geist Mono",ui-monospace,Menlo,monospace;}
+  .svg-l{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; fill:var(--muted);}
+  .svg-t{font-family:"Geist",-apple-system,sans-serif; font-size:13px; fill:var(--ink); font-weight:700;}
+  .svg-s{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:11px; fill:var(--faint);}
+  .svg-a{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12.5px; fill:var(--ton); font-weight:700;}
+  .svg-g{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; fill:var(--green); font-weight:700;}
+  .svg-r{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; fill:#C0392B; font-weight:700;}
+
+  /* ---------- pillars ---------- */
+  .pillars{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:36px;}
+  .pillar{border:1px solid var(--line); border-radius:12px; padding:22px 20px; background:var(--bg);}
+  .pillar .pt{font-size:17px; font-weight:700; margin-bottom:7px; letter-spacing:-.01em;}
+  .pillar .pt span{color:var(--ton);}
+  .pillar .pd{font-size:14px; color:var(--muted); line-height:1.5;}
+  .pillar .pd b{color:var(--ink); font-weight:600;}
+
+  /* ---------- steps + command blocks ---------- */
+  .steps{display:flex; flex-direction:column; gap:20px; margin-top:36px;}
+  .step{border:1px solid var(--line); border-radius:12px; padding:22px 22px 20px; background:var(--bg);}
+  .step .st{font-size:17px; font-weight:700; letter-spacing:-.01em; margin-bottom:6px;}
+  .step .st .k{color:var(--ton); font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; font-weight:600; letter-spacing:.06em; margin-right:10px;}
+  .badge{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:11px; font-weight:700; border-radius:6px; padding:1px 8px; margin-left:8px; vertical-align:middle;}
+  .badge.done{color:var(--green); background:var(--green-tint); border:1px solid var(--green-line);}
+  .badge.next{color:var(--amber); background:var(--amber-tint); border:1px solid var(--amber-line);}
+  .step .sd{font-size:14.5px; color:var(--muted); line-height:1.55; margin-bottom:15px;}
+  .step .sd b{color:var(--ink); font-weight:600;}
+  .step .sd code{color:var(--ton-deep); font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:.9em;}
+  .cmd{background:var(--ink); border-radius:10px; padding:15px 17px; font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12.5px; line-height:1.7; color:#E8F1F8; overflow-x:auto; white-space:pre;}
+  .cmd .c{color:#7E93A3;}                          /* comment */
+  .cmd .p{color:#0098EA; user-select:none;}        /* prompt $ */
+  .cmd .f{color:#7FD0A8;}                           /* flag / string */
+  .note{font-size:13.5px; color:var(--muted); margin-top:26px; line-height:1.7; padding:16px 18px; background:var(--ton-tint); border:1px solid #B9E4F8; border-radius:10px;}
+  .note b{color:var(--ton-deep);}
+
+  /* ---------- footer ---------- */
+  footer{padding:46px 0 0;}
+  .foot-links{display:flex; flex-wrap:wrap; gap:10px 22px; font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:13px;}
+  .foot-links a{color:var(--muted); text-decoration:none; border-bottom:1px solid var(--line); padding-bottom:1px;}
+  .foot-links a:hover{color:var(--ton); border-color:var(--ton);}
+  .foot-note{font-size:12.5px; color:var(--faint); margin-top:24px; font-family:"Geist Mono",ui-monospace,Menlo,monospace; line-height:1.7;}
+
+  @media(max-width:720px){
+    h1{font-size:48px;} .tagline{font-size:22px;} h2{font-size:27px;}
+    .pillars{grid-template-columns:1fr;}
+  }
+  @media print{ *{ -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ HERO ============ -->
+  <header>
+    <div class="hero-row">
+      <div class="hero-text">
+        <div class="kicker">post-AGI cognitive sovereignty</div>
+        <h1>Cipher <span class="accent">Brain</span></h1>
+        <p class="tagline">The brain you offload to AI<br><strong>should be unreadable, and impossible to delete.</strong></p>
+        <p class="sub">An AI second brain, <b>encrypted on your machine</b> &mdash; only you hold the key &mdash; stored where no platform can read or delete it.</p>
+      </div>
+      <div class="hero-mascot"><img src="mascot.svg" width="172" height="172" alt="Cipher Brain mascot — a cypherpunk hooded dog in sunglasses"></div>
+    </div>
+  </header>
+
+  <!-- ============ 01 CONCEPT ============ -->
+  <section>
+    <div class="label"><span class="n">01</span> &nbsp;Concept</div>
+    <h2>Encrypt your memory locally, store it where no one can reach it</h2>
+    <p class="lead">Encrypt the notes and chats you feed to AI <strong>on your own machine</strong>, turn them into a queryable <strong>second brain</strong>, and publish it to <strong>TON Storage + <code>.ton</code> DNS</strong>. Three layers: <strong>Cipher</strong>, <strong>Brain</strong>, <strong>Mesh</strong>.</p>
+
+    <div class="fig">
+      <svg viewBox="0 0 760 184" role="img" aria-label="Five-step flow: your data becomes a brain, is encrypted on your machine, published to TON, and only your key restores it">
+        <!-- 1 Your data -->
+        <rect x="16" y="40" width="132" height="74" rx="10" fill="#fff" stroke="#E4EAEF"/>
+        <text x="82" y="71" text-anchor="middle" class="svg-t">1 · Your data</text>
+        <text x="82" y="91" text-anchor="middle" class="svg-s">notes · chats</text>
+        <text x="82" y="105" text-anchor="middle" class="svg-s">memory</text>
+
+        <!-- 2 Brain -->
+        <rect x="168" y="40" width="132" height="74" rx="10" fill="#fff" stroke="#0098EA" stroke-width="1.5"/>
+        <text x="234" y="71" text-anchor="middle" class="svg-t" style="fill:#0077C0">2 · Brain</text>
+        <text x="234" y="91" text-anchor="middle" class="svg-s">AI structures it</text>
+        <text x="234" y="105" text-anchor="middle" class="svg-s">embed · synthesize</text>
+
+        <!-- 3 Cipher -->
+        <rect x="320" y="40" width="132" height="74" rx="10" fill="#E6F6FE" stroke="#0098EA" stroke-width="1.9"/>
+        <text x="386" y="71" text-anchor="middle" class="svg-t" style="fill:#0077C0">3 · Cipher</text>
+        <text x="386" y="91" text-anchor="middle" class="svg-s">encrypt with</text>
+        <text x="386" y="105" text-anchor="middle" class="svg-s">your key</text>
+
+        <!-- 4 Mesh -->
+        <rect x="472" y="40" width="132" height="74" rx="10" fill="#fff" stroke="#1A7F4B" stroke-width="1.5"/>
+        <text x="538" y="71" text-anchor="middle" class="svg-t" style="fill:#1A7F4B">4 · Mesh</text>
+        <text x="538" y="91" text-anchor="middle" class="svg-s">publish to TON</text>
+        <text x="538" y="105" text-anchor="middle" class="svg-s">bag + .ton DNS</text>
+
+        <!-- 5 Yours -->
+        <rect x="624" y="40" width="132" height="74" rx="10" fill="#fff" stroke="#E4EAEF"/>
+        <text x="690" y="71" text-anchor="middle" class="svg-t">5 · Yours</text>
+        <text x="690" y="91" text-anchor="middle" class="svg-s">only your key</text>
+        <text x="690" y="105" text-anchor="middle" class="svg-s">restores it</text>
+
+        <defs>
+          <marker id="cf" markerWidth="9" markerHeight="9" refX="5" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#5B6B78" stroke-width="1.5"/></marker>
+          <marker id="cfb" markerWidth="9" markerHeight="9" refX="5" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#0098EA" stroke-width="1.6"/></marker>
+        </defs>
+        <path d="M148 77 L168 77" fill="none" stroke="#5B6B78" stroke-width="1.5" marker-end="url(#cf)"/>
+        <path d="M300 77 L320 77" fill="none" stroke="#5B6B78" stroke-width="1.5" marker-end="url(#cf)"/>
+        <path d="M452 77 L472 77" fill="none" stroke="#0098EA" stroke-width="2" marker-end="url(#cfb)"/>
+        <path d="M604 77 L624 77" fill="none" stroke="#5B6B78" stroke-width="1.5" marker-end="url(#cf)"/>
+        <text x="462" y="31" text-anchor="middle" class="svg-a">encrypted from here on</text>
+
+        <rect x="16" y="132" width="436" height="34" rx="8" fill="#F5F9FC" stroke="#E4EAEF"/>
+        <text x="234" y="153" text-anchor="middle" class="svg-s">ON YOUR MACHINE · plaintext never leaves</text>
+        <rect x="472" y="132" width="132" height="34" rx="8" fill="#E6F6FE" stroke="#B9E4F8"/>
+        <text x="538" y="153" text-anchor="middle" class="svg-s" style="fill:#0077C0">ON TON · ciphertext</text>
+        <rect x="624" y="132" width="132" height="34" rx="8" fill="#fff" stroke="#E4EAEF"/>
+        <text x="690" y="153" text-anchor="middle" class="svg-s">back to you</text>
+      </svg>
+      <div class="fig-cap">Steps 1–3 run on your machine — only encrypted data ever reaches TON.</div>
+    </div>
+  </section>
+
+  <!-- ============ 02 PROBLEM ============ -->
+  <section>
+    <div class="label"><span class="n">02</span> &nbsp;Problem</div>
+    <h2>Your brain now lives on someone else&rsquo;s server</h2>
+    <p class="lead">The more you offload to AI, the more your <strong>second brain lives inside a platform</strong> &mdash; deletable, alterable, and readable by whoever runs it. Your most personal data is the one you own least.</p>
+
+    <div class="fig">
+      <svg viewBox="0 0 760 210" role="img" aria-label="A platform-held brain can be read and deleted; an encrypted brain on TON cannot">
+        <line x1="380" y1="16" x2="380" y2="194" stroke="#E4EAEF" stroke-width="1" stroke-dasharray="3 4"/>
+
+        <!-- LEFT: platform-held (fails) -->
+        <text x="30" y="30" class="svg-l">BRAIN INSIDE A PLATFORM</text>
+        <rect x="30" y="54" width="132" height="50" rx="9" fill="#fff" stroke="#E4EAEF"/>
+        <text x="96" y="76" text-anchor="middle" class="svg-t">AI platform</text>
+        <text x="96" y="93" text-anchor="middle" class="svg-s">holds your data</text>
+        <rect x="206" y="54" width="132" height="50" rx="9" fill="#fff" stroke="#E4EAEF"/>
+        <text x="272" y="76" text-anchor="middle" class="svg-t">their database</text>
+        <text x="272" y="93" text-anchor="middle" class="svg-s">plaintext to them</text>
+        <path d="M162 79 L204 79" stroke="#C0392B" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#p-x)"/>
+        <text x="30" y="138" class="svg-r">&#10007; deleted on a policy change</text>
+        <text x="30" y="160" class="svg-r">&#10007; readable by the operator</text>
+        <text x="30" y="182" class="svg-r">&#10007; censorable / subpoenable</text>
+
+        <!-- RIGHT: cipher brain (works) -->
+        <text x="412" y="30" class="svg-a">CIPHER BRAIN</text>
+        <rect x="412" y="54" width="146" height="50" rx="9" fill="#E6F6FE" stroke="#0098EA" stroke-width="1.5"/>
+        <text x="485" y="76" text-anchor="middle" class="svg-t" style="fill:#0077C0">encrypted bag</text>
+        <text x="485" y="93" text-anchor="middle" class="svg-s">ciphertext only</text>
+        <rect x="600" y="54" width="132" height="50" rx="9" fill="#E6F6FE" stroke="#0098EA" stroke-width="1.5"/>
+        <text x="666" y="76" text-anchor="middle" class="svg-t" style="fill:#0077C0">.ton DNS</text>
+        <text x="666" y="93" text-anchor="middle" class="svg-s">on-chain</text>
+        <path d="M558 79 L598 79" stroke="#1A7F4B" stroke-width="1.6" marker-end="url(#p-ok)"/>
+        <text x="412" y="138" class="svg-g">&#10003; no operator can read it</text>
+        <text x="412" y="160" class="svg-g">&#10003; no host to delete it</text>
+        <text x="412" y="182" class="svg-g">&#10003; updates need your signature</text>
+
+        <defs>
+          <marker id="p-x" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#C0392B" stroke-width="1.4"/></marker>
+          <marker id="p-ok" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#1A7F4B" stroke-width="1.4"/></marker>
+        </defs>
+      </svg>
+      <div class="fig-cap">Same second brain, two custody models &mdash; only the encrypted-on-TON one is truly yours.</div>
+    </div>
+  </section>
+
+  <!-- ============ 03 SOLUTION ============ -->
+  <section>
+    <div class="label"><span class="n">03</span> &nbsp;Solution</div>
+    <h2>Encrypt it. Own the key. Put it where it can&rsquo;t be taken down.</h2>
+    <p class="lead">Three layers in one tool: <strong>Cipher</strong> encrypts on-device, <strong>Brain</strong> makes your memory queryable, and <strong>Mesh</strong> (the shipping <code>ton-mesh-harness</code>) puts it beyond any single party&rsquo;s reach.</p>
+
+    <div class="fig">
+      <svg viewBox="0 0 760 232" role="img" aria-label="Three stacked layers: cipher, brain, mesh, driven by you">
+        <rect x="20" y="92" width="120" height="54" rx="9" fill="#fff" stroke="#E4EAEF"/>
+        <text x="80" y="116" text-anchor="middle" class="svg-t">you</text>
+        <text x="80" y="134" text-anchor="middle" class="svg-s">key holder</text>
+        <path d="M140 119 L186 119" stroke="#0098EA" stroke-width="1.6" marker-end="url(#sol-ar)"/>
+
+        <rect x="190" y="18" width="550" height="196" rx="12" fill="#E6F6FE" stroke="#0098EA" stroke-width="1.6"/>
+
+        <rect x="210" y="34" width="510" height="50" rx="9" fill="#fff" stroke="#B9E4F8"/>
+        <text x="230" y="55" class="svg-a">CIPHER</text>
+        <text x="330" y="55" class="svg-s">client-side encryption &mdash; only your key decrypts</text>
+        <text x="230" y="73" class="svg-s" style="fill:#5B6B78">nothing leaves the device as plaintext</text>
+
+        <rect x="210" y="92" width="510" height="50" rx="9" fill="#fff" stroke="#B9E4F8"/>
+        <text x="230" y="113" class="svg-a">BRAIN</text>
+        <text x="330" y="113" class="svg-s">AI second brain &mdash; ingest, embed, synthesize, query</text>
+        <text x="230" y="131" class="svg-s" style="fill:#5B6B78">your memory becomes answerable, not just stored</text>
+
+        <rect x="210" y="150" width="510" height="50" rx="9" fill="#fff" stroke="#BFE3CE"/>
+        <text x="230" y="171" class="svg-g">MESH</text>
+        <text x="330" y="171" class="svg-s">TON Storage bag + .ton DNS &mdash; censorship-resistant</text>
+        <text x="330" y="189" class="svg-s" style="fill:#1A7F4B">powered by ton-mesh-harness (live on mainnet)</text>
+
+        <defs><marker id="sol-ar" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#0098EA" stroke-width="1.4"/></marker></defs>
+      </svg>
+      <div class="fig-cap">Cipher + Brain run on your machine; Mesh carries the encrypted result onto TON.</div>
+    </div>
+
+    <div class="pillars">
+      <div class="pillar"><div class="pt"><span>Cipher</span></div><div class="pd">Client-side encryption keyed to you &mdash; the network only ever holds ciphertext.</div></div>
+      <div class="pillar"><div class="pt"><span>Brain</span></div><div class="pd">An AI second brain over your own corpus &mdash; memory you can <i>ask</i>, not just store.</div></div>
+      <div class="pillar"><div class="pt"><span>Mesh</span></div><div class="pd">TON Storage + <code>.ton</code> DNS via <code>ton-mesh-harness</code> &mdash; no host to seize, owner-signed only.</div></div>
+    </div>
+  </section>
+
+  <!-- ============ 04 WHY TON ============ -->
+  <section>
+    <div class="label"><span class="n">04</span> &nbsp;Why TON</div>
+    <h2>Censorship resistance needs storage <em>and</em> naming &mdash; TON has both</h2>
+    <p class="lead">An encrypted blob is useless if its address can be seized. TON is the one stack that pairs <strong>immutable storage</strong> with an <strong>on-chain name no one can take</strong> and a <strong>private transport</strong> &mdash; built by Telegram&rsquo;s team as a digital-resistance stack.</p>
+    <div class="pillars">
+      <div class="pillar"><div class="pt"><span>TON Storage</span></div><div class="pd">Content-addressed bags &mdash; immutable, no host to subpoena.</div></div>
+      <div class="pillar"><div class="pt"><span>.ton DNS</span></div><div class="pd">A human-readable name updated only by your signature &mdash; unseizable. IPFS / Arweave have no equivalent.</div></div>
+      <div class="pillar"><div class="pt"><span>TON Proxy</span></div><div class="pd">Garlic-routed access hides who reads what &mdash; privacy at the transport layer.</div></div>
+    </div>
+  </section>
+
+  <!-- ============ 05 STATUS & ROADMAP ============ -->
+  <section>
+    <div class="label"><span class="n">05</span> &nbsp;Status &amp; Roadmap</div>
+    <h2>Two halves already run &mdash; Cipher Brain bridges them</h2>
+    <p class="lead">Not a slide. The <strong>Mesh</strong> and <strong>Brain</strong> layers each run today; the <strong>Cipher</strong> layer and the wiring between them are what&rsquo;s left.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="st"><span class="k">STEP 1</span>Mesh layer &mdash; censorship-resistant publishing<span class="badge done">DONE · mainnet</span></div>
+        <div class="sd"><code>ton-mesh-harness</code> is <b>open-source on npm with verified on-chain deploys on TON mainnet</b>. One command ships any build to a bag + <code>.ton</code> DNS &mdash; and an <b>AI agent can drive it</b> via MCP.</div>
+        <div class="cmd"><span class="c"># the Mesh layer, available now</span>
+<span class="p">$ </span>npx ton-mesh-harness ./build <span class="f">--domain</span> mybrain.ton <span class="f">--site-auto</span></div>
+      </div>
+
+      <div class="step">
+        <div class="st"><span class="k">STEP 2</span>Brain layer &mdash; a second brain we already run<span class="badge done">RUNNING · GBrain</span></div>
+        <div class="sd">We already run a personal second brain (<b>GBrain</b>) nightly on a local machine: it <b>ingests our AI conversations across projects, embeds them, and synthesizes links</b>, then serves hybrid search + LLM reasoning over the whole corpus. The Brain layer is real, not a mock.</div>
+        <div class="cmd"><span class="c"># the brain we run every night — locally</span>
+<span class="p">$ </span>gbrain think <span class="f">"what did we decide about X?"</span></div>
+      </div>
+
+      <div class="step">
+        <div class="st"><span class="k">STEP 3</span>Cipher &mdash; encrypt &amp; bridge the two<span class="badge next">ROADMAP</span></div>
+        <div class="sd"><b>Encrypt the brain client-side</b> and publish it through the Mesh layer, into a bag <b>only your key can restore</b>. Both halves exist &mdash; what&rsquo;s left is the Cipher layer and the wiring between them.</div>
+        <div class="cmd"><span class="c">// the shape we&rsquo;re building toward</span>
+<span class="p">$ </span>cipher-brain push <span class="f">--key</span> ~/.cipher-brain/key <span class="f">--domain</span> mybrain.ton</div>
+      </div>
+    </div>
+
+    <div class="note"><b>Where the prototype ends:</b> the Mesh layer (<code>ton-mesh-harness</code>) ships on mainnet and the Brain layer (GBrain) runs nightly &mdash; but they aren&rsquo;t joined yet, and the <b>Cipher</b> layer isn&rsquo;t built. We say it plainly because <b>censorship-resistant is not the same as private</b> &mdash; closing that gap is the point of Cipher Brain.</div>
+  </section>
+
+  <!-- ============ FOOTER ============ -->
+  <footer>
+    <div class="foot-links">
+      <a href="https://github.com/Masashi-Ono0611/ton-mesh-harness">ton-mesh-harness (Mesh layer)</a>
+      <a href="https://ton.org/docs/develop/dns">TON DNS</a>
+      <a href="https://tonconnect.network">TON Connect</a>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

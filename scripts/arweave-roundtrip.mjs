@@ -53,6 +53,8 @@ try {
     CIPHER_BRAIN_AR_PROTOCOL: 'http',
     CIPHER_BRAIN_AR_WALLET: walletPath,
   };
+  // AR_HOST=localhost is not the default arweave.net, so arGateways() yields only the
+  // derived arlocal gateway (no public mirrors) — the test never egresses.
   const cb = (...args) => {
     const r = spawnSync('node', [BIN, ...args], { env, encoding: 'utf8' });
     if (r.status !== 0) throw new Error(`cb ${args.join(' ')} failed (${r.status}): ${r.stderr || r.stdout}`);
@@ -124,6 +126,16 @@ try {
   (w.status !== 0 && /retrying/.test(w.stderr))
     ? pass('--wait retries while not retrievable, then fails for a truly-missing id')
     : fail(`--wait did not retry as expected: status=${w.status} stderr=${(w.stderr || '').slice(0, 160)}`);
+
+  // multi-gateway (#21): the first gateway is dead, the second (arlocal) serves — the
+  // read loop must move past the dead gateway to produce the bytes. AR_PORT=1 dead-ends
+  // the L1 chunk fallback so ONLY gateway-2's HTTP read can satisfy this (otherwise the
+  // chunk read would mask a loop that never advanced).
+  const mgEnv = { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:1,http://localhost:${PORT}` };
+  const mg = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'mg.age')], { env: mgEnv, encoding: 'utf8' });
+  (mg.status === 0 && sha(await readFile(join(tmp, 'mg.age'))) === cipherSha)
+    ? pass('multi-gateway: read falls through a dead gateway to a live one')
+    : fail(`multi-gateway did not serve from the second gateway: ${mg.stderr || 'bytes differ'}`);
 } catch (e) {
   fail(`exception: ${e.message}`);
 } finally {

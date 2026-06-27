@@ -49,7 +49,7 @@ const AR_HOST = process.env.CIPHER_BRAIN_AR_HOST || 'arweave.net';
 const AR_PORT = Number(process.env.CIPHER_BRAIN_AR_PORT || 443);
 const AR_PROTOCOL = process.env.CIPHER_BRAIN_AR_PROTOCOL || 'https';
 const AR_WALLET = process.env.CIPHER_BRAIN_AR_WALLET || ''; // path to a JWK key file
-const AR_GATEWAY = process.env.CIPHER_BRAIN_AR_GATEWAY || `${AR_PROTOCOL}://${AR_HOST}:${AR_PORT}`; // base URL for the gateway HTTP read (serves bundled items)
+const AR_DEFAULT_EXTRA_GATEWAYS = ['https://permagate.io']; // public mirror(s) tried after the primary (override the whole list with CIPHER_BRAIN_AR_GATEWAYS)
 const AR_HTTP_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_AR_HTTP_TIMEOUT || 60000); // bound the gateway read so a stall falls through to the L1 chunk fallback
 
 // ---------- small process helpers (array args only — no shell, no injection) ----------
@@ -224,6 +224,46 @@ function tonBackend() {
   };
 }
 
+// The public gateways to try (in order) for the HTTP read, before the L1 chunk
+// fallback (#21). Override the whole list with CIPHER_BRAIN_AR_GATEWAYS (comma-
+// separated), or pin a single one with CIPHER_BRAIN_AR_GATEWAY; otherwise the derived
+// host (CIPHER_BRAIN_AR_HOST/PORT/PROTOCOL — arweave.net, or arlocal in tests) is tried
+// first, then the extra public mirrors.
+function arGateways() {
+  if (process.env.CIPHER_BRAIN_AR_GATEWAYS) {
+    const list = process.env.CIPHER_BRAIN_AR_GATEWAYS.split(',').map((s) => s.trim()).filter(Boolean);
+    if (list.length) return list; // ignore an all-blank override → fall through to the default
+  }
+  if (process.env.CIPHER_BRAIN_AR_GATEWAY) return [process.env.CIPHER_BRAIN_AR_GATEWAY];
+  // the derived host first, plus the public mirrors ONLY when the host is the default
+  // arweave.net — a custom CIPHER_BRAIN_AR_HOST must not silently egress to them.
+  const derived = `${AR_PROTOCOL}://${AR_HOST}:${AR_PORT}`;
+  return [derived, ...(AR_HOST === 'arweave.net' ? AR_DEFAULT_EXTRA_GATEWAYS : [])];
+}
+
+// Stream an Arweave gateway GET to `part`; resolve true iff it produced a non-empty
+// file (the caller then promotes it to `out`). A STALL timeout (reset per chunk) bounds
+// a stalled gateway WITHOUT capping a large but progressing transfer (#17). Accept ONLY
+// HTTP 200 (a 202 "pending" / soft-404 means "not here, try the next gateway").
+async function streamArweaveGateway(url, part, timeoutMs) {
+  const ctl = new AbortController();
+  let stall;
+  const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), timeoutMs); };
+  try {
+    arm();
+    const r = await fetch(url, { redirect: 'follow', signal: ctl.signal });
+    if (r.status === 200 && r.body) {
+      const tap = new Transform({ transform(c, _e, cb) { arm(); cb(null, c); } }); // each chunk resets the stall deadline
+      await pipeline(Readable.fromWeb(r.body), tap, createWriteStream(part));
+      clearTimeout(stall);
+      if ((await stat(part)).size > 0) return true;
+    }
+  } catch { /* stall / network / mid-stream error — try the next gateway */ }
+  finally { clearTimeout(stall); }
+  await rm(part, { force: true });
+  return false;
+}
+
 // arweave backend: stores the ciphertext as an Arweave transaction. The locator is
 // the tx id — assigned AFTER upload, NOT a content hash — which is exactly the case
 // the StorageBackend interface must handle (vs file/ton's pre-known content ids).
@@ -263,31 +303,20 @@ async function arweaveBackend() {
       }
       await mkdir(dirname(resolve(out)), { recursive: true });
       const part = `${out}.part`;
-      // 1) the gateway HTTP endpoint serves ANS-104 *bundled* data items (Turbo/Irys
-      //    uploads — the pay-with-ETH/USDC path), which the chunk read below cannot
-      //    fetch. STREAM the body straight to disk so a multi-hundred-MB brain never
-      //    loads into memory (#17). Use a STALL timeout (reset on every chunk) so a
-      //    slow-but-progressing large download is NOT capped, while a stalled gateway
-      //    still aborts and falls through to the fallback. Stream into a .part file and
-      //    promote it only on a clean, non-empty download; accept ONLY HTTP 200 (a 202
-      //    "pending" / soft-404 means "not here, try the fallback"; a 200 error page is
-      //    caught downstream when age decryption rejects the non-ciphertext).
-      const ctl = new AbortController();
-      let stall;
-      const armStall = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), AR_HTTP_TIMEOUT_MS); };
-      try {
-        armStall();
-        const r = await fetch(`${AR_GATEWAY}/${locator}`, { redirect: 'follow', signal: ctl.signal });
-        if (r.status === 200 && r.body) {
-          const tap = new Transform({ transform(c, _e, cb) { armStall(); cb(null, c); } }); // each chunk resets the stall deadline
-          await pipeline(Readable.fromWeb(r.body), tap, createWriteStream(part));
-          if ((await stat(part)).size > 0) { clearTimeout(stall); await rename(part, out); return; }
+      // 1) try each public gateway's HTTP endpoint in turn (#21). It serves ANS-104
+      //    *bundled* data items (Turbo/Irys — the pay-with-ETH/USDC path), which the
+      //    chunk read below cannot fetch. The body is STREAMED to disk (#17), so a
+      //    multi-hundred-MB brain never loads into memory; .part is promoted only on a
+      //    clean, non-empty download (a 202 / soft-404 / 200 error page just moves on —
+      //    the last caught downstream when age decryption rejects the non-ciphertext).
+      for (const gw of arGateways()) {
+        if (await streamArweaveGateway(`${gw.replace(/\/+$/, '')}/${locator}`, part, AR_HTTP_TIMEOUT_MS)) {
+          await rename(part, out);
+          return;
         }
-      } catch { /* stall / network / mid-stream error — fall through to the chunk read */ }
-      finally { clearTimeout(stall); }
-      await rm(part, { force: true });
-      // 2) arweave-js chunk read — robust for L1 txs even when the gateway HTTP front
-      //    is flaky (it can 5xx for L1 ids whose chunks the node still serves). This
+      }
+      // 2) arweave-js chunk read — robust for L1 txs even when every gateway HTTP front
+      //    is flaky (they can 5xx for L1 ids whose chunks the node still serves). This
       //    buffers in arweave-js, but it is the rare L1 fallback; a bundled brain takes
       //    the streamed path above. getData THROWS for an unknown / not-yet-seeded id,
       //    so treat a throw the same as "no data" (retryable below).
@@ -555,7 +584,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
 
 Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
 Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);
-         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,HTTP_TIMEOUT} (arweave — needs the 'arweave' npm package).`;
+         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave — needs the 'arweave' npm package).`;
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);

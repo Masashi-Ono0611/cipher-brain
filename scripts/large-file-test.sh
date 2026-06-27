@@ -59,7 +59,9 @@ if [ "${CB_TON:-0}" = "1" ]; then
   A() { "$CLIBIN" -I 127.0.0.1:15555 -k "$W/db/cli-keys/client" -p "$W/db/cli-keys/server.pub" -c "$1"; }
   export CIPHER_BRAIN_TON_CLI="$CLIBIN" CIPHER_BRAIN_TON_API=127.0.0.1:15555
   export CIPHER_BRAIN_TON_CLIENT="$W/db/cli-keys/client" CIPHER_BRAIN_TON_SERVER="$W/db/cli-keys/server.pub"
-  A "list" >/dev/null 2>&1 || { echo "[BLOCKED] daemon A unreachable — skipping ton part"; echo; echo "LARGE-FILE TEST PASS (${SIZE_MB} MB, file backend; ton skipped)"; exit 0; }
+  # CB_TON=1 explicitly requested the ton path — if the daemon is unreachable that's
+  # BLOCKED, not PASS (don't green-stamp a backend we never exercised).
+  A "list" >/dev/null 2>&1 || { echo "[BLOCKED] CB_TON=1 was requested but daemon A (:15555) is unreachable"; exit 2; }
   TON_ORIG=$(sha "$TMP/ton.age")
   BAG=$(cb push --in "$TMP/ton.age" --backend ton)
   TOTAL=$(A "get $BAG --json" 2>/dev/null | grep -oE '"total_size"[^0-9]*[0-9]+' | grep -oE '[0-9]+' | head -1)

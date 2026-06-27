@@ -28,12 +28,14 @@ cb "$PRIMARY" snapshot --dir "$SRC" \
 echo "== primary identity restores =="
 cb "$PRIMARY" restore --in "$TMP/v1.age" --out-dir "$TMP/r-primary" >/dev/null
 tar -xzf "$TMP/r-primary/brain.tar.gz" -C "$TMP/r-primary"
-diff -r "$SRC" "$TMP/r-primary/brain" && echo "[PASS] primary identity restores"
+diff -r "$SRC" "$TMP/r-primary/brain" || { echo "[FAIL] primary restore content mismatch"; exit 1; }
+echo "[PASS] primary identity restores"
 
 echo "== BACKUP identity restores too (key recovery: primary not needed) =="
 cb "$BACKUP" restore --in "$TMP/v1.age" --out-dir "$TMP/r-backup" >/dev/null
 tar -xzf "$TMP/r-backup/brain.tar.gz" -C "$TMP/r-backup"
-diff -r "$SRC" "$TMP/r-backup/brain" && echo "[PASS] BACKUP key restores without the primary identity"
+diff -r "$SRC" "$TMP/r-backup/brain" || { echo "[FAIL] backup restore content mismatch"; exit 1; }
+echo "[PASS] BACKUP key restores without the primary identity"
 
 echo "== an unrelated third identity cannot restore =="
 if cb "$THIRD" restore --in "$TMP/v1.age" --out-dir "$TMP/r-third" 2>/dev/null; then

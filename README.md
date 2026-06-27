@@ -132,6 +132,11 @@ versioning (each push → an immutable content-addressed locator + an append-onl
 index), the restore runbook, and **key recovery** — the primary-plus-offline-backup
 model above, so losing one identity never loses the brain.
 
+**Durability** (will the bytes survive a year of neglect?) is a separate question from
+the round-trip: [`docs/durability.md`](docs/durability.md) lays out the paths to a real
+guarantee — Arweave's pay-once permanence vs TON's proof-based rental — and recommends
+Arweave as the durable cold archive + a TON copy for `.ton`-addressable hot access (#7).
+
 ## Roadmap
 
 - **#1 Cipher** — encrypt a snapshot client-side, key only yours. ✅

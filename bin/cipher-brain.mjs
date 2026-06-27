@@ -228,12 +228,19 @@ function tonBackend() {
 async function arweaveBackend() {
   let Arweave;
   try { Arweave = (await import('arweave')).default; }
-  catch { throw new Error('arweave backend needs the `arweave` package — run: npm install arweave'); }
-  if (!AR_WALLET) throw new Error('arweave backend needs CIPHER_BRAIN_AR_WALLET (path to a JWK key file)');
+  catch (e) {
+    if (e && e.code === 'ERR_MODULE_NOT_FOUND') throw new Error('arweave backend needs the `arweave` package — run: npm install arweave');
+    throw e;
+  }
   const ar = Arweave.init({ host: AR_HOST, port: AR_PORT, protocol: AR_PROTOCOL });
-  const jwk = JSON.parse(await readFile(AR_WALLET, 'utf8'));
+  const loadWallet = async () => {
+    if (!AR_WALLET) throw new Error('arweave put needs CIPHER_BRAIN_AR_WALLET (path to a JWK key file)');
+    try { return JSON.parse(await readFile(AR_WALLET, 'utf8')); }
+    catch (e) { throw new Error(`arweave: cannot read JWK wallet at ${AR_WALLET}: ${e.message}`); }
+  };
   return {
     async put(file) {
+      const jwk = await loadWallet(); // only uploads need a wallet/signature
       const data = await readFile(file); // PoC: small ciphertext fits one tx; chunked upload for big blobs is future (#8-adjacent)
       const tx = await ar.createTransaction({ data }, jwk);
       tx.addTag('App-Name', 'cipher-brain');
@@ -244,6 +251,7 @@ async function arweaveBackend() {
       return tx.id; // 43-char base64url tx id
     },
     async get(locator, out) {
+      // reads are unauthenticated — a fresh machine needs only the tx id, no wallet
       const data = await ar.transactions.getData(locator, { decode: true });
       if (!data || !data.length) throw new Error(`arweave: no data for tx ${locator} (not mined / not found)`);
       await mkdir(dirname(resolve(out)), { recursive: true });

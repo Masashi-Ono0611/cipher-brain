@@ -78,8 +78,12 @@ try {
 
   log('mine'); await mine(); // arlocal: confirm the pending tx
 
-  // a fresh machine that only has the tx id fetches the bytes back
-  log('pull'); cb('pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'got.age'));
+  // a fresh machine that only has the tx id (NO upload wallet) fetches the bytes back
+  const pullEnv = { ...env };
+  delete pullEnv.CIPHER_BRAIN_AR_WALLET;
+  log('pull (no wallet)');
+  const rp = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'got.age')], { env: pullEnv, encoding: 'utf8' });
+  rp.status === 0 ? pass('pull works with only the tx id (no upload wallet needed)') : fail(`pull without wallet failed: ${rp.stderr}`);
   const got = await readFile(join(tmp, 'got.age'));
   sha(got) === cipherSha ? pass('pulled bytes == pushed ciphertext (byte-identical)') : fail('pulled bytes differ');
 

@@ -116,6 +116,14 @@ try {
   (fb.status === 0 && sha(await readFile(join(tmp, 'fb.age'))) === cipherSha)
     ? pass('fallback: L1 chunk read serves when the gateway HTTP path is dead')
     : fail(`fallback path did not serve via getData: ${fb.stderr || 'bytes differ'}`);
+
+  // --wait retry (#19): a not-yet-available id with a wait budget retries (then still
+  // fails for a truly-missing id). A short retry interval keeps the test fast.
+  const wEnv = { ...env, CIPHER_BRAIN_PULL_RETRY_MS: '150' };
+  const w = spawnSync('node', [BIN, 'pull', '--locator', 'B'.repeat(43), '--backend', 'arweave', '--out', join(tmp, 'w.age'), '--wait', '1'], { env: wEnv, encoding: 'utf8' });
+  (w.status !== 0 && /retrying/.test(w.stderr))
+    ? pass('--wait retries while not retrievable, then fails for a truly-missing id')
+    : fail(`--wait did not retry as expected: status=${w.status} stderr=${(w.stderr || '').slice(0, 160)}`);
 } catch (e) {
   fail(`exception: ${e.message}`);
 } finally {

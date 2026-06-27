@@ -49,5 +49,20 @@ if cb restore --in "$TMP/snap.age" --out-dir "$TMP/out-wrong" 2>/dev/null; then
 fi
 echo "[PASS] a different identity cannot restore"
 
+echo "== P1 regression: a failed snapshot must not leave staged plaintext =="
+# a recipient file with garbage makes `age` exit immediately while `tar` is still
+# streaming -> exercises the EPIPE path. The fix must (a) fail cleanly and (b) let
+# the finally-block erase the staged plaintext.
+export TMPDIR="$TMP/stagedir"; mkdir -p "$TMPDIR"
+printf 'not-a-valid-age-recipient\n' > "$TMP/bad-recipient.txt"
+if cb snapshot --dir "$SRC" --recipient "$TMP/bad-recipient.txt" --out "$TMP/bad.age" 2>/dev/null; then
+  echo "FAIL: snapshot with a bad recipient unexpectedly succeeded"; exit 1
+fi
+LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | wc -l | tr -d ' ')
+if [ "$LEFTOVERS" != "0" ]; then
+  echo "FAIL: $LEFTOVERS staged plaintext dir(s) left behind after a failed snapshot"; exit 1
+fi
+echo "[PASS] failed snapshot exited cleanly and left no staged plaintext"
+
 echo
 echo "SELFTEST PASS"

@@ -7,9 +7,12 @@
 // and is the sole thing that can restore. Compromising the snapshotting machine
 // therefore leaks no brain content.
 //
-// Crypto: age (X25519 + ChaCha20-Poly1305) via the audited `age` binary. We
-// stream tar -> age, so a multi-GB snapshot never loads into memory and never
-// hits disk as a single plaintext blob (only the pg_dump is staged, then erased).
+// Crypto: age (X25519 + ChaCha20-Poly1305) via the audited `age` binary. Each
+// component (the pg_dump, each directory archive) is staged into a private (0700)
+// temp dir, then the bundle is streamed `tar -> age` so the final ciphertext never
+// loads into memory. The staged plaintext is erased even on failure (the snapshot
+// finally-block), so it doesn't linger. Staging needs scratch space ~the size of
+// the snapshot, so point TMPDIR at a disk with room for large brains.
 //
 // Backend-agnostic: this produces ONE encrypted artifact (`*.age`). Where those
 // bytes get parked (TON Storage / Arweave / anything) is a separate, pluggable
@@ -50,23 +53,37 @@ function run(cmd, args, { input } = {}) {
 
 // Pipe producer.stdout -> consumer.stdin and wait for both. Used for the
 // tar|age (snapshot) and age|tar (restore) streaming pipelines.
-function pipe2(prodCmd, prodArgs, consCmd, consArgs) {
+function pipe2(prodCmd, prodArgs, consCmd, consArgs, { consStdout = 'inherit' } = {}) {
   return new Promise((res, rej) => {
     const prod = spawn(prodCmd, prodArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const cons = spawn(consCmd, consArgs, { stdio: ['pipe', 'inherit', 'pipe'] });
-    let pErr = '', cErr = '', left = 2, failed = false;
-    const done = (e) => { if (failed) return; if (e) { failed = true; return rej(e); } if (--left === 0) res(); };
+    const cons = spawn(consCmd, consArgs, { stdio: ['pipe', consStdout, 'pipe'] });
+    let pErr = '', cErr = '', left = 2, settled = false;
+    const fail = (e) => {
+      if (settled) return;
+      settled = true;
+      prod.kill(); cons.kill(); // don't leave the survivor running (or still decrypting)
+      rej(e);
+    };
+    const ok = () => { if (settled) return; if (--left === 0) { settled = true; res(); } };
     prod.stderr.on('data', (d) => (pErr += d));
     cons.stderr.on('data', (d) => (cErr += d));
-    prod.on('error', rej);
-    cons.on('error', rej);
+    prod.on('error', fail);
+    cons.on('error', fail);
+    // If the consumer dies early, writing to its closed stdin emits EPIPE as an
+    // async 'error' event — swallow it on the pipe ends so the real failure
+    // surfaces via the close handler (a clean reject) instead of an uncaught crash
+    // that would skip snapshot's finally-block and leave staged plaintext behind.
+    prod.stdout.on('error', () => {});
+    cons.stdin.on('error', () => {});
     prod.stdout.pipe(cons.stdin);
-    prod.on('close', (c) => done(c === 0 ? null : new Error(`${prodCmd} exited ${c}: ${pErr.trim()}`)));
-    cons.on('close', (c) => done(c === 0 ? null : new Error(`${consCmd} exited ${c}: ${cErr.trim()}`)));
+    prod.on('close', (c) => (c === 0 ? ok() : fail(new Error(`${prodCmd} exited ${c}: ${pErr.trim()}`))));
+    cons.on('close', (c) => (c === 0 ? ok() : fail(new Error(`${consCmd} exited ${c}: ${cErr.trim()}`))));
   });
 }
 
 const exists = (p) => access(p, FS.F_OK).then(() => true).catch(() => false);
+
+const BOOL_FLAGS = new Set(['force']); // flags that take no value
 
 function parseArgs(argv) {
   const o = { dirs: [], tables: [] };
@@ -74,8 +91,10 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--dir') o.dirs.push(argv[++i]);
     else if (a === '--pg-table') o.tables.push(argv[++i]);
-    else if (a.startsWith('--')) o[a.slice(2).replace(/-/g, '_')] = argv[++i];
-    else o._ = a;
+    else if (a.startsWith('--')) {
+      const key = a.slice(2).replace(/-/g, '_');
+      o[key] = BOOL_FLAGS.has(key) ? true : argv[++i];
+    } else o._ = a;
   }
   return o;
 }
@@ -84,8 +103,11 @@ function parseArgs(argv) {
 
 async function keygen(o) {
   await mkdir(HOME, { recursive: true });
-  if ((await exists(IDENTITY)) && !o.force) {
-    throw new Error(`identity already exists at ${IDENTITY} (refusing to overwrite — losing it = losing the brain). Pass --force only if you are certain.`);
+  if (await exists(IDENTITY)) {
+    if (!o.force) {
+      throw new Error(`identity already exists at ${IDENTITY} (refusing to overwrite — losing it = losing the brain). Pass --force only if you are certain.`);
+    }
+    await rm(IDENTITY, { force: true }); // age-keygen -o uses O_EXCL, so the old key must go first
   }
   await run(AGE_KEYGEN, ['-o', IDENTITY]);
   await chmod(IDENTITY, 0o600);
@@ -113,9 +135,13 @@ async function snapshot(o) {
       await run(pgTool('pg_dump'), ['-Fc', '--no-owner', '--no-privileges', ...tableArgs, '-f', dumpPath, o.pg]);
       components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all' });
     }
+    const usedNames = new Set();
     for (const d of o.dirs) {
       const abs = resolve(d);
-      const name = basename(abs) + '.tar.gz';
+      let name = basename(abs) + '.tar.gz';
+      // multiple --dir with the same basename must not overwrite each other in the stage
+      for (let n = 1; usedNames.has(name); n++) name = `${basename(abs)}-${n}.tar.gz`;
+      usedNames.add(name);
       await run('tar', ['-czf', join(stage, name), '-C', dirname(abs), basename(abs)]);
       components.push({ name, kind: 'dir', source: abs });
     }
@@ -153,35 +179,52 @@ async function restore(o) {
   }
 }
 
-// verify is the falsifiable half: prove the artifact is real age ciphertext AND
-// that the WRONG key cannot read it. A snapshot that a stranger's key can open
-// would be a catastrophic FAIL, not a PASS.
+// verify is the falsifiable half. Three checks:
+//   1. it is real age ciphertext (header),
+//   2. a WRONG key is rejected (negative control), and
+//   3. when the private identity is on THIS machine, that identity decrypts the
+//      whole artifact into a well-formed bundle (positive control) — this is what
+//      makes PASS mean "restorable by you", and it catches truncation/corruption
+//      that a wrong-key test alone would miss.
+// On a public-key-only box the positive control is skipped (no identity present),
+// so verify there only attests the header + that a stranger's key cannot read it.
 async function verify(o) {
   if (!o.in) throw new Error('--in <file.age> required');
+  const sz = (await stat(o.in)).size;
   const head = await readHead(o.in, 64);
   const isAge = head.startsWith(AGE_MAGIC);
-  const sz = (await stat(o.in)).size;
   console.log(`file: ${o.in} (${fmtBytes(sz)})`);
   console.log(`[${isAge ? 'PASS' : 'FAIL'}] age ciphertext header present`);
 
-  // generate a throwaway identity and confirm it CANNOT decrypt
+  // negative control: a throwaway key must NOT decrypt
   const tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-verify-'));
   let wrongKeyRejected = false;
   try {
     const wrongId = join(tdir, 'wrong.age');
     await run(AGE_KEYGEN, ['-o', wrongId]);
-    try {
-      await run(AGE, ['-d', '-i', wrongId, o.in]);
-      wrongKeyRejected = false; // decryption SUCCEEDED with a wrong key => broken
-    } catch {
-      wrongKeyRejected = true; // expected: wrong key is rejected
-    }
+    try { await run(AGE, ['-d', '-i', wrongId, o.in]); } catch { wrongKeyRejected = true; }
   } finally {
     await rm(tdir, { recursive: true, force: true });
   }
-  console.log(`[${wrongKeyRejected ? 'PASS' : 'FAIL'}] a wrong key is rejected (only your identity can read it)`);
+  console.log(`[${wrongKeyRejected ? 'PASS' : 'FAIL'}] a wrong key is rejected`);
 
-  const ok = isAge && wrongKeyRejected;
+  // positive control: your identity decrypts the whole thing into a well-formed
+  // bundle. Streamed (age -d | tar -t) so it never buffers a multi-GB plaintext.
+  const identity = o.identity || IDENTITY;
+  let positiveOk = true;
+  if (await exists(identity)) {
+    try {
+      await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-tf', '-'], { consStdout: 'ignore' });
+      console.log('[PASS] your identity decrypts the artifact into a well-formed bundle');
+    } catch {
+      positiveOk = false;
+      console.log('[FAIL] your identity could not decrypt the artifact (corrupt/truncated, or not encrypted to you)');
+    }
+  } else {
+    console.log('[SKIP] positive control — no private identity on this machine (public-key-only box)');
+  }
+
+  const ok = isAge && wrongKeyRejected && positiveOk;
   console.log(ok ? '\nVERDICT: PASS' : '\nVERDICT: FAIL');
   if (!ok) process.exitCode = 1;
 }

@@ -53,11 +53,15 @@ cipher-brain restore \
   --pg "postgres://user@localhost:5432/gbrain_restore"
 ```
 
-A multi-GB snapshot is streamed `tar -> age`, so it never loads into memory and
-never hits disk as one plaintext blob (only the staged `pg_dump` is written, then
-erased). Binary paths are overridable for non-PATH installs:
-`CIPHER_BRAIN_AGE`, `CIPHER_BRAIN_PG_BIN` (dir holding `pg_dump`/`pg_restore`),
-`CIPHER_BRAIN_HOME`.
+Each component (the `pg_dump`, each `--dir` archive) is staged into a private
+(0700) temp dir, then the bundle is streamed `tar -> age`, so the final ciphertext
+never loads into memory. The staged plaintext is erased even on failure, so it
+doesn't linger — but staging needs scratch space about the size of the snapshot,
+so point `TMPDIR` at a disk with room for large brains. The Postgres connection
+string is passed as a process argument; for password auth use `~/.pgpass` or
+`PGPASSWORD` so secrets stay out of the process list. Binary paths are overridable
+for non-PATH installs: `CIPHER_BRAIN_AGE`, `CIPHER_BRAIN_PG_BIN` (dir holding
+`pg_dump`/`pg_restore`), `CIPHER_BRAIN_HOME`.
 
 ## Validation
 

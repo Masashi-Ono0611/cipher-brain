@@ -21,9 +21,11 @@ psql() { command "$PSQL" "$@"; }   # `command` bypasses this function -> runs th
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLI="$ROOT/bin/cipher-brain.mjs"
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d)"
 export CIPHER_BRAIN_HOME="$WORK/keys"
 SCRATCH_URL="${CB_PG_URL%/*}/$SCRATCH_DB"
+# always tidy up: remove the work dir AND drop the scratch db even if a step fails mid-run
+trap 'rm -rf "$WORK"; psql "$CB_PG_URL" -c "drop database if exists $SCRATCH_DB;" >/dev/null 2>&1 || true' EXIT
 
 echo "== keygen =="
 node "$CLI" keygen >/dev/null

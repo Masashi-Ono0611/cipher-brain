@@ -124,6 +124,10 @@ control address, key paths, and download timeout for the ton backend).
    proves the `StorageBackend` abstraction holds for a backend whose locator is an
    **Arweave tx id assigned *after* upload** (not a content hash like `file`/`ton`):
    push → tx id, fetch by that id, byte-identical, decrypts; unknown id fails. ✅
+   `pull` reads both plain **L1** txs and **ANS-104 bundled** data items — the form a
+   bundler (Turbo/Irys) produces when you pay with **ETH/USDC/fiat** — via a gateway-HTTP
+   read with an L1 chunk-read fallback, proven against *real* arweave.net by
+   `node scripts/arweave-real-read.mjs` (operator-run; external, not in CI). ✅
 
 ## Managing snapshots over time
 

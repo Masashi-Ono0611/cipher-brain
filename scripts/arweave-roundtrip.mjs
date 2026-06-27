@@ -95,10 +95,27 @@ try {
   const restored = await readFile(join(tmp, 'out', 'brain', 'note.txt'), 'utf8');
   restored.includes(marker) ? pass('decrypt(pulled) == original plaintext') : fail('decrypted content mismatch');
 
-  // negative control: an unknown tx id returns no bytes
+  // negative control: an unknown (but well-formed) tx id returns no bytes
   const badId = 'A'.repeat(43);
   const r = spawnSync('node', [BIN, 'pull', '--locator', badId, '--backend', 'arweave', '--out', join(tmp, 'bad.age')], { env, encoding: 'utf8' });
   r.status !== 0 ? pass('negative control: unknown tx id fails') : fail('unknown tx id unexpectedly succeeded');
+
+  // guard: a malformed locator must be rejected BEFORE it is interpolated into the
+  // gateway URL the get() HTTP read builds (path-traversal/SSRF guard)
+  const bad2 = spawnSync('node', [BIN, 'pull', '--locator', '../../etc/passwd', '--backend', 'arweave', '--out', join(tmp, 'bad2.age')], { env, encoding: 'utf8' });
+  (bad2.status !== 0 && /invalid tx id/.test(bad2.stderr))
+    ? pass('guard: malformed locator rejected (no SSRF/path-traversal)')
+    : fail('malformed locator was not rejected by the id guard');
+
+  // fallback coverage: point the gateway HTTP read (path 1) at a dead address and
+  // assert the L1 chunk-read fallback (path 2 = getData) still serves the bytes.
+  // Without this the fallback is never exercised — arlocal serves GET /{id}, so the
+  // happy path above always wins on path 1.
+  const fbEnv = { ...env, CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1' }; // connection refused → path 1 fails fast
+  const fb = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'fb.age')], { env: fbEnv, encoding: 'utf8' });
+  (fb.status === 0 && sha(await readFile(join(tmp, 'fb.age'))) === cipherSha)
+    ? pass('fallback: L1 chunk read serves when the gateway HTTP path is dead')
+    : fail(`fallback path did not serve via getData: ${fb.stderr || 'bytes differ'}`);
 } catch (e) {
   fail(`exception: ${e.message}`);
 } finally {

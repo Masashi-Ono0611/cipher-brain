@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Key-recovery + versioning proof (issue #3), daemon-free so CI can gate it.
+# Encrypts a snapshot to a PRIMARY *and* an offline BACKUP key, then shows:
+#   - the primary identity restores,
+#   - the BACKUP identity restores too (so losing the primary != losing the brain),
+#   - an unrelated third identity cannot,
+#   - two different snapshots are independently restorable (versioning).
+set -euo pipefail
+
+BIN="$(cd "$(dirname "$0")/.." && pwd)/bin/cipher-brain.mjs"
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+PRIMARY="$TMP/keys-primary"; BACKUP="$TMP/keys-backup"; THIRD="$TMP/keys-third"
+cb() { CIPHER_BRAIN_HOME="$1" node "$BIN" "${@:2}"; }
+
+echo "== three independent keypairs =="
+cb "$PRIMARY" keygen >/dev/null
+cb "$BACKUP"  keygen >/dev/null
+cb "$THIRD"   keygen >/dev/null
+
+SRC="$TMP/brain"; mkdir -p "$SRC"
+printf 'brain-v1-%s\n' "$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')" > "$SRC/note.txt"
+V1MARK=$(cat "$SRC/note.txt")
+
+echo "== snapshot v1 -> encrypt to PRIMARY *and* BACKUP =="
+cb "$PRIMARY" snapshot --dir "$SRC" \
+  --recipient "$PRIMARY/recipient.txt" --recipient "$BACKUP/recipient.txt" --out "$TMP/v1.age"
+
+echo "== primary identity restores =="
+cb "$PRIMARY" restore --in "$TMP/v1.age" --out-dir "$TMP/r-primary" >/dev/null
+tar -xzf "$TMP/r-primary/brain.tar.gz" -C "$TMP/r-primary"
+diff -r "$SRC" "$TMP/r-primary/brain" || { echo "[FAIL] primary restore content mismatch"; exit 1; }
+echo "[PASS] primary identity restores"
+
+echo "== BACKUP identity restores too (key recovery: primary not needed) =="
+cb "$BACKUP" restore --in "$TMP/v1.age" --out-dir "$TMP/r-backup" >/dev/null
+tar -xzf "$TMP/r-backup/brain.tar.gz" -C "$TMP/r-backup"
+diff -r "$SRC" "$TMP/r-backup/brain" || { echo "[FAIL] backup restore content mismatch"; exit 1; }
+echo "[PASS] BACKUP key restores without the primary identity"
+
+echo "== an unrelated third identity cannot restore =="
+if cb "$THIRD" restore --in "$TMP/v1.age" --out-dir "$TMP/r-third" 2>/dev/null; then
+  echo "[FAIL] a non-recipient identity restored"; exit 1
+fi
+echo "[PASS] non-recipient identity is rejected"
+
+echo "== versioning: a second snapshot is independently restorable =="
+printf 'brain-v2-%s\n' "$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')" > "$SRC/note.txt"
+V2MARK=$(cat "$SRC/note.txt")
+cb "$PRIMARY" snapshot --dir "$SRC" --recipient "$PRIMARY/recipient.txt" --out "$TMP/v2.age"
+cb "$PRIMARY" restore --in "$TMP/v1.age" --out-dir "$TMP/rv1" >/dev/null
+cb "$PRIMARY" restore --in "$TMP/v2.age" --out-dir "$TMP/rv2" >/dev/null
+tar -xzf "$TMP/rv1/brain.tar.gz" -C "$TMP/rv1"; tar -xzf "$TMP/rv2/brain.tar.gz" -C "$TMP/rv2"
+grep -q "$V1MARK" "$TMP/rv1/brain/note.txt" && grep -q "$V2MARK" "$TMP/rv2/brain/note.txt" \
+  && echo "[PASS] both versions restore to their own content" || { echo "[FAIL] version mismatch"; exit 1; }
+
+echo
+echo "RECOVERY SELFTEST PASS"

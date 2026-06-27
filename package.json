@@ -9,7 +9,8 @@
   },
   "scripts": {
     "selftest": "bash scripts/selftest.sh",
-    "selftest:storage": "bash scripts/selftest-storage.sh"
+    "selftest:storage": "bash scripts/selftest-storage.sh",
+    "selftest:recovery": "bash scripts/selftest-recovery.sh"
   },
   "engines": {
     "node": ">=18"

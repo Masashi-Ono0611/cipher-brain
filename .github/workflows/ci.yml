@@ -18,3 +18,5 @@ jobs:
         run: npm run selftest
       - name: storage round-trip selftest (file backend, no daemon)
         run: npm run selftest:storage
+      - name: key-recovery + versioning selftest
+        run: npm run selftest:recovery

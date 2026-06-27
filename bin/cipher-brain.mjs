@@ -216,11 +216,12 @@ function tonBackend() {
 const BOOL_FLAGS = new Set(['force']); // flags that take no value
 
 function parseArgs(argv) {
-  const o = { dirs: [], tables: [] };
+  const o = { dirs: [], tables: [], recipients: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dir') o.dirs.push(argv[++i]);
     else if (a === '--pg-table') o.tables.push(argv[++i]);
+    else if (a === '--recipient') o.recipients.push(argv[++i]); // repeatable: key recovery
     else if (a.startsWith('--')) {
       const key = a.slice(2).replace(/-/g, '_');
       o[key] = BOOL_FLAGS.has(key) ? true : argv[++i];
@@ -253,8 +254,19 @@ async function keygen(o) {
 async function snapshot(o) {
   if (!o.out) throw new Error('--out <file.age> required');
   if (!o.pg && o.dirs.length === 0) throw new Error('nothing to snapshot: pass --pg <conn> and/or --dir <path>');
-  const recipientFile = o.recipient ? o.recipient : RECIPIENT;
-  if (!(await exists(recipientFile))) throw new Error(`no recipient at ${recipientFile} — run "cipher-brain keygen" first (or pass --recipient <file>)`);
+  // Recipients = who can decrypt. Each --recipient is an `age1...` pubkey OR a
+  // file of pubkeys; default to the keypair's own recipient. Passing more than one
+  // is key recovery: encrypt to a primary AND an offline backup key so that losing
+  // the primary identity does NOT lose the brain (any one identity restores).
+  const recArgs = [];
+  const recs = o.recipients.length ? o.recipients : [RECIPIENT];
+  for (const r of recs) {
+    if (r.startsWith('age1')) recArgs.push('-r', r);
+    else {
+      if (!(await exists(r))) throw new Error(`no recipient at ${r} — run "cipher-brain keygen" first, or pass an age1... pubkey`);
+      recArgs.push('-R', r);
+    }
+  }
 
   const stage = await mkdtemp(join(tmpdir(), 'cipher-brain-'));
   try {
@@ -280,10 +292,10 @@ async function snapshot(o) {
       join(stage, 'manifest.json'),
       JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), components }, null, 2) + '\n',
     );
-    // tar the staged components into one stream, encrypt to the public recipient
-    await pipe2('tar', ['-cf', '-', '-C', stage, '.'], AGE, ['-R', recipientFile, '-o', o.out]);
+    // tar the staged components into one stream, encrypt to all recipients
+    await pipe2('tar', ['-cf', '-', '-C', stage, '.'], AGE, [...recArgs, '-o', o.out]);
     const sz = (await stat(o.out)).size;
-    console.log(`wrote ${o.out} (${fmtBytes(sz)}, encrypted to ${recipientFile})`);
+    console.log(`wrote ${o.out} (${fmtBytes(sz)}, encrypted to ${recs.length} recipient(s): ${recs.join(', ')})`);
     console.log(`components: ${components.map((c) => c.name).join(', ')}`);
   } finally {
     await rm(stage, { recursive: true, force: true });
@@ -410,9 +422,11 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       Create your age keypair: identity (PRIVATE) + recipient (PUBLIC).
       Identity = ${IDENTITY}
 
-  cipher-brain snapshot --out <file.age> [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <file>]
-      Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient.
-      The snapshotting machine never needs the private key.
+  cipher-brain snapshot --out <file.age> [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
+      Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
+      Pass --recipient more than once (a primary + an offline backup key) for key
+      recovery: any one of those identities can restore. The snapshotting machine
+      never needs a private key.
 
   cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>]
       Decrypt with the PRIVATE identity; optionally pg_restore the db.dump.

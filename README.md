@@ -79,8 +79,6 @@ control address, key paths, and download timeout for the ton backend).
 
 ## Validation
 
-Two layers, both green:
-
 1. **Local crypto round-trip** (`npm run selftest`) — no Postgres, no network.
    keygen → snapshot a synthetic tree → verify → restore → assert the tree is
    byte-identical, the ciphertext leaks no plaintext, and a *different* identity
@@ -108,6 +106,17 @@ Two layers, both green:
    never peered (the seeder shows 0 peers), so the cross-node ADNL transfer was
    **not** exercised. That gap is seeder reachability (NAT / sparse testnet DHT),
    filed as a follow-up issue. It is honestly *not* a full PASS.
+5. **Key recovery + versioning** (`npm run selftest:recovery`, gated in CI, no
+   daemon) — encrypts a snapshot to a primary *and* an offline backup key, then
+   shows the **backup key restores with the primary identity absent**, an unrelated
+   identity cannot, and two snapshots restore independently. ✅
+
+## Managing snapshots over time
+
+[`MANAGEMENT.md`](MANAGEMENT.md) covers cadence (a nightly snapshot+push recipe),
+versioning (each push → an immutable content-addressed locator + an append-only
+index), the restore runbook, and **key recovery** — the primary-plus-offline-backup
+model above, so losing one identity never loses the brain.
 
 ## Roadmap
 
@@ -115,7 +124,8 @@ Two layers, both green:
 - **#2 Storage** — pluggable backend, storage sees ciphertext only. `file` backend
   round-trip ✅ (CI-gated); `ton` push/store/decrypt ✅, cross-node fetch blocked on
   seeder reachability (PARTIAL — tracked as a follow-up).
-- **#3 Management** — snapshot cadence, versioning, and key recovery.
+- **#3 Management** — key recovery (backup key, CI-proven ✅) + versioning ✅;
+  cadence / restore runbook documented in [`MANAGEMENT.md`](MANAGEMENT.md).
 
-The Arweave-vs-TON storage decision is deliberately *downstream* of #1–#3: the
-cipher layer is backend-agnostic by design.
+With #1–#3 in, the Arweave-vs-TON storage decision is the next step — deliberately
+*downstream*, because the cipher layer is backend-agnostic by design (#9).

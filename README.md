@@ -117,6 +117,11 @@ control address, key paths, and download timeout for the ton backend).
    (≪ the 256 MB input → not buffered); the `file` backend round-tripped
    byte-identical; the `ton` backend produced a **2050-piece** bag the daemon
    stored exactly and that decrypted byte-identical. ✅
+7. **Arweave backend parity** (`npm run selftest:arweave`, gated in CI against a
+   local [arlocal](https://github.com/textury/arlocal) gateway — no real AR) —
+   proves the `StorageBackend` abstraction holds for a backend whose locator is an
+   **Arweave tx id assigned *after* upload** (not a content hash like `file`/`ton`):
+   push → tx id, fetch by that id, byte-identical, decrypts; unknown id fails. ✅
 
 ## Managing snapshots over time
 
@@ -133,6 +138,11 @@ model above, so losing one identity never loses the brain.
   seeder reachability (PARTIAL — tracked as a follow-up).
 - **#3 Management** — key recovery (backup key, CI-proven ✅) + versioning ✅;
   cadence / restore runbook documented in [`MANAGEMENT.md`](MANAGEMENT.md).
+- **Backends** — `file` (CI ✅) · `ton` (store/decrypt ✅, cross-node PARTIAL, #6) ·
+  `arweave` (parity CI-proven against arlocal ✅, #9). The abstraction is validated
+  across content-addressed *and* post-assigned-id backends.
 
-With #1–#3 in, the Arweave-vs-TON storage decision is the next step — deliberately
-*downstream*, because the cipher layer is backend-agnostic by design (#9).
+The cipher layer is backend-agnostic by design — proven, not just asserted, now that
+both a content-addressed (`ton`) and a post-assigned-id (`arweave`) backend round-trip.
+The remaining **Arweave-vs-TON-for-real** decision is about durability/cost/UX on
+*real* networks (#6 reachability, #7 persistence), not the abstraction.

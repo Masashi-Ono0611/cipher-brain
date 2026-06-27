@@ -43,6 +43,10 @@ const TON_API = process.env.CIPHER_BRAIN_TON_API || '127.0.0.1:15555';     // st
 const TON_CLIENT = process.env.CIPHER_BRAIN_TON_CLIENT || '';              // storage-daemon-cli -k <client key>
 const TON_SERVER = process.env.CIPHER_BRAIN_TON_SERVER || '';              // storage-daemon-cli -p <server.pub>
 const TON_TIMEOUT_S = Number(process.env.CIPHER_BRAIN_TON_TIMEOUT || 300); // pull: wait this long for download
+const AR_HOST = process.env.CIPHER_BRAIN_AR_HOST || 'arweave.net';
+const AR_PORT = Number(process.env.CIPHER_BRAIN_AR_PORT || 443);
+const AR_PROTOCOL = process.env.CIPHER_BRAIN_AR_PROTOCOL || 'https';
+const AR_WALLET = process.env.CIPHER_BRAIN_AR_WALLET || ''; // path to a JWK key file
 
 // ---------- small process helpers (array args only — no shell, no injection) ----------
 
@@ -108,11 +112,14 @@ function sha256(file) {
 
 // ---------- storage backends ----------
 // A StorageBackend is { put(file) -> locator, get(locator, outFile) }. Storage
-// only ever sees the *.age ciphertext; the locator is content-addressed.
-function backendFor(name) {
+// only ever sees the *.age ciphertext. The locator is whatever the backend
+// assigns: a content hash for file/ton (known before upload), or a tx id for
+// arweave (assigned AFTER upload) — the interface assumes neither.
+async function backendFor(name) {
   if (name === 'file') return fileBackend();
   if (name === 'ton') return tonBackend();
-  throw new Error(`unknown backend: ${name || '(none)'} — use --backend file|ton`);
+  if (name === 'arweave') return arweaveBackend();
+  throw new Error(`unknown backend: ${name || '(none)'} — use --backend file|ton|arweave`);
 }
 
 // file backend: a local content-addressed store. Needs no daemon and no network,
@@ -209,6 +216,38 @@ function tonBackend() {
       } finally {
         await rm(tmp, { recursive: true, force: true }); // don't leak the downloaded ciphertext
       }
+    },
+  };
+}
+
+// arweave backend: stores the ciphertext as an Arweave transaction. The locator is
+// the tx id — assigned AFTER upload, NOT a content hash — which is exactly the case
+// the StorageBackend interface must handle (vs file/ton's pre-known content ids).
+// Uses the official `arweave` SDK, lazily imported so the core stays dependency-free
+// unless this backend is used (run `npm install arweave`).
+async function arweaveBackend() {
+  let Arweave;
+  try { Arweave = (await import('arweave')).default; }
+  catch { throw new Error('arweave backend needs the `arweave` package — run: npm install arweave'); }
+  if (!AR_WALLET) throw new Error('arweave backend needs CIPHER_BRAIN_AR_WALLET (path to a JWK key file)');
+  const ar = Arweave.init({ host: AR_HOST, port: AR_PORT, protocol: AR_PROTOCOL });
+  const jwk = JSON.parse(await readFile(AR_WALLET, 'utf8'));
+  return {
+    async put(file) {
+      const data = await readFile(file); // PoC: small ciphertext fits one tx; chunked upload for big blobs is future (#8-adjacent)
+      const tx = await ar.createTransaction({ data }, jwk);
+      tx.addTag('App-Name', 'cipher-brain');
+      tx.addTag('Content-Type', 'application/octet-stream');
+      await ar.transactions.sign(tx, jwk);
+      const res = await ar.transactions.post(tx);
+      if (res.status !== 200 && res.status !== 208) throw new Error(`arweave post failed: HTTP ${res.status}`);
+      return tx.id; // 43-char base64url tx id
+    },
+    async get(locator, out) {
+      const data = await ar.transactions.getData(locator, { decode: true });
+      if (!data || !data.length) throw new Error(`arweave: no data for tx ${locator} (not mined / not found)`);
+      await mkdir(dirname(resolve(out)), { recursive: true });
+      await writeFile(out, Buffer.from(data));
     },
   };
 }
@@ -326,15 +365,16 @@ async function restore(o) {
 // second, independent node) is the operator script's job, not the verb's.
 async function push(o) {
   if (!o.in) throw new Error('--in <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|ton> required'); // no silent default
+  if (!o.backend) throw new Error('--backend <file|ton|arweave> required'); // no silent default
   if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
   // storage must only ever see ciphertext — refuse to push a non-age artifact
-  // (e.g. an accidental plaintext path), which would be the last gate before ton
-  // can publish bytes externally.
+  // (e.g. an accidental plaintext path), which would be the last gate before a
+  // backend can publish bytes externally.
   if (!(await readHead(o.in, 64)).startsWith(AGE_MAGIC)) {
     throw new Error(`${o.in} is not age ciphertext (header mismatch) — refusing to push non-ciphertext to storage`);
   }
-  const locator = await backendFor(o.backend).put(o.in);
+  const backend = await backendFor(o.backend);
+  const locator = await backend.put(o.in);
   console.error(`pushed ${o.in} -> ${o.backend}:${locator}`);
   console.log(locator); // stdout = locator ONLY, so a script can capture it
 }
@@ -342,8 +382,9 @@ async function push(o) {
 async function pull(o) {
   if (!o.locator) throw new Error('--locator <id> required');
   if (!o.out) throw new Error('--out <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|ton> required');
-  await backendFor(o.backend).get(o.locator, o.out);
+  if (!o.backend) throw new Error('--backend <file|ton|arweave> required');
+  const backend = await backendFor(o.backend);
+  await backend.get(o.locator, o.out);
   console.error(`pulled ${o.backend}:${o.locator} -> ${o.out}`);
 }
 
@@ -434,15 +475,16 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
   cipher-brain verify --in <file.age>
       Assert it is real age ciphertext AND a wrong key cannot open it.
 
-  cipher-brain push --in <file.age> --backend <file|ton>
+  cipher-brain push --in <file.age> --backend <file|ton|arweave>
       Upload ciphertext to storage. Prints ONLY the locator to stdout
-      (file: store path; ton: hex BagID). Storage sees ciphertext only.
+      (file: store path; ton: hex BagID; arweave: tx id). Storage sees ciphertext only.
 
-  cipher-brain pull --locator <id> --backend <file|ton> --out <file.age>
-      Fetch ciphertext by locator into --out. Blocks until download completes.
+  cipher-brain pull --locator <id> --backend <file|ton|arweave> --out <file.age>
+      Fetch ciphertext by locator into --out. Blocks until it is available.
 
 Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
-Storage: CIPHER_BRAIN_FILE_DIR (file backend); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton backend).`;
+Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);
+         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET} (arweave — needs the 'arweave' npm package).`;
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);

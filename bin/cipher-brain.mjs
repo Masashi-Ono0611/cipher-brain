@@ -47,6 +47,8 @@ const AR_HOST = process.env.CIPHER_BRAIN_AR_HOST || 'arweave.net';
 const AR_PORT = Number(process.env.CIPHER_BRAIN_AR_PORT || 443);
 const AR_PROTOCOL = process.env.CIPHER_BRAIN_AR_PROTOCOL || 'https';
 const AR_WALLET = process.env.CIPHER_BRAIN_AR_WALLET || ''; // path to a JWK key file
+const AR_GATEWAY = process.env.CIPHER_BRAIN_AR_GATEWAY || `${AR_PROTOCOL}://${AR_HOST}:${AR_PORT}`; // base URL for the gateway HTTP read (serves bundled items)
+const AR_HTTP_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_AR_HTTP_TIMEOUT || 60000); // bound the gateway read so a stall falls through to the L1 chunk fallback
 
 // ---------- small process helpers (array args only — no shell, no injection) ----------
 
@@ -251,11 +253,38 @@ async function arweaveBackend() {
       return tx.id; // 43-char base64url tx id
     },
     async get(locator, out) {
-      // reads are unauthenticated — a fresh machine needs only the tx id, no wallet
-      const data = await ar.transactions.getData(locator, { decode: true });
-      if (!data || !data.length) throw new Error(`arweave: no data for tx ${locator} (not mined / not found)`);
+      // reads are unauthenticated — a fresh machine needs only the tx id, no wallet.
+      // The locator is interpolated into a gateway URL below, so validate it is a
+      // clean Arweave tx id first (this also closes a path-traversal/SSRF foot-gun).
+      if (!/^[A-Za-z0-9_-]{43}$/.test(locator)) {
+        throw new Error(`arweave: invalid tx id (expected 43-char base64url): ${locator}`);
+      }
+      let data = null;
+      // 1) the gateway HTTP endpoint serves ANS-104 *bundled* data items (Turbo/Irys
+      //    uploads — the pay-with-ETH/USDC path), which the chunk-based getData below
+      //    cannot fetch. Bound it with a timeout so a STALLED gateway falls through to
+      //    the L1 fallback instead of hanging. Accept ONLY HTTP 200 + a non-empty body:
+      //    a 202 "pending" / soft-404 status means "no data here, try the fallback",
+      //    and a 200 HTML error page is caught downstream when age decryption rejects
+      //    the non-ciphertext (pull is backend-agnostic, so it can't parse it here).
+      try {
+        const r = await fetch(`${AR_GATEWAY}/${locator}`, { redirect: 'follow', signal: AbortSignal.timeout(AR_HTTP_TIMEOUT_MS) });
+        if (r.status === 200) {
+          const b = Buffer.from(await r.arrayBuffer()); // whole body in memory (PoC, matches put(); streaming big blobs is a follow-up)
+          if (b.length) data = b;
+        }
+      } catch { /* timeout / network hiccup — fall through to the chunk read */ }
+      // 2) arweave-js chunk read — robust for L1 txs even when the gateway HTTP front
+      //    is flaky (it can 5xx for L1 ids whose chunks the node still serves).
+      if (!data) {
+        const d = await ar.transactions.getData(locator, { decode: true });
+        if (d && d.length) data = Buffer.from(d);
+      }
+      if (!data || !data.length) {
+        throw new Error(`arweave: no data for tx ${locator} (not mined / not found / not yet seeded)`);
+      }
       await mkdir(dirname(resolve(out)), { recursive: true });
-      await writeFile(out, Buffer.from(data));
+      await writeFile(out, data);
     },
   };
 }
@@ -492,7 +521,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
 
 Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
 Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);
-         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET} (arweave — needs the 'arweave' npm package).`;
+         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,HTTP_TIMEOUT} (arweave — needs the 'arweave' npm package).`;
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);

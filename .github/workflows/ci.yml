@@ -14,9 +14,13 @@ jobs:
           node-version: '20'
       - name: install age
         run: sudo apt-get update && sudo apt-get install -y age
+      - name: install deps (arweave + arlocal for the arweave backend test)
+        run: npm ci
       - name: crypto round-trip selftest
         run: npm run selftest
       - name: storage round-trip selftest (file backend, no daemon)
         run: npm run selftest:storage
       - name: key-recovery + versioning selftest
         run: npm run selftest:recovery
+      - name: arweave backend parity selftest (arlocal, no real AR)
+        run: npm run selftest:arweave

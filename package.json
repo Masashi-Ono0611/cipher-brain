@@ -10,10 +10,23 @@
   "scripts": {
     "selftest": "bash scripts/selftest.sh",
     "selftest:storage": "bash scripts/selftest-storage.sh",
-    "selftest:recovery": "bash scripts/selftest-recovery.sh"
+    "selftest:recovery": "bash scripts/selftest-recovery.sh",
+    "selftest:arweave": "node scripts/arweave-roundtrip.mjs"
   },
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "peerDependencies": {
+    "arweave": "^1.15.0"
+  },
+  "peerDependenciesMeta": {
+    "arweave": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "arlocal": "^1.1.66",
+    "arweave": "^1.15.7"
+  }
 }

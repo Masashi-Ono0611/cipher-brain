@@ -110,6 +110,13 @@ control address, key paths, and download timeout for the ton backend).
    daemon) — encrypts a snapshot to a primary *and* an offline backup key, then
    shows the **backup key restores with the primary identity absent**, an unrelated
    identity cannot, and two snapshots restore independently. ✅
+6. **Large-file / multi-chunk** (`scripts/large-file-test.sh`, operator-run) —
+   runs the whole pipeline at scale through both backends.
+
+   Result (2026-06-27, 256 MB): snapshot streamed in 9 s at **~101 MB node RSS**
+   (≪ the 256 MB input → not buffered); the `file` backend round-tripped
+   byte-identical; the `ton` backend produced a **2050-piece** bag the daemon
+   stored exactly and that decrypted byte-identical. ✅
 
 ## Managing snapshots over time
 

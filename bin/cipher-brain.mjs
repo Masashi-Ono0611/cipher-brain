@@ -19,8 +19,10 @@
 // concern — storage only ever sees ciphertext.
 
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile, rm, chmod, access, stat, readFile, mkdtemp, copyFile, readdir } from 'node:fs/promises';
-import { createReadStream, constants as FS } from 'node:fs';
+import { mkdir, writeFile, rm, chmod, access, stat, readFile, mkdtemp, copyFile, readdir, rename } from 'node:fs/promises';
+import { createReadStream, createWriteStream, constants as FS } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { Readable, Transform } from 'node:stream';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { join, basename, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -259,32 +261,45 @@ async function arweaveBackend() {
       if (!/^[A-Za-z0-9_-]{43}$/.test(locator)) {
         throw new Error(`arweave: invalid tx id (expected 43-char base64url): ${locator}`);
       }
-      let data = null;
-      // 1) the gateway HTTP endpoint serves ANS-104 *bundled* data items (Turbo/Irys
-      //    uploads — the pay-with-ETH/USDC path), which the chunk-based getData below
-      //    cannot fetch. Bound it with a timeout so a STALLED gateway falls through to
-      //    the L1 fallback instead of hanging. Accept ONLY HTTP 200 + a non-empty body:
-      //    a 202 "pending" / soft-404 status means "no data here, try the fallback",
-      //    and a 200 HTML error page is caught downstream when age decryption rejects
-      //    the non-ciphertext (pull is backend-agnostic, so it can't parse it here).
-      try {
-        const r = await fetch(`${AR_GATEWAY}/${locator}`, { redirect: 'follow', signal: AbortSignal.timeout(AR_HTTP_TIMEOUT_MS) });
-        if (r.status === 200) {
-          const b = Buffer.from(await r.arrayBuffer()); // whole body in memory (PoC, matches put(); streaming big blobs is a follow-up)
-          if (b.length) data = b;
-        }
-      } catch { /* timeout / network hiccup — fall through to the chunk read */ }
-      // 2) arweave-js chunk read — robust for L1 txs even when the gateway HTTP front
-      //    is flaky (it can 5xx for L1 ids whose chunks the node still serves).
-      if (!data) {
-        const d = await ar.transactions.getData(locator, { decode: true });
-        if (d && d.length) data = Buffer.from(d);
-      }
-      if (!data || !data.length) {
-        throw new Error(`arweave: no data for tx ${locator} (not mined / not found / not yet seeded)`);
-      }
       await mkdir(dirname(resolve(out)), { recursive: true });
-      await writeFile(out, data);
+      const part = `${out}.part`;
+      // 1) the gateway HTTP endpoint serves ANS-104 *bundled* data items (Turbo/Irys
+      //    uploads — the pay-with-ETH/USDC path), which the chunk read below cannot
+      //    fetch. STREAM the body straight to disk so a multi-hundred-MB brain never
+      //    loads into memory (#17). Use a STALL timeout (reset on every chunk) so a
+      //    slow-but-progressing large download is NOT capped, while a stalled gateway
+      //    still aborts and falls through to the fallback. Stream into a .part file and
+      //    promote it only on a clean, non-empty download; accept ONLY HTTP 200 (a 202
+      //    "pending" / soft-404 means "not here, try the fallback"; a 200 error page is
+      //    caught downstream when age decryption rejects the non-ciphertext).
+      const ctl = new AbortController();
+      let stall;
+      const armStall = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), AR_HTTP_TIMEOUT_MS); };
+      try {
+        armStall();
+        const r = await fetch(`${AR_GATEWAY}/${locator}`, { redirect: 'follow', signal: ctl.signal });
+        if (r.status === 200 && r.body) {
+          const tap = new Transform({ transform(c, _e, cb) { armStall(); cb(null, c); } }); // each chunk resets the stall deadline
+          await pipeline(Readable.fromWeb(r.body), tap, createWriteStream(part));
+          if ((await stat(part)).size > 0) { clearTimeout(stall); await rename(part, out); return; }
+        }
+      } catch { /* stall / network / mid-stream error — fall through to the chunk read */ }
+      finally { clearTimeout(stall); }
+      await rm(part, { force: true });
+      // 2) arweave-js chunk read — robust for L1 txs even when the gateway HTTP front
+      //    is flaky (it can 5xx for L1 ids whose chunks the node still serves). This
+      //    buffers in arweave-js, but it is the rare L1 fallback; a bundled brain takes
+      //    the streamed path above. getData THROWS for an unknown / not-yet-seeded id,
+      //    so treat a throw the same as "no data" (retryable below).
+      let d = null;
+      try { d = await ar.transactions.getData(locator, { decode: true }); } catch { /* not found / chunk error → not (yet) available */ }
+      if (d && d.length) { await writeFile(out, Buffer.from(d)); return; }
+      // a fresh upload may simply be propagating — mark this retryable so `pull --wait`
+      // keeps trying (fatal errors like an invalid locator are NOT tagged, so they
+      // fail fast even under --wait).
+      const err = new Error(`arweave: no data for tx ${locator} (not mined / not found / not yet seeded)`);
+      err.retryable = true;
+      throw err;
     },
   };
 }
@@ -421,7 +436,25 @@ async function pull(o) {
   if (!o.out) throw new Error('--out <file.age> required');
   if (!o.backend) throw new Error('--backend <file|ton|arweave> required');
   const backend = await backendFor(o.backend);
-  await backend.get(o.locator, o.out);
+  // --wait <seconds>: keep retrying while the item is not yet retrievable. A fresh
+  // Turbo/ArDrive upload takes ~5-8 min to propagate to the gateway (bundle -> mine
+  // -> index); with --wait 0 (the default) pull fails immediately, preserving the old
+  // behavior. CIPHER_BRAIN_PULL_RETRY_MS overrides the 30s retry interval (tests use it).
+  const waitMs = (Number(o.wait) || 0) * 1000;       // `|| 0` OUTSIDE Number → a non-numeric --wait is 0, not NaN (no infinite loop)
+  const retryMs = Number(process.env.CIPHER_BRAIN_PULL_RETRY_MS) || 30000;
+  const deadline = Date.now() + waitMs;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await backend.get(o.locator, o.out);
+      break;
+    } catch (e) {
+      const remaining = deadline - Date.now();
+      if (!e.retryable || remaining <= 0) throw e;    // fatal (bad locator etc.) or out of budget → fail now
+      const naptime = Math.min(retryMs, remaining);   // honor a budget shorter than the retry interval
+      console.error(`pull attempt ${attempt} not ready (${e.message}); retrying in ${Math.round(naptime / 1000)}s…`);
+      await sleep(naptime);
+    }
+  }
   console.error(`pulled ${o.backend}:${o.locator} -> ${o.out}`);
 }
 
@@ -516,8 +549,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       Upload ciphertext to storage. Prints ONLY the locator to stdout
       (file: store path; ton: hex BagID; arweave: tx id). Storage sees ciphertext only.
 
-  cipher-brain pull --locator <id> --backend <file|ton|arweave> --out <file.age>
-      Fetch ciphertext by locator into --out. Blocks until it is available.
+  cipher-brain pull --locator <id> --backend <file|ton|arweave> --out <file.age> [--wait <seconds>]
+      Fetch ciphertext by locator into --out. --wait retries while the item is not yet
+      retrievable (a fresh Turbo/Arweave upload takes ~5-8 min to propagate); default 0.
 
 Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
 Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);

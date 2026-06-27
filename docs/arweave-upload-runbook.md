@@ -54,7 +54,9 @@ decrypts them. That is the whole claim: public + permanent + unreadable without 
 ## Notes
 
 - **Read robustness**: `get()` reads ANS-104 *bundled* items (the bundler form) via a
-  gateway-HTTP read, falling back to the arweave-js chunk read for L1 txs. Point it at
-  a different gateway with `CIPHER_BRAIN_AR_GATEWAY` if `arweave.net` is lagging.
+  gateway-HTTP read, falling back to the arweave-js chunk read for L1 txs. It tries
+  **multiple public gateways in turn** (`arweave.net`, then `permagate.io`) so one lagging
+  gateway doesn't fail the pull; override the list with `CIPHER_BRAIN_AR_GATEWAYS`
+  (comma-separated) or pin one with `CIPHER_BRAIN_AR_GATEWAY`.
 - A self-contained `cipher-brain push --backend turbo` (programmatic ETH/USDC upload)
-  is tracked in #20; multi-gateway read fallback in #21.
+  is tracked in #20.

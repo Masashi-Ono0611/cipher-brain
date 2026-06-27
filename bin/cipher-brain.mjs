@@ -19,10 +19,11 @@
 // concern — storage only ever sees ciphertext.
 
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile, rm, chmod, access, stat, readFile, mkdtemp } from 'node:fs/promises';
+import { mkdir, writeFile, rm, chmod, access, stat, readFile, mkdtemp, copyFile, readdir } from 'node:fs/promises';
 import { createReadStream, constants as FS } from 'node:fs';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { join, basename, dirname, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 
 const HOME = process.env.CIPHER_BRAIN_HOME || join(homedir(), '.cipher-brain');
 const AGE = process.env.CIPHER_BRAIN_AGE || 'age';
@@ -35,18 +36,32 @@ const RECIPIENT = join(HOME, 'recipient.txt');   // public key — all snapshot 
 
 const AGE_MAGIC = 'age-encryption.org/v1';
 
+// ---------- storage backend config (pluggable: storage only ever sees ciphertext) ----------
+const FILE_DIR = process.env.CIPHER_BRAIN_FILE_DIR || join(HOME, 'store'); // file backend object store
+const TON_CLI = process.env.CIPHER_BRAIN_TON_CLI || 'storage-daemon-cli';
+const TON_API = process.env.CIPHER_BRAIN_TON_API || '127.0.0.1:15555';     // storage-daemon control addr
+const TON_CLIENT = process.env.CIPHER_BRAIN_TON_CLIENT || '';              // storage-daemon-cli -k <client key>
+const TON_SERVER = process.env.CIPHER_BRAIN_TON_SERVER || '';              // storage-daemon-cli -p <server.pub>
+const TON_TIMEOUT_S = Number(process.env.CIPHER_BRAIN_TON_TIMEOUT || 300); // pull: wait this long for download
+
 // ---------- small process helpers (array args only — no shell, no injection) ----------
 
-function run(cmd, args, { input } = {}) {
+function run(cmd, args, { input, timeoutMs } = {}) {
   return new Promise((res, rej) => {
     const p = spawn(cmd, args, { stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
-    let out = '', err = '';
+    let out = '', err = '', timer;
+    if (timeoutMs) {
+      // a stuck child (e.g. a storage-daemon-cli call that never returns) must not
+      // hang us forever — kill it and reject so callers can bound their own loops.
+      timer = setTimeout(() => { p.kill('SIGKILL'); rej(new Error(`${cmd} timed out after ${timeoutMs}ms`)); }, timeoutMs);
+    }
     p.stdout.on('data', (d) => (out += d));
     p.stderr.on('data', (d) => (err += d));
-    p.on('error', rej);
-    p.on('close', (code) =>
-      code === 0 ? res({ out, err }) : rej(new Error(`${cmd} exited ${code}: ${err.trim() || out.trim()}`)),
-    );
+    p.on('error', (e) => { clearTimeout(timer); rej(e); });
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      code === 0 ? res({ out, err }) : rej(new Error(`${cmd} exited ${code}: ${err.trim() || out.trim()}`));
+    });
     if (input) { p.stdin.write(input); p.stdin.end(); }
   });
 }
@@ -82,6 +97,121 @@ function pipe2(prodCmd, prodArgs, consCmd, consArgs, { consStdout = 'inherit' } 
 }
 
 const exists = (p) => access(p, FS.F_OK).then(() => true).catch(() => false);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function sha256(file) {
+  return new Promise((res, rej) => {
+    const h = createHash('sha256');
+    createReadStream(file).on('data', (d) => h.update(d)).on('end', () => res(h.digest('hex'))).on('error', rej);
+  });
+}
+
+// ---------- storage backends ----------
+// A StorageBackend is { put(file) -> locator, get(locator, outFile) }. Storage
+// only ever sees the *.age ciphertext; the locator is content-addressed.
+function backendFor(name) {
+  if (name === 'file') return fileBackend();
+  if (name === 'ton') return tonBackend();
+  throw new Error(`unknown backend: ${name || '(none)'} — use --backend file|ton`);
+}
+
+// file backend: a local content-addressed store. Needs no daemon and no network,
+// so CI can exercise push/pull end-to-end. locator = <FILE_DIR>/<sha256>.age
+function fileBackend() {
+  return {
+    async put(file) {
+      await mkdir(FILE_DIR, { recursive: true });
+      const locator = join(FILE_DIR, `${await sha256(file)}.age`);
+      await copyFile(file, locator);
+      return locator;
+    },
+    async get(locator, out) {
+      if (!(await exists(locator))) throw new Error(`file backend: no object at ${locator}`);
+      await mkdir(dirname(resolve(out)), { recursive: true });
+      await copyFile(locator, out);
+    },
+  };
+}
+
+// ton backend: shells out to the official storage-daemon-cli. locator = hex BagID
+// (a content fingerprint). The CLI takes ONE command string via -c, so the file
+// path must be space-free (our temp paths are).
+function tonArgs(cmd) {
+  if (!TON_CLIENT || !TON_SERVER) {
+    throw new Error('ton backend needs CIPHER_BRAIN_TON_CLIENT and CIPHER_BRAIN_TON_SERVER (storage-daemon-cli key paths)');
+  }
+  return ['-I', TON_API, '-k', TON_CLIENT, '-p', TON_SERVER, '-c', cmd];
+}
+
+// add-by-hash wants the hex BagID. In --json that is NOT the base64 `hash` field —
+// the hex appears in the root_dir path. Prefer that; else decode base64 hash; else
+// any bare 64-hex. (Confirmed against a real storage-daemon --json blob.)
+function parseBagId(s) {
+  let m = s.match(/torrent-files\/([0-9A-Fa-f]{64})/);
+  if (m) return m[1].toUpperCase();
+  try {
+    const j = JSON.parse(s);
+    const h = j.hash || (j.torrent && j.torrent.hash) || j.bag_id;
+    if (h && /^[0-9A-Fa-f]{64}$/.test(h)) return h.toUpperCase();
+    if (h && /^[A-Za-z0-9+/]+={0,2}$/.test(h)) {
+      const buf = Buffer.from(h, 'base64');
+      if (buf.length === 32) return buf.toString('hex').toUpperCase(); // a BagID is a 32-byte hash
+    }
+  } catch { /* not json, fall through */ }
+  m = s.match(/\b[0-9A-Fa-f]{64}\b/);
+  if (m) return m[0].toUpperCase();
+  throw new Error(`could not parse BagID from: ${s.trim().slice(0, 200)}`);
+}
+
+// confirmed against a real `get --json`: the torrent block carries "completed": true
+function bagComplete(s) {
+  try {
+    const j = JSON.parse(s);
+    return (j.torrent || j).completed === true;
+  } catch { /* not json */ }
+  return /"completed"\s*:\s*true/.test(s);
+}
+
+// the daemon's -c is ONE space-delimited command string (not a shell), so any path
+// embedded in it must be whitespace-free — quoting wouldn't help.
+function assertNoSpace(p, what) {
+  if (/\s/.test(p)) throw new Error(`ton backend: ${what} must not contain whitespace: ${p}`);
+}
+
+function tonBackend() {
+  return {
+    async put(file) {
+      assertNoSpace(file, 'file path');
+      const { out } = await run(TON_CLI, tonArgs(`create --copy --json ${file}`));
+      return parseBagId(out);
+    },
+    async get(locator, out) {
+      assertNoSpace(locator, 'locator');
+      const base = tmpdir();
+      assertNoSpace(base, 'TMPDIR (point it at a space-free path for the ton backend)');
+      const tmp = await mkdtemp(join(base, 'cipher-brain-pull-'));
+      try {
+        await run(TON_CLI, tonArgs(`add-by-hash ${locator} -d ${tmp} --json`), { timeoutMs: 30000 });
+        const deadline = Date.now() + TON_TIMEOUT_S * 1000;
+        for (;;) {
+          // bound EACH poll: a hung `get` must not defeat the deadline below
+          let g = '';
+          try { ({ out: g } = await run(TON_CLI, tonArgs(`get ${locator} --json`), { timeoutMs: 15000 })); } catch { /* treat as not-yet-complete */ }
+          if (bagComplete(g)) break;
+          if (Date.now() > deadline) throw new Error(`ton backend: download of ${locator} did not complete in ${TON_TIMEOUT_S}s`);
+          await sleep(3000);
+        }
+        const entries = await readdir(tmp, { recursive: true, withFileTypes: true });
+        const files = entries.filter((d) => d.isFile()).map((d) => join(d.parentPath || tmp, d.name));
+        if (files.length !== 1) throw new Error(`ton backend: expected 1 file in bag, got ${files.length}`);
+        await mkdir(dirname(resolve(out)), { recursive: true });
+        await copyFile(files[0], out);
+      } finally {
+        await rm(tmp, { recursive: true, force: true }); // don't leak the downloaded ciphertext
+      }
+    },
+  };
+}
 
 const BOOL_FLAGS = new Set(['force']); // flags that take no value
 
@@ -179,6 +309,32 @@ async function restore(o) {
   }
 }
 
+// push/pull move the ciphertext to/from a storage backend. The verb is a dumb
+// primitive against ONE backend endpoint; proving "fetched from elsewhere" (a
+// second, independent node) is the operator script's job, not the verb's.
+async function push(o) {
+  if (!o.in) throw new Error('--in <file.age> required');
+  if (!o.backend) throw new Error('--backend <file|ton> required'); // no silent default
+  if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
+  // storage must only ever see ciphertext — refuse to push a non-age artifact
+  // (e.g. an accidental plaintext path), which would be the last gate before ton
+  // can publish bytes externally.
+  if (!(await readHead(o.in, 64)).startsWith(AGE_MAGIC)) {
+    throw new Error(`${o.in} is not age ciphertext (header mismatch) — refusing to push non-ciphertext to storage`);
+  }
+  const locator = await backendFor(o.backend).put(o.in);
+  console.error(`pushed ${o.in} -> ${o.backend}:${locator}`);
+  console.log(locator); // stdout = locator ONLY, so a script can capture it
+}
+
+async function pull(o) {
+  if (!o.locator) throw new Error('--locator <id> required');
+  if (!o.out) throw new Error('--out <file.age> required');
+  if (!o.backend) throw new Error('--backend <file|ton> required');
+  await backendFor(o.backend).get(o.locator, o.out);
+  console.error(`pulled ${o.backend}:${o.locator} -> ${o.out}`);
+}
+
 // verify is the falsifiable half. Three checks:
 //   1. it is real age ciphertext (header),
 //   2. a WRONG key is rejected (negative control), and
@@ -264,7 +420,15 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
   cipher-brain verify --in <file.age>
       Assert it is real age ciphertext AND a wrong key cannot open it.
 
-Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).`;
+  cipher-brain push --in <file.age> --backend <file|ton>
+      Upload ciphertext to storage. Prints ONLY the locator to stdout
+      (file: store path; ton: hex BagID). Storage sees ciphertext only.
+
+  cipher-brain pull --locator <id> --backend <file|ton> --out <file.age>
+      Fetch ciphertext by locator into --out. Blocks until download completes.
+
+Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
+Storage: CIPHER_BRAIN_FILE_DIR (file backend); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton backend).`;
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -274,6 +438,8 @@ async function main() {
     case 'snapshot': return snapshot(o);
     case 'restore': return restore(o);
     case 'verify': return verify(o);
+    case 'push': return push(o);
+    case 'pull': return pull(o);
     case 'help': case '--help': case '-h': case undefined: console.log(HELP); return;
     default: console.error(`unknown command: ${cmd}\n`); console.log(HELP); process.exitCode = 2;
   }

@@ -46,12 +46,23 @@ cipher-brain snapshot \
 
 cipher-brain verify --in brain-2026-06-27.age      # real ciphertext? wrong key rejected?
 
+# park the ciphertext on a storage backend (storage only ever sees ciphertext):
+BAG=$(cipher-brain push --in brain-2026-06-27.age --backend ton)   # prints the locator (BagID)
+cipher-brain pull --locator "$BAG" --backend ton --out got.age     # fetch it back, anywhere
+
 # later, on the machine that holds your PRIVATE identity:
 cipher-brain restore \
-  --in brain-2026-06-27.age \
+  --in got.age \
   --out-dir ./restored \
   --pg "postgres://user@localhost:5432/gbrain_restore"
 ```
+
+`push`/`pull` are storage primitives over a pluggable backend (`--backend` is
+required — there is no default). The **`file`** backend is a local
+content-addressed store (no daemon, used by CI); the **`ton`** backend shells out
+to a TON Storage `storage-daemon` (`locator` = hex BagID, a content fingerprint).
+The same `snapshot → push … pull → restore` pipeline will hold for an Arweave
+backend later — that is the point of the abstraction.
 
 Each component (the `pg_dump`, each `--dir` archive) is staged into a private
 (0700) temp dir, then the bundle is streamed `tar -> age`, so the final ciphertext
@@ -61,7 +72,10 @@ so point `TMPDIR` at a disk with room for large brains. The Postgres connection
 string is passed as a process argument; for password auth use `~/.pgpass` or
 `PGPASSWORD` so secrets stay out of the process list. Binary paths are overridable
 for non-PATH installs: `CIPHER_BRAIN_AGE`, `CIPHER_BRAIN_PG_BIN` (dir holding
-`pg_dump`/`pg_restore`), `CIPHER_BRAIN_HOME`.
+`pg_dump`/`pg_restore`), `CIPHER_BRAIN_HOME`. Storage backends read
+`CIPHER_BRAIN_FILE_DIR` (file backend object store) and
+`CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT}` (the `storage-daemon-cli` path,
+control address, key paths, and download timeout for the ton backend).
 
 ## Validation
 
@@ -78,12 +92,29 @@ Two layers, both green:
 
    Result (2026-06-27, table `dream_verdicts`, 796 rows): ciphertext 90 KB,
    restored count = 796, source checksum == restored checksum. ✅
+3. **Storage round-trip — `file` backend** (`npm run selftest:storage`, gated in
+   CI, no daemon/network) — snapshot → push → *delete the original* → pull → verify
+   → restore, asserting the locator is content-addressed (not the source path), the
+   pulled bytes decrypt to the source, and an absent locator errors. ✅
+4. **Storage round-trip — `ton` backend** (`scripts/ton-roundtrip.sh`,
+   operator-run) — pushes the ciphertext to a real `storage-daemon`, starts an
+   independent second daemon with its own db, and attempts a cross-node fetch by
+   BagID, gated on `get-peers` showing the seeder (so a local read can't pass as a
+   transfer).
+
+   Result (2026-06-27, testnet, home-NAT'd seeder): **PARTIAL**. The daemon stored
+   the *exact* ciphertext (sha256 match), it decrypts back to the original, storage
+   held no plaintext, and a flipped BagID returns nothing — but the two daemons
+   never peered (the seeder shows 0 peers), so the cross-node ADNL transfer was
+   **not** exercised. That gap is seeder reachability (NAT / sparse testnet DHT),
+   filed as a follow-up issue. It is honestly *not* a full PASS.
 
 ## Roadmap
 
-- **#1 Cipher (this PoC)** — encrypt a snapshot client-side, key only yours. ✅
-- **#2 Storage** — put the ciphertext on a real backend (TON Storage / Arweave),
-  fetch it back from elsewhere, decrypt. Storage sees only ciphertext.
+- **#1 Cipher** — encrypt a snapshot client-side, key only yours. ✅
+- **#2 Storage** — pluggable backend, storage sees ciphertext only. `file` backend
+  round-trip ✅ (CI-gated); `ton` push/store/decrypt ✅, cross-node fetch blocked on
+  seeder reachability (PARTIAL — tracked as a follow-up).
 - **#3 Management** — snapshot cadence, versioning, and key recovery.
 
 The Arweave-vs-TON storage decision is deliberately *downstream* of #1–#3: the

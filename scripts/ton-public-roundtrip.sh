@@ -28,14 +28,14 @@ trap 'kill $DPID 2>/dev/null; rm -rf "$WORK"' EXIT
 sha(){ shasum -a 256 "$1" | head -c 64; }
 with_timeout(){ local s=$1; shift; "$@" & local c=$!; ( sleep "$s"; kill -9 "$c" 2>/dev/null ) >/dev/null 2>&1 & local w=$!; wait "$c" 2>/dev/null; local rc=$?; kill -9 "$w" 2>/dev/null; wait "$w" 2>/dev/null; return $rc; }
 L(){ with_timeout 20 "$CLIBIN" -I 127.0.0.1:15557 -k "$WORK/db/cli-keys/client" -p "$WORK/db/cli-keys/server.pub" -c "$1"; }
-FAILED=0; BLOCKED=0
+FAILED=0; BLOCKED=0; VERIFIED=0
 pass(){ echo "[PASS] $1"; }; fail(){ echo "[FAIL] $1"; FAILED=1; }; blk(){ echo "[BLOCKED] $1"; BLOCKED=1; }
 
 # throwaway downloader daemon: own db, distinct ports, NOT a provider (no -P)
 nohup "$DAEMON" -v 3 -C "$CB_CONFIG" -I "$CB_LAN_IP:13335" -p 15557 -D "$WORK/db" -l "$WORK/d.log" >/dev/null 2>&1 &
 DPID=$!
 for i in $(seq 1 30); do L "list" >/dev/null 2>&1 && break; sleep 1; done
-L "list" >/dev/null 2>&1 || { echo "[BLOCKED] downloader daemon CLI not reachable; see $WORK/d.log"; exit 2; }
+L "list" >/dev/null 2>&1 || { cp "$WORK/d.log" /tmp/ton-public-d.log 2>/dev/null; echo "[BLOCKED] downloader daemon CLI not reachable; see /tmp/ton-public-d.log"; exit 2; }
 pass "downloader daemon up (throwaway db)"
 L "list --hashes" 2>/dev/null | grep -qi "$CB_BAG" && fail "bag already present before fetch" || pass "bag absent pre-fetch"
 
@@ -62,17 +62,19 @@ wait "$PULLPID"; PULLRC=$?
 
 if [ "$PULLRC" = 0 ] && [ -f "$WORK/pulled.age" ]; then
   if [ -n "${CB_ORIG_SHA:-}" ]; then
-    [ "$(sha "$WORK/pulled.age")" = "$CB_ORIG_SHA" ] && pass "pulled bytes == original (sha match)" || fail "pulled byte mismatch"
+    if [ "$(sha "$WORK/pulled.age")" = "$CB_ORIG_SHA" ]; then pass "pulled bytes == original (sha match)"; VERIFIED=1; else fail "pulled byte mismatch"; fi
   fi
   if [ -n "${CIPHER_BRAIN_HOME:-}" ] && [ -f "$CIPHER_BRAIN_HOME/identity.age" ]; then
     node "$CB" verify --in "$WORK/pulled.age" | grep -q "VERDICT: PASS" && pass "verify PASS on pulled" || fail "verify on pulled"
-    node "$CB" restore --in "$WORK/pulled.age" --out-dir "$WORK/out" >/dev/null 2>&1 && pass "pulled ciphertext decrypts" || fail "decrypt"
+    if node "$CB" restore --in "$WORK/pulled.age" --out-dir "$WORK/out" >/dev/null 2>&1; then pass "pulled ciphertext decrypts"; VERIFIED=1; else fail "decrypt"; fi
   fi
+  # peered + downloaded is necessary but NOT sufficient — full PASS needs the content proven
+  [ "$VERIFIED" = 0 ] && blk "transfer peered + downloaded, but content NOT verified — set CB_ORIG_SHA and/or a decrypting CIPHER_BRAIN_HOME identity"
 elif [ "$PEERED" = 1 ]; then
   fail "peered but pull produced no ciphertext (rc=$PULLRC)"
 fi
 
 echo
 if [ "$FAILED" = 1 ]; then echo "TON PUBLIC ROUND-TRIP: FAIL"; exit 1
-elif [ "$PEERED" != 1 ]; then echo "TON PUBLIC ROUND-TRIP: PARTIAL (no cross-node peer — reachability still not open end-to-end)"; exit 0
-else echo "TON PUBLIC ROUND-TRIP: PASS (cross-node ADNL transfer + decrypt verified)"; fi
+elif [ "$PEERED" != 1 ] || [ "$VERIFIED" != 1 ]; then echo "TON PUBLIC ROUND-TRIP: PARTIAL (cross-node transfer and/or content not fully proven — see [BLOCKED] lines)"; exit 0
+else echo "TON PUBLIC ROUND-TRIP: PASS (cross-node ADNL transfer + content verified)"; fi

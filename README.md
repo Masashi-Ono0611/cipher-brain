@@ -105,7 +105,9 @@ control address, key paths, and download timeout for the ton backend).
    held no plaintext, and a flipped BagID returns nothing — but the two daemons
    never peered (the seeder shows 0 peers), so the cross-node ADNL transfer was
    **not** exercised. That gap is seeder reachability (NAT / sparse testnet DHT),
-   filed as a follow-up issue. It is honestly *not* a full PASS.
+   filed as a follow-up issue (#6). It is honestly *not* a full PASS — the path to
+   PASS (a public-IP seeder + the cross-node proof) is laid out in
+   [`docs/ton-public-seeder.md`](docs/ton-public-seeder.md).
 5. **Key recovery + versioning** (`npm run selftest:recovery`, gated in CI, no
    daemon) — encrypts a snapshot to a primary *and* an offline backup key, then
    shows the **backup key restores with the primary identity absent**, an unrelated

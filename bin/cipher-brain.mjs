@@ -569,7 +569,7 @@ function turboBackend() {
   };
 }
 
-const BOOL_FLAGS = new Set(['force']); // flags that take no value
+const BOOL_FLAGS = new Set(['force', 'passphrase', 'yes']); // flags that take no value
 
 function parseArgs(argv) {
   const o = { dirs: [], tables: [], recipients: [] };
@@ -588,6 +588,16 @@ function parseArgs(argv) {
 
 // ---------- commands ----------
 
+// Run a child with the parent's stdio so it can prompt on the TTY (age -p reads the
+// passphrase interactively). Used only by keygen --passphrase, an interactive command.
+function runInteractive(cmd, args) {
+  return new Promise((res, rej) => {
+    const p = spawn(cmd, args, { stdio: 'inherit' });
+    p.on('error', rej);
+    p.on('close', (code) => (code === 0 ? res() : rej(new Error(`${cmd} exited ${code}`))));
+  });
+}
+
 async function keygen(o) {
   // 0700: HOME holds the private identity (and often the JWK wallet) — it must not be
   // world/group-listable. chmod too, in case it pre-existed with a looser mode.
@@ -599,12 +609,30 @@ async function keygen(o) {
     }
     await rm(IDENTITY, { force: true }); // age-keygen -o uses O_EXCL, so the old key must go first
   }
-  await run(AGE_KEYGEN, ['-o', IDENTITY]);
-  await chmod(IDENTITY, 0o600);
-  const { out } = await run(AGE_KEYGEN, ['-y', IDENTITY]); // derive recipient (public key)
-  const pub = out.trim();
+  let pub;
+  if (o.passphrase) {
+    // Passphrase-wrap the identity at rest (#36): generate the raw key to a temp file,
+    // derive the recipient from it, then encrypt it with a scrypt passphrase via `age -p`
+    // (which prompts interactively on the TTY). Decrypt is unchanged — `age -d -i` prompts
+    // for the passphrase when the identity file is itself encrypted.
+    const raw = `${IDENTITY}.${process.pid}.${randomBytes(4).toString('hex')}.raw`;
+    try {
+      await run(AGE_KEYGEN, ['-o', raw]);
+      await chmod(raw, 0o600);
+      pub = (await run(AGE_KEYGEN, ['-y', raw])).out.trim(); // derive recipient BEFORE wrapping (needs the plaintext)
+      console.log('Set a passphrase to protect the identity at rest (you will enter it on restore/verify):');
+      await runInteractive(AGE, ['-p', '-o', IDENTITY, raw]); // prompts for the passphrase on the TTY
+      await chmod(IDENTITY, 0o600);
+    } finally {
+      await rm(raw, { force: true }); // never leave the unwrapped key behind
+    }
+  } else {
+    await run(AGE_KEYGEN, ['-o', IDENTITY]);
+    await chmod(IDENTITY, 0o600);
+    pub = (await run(AGE_KEYGEN, ['-y', IDENTITY])).out.trim(); // derive recipient (public key)
+  }
   await writeFile(RECIPIENT, pub + '\n', { mode: 0o644 });
-  console.log(`identity (PRIVATE, keep offline): ${IDENTITY}`);
+  console.log(`identity (PRIVATE, keep offline): ${IDENTITY}${o.passphrase ? ' (passphrase-wrapped)' : ''}`);
   console.log(`recipient (PUBLIC, safe to copy):  ${RECIPIENT}`);
   console.log(`recipient = ${pub}`);
   console.log('\n⚠  Back up the identity file now. If you lose it, the snapshots are unrecoverable.');
@@ -1032,9 +1060,10 @@ function fmtBytes(n) {
 
 const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
 
-  cipher-brain keygen
+  cipher-brain keygen [--passphrase] [--force]
       Create your age keypair: identity (PRIVATE) + recipient (PUBLIC).
-      Identity = ${IDENTITY}
+      --passphrase wraps the identity at rest with a scrypt passphrase (prompted on the
+      TTY); restore/verify then prompt for it. Identity = ${IDENTITY}
 
   cipher-brain snapshot --out <file.age> [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).

@@ -43,6 +43,16 @@ The identity is a short text file — copy it somewhere durable and private:
 a password manager (secure note), a printed copy in a safe, or a hardware-backed
 store. Treat it like a seed phrase.
 
+**Protect it at rest.** A bare `age-keygen` identity is an unwrapped secret guarded
+only by file perms (0600) — theft of the file = every snapshot decryptable. Two
+defenses, ideally both:
+- **Passphrase-wrap it:** `cipher-brain keygen --passphrase` encrypts the identity with
+  a scrypt passphrase (you enter it on `restore`/`verify`). An exfiltrated identity file
+  is then useless without the passphrase.
+- **Full-disk-encrypt the identity host.** The machine that holds the identity is
+  secret-bearing (it can read every snapshot); FileVault / LUKS protects it (and any
+  off-box copies) if the disk or USB is lost or stolen.
+
 > **M-of-N (Shamir) split** — splitting the identity into *N* shares where any *K*
 > reconstruct it (no single point of loss *or* compromise) is tracked as a future
 > option rather than hand-rolled here. See the repo issues.
@@ -160,4 +170,5 @@ under `./restored` yourself.
 | `arweave` backend round-trip | **proven** — `selftest:arweave` (CI, against arlocal); real-network gateway pull confirmed operator-run |
 | `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |
 | `ton` cross-node fetch | **PARTIAL** — blocked on seeder reachability (see issues) |
+| Identity at rest (passphrase-wrap via `keygen --passphrase`; FDE on the identity host) | **available / recommended** — `--passphrase` ships; FDE is operator config, not enforced by code |
 | Cadence script, identity off-box backup, Shamir M-of-N | **recommended practice / future** — not enforced by code |

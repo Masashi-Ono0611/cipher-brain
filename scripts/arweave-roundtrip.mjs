@@ -53,6 +53,7 @@ try {
     CIPHER_BRAIN_AR_PORT: String(PORT),
     CIPHER_BRAIN_AR_PROTOCOL: 'http',
     CIPHER_BRAIN_AR_WALLET: walletPath,
+    CIPHER_BRAIN_YES: '1', // arlocal (test) — no real funds; bypass the interactive --yes guard
   };
   // AR_HOST=localhost is not the default arweave.net, so arGateways() yields only the
   // derived arlocal gateway (no public mirrors) — the test never egresses.

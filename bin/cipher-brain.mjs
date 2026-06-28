@@ -334,18 +334,13 @@ async function arweaveBackend() {
       const ar = await getAr(); // uploads genuinely need the SDK (createTransaction/sign/post)
       const jwk = await loadWallet(); // only uploads need a wallet/signature
       const data = await readFile(file); // PoC: small ciphertext fits one tx; chunked upload for big blobs is future (#8-adjacent)
-      // cost estimate — print before signing so the user knows what they're committing
-      // to (the --yes guard in push() already confirmed intent; this surfaces the amount)
-      try {
-        const priceStr = await ar.transactions.getPrice(data.length);
-        const costW = BigInt(priceStr);
-        process.stderr.write(`arweave: upload cost estimate: ${costW} winston (~${(Number(costW) / 1e12).toFixed(8)} AR, ${data.length} bytes, wallet ${AR_WALLET})\n`);
-        if (AR_MAX_SPEND > 0n && costW > AR_MAX_SPEND) {
-          throw new Error(`arweave: upload cost ${costW} winston exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
-        }
-      } catch (e) {
-        if (e.message && e.message.startsWith('arweave: upload cost')) throw e; // re-raise the cap guard
-        process.stderr.write(`arweave: could not estimate upload cost (${e.message}); proceeding (${data.length} bytes, wallet ${AR_WALLET})\n`);
+      // inform before signing — the --yes guard in push() already confirmed intent;
+      // this surfaces the size so the operator knows what they're committing to.
+      // (ar.createTransaction fetches the network price internally when no reward is
+      // preset, so we avoid a redundant pre-flight /price call here.)
+      process.stderr.write(`arweave: L1 upload — ${data.length} bytes, wallet ${AR_WALLET}\n`);
+      if (AR_MAX_SPEND > 0n) {
+        process.stderr.write(`arweave: CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} set — cannot pre-flight L1 cost without an extra network round-trip; the actual reward is set by createTransaction\n`);
       }
       const tx = await ar.createTransaction({ data }, jwk);
       tx.addTag('App-Name', 'cipher-brain');

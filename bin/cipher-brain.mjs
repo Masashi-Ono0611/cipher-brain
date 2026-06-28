@@ -740,11 +740,56 @@ async function push(o) {
   const backend = await backendFor(o.backend);
   const locator = await backend.put(o.in, { yes });
   console.error(`pushed ${o.in} -> ${o.backend}:${locator}`);
+  // --save-locator <path>: persist the returned locator so operators can back it up
+  // alongside their identity (the two things a fresh machine needs to restore).
+  // The file is rewritten on each push — it always holds the most recent locator.
+  if (o.save_locator) {
+    await mkdir(dirname(resolve(o.save_locator)), { recursive: true });
+    // Record "<locator>\t<backend>\t<sha256>". The sha256 — computed here off the bytes
+    // we just pushed — binds the locator to its ciphertext, so a recovery via
+    // --from-locator-file is fail-closed: for arweave/turbo (locator != content hash) a
+    // gateway/storage attacker can't later serve a substituted, still-age-decryptable
+    // artifact. The hash is trustworthy because this file is backed up OFF-BOX (the same
+    // trusted-source rule the existing --sha256 pin relies on).
+    const digest = await sha256(o.in);
+    // Atomic write: a crash / ENOSPC mid-rewrite must not leave the recovery pointer
+    // empty AND destroy the previous good locator. Write a temp sibling, then rename.
+    const tmp = `${o.save_locator}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    try {
+      await writeFile(tmp, `${locator}\t${o.backend}\t${digest}\n`, { flag: 'w' });
+      await rename(tmp, o.save_locator);
+    } catch (e) {
+      await rm(tmp, { force: true });
+      throw e;
+    }
+    console.error(`locator saved -> ${o.save_locator}`);
+  }
   console.log(locator); // stdout = locator ONLY, so a script can capture it
 }
 
 async function pull(o) {
-  if (!o.locator) throw new Error('--locator <id> required');
+  // --from-locator-file <path>: read the locator (and its backend) from a file written
+  // by `push --save-locator`. This is the recovery path — a fresh machine that holds
+  // only the identity + this one small file (both backed up off-box) can restore the
+  // latest snapshot without ever having seen index.tsv. Explicit --locator/--backend
+  // still win if both are also given.
+  if (o.from_locator_file) {
+    if (!(await exists(o.from_locator_file))) throw new Error(`no such locator file: ${o.from_locator_file}`);
+    const line = (await readFile(o.from_locator_file, 'utf8')).split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+    if (!line) throw new Error(`locator file ${o.from_locator_file} has no locator line`);
+    const [savedLoc, savedBackend, savedSha] = line.split('\t');
+    // A truncated / hand-mangled file missing the backend column would otherwise fall
+    // through to the generic "--backend required" error, hiding the real cause.
+    if (!savedLoc || !savedBackend) {
+      throw new Error(`locator file ${o.from_locator_file} must contain "<locator>\\t<backend>[\\t<sha256>]" — got: ${JSON.stringify(line)}`);
+    }
+    if (!o.locator) o.locator = savedLoc;
+    if (!o.backend) o.backend = savedBackend;
+    // Apply the saved integrity pin so recovery is fail-closed (a substituted ciphertext
+    // is rejected); an explicit --sha256 still wins if the operator passed one.
+    if (!o.sha256 && savedSha) o.sha256 = savedSha;
+  }
+  if (!o.locator) throw new Error('--locator <id> required (or --from-locator-file <path>)');
   if (!o.out) throw new Error('--out <file.age> required');
   if (!o.backend) throw new Error('--backend <file|ton|arweave|turbo> required');
   const backend = await backendFor(o.backend);
@@ -898,12 +943,21 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       bundle. --sha256 also pins the artifact to an expected hash. VERDICT: PASS (exit 0)
       / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not proven, e.g. public-key-only box).
 
-  cipher-brain push --in <file.age> --backend <file|ton|arweave|turbo>
+  cipher-brain push --in <file.age> --backend <file|ton|arweave|turbo> [--yes] [--save-locator <path>]
       Upload ciphertext to storage. Prints ONLY the locator to stdout
-      (file: store path; ton: hex BagID; arweave: tx id). Storage sees ciphertext only.
+      (file: store path; ton: hex BagID; arweave/turbo: tx id). Storage sees ciphertext only.
+      arweave/turbo are paid permanent stores — require --yes or CIPHER_BRAIN_YES=1.
+      --save-locator writes "<locator>\\t<backend>\\t<sha256>" to a file (rewritten
+      atomically each push, so it always holds the LATEST + an integrity pin). Back this
+      file up off-box next to your identity: it is the durable pointer a fresh machine
+      needs to find the most recent snapshot. (For the file backend the locator is a
+      LOCAL store path — only ton/arweave/turbo locators are portable to another machine.)
 
-  cipher-brain pull --locator <id> --backend <file|ton|arweave|turbo> --out <file.age> [--wait <seconds>] [--sha256 <hex>]
-      Fetch ciphertext by locator into --out. --wait retries while the item is not yet
+  cipher-brain pull (--locator <id> --backend <…> | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>]
+      Fetch ciphertext by locator into --out. --from-locator-file reads the locator, its
+      backend AND the saved sha256 from a file written by push --save-locator (the recovery
+      path: identity + this file are all a fresh machine needs; the saved sha256 is applied
+      as the integrity pin automatically). --wait retries while the item is not yet
       retrievable (a fresh Turbo/Arweave upload takes ~5-8 min to propagate); default 0.
       --sha256 fail-closes the fetch: the bytes must match the expected hash (sourced
       out-of-band from a trusted index) or --out is deleted and pull errors.

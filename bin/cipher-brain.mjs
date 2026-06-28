@@ -308,45 +308,65 @@ function isPrivateAddr(ip) {
     if (a === 169 && b === 254) return true;                      // link-local (AWS/GCP IMDS)
     if (a === 172 && b >= 16 && b <= 31) return true;             // private
     if (a === 192 && b === 168) return true;                      // private
+    if (a === 100 && b >= 64 && b <= 127) return true;            // CGNAT (RFC 6598) — carrier/cloud internal
     if (a >= 224) return true;                                    // multicast / reserved
     return false;
   }
   const low = ip.toLowerCase().replace(/^\[|\]$/g, '');
   if (low === '::1' || low === '::') return true;                 // loopback / unspecified
-  if (low.startsWith('fe80')) return true;                        // link-local
+  if (/^fe[89ab]/.test(low)) return true;                         // link-local fe80::/10 (fe80–febf)
   if (low.startsWith('fc') || low.startsWith('fd')) return true;  // unique-local
-  const m = low.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);           // IPv4-mapped
-  if (m) return isPrivateAddr(m[1]);
+  // IPv4-mapped ::ffff:a.b.c.d — dotted form, OR the canonical hex-quad form
+  // ::ffff:7f00:1 (which isIP() reports as v6, so it must be normalised here or a
+  // hex-encoded loopback/IMDS literal would slip past the v4 checks above).
+  const mDot = low.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mDot) return isPrivateAddr(mDot[1]);
+  const mHex = low.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mHex) {
+    const n = ((parseInt(mHex[1], 16) << 16) | parseInt(mHex[2], 16)) >>> 0;
+    return isPrivateAddr([(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff].join('.'));
+  }
   return false;
 }
 
 // Reject a redirect target that is non-http(s) or resolves to a private/loopback/
-// link-local address. Throws on refusal (the caller logs + skips the gateway).
+// link-local address. Throws on refusal. On success returns the SCREENED address +
+// family so the caller can PIN the connection to exactly the vetted IP — closing the
+// DNS-rebinding TOCTOU where a low-TTL host returns a public IP for this check and a
+// private one for the actual connect.
 async function assertPublicRedirectTarget(u) {
   const parsed = new URL(u);
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`refusing non-http(s) redirect to ${u}`);
   }
   const host = parsed.hostname.replace(/^\[|\]$/g, '');
-  const addrs = isIP(host) ? [{ address: host }] : await lookup(host, { all: true });
+  const fam = isIP(host);
+  const addrs = fam ? [{ address: host, family: fam }] : await lookup(host, { all: true });
   for (const { address } of addrs) {
     if (isPrivateAddr(address)) {
       throw new Error(`redirect to ${parsed.hostname} resolves to a private/loopback/link-local address (${address})`);
     }
   }
+  return { address: addrs[0].address, family: addrs[0].family || isIP(addrs[0].address) };
 }
 
 // One GET over node:http(s), resolving with the IncomingMessage so the caller can read
 // statusCode/headers AND stream the body. We use node:http instead of fetch because the
 // Fetch standard's `redirect:'manual'` returns an opaque response (status 0, no Location),
 // so manual SSRF-screened redirect following (#39) is impossible with fetch.
-function gatewayGet(url, signal) {
+// `pin` (optional) is a {address, family} from assertPublicRedirectTarget: when set, the
+// connection is pinned to that exact IP via a custom lookup, so the bytes come from the
+// SAME address we screened (no DNS-rebinding between the check and the connect). The URL's
+// hostname still drives the Host header / TLS SNI, so cert validation is unaffected.
+function gatewayGet(url, signal, pin) {
   return new Promise((res, rej) => {
     const lib = url.startsWith('https:') ? https : http;
     // autoSelectFamily: match fetch/undici's happy-eyeballs so a dual-stack host
     // (e.g. `localhost` → ::1 then 127.0.0.1) connects to whichever family answers,
     // instead of failing on the first AAAA when the server is IPv4-only.
-    const req = lib.get(url, { signal, autoSelectFamily: true }, (resp) => res(resp));
+    const opts = { signal, autoSelectFamily: true };
+    if (pin) opts.lookup = (_h, lopts, cb) => (lopts && lopts.all ? cb(null, [{ address: pin.address, family: pin.family }]) : cb(null, pin.address, pin.family));
+    const req = lib.get(url, opts, (resp) => res(resp));
     req.on('error', rej);
   });
 }
@@ -362,16 +382,17 @@ async function streamArweaveGateway(url, part, timeoutMs) {
   const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), timeoutMs); };
   try {
     let current = url;
+    let pin = null; // {address, family} screened for the NEXT request — pins out DNS-rebinding
     let resp;
     for (let hop = 0; ; hop++) {
       arm();
-      resp = await gatewayGet(current, ctl.signal);
+      resp = await gatewayGet(current, ctl.signal, pin);
       const sc = resp.statusCode;
       if (sc >= 300 && sc < 400 && resp.headers.location) {
         resp.resume(); // drain & discard the redirect body so the socket frees
         if (hop >= 3) { console.error(`arweave: too many redirects from ${url} — skipping gateway`); clearTimeout(stall); await rm(part, { force: true }); return false; }
         const next = new URL(resp.headers.location, current).href;
-        try { await assertPublicRedirectTarget(next); }
+        try { pin = await assertPublicRedirectTarget(next); }
         catch (e) { console.error(`arweave: ${e.message} — refusing redirect, skipping gateway (SSRF guard)`); clearTimeout(stall); await rm(part, { force: true }); return false; }
         current = next;
         continue;
@@ -616,6 +637,12 @@ async function keygen(o) {
     // (which prompts interactively on the TTY). Decrypt is unchanged — `age -d -i` prompts
     // for the passphrase when the identity file is itself encrypted.
     const raw = `${IDENTITY}.${process.pid}.${randomBytes(4).toString('hex')}.raw`;
+    // A Ctrl-C/SIGHUP at the interactive `age -p` prompt tears the process down without
+    // unwinding the finally, so register the raw path with the signal guard too — it
+    // rmSync's the unwrapped key synchronously before re-raising (the finally still
+    // covers the normal-error path).
+    installStageSignalGuard();
+    ACTIVE_RAW_KEY = raw;
     try {
       await run(AGE_KEYGEN, ['-o', raw]);
       await chmod(raw, 0o600);
@@ -625,6 +652,7 @@ async function keygen(o) {
       await chmod(IDENTITY, 0o600);
     } finally {
       await rm(raw, { force: true }); // never leave the unwrapped key behind
+      ACTIVE_RAW_KEY = null;
     }
   } else {
     await run(AGE_KEYGEN, ['-o', IDENTITY]);
@@ -677,6 +705,7 @@ async function resolvePinnedRecipients(val) {
 // finish before the process dies), then re-raise so the exit code is correct.
 let ACTIVE_STAGE = null;
 let ACTIVE_OUT_PART = null; // the partial ${out}.part being written; erased on signal so no stray ciphertext lingers
+let ACTIVE_RAW_KEY = null;  // the unwrapped identity temp during keygen --passphrase; erased on signal so the plaintext key never lingers
 let SIGNAL_GUARD_INSTALLED = false;
 function installStageSignalGuard() {
   if (SIGNAL_GUARD_INSTALLED) return;
@@ -689,6 +718,7 @@ function installStageSignalGuard() {
       ACTIVE_CHILDREN.clear();
       if (ACTIVE_STAGE) { try { rmSync(ACTIVE_STAGE, { recursive: true, force: true }); } catch {} ACTIVE_STAGE = null; }
       if (ACTIVE_OUT_PART) { try { rmSync(ACTIVE_OUT_PART, { force: true }); } catch {} ACTIVE_OUT_PART = null; }
+      if (ACTIVE_RAW_KEY) { try { rmSync(ACTIVE_RAW_KEY, { force: true }); } catch {} ACTIVE_RAW_KEY = null; }
       // adding a listener suppressed Node's default auto-terminate — remove only our
       // own handler (not any unrelated listener) and re-raise so the process exits
       // with the correct signal code instead of hanging.

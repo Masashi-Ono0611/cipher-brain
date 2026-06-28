@@ -42,9 +42,24 @@ CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
   cipher-brain push --in brain.age --backend turbo  # <100KB free; larger spends Turbo Credits
 ```
 
-The signer is the JWK at `CIPHER_BRAIN_AR_WALLET`. For a paid (>100 KB) upload, top up
-**that wallet's address** with Turbo Credits at app.ardrive.io (pay with MetaMask
-ETH/USDC — you fund the address, no key export). The printed id is the **Data Tx ID**.
+The signer is the JWK at `CIPHER_BRAIN_AR_WALLET`. A paid (>100 KB) upload spends Turbo
+Credits, and Turbo charges the **signer's** reachable credits — so they must be one of:
+
+- **The JWK's own balance** — fund the JWK's address at [turbo.ar.io](https://turbo.ar.io)
+  (connect it via an Arweave wallet and pay by card, or send it native AR).
+- **A shared (delegated) approval** — Credits are *non-transferable*, so credits bought on
+  a wallet you can't sign with from the CLI (e.g. a MetaMask-derived wallet) can't be moved
+  to the JWK. Instead that wallet **shares** an approval to the JWK's address at
+  [turbo.ar.io](https://turbo.ar.io), and you pass the sharing wallet's address as
+  `CIPHER_BRAIN_AR_PAID_BY` (the `x-paid-by` header) so the upload draws from the approval:
+
+  ```sh
+  CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
+  CIPHER_BRAIN_AR_PAID_BY=<address-that-shared-credits> \
+    cipher-brain push --in brain.age --backend turbo
+  ```
+
+The printed id is the **Data Tx ID**.
 
 ## 3. Pull it back from a public gateway (no wallet)
 

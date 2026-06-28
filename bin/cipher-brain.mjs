@@ -49,6 +49,7 @@ const AR_HOST = process.env.CIPHER_BRAIN_AR_HOST || 'arweave.net';
 const AR_PORT = Number(process.env.CIPHER_BRAIN_AR_PORT || 443);
 const AR_PROTOCOL = process.env.CIPHER_BRAIN_AR_PROTOCOL || 'https';
 const AR_WALLET = process.env.CIPHER_BRAIN_AR_WALLET || ''; // path to a JWK key file
+const AR_PAID_BY = process.env.CIPHER_BRAIN_AR_PAID_BY || ''; // optional (turbo): an address that shared (delegated) Turbo Credits to the signer — passed as `paidBy` so the upload draws from that approval before the signer's own balance (the path for credits bought on a wallet we can't sign with, e.g. MetaMask, then shared to this JWK)
 const AR_DEFAULT_EXTRA_GATEWAYS = ['https://permagate.io']; // public mirror(s) tried after the primary (override the whole list with CIPHER_BRAIN_AR_GATEWAYS)
 const AR_HTTP_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_AR_HTTP_TIMEOUT || 60000); // bound the gateway read so a stall falls through to the L1 chunk fallback
 
@@ -358,10 +359,20 @@ function turboBackend() {
       const turbo = TurboFactory.authenticated({ signer: new ArweaveSigner(jwk) });
       const abs = resolve(file);
       const { size } = await stat(abs); // stream the file (don't buffer an ~850MB brain) and give Turbo its size
+      // paidBy (x-paid-by header): when set, Turbo pays from a Credit Share Approval the
+      // named address granted THIS signer, before the signer's own balance. It funds the
+      // CLI path when credits were bought on a wallet we can't sign with (e.g. MetaMask)
+      // and shared to this JWK. Not URL-interpolated (header only), but sanity-check the
+      // shape (Arweave/Ethereum/Solana address) to reject header-breaking input.
+      const dataItemOpts = { tags: [{ name: 'App-Name', value: 'cipher-brain' }, { name: 'Content-Type', value: 'application/octet-stream' }] };
+      if (AR_PAID_BY) {
+        if (!/^[A-Za-z0-9_-]{30,64}$/.test(AR_PAID_BY)) throw new Error(`turbo: CIPHER_BRAIN_AR_PAID_BY must be a plain wallet address (Arweave/Ethereum/Solana): ${AR_PAID_BY}`);
+        dataItemOpts.paidBy = [AR_PAID_BY];
+      }
       const res = await turbo.uploadFile({
         fileStreamFactory: () => createReadStream(abs),
         fileSizeFactory: () => size,
-        dataItemOpts: { tags: [{ name: 'App-Name', value: 'cipher-brain' }, { name: 'Content-Type', value: 'application/octet-stream' }] },
+        dataItemOpts,
       });
       if (!res || !res.id) throw new Error(`turbo upload returned no data item id: ${JSON.stringify(res).slice(0, 200)}`);
       return res.id; // 43-char data item id — retrievable like any bundled item

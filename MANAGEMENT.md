@@ -53,6 +53,11 @@ OUT="$HOME/brain-snapshots/brain-$(date +%F).age"
 cipher-brain snapshot --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.gbrain" \
   --recipient ~/.cipher-brain/recipient.txt --recipient ~/.cipher-brain-backup/recipient.txt \
   --out "$OUT"
+# arweave/turbo are paid, permanent stores — CIPHER_BRAIN_YES=1 suppresses the
+# interactive --yes guard when running unattended. Remove if using file/ton only.
+# Optionally set CIPHER_BRAIN_MAX_SPEND=<n> (native units: winston for arweave L1,
+# winc for turbo) to abort when the cost estimate exceeds your budget.
+export CIPHER_BRAIN_YES=1        # omit for file/ton backends (no charge)
 LOC=$(cipher-brain push --in "$OUT" --backend "$BACKEND")   # file | ton | arweave | turbo
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$(shasum -a 256 "$OUT" | cut -d" " -f1)" \
   >> "$HOME/brain-snapshots/index.tsv"

@@ -222,5 +222,29 @@ if [ "$RC" = "0" ]; then echo "FAIL: pin allowed a key that was only in a commen
 test ! -f "$TMP/pin-comment.age"
 echo "[PASS] snapshot refused a recipient whose key was only commented-out in the allowlist"
 
+echo "== push arweave/turbo --yes guard: requires explicit opt-in before a paid permanent store =="
+# Without --yes or CIPHER_BRAIN_YES, push to arweave/turbo must fail at the gate
+# (before the SDK / wallet is even loaded), so this test needs no external deps.
+set +e
+OUT_AR=$(node "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC_AR=$?
+OUT_TU=$(node "$BIN" push --in "$TMP/snap.age" --backend turbo  2>&1); RC_TU=$?
+set -e
+[ "$RC_AR" != "0" ] || { echo "[FAIL] push arweave without --yes exited 0"; exit 1; }
+[ "$RC_TU" != "0" ] || { echo "[FAIL] push turbo without --yes exited 0"; exit 1; }
+printf '%s' "$OUT_AR" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
+  || { echo "[FAIL] push arweave error lacks --yes guidance"; echo "$OUT_AR"; exit 1; }
+printf '%s' "$OUT_TU" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
+  || { echo "[FAIL] push turbo error lacks --yes guidance"; echo "$OUT_TU"; exit 1; }
+echo "[PASS] push arweave/turbo without --yes fails with clear guidance"
+# With CIPHER_BRAIN_YES=1 the --yes guard passes; the error moves further in
+# (wallet / SDK missing), which proves the guard no longer blocks.
+set +e
+OUT2=$(CIPHER_BRAIN_YES=1 node "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC2=$?
+set -e
+[ "$RC2" != "0" ] || { echo "[FAIL] arweave push should fail (no wallet in test env)"; exit 1; }
+printf '%s' "$OUT2" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
+  && { echo "[FAIL] CIPHER_BRAIN_YES=1 still hitting the --yes gate"; echo "$OUT2"; exit 1; } || true
+echo "[PASS] push arweave with CIPHER_BRAIN_YES=1 passes the --yes guard (fails further in: wallet/SDK)"
+
 echo
 echo "SELFTEST PASS"

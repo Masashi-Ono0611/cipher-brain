@@ -62,6 +62,15 @@ const AR_WALLET = process.env.CIPHER_BRAIN_AR_WALLET || ''; // path to a JWK key
 const AR_PAID_BY = process.env.CIPHER_BRAIN_AR_PAID_BY || ''; // optional (turbo): an address that shared (delegated) Turbo Credits to the signer — passed as `paidBy` so the upload draws from that approval before the signer's own balance (the path for credits bought on a wallet we can't sign with, e.g. MetaMask, then shared to this JWK)
 const AR_DEFAULT_EXTRA_GATEWAYS = ['https://permagate.io']; // public mirror(s) tried after the primary (override the whole list with CIPHER_BRAIN_AR_GATEWAYS)
 const AR_HTTP_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_AR_HTTP_TIMEOUT || 60000); // bound the gateway read so a stall falls through to the L1 chunk fallback
+// Spend guard: arweave/turbo uploads are irreversible and cost real funds. Require an
+// explicit opt-in so an unattended nightly loop doesn't silently accumulate charges.
+//   CIPHER_BRAIN_YES=1  — set in the cadence script to suppress the --yes prompt
+//   CIPHER_BRAIN_MAX_SPEND — abort if the upload cost estimate (in the backend's native
+//     unit: winston for arweave L1, winc for turbo) exceeds this value; 0/unset = no cap
+//     (the --yes guard still fires). Prevents runaway spend without changing behaviour
+//     when the upload is well under budget.
+const CIPHER_YES = !!process.env.CIPHER_BRAIN_YES;
+const AR_MAX_SPEND = process.env.CIPHER_BRAIN_MAX_SPEND ? BigInt(process.env.CIPHER_BRAIN_MAX_SPEND) : 0n;
 
 // ---------- small process helpers (array args only — no shell, no injection) ----------
 
@@ -154,7 +163,7 @@ async function backendFor(name) {
 // so CI can exercise push/pull end-to-end. locator = <FILE_DIR>/<sha256>.age
 function fileBackend() {
   return {
-    async put(file) {
+    async put(file, _opts = {}) {
       await mkdir(FILE_DIR, { recursive: true });
       const locator = join(FILE_DIR, `${await sha256(file)}.age`);
       await copyFile(file, locator);
@@ -215,7 +224,7 @@ function assertNoSpace(p, what) {
 
 function tonBackend() {
   return {
-    async put(file) {
+    async put(file, _opts = {}) {
       assertNoSpace(file, 'file path');
       const { out } = await run(TON_CLI, tonArgs(`create --copy --json ${file}`));
       return parseBagId(out);
@@ -321,10 +330,18 @@ async function arweaveBackend() {
     catch (e) { throw new Error(`arweave: cannot read JWK wallet at ${AR_WALLET}: ${e.message}`); }
   };
   return {
-    async put(file) {
+    async put(file, _opts = {}) {
       const ar = await getAr(); // uploads genuinely need the SDK (createTransaction/sign/post)
       const jwk = await loadWallet(); // only uploads need a wallet/signature
       const data = await readFile(file); // PoC: small ciphertext fits one tx; chunked upload for big blobs is future (#8-adjacent)
+      // inform before signing — the --yes guard in push() already confirmed intent;
+      // this surfaces the size so the operator knows what they're committing to.
+      // (ar.createTransaction fetches the network price internally when no reward is
+      // preset, so we avoid a redundant pre-flight /price call here.)
+      process.stderr.write(`arweave: L1 upload — ${data.length} bytes, wallet ${AR_WALLET}\n`);
+      if (AR_MAX_SPEND > 0n) {
+        process.stderr.write(`arweave: CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} set — cannot pre-flight L1 cost without an extra network round-trip; the actual reward is set by createTransaction\n`);
+      }
       const tx = await ar.createTransaction({ data }, jwk);
       tx.addTag('App-Name', 'cipher-brain');
       tx.addTag('Content-Type', 'application/octet-stream');
@@ -386,7 +403,7 @@ async function arweaveBackend() {
 // is used (run `npm install @ardrive/turbo-sdk`).
 function turboBackend() {
   return {
-    async put(file) {
+    async put(file, _opts = {}) {
       // import + wallet load live HERE (not the constructor) so a turbo PULL needs
       // neither @ardrive/turbo-sdk nor a wallet — only an upload does.
       let TurboFactory, ArweaveSigner;
@@ -402,6 +419,24 @@ function turboBackend() {
       const turbo = TurboFactory.authenticated({ signer: new ArweaveSigner(jwk) });
       const abs = resolve(file);
       const { size } = await stat(abs); // stream the file (don't buffer an ~850MB brain) and give Turbo its size
+      // cost estimate + balance before committing to an irreversible spend.
+      // Uploads <100KB are free (0 winc); larger ones draw from Turbo Credits.
+      try {
+        const [{ winc: uploadWincStr }] = await turbo.getUploadCosts({ bytes: [size] });
+        const uploadWinc = BigInt(uploadWincStr);
+        process.stderr.write(`turbo: upload cost estimate: ${uploadWinc} winc (~${(Number(uploadWinc) / 1e12).toFixed(8)} AR, ${size} bytes)\n`);
+        try {
+          const { winc: balWincStr } = await turbo.getBalance();
+          const balWinc = BigInt(balWincStr);
+          process.stderr.write(`turbo: Turbo Credit balance: ${balWinc} winc (~${(Number(balWinc) / 1e12).toFixed(8)} AR)\n`);
+        } catch { /* paidBy wallet has no personal balance on this signer — non-fatal */ }
+        if (AR_MAX_SPEND > 0n && uploadWinc > AR_MAX_SPEND) {
+          throw new Error(`turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
+        }
+      } catch (e) {
+        if (e.message && e.message.startsWith('turbo: upload cost')) throw e; // re-raise the cap guard
+        process.stderr.write(`turbo: could not estimate upload cost (${e.message}); proceeding\n`);
+      }
       // paidBy (x-paid-by header): when set, Turbo pays from a Credit Share Approval the
       // named address granted THIS signer, before the signer's own balance. It funds the
       // CLI path when credits were bought on a wallet we can't sign with (e.g. MetaMask)
@@ -692,8 +727,18 @@ async function push(o) {
   if (!(await readHead(o.in, 64)).startsWith(AGE_MAGIC)) {
     throw new Error(`${o.in} is not age ciphertext (header mismatch) — refusing to push non-ciphertext to storage`);
   }
+  const yes = !!o.yes || CIPHER_YES;
+  // arweave and turbo are paid, permanent stores — require an explicit opt-in so
+  // an unattended cadence loop doesn't silently accumulate charges. Set CIPHER_BRAIN_YES=1
+  // in the nightly script (or pass --yes) to skip this prompt in automation.
+  if ((o.backend === 'arweave' || o.backend === 'turbo') && !yes) {
+    throw new Error(
+      `${o.backend}: uploading to a permanent Arweave store spends real funds — ` +
+      `re-run push with --yes or set CIPHER_BRAIN_YES=1 in the environment to confirm`
+    );
+  }
   const backend = await backendFor(o.backend);
-  const locator = await backend.put(o.in);
+  const locator = await backend.put(o.in, { yes });
   console.error(`pushed ${o.in} -> ${o.backend}:${locator}`);
   console.log(locator); // stdout = locator ONLY, so a script can capture it
 }

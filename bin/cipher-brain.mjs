@@ -79,6 +79,11 @@ const AR_MAX_SPEND = process.env.CIPHER_BRAIN_MAX_SPEND ? BigInt(process.env.CIP
 // past ~12 MiB. Guard at a conservative 10 MiB and redirect large uploads to `turbo`
 // (which streams + ANS-104-bundles). Override for a deliberate large L1 post.
 const AR_L1_MAX_BYTES = Number(process.env.CIPHER_BRAIN_AR_L1_MAX || 10 * 1024 * 1024);
+// Overall wall-clock cap for the tar|age / age|tar streaming pipelines and the pre-stage
+// tar, so a wedged binary (or a FIFO/special file under --dir) can't hang the CLI forever.
+// Generous default (1h) — a real ~850 MB brain streams in seconds, so this only ever trips
+// on a genuine hang. Override with CIPHER_BRAIN_PIPE_TIMEOUT (ms) for very large brains.
+const PIPE_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_PIPE_TIMEOUT || 60 * 60 * 1000);
 
 // ---------- small process helpers (array args only — no shell, no injection) ----------
 
@@ -112,22 +117,33 @@ function run(cmd, args, { input, timeoutMs } = {}) {
 }
 
 // Pipe producer.stdout -> consumer.stdin and wait for both. Used for the
-// tar|age (snapshot) and age|tar (restore) streaming pipelines.
-function pipe2(prodCmd, prodArgs, consCmd, consArgs, { consStdout = 'inherit' } = {}) {
+// tar|age (snapshot) and age|tar (restore) streaming pipelines. `timeoutMs` bounds the
+// WHOLE pipeline (like run()'s per-child timeout) so a wedged age/tar can't hang the CLI
+// forever; on failure children are SIGTERM'd then SIGKILL'd ~2s later so a SIGTERM-ignoring
+// child can't linger after the promise rejects.
+function pipe2(prodCmd, prodArgs, consCmd, consArgs, { consStdout = 'inherit', timeoutMs } = {}) {
   return new Promise((res, rej) => {
     const prod = spawn(prodCmd, prodArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
     const cons = spawn(consCmd, consArgs, { stdio: ['pipe', consStdout, 'pipe'] });
     ACTIVE_CHILDREN.add(prod); ACTIVE_CHILDREN.add(cons);
     const doneChildren = () => { ACTIVE_CHILDREN.delete(prod); ACTIVE_CHILDREN.delete(cons); };
-    let pErr = '', cErr = '', left = 2, settled = false;
+    let pErr = '', cErr = '', left = 2, settled = false, timer, killTimer;
+    const stopTimers = () => { clearTimeout(timer); clearTimeout(killTimer); };
     const fail = (e) => {
       if (settled) return;
       settled = true;
+      stopTimers();
       doneChildren();
-      prod.kill(); cons.kill(); // don't leave the survivor running (or still decrypting)
+      prod.kill('SIGTERM'); cons.kill('SIGTERM'); // ask the survivor (or still-decrypting child) to stop
+      // escalate: a child that ignores SIGTERM must not linger holding plaintext open.
+      killTimer = setTimeout(() => { try { prod.kill('SIGKILL'); } catch {} try { cons.kill('SIGKILL'); } catch {} }, 2000);
+      killTimer.unref?.(); // don't keep the event loop alive just for the escalation
       rej(e);
     };
-    const ok = () => { if (settled) return; if (--left === 0) { settled = true; doneChildren(); res(); } };
+    const ok = () => { if (settled) return; if (--left === 0) { settled = true; stopTimers(); doneChildren(); res(); } };
+    if (timeoutMs) {
+      timer = setTimeout(() => fail(new Error(`${prodCmd}|${consCmd} pipeline timed out after ${timeoutMs}ms`)), timeoutMs);
+    }
     prod.stderr.on('data', (d) => (pErr += d));
     cons.stderr.on('data', (d) => (cErr += d));
     prod.on('error', fail);
@@ -814,7 +830,7 @@ async function snapshot(o) {
       // multiple --dir with the same basename must not overwrite each other in the stage
       for (let n = 1; usedNames.has(name); n++) name = `${basename(abs)}-${n}.tar.gz`;
       usedNames.add(name);
-      await run('tar', ['-czf', join(stage, name), '-C', dirname(abs), basename(abs)]);
+      await run('tar', ['-czf', join(stage, name), '-C', dirname(abs), basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar
       components.push({ name, kind: 'dir', source: abs });
     }
     // manifest carries NO secrets — just what's inside, so restore is self-describing
@@ -831,7 +847,7 @@ async function snapshot(o) {
     const part = `${o.out}.${process.pid}.${randomBytes(4).toString('hex')}.part`;
     ACTIVE_OUT_PART = part; // a signal now also erases this partial ciphertext
     try {
-      await pipe2('tar', ['-cf', '-', '-C', stage, '.'], AGE, [...recArgs, '-o', part]);
+      await pipe2('tar', ['-cf', '-', '-C', stage, '.'], AGE, [...recArgs, '-o', part], { timeoutMs: PIPE_TIMEOUT_MS });
       await promoteSnapshot(part, o.out);
       ACTIVE_OUT_PART = null;
     } catch (e) {
@@ -863,7 +879,7 @@ async function restore(o) {
   // able to set hostile ownership or modes on extraction (defense-in-depth — the
   // bytes can be attacker-chosen if storage is compromised; see verify --sha256).
   try {
-    await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir]);
+    await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
   } catch (e) {
     if (!outDirPreExisted) await rm(o.out_dir, { recursive: true, force: true });
     else console.error(`warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`);
@@ -1043,7 +1059,7 @@ async function verify(o) {
   let positiveSkipped = false;
   if (await exists(identity)) {
     try {
-      await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-tf', '-'], { consStdout: 'ignore' });
+      await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-tf', '-'], { consStdout: 'ignore', timeoutMs: PIPE_TIMEOUT_MS });
       console.log('[PASS] your identity decrypts the artifact into a well-formed bundle');
     } catch {
       positiveOk = false;

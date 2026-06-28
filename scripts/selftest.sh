@@ -246,5 +246,27 @@ printf '%s' "$OUT2" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
   && { echo "[FAIL] CIPHER_BRAIN_YES=1 still hitting the --yes gate"; echo "$OUT2"; exit 1; } || true
 echo "[PASS] push arweave with CIPHER_BRAIN_YES=1 passes the --yes guard (fails further in: wallet/SDK)"
 
+echo "== pipe2 timeout: a wedged age in the tar|age pipeline can't hang the CLI (#38) =="
+# Replace `age` with a stub that hangs (never consumes stdin / never exits). With a tiny
+# CIPHER_BRAIN_PIPE_TIMEOUT the snapshot pipeline must give up, fail non-zero, AND leave
+# no staged plaintext or partial ciphertext behind.
+AGESTUB="$TMP/age-hang.sh"
+printf '#!/bin/sh\nexec sleep 30\n' > "$AGESTUB"; chmod +x "$AGESTUB"
+TOUT="$TMP/timeout-snap.age"
+START=$(date +%s)
+set +e
+TERR=$(CIPHER_BRAIN_AGE="$AGESTUB" CIPHER_BRAIN_PIPE_TIMEOUT=600 cb snapshot --dir "$SRC" --out "$TOUT" 2>&1); TRC=$?
+set -e
+ELAPSED=$(( $(date +%s) - START ))
+[ "$TRC" != "0" ] || { echo "[FAIL] wedged-age snapshot exited 0"; exit 1; }
+printf '%s' "$TERR" | grep -qi "timed out" || { echo "[FAIL] no timeout error surfaced"; echo "$TERR"; exit 1; }
+[ "$ELAPSED" -lt 25 ] || { echo "[FAIL] pipeline took ${ELAPSED}s — timeout did not bound it (< the 30s stub)"; exit 1; }
+test ! -f "$TOUT"                                       # no finished output
+[ -z "$(find "$TMP" -name '*.part' 2>/dev/null)" ] || { echo "[FAIL] a .part lingered after timeout"; exit 1; }
+# the staged plaintext dir must be erased by snapshot's finally on the timeout path
+[ -z "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cipher-brain-*' -newermt "@$START" 2>/dev/null)" ] \
+  || { echo "[FAIL] a staged-plaintext cipher-brain-* dir lingered after timeout"; exit 1; }
+echo "[PASS] wedged-age pipeline timed out in ${ELAPSED}s, no output / no .part / no staged plaintext left"
+
 echo
 echo "SELFTEST PASS"

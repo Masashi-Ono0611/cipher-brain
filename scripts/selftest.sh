@@ -64,5 +64,36 @@ if [ "$LEFTOVERS" != "0" ]; then
 fi
 echo "[PASS] failed snapshot exited cleanly and left no staged plaintext"
 
+echo "== P1 regression: SIGINT mid-snapshot must not leave staged plaintext =="
+# A signal tears the process down WITHOUT running the finally-block, so this is the
+# gap the EPIPE case above does NOT cover. Use a slow `age` to hold the pipeline open
+# while the staged plaintext exists, observe the stage dir appear, then SIGINT and
+# assert the signal handler erased it.
+SLOWAGE="$TMP/slow-age.sh"
+cat > "$SLOWAGE" <<EOF
+#!/usr/bin/env bash
+sleep 5
+exec age "\$@"
+EOF
+chmod +x "$SLOWAGE"
+export TMPDIR="$TMP/stagedir-sig"; mkdir -p "$TMPDIR"
+CIPHER_BRAIN_AGE="$SLOWAGE" cb snapshot --dir "$SRC" --out "$TMP/sig.age" >/dev/null 2>&1 &
+SNAP_PID=$!
+APPEARED=0
+for _ in $(seq 1 50); do
+  if find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | grep -q .; then APPEARED=1; break; fi
+  sleep 0.1
+done
+if [ "$APPEARED" != "1" ]; then
+  echo "FAIL: stage dir never appeared (test setup)"; kill "$SNAP_PID" 2>/dev/null || true; exit 1
+fi
+kill -INT "$SNAP_PID"
+wait "$SNAP_PID" 2>/dev/null || true   # signal exit is non-zero — expected
+LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | wc -l | tr -d ' ')
+if [ "$LEFTOVERS" != "0" ]; then
+  echo "FAIL: $LEFTOVERS staged plaintext dir(s) left behind after SIGINT"; exit 1
+fi
+echo "[PASS] SIGINT mid-snapshot left no staged plaintext"
+
 echo
 echo "SELFTEST PASS"

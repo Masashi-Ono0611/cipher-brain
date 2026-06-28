@@ -389,7 +389,11 @@ function gatewayGet(url, signal, pin) {
     // autoSelectFamily: match fetch/undici's happy-eyeballs so a dual-stack host
     // (e.g. `localhost` → ::1 then 127.0.0.1) connects to whichever family answers,
     // instead of failing on the first AAAA when the server is IPv4-only.
-    const opts = { signal, autoSelectFamily: true };
+    // Send a User-Agent (and Accept): arweave.net 302-redirects a bundled-item read
+    // to a sandbox subdomain (euzcbl….arweave.net) that returns 403 to a header-less
+    // request — node:http.get sends NO default headers, unlike the fetch() this replaced
+    // in #39, which silently regressed the real-world full-brain (Turbo/bundled) pull.
+    const opts = { signal, autoSelectFamily: true, headers: { 'user-agent': 'cipher-brain', accept: '*/*' } };
     if (pin) opts.lookup = (_h, lopts, cb) => (lopts && lopts.all ? cb(null, [{ address: pin.address, family: pin.family }]) : cb(null, pin.address, pin.family));
     const req = lib.get(url, opts, (resp) => res(resp));
     req.on('error', rej);

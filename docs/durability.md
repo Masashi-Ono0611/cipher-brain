@@ -47,6 +47,9 @@ The trade: you pay AR up front (per-byte, one time), and retrieval is via a gate
 (slower, not `.ton`-native). Reads need no wallet AND no npm dependency — the gateway
 pull path is pure `fetch`, so a fresh machine restores with just the tx id (the
 `arweave` package is needed only to push, or for the rare L1 chunk fallback — see #9).
+You must still *retain* that tx id off-box, though: it is not self-discoverable, so
+back up the latest locator (`push --save-locator`, MANAGEMENT.md "Key recovery #3")
+next to your identity. A self-resolving stable name (`.ton` DNS / ArNS) is future work.
 
 ## Recommended model: redundancy across backends
 

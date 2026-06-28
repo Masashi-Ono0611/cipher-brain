@@ -53,5 +53,38 @@ tar -xzf "$TMP/rv1/brain.tar.gz" -C "$TMP/rv1"; tar -xzf "$TMP/rv2/brain.tar.gz"
 grep -q "$V1MARK" "$TMP/rv1/brain/note.txt" && grep -q "$V2MARK" "$TMP/rv2/brain/note.txt" \
   && echo "[PASS] both versions restore to their own content" || { echo "[FAIL] version mismatch"; exit 1; }
 
+echo "== durable locator: a fresh machine with the identity but NO index.tsv recovers via --save-locator =="
+# A "latest" snapshot encrypted to BOTH keys (so the off-box backup identity can open it),
+# pushed to the file backend with the locator saved off-box. Then simulate disk-death:
+# the only things that survive are (a) the BACKUP identity and (b) the saved locator file
+# — NOT index.tsv, NOT the store path typed by hand. Recovery must find the bytes from the
+# locator file alone.
+printf 'brain-latest-%s\n' "$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')" > "$SRC/note.txt"
+LATESTMARK=$(cat "$SRC/note.txt")
+cb "$PRIMARY" snapshot --dir "$SRC" \
+  --recipient "$PRIMARY/recipient.txt" --recipient "$BACKUP/recipient.txt" --out "$TMP/latest.age"
+STORE="$TMP/store"; LOCFILE="$TMP/offbox/latest-locator.tsv"
+CIPHER_BRAIN_FILE_DIR="$STORE" cb "$PRIMARY" push --in "$TMP/latest.age" --backend file \
+  --save-locator "$LOCFILE" >/dev/null
+test -f "$LOCFILE" || { echo "[FAIL] --save-locator wrote no file"; exit 1; }
+# the saved file must carry the backend so pull needs no other knowledge
+grep -q $'\tfile' "$LOCFILE" || { echo "[FAIL] locator file missing backend tag"; cat "$LOCFILE"; exit 1; }
+echo "[PASS] push --save-locator wrote <locator>\\t<backend>"
+# fresh machine: BACKUP identity present, index.tsv absent, only the locator file + store
+CIPHER_BRAIN_FILE_DIR="$STORE" cb "$BACKUP" pull --from-locator-file "$LOCFILE" --out "$TMP/recovered.age" >/dev/null
+cmp -s "$TMP/latest.age" "$TMP/recovered.age" || { echo "[FAIL] --from-locator-file fetched different bytes"; exit 1; }
+cb "$BACKUP" restore --in "$TMP/recovered.age" --out-dir "$TMP/r-loc" >/dev/null
+tar -xzf "$TMP/r-loc/brain.tar.gz" -C "$TMP/r-loc"
+grep -q "$LATESTMARK" "$TMP/r-loc/brain/note.txt" \
+  && echo "[PASS] fresh machine recovered latest snapshot from identity + saved locator alone" \
+  || { echo "[FAIL] locator-file recovery content mismatch"; exit 1; }
+# --save-locator must be overwrite-only (always the LATEST), not appended
+printf 'brain-v3-%s\n' "$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')" > "$SRC/note.txt"
+cb "$PRIMARY" snapshot --dir "$SRC" --recipient "$PRIMARY/recipient.txt" --out "$TMP/v3.age"
+CIPHER_BRAIN_FILE_DIR="$STORE" cb "$PRIMARY" push --in "$TMP/v3.age" --backend file \
+  --save-locator "$LOCFILE" >/dev/null
+[ "$(grep -c . "$LOCFILE")" = "1" ] || { echo "[FAIL] locator file has >1 line (should hold only the latest)"; cat "$LOCFILE"; exit 1; }
+echo "[PASS] --save-locator holds only the latest locator (overwrite, not append)"
+
 echo
 echo "RECOVERY SELFTEST PASS"

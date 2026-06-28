@@ -4,11 +4,17 @@ How to run encrypted gbrain backups over time: **cadence**, **versioning**,
 **restore**, and **key recovery**. The recovery and versioning claims here are
 exercised by `npm run selftest:recovery` (gated in CI).
 
-## Key recovery — "losing the identity must not lose the brain"
+## Key recovery — "losing the identity *or the locator* must not lose the brain"
 
-The #1 footgun is simple: the private `identity.age` is the *only* thing that can
-decrypt. Lose it and every snapshot is permanently unreadable. cipher-brain gives
-you two independent defenses; **use both**.
+Recovery needs **two** things, and both can be lost. The private `identity.age` is the
+only thing that can *decrypt* — lose it and every snapshot is permanently unreadable.
+But the **locator** (which BagID / tx id / store path holds the latest ciphertext) is
+the only thing that tells a fresh machine *where to fetch from* — and today the full
+record of locators is a local `index.tsv` on the always-on box. If that box dies, an
+operator who backed up only the identity still cannot find the bytes. So back up both:
+the identity (below) **and** the latest locator (`#3`).
+
+cipher-brain gives you two independent defenses for the identity; **use both**.
 
 ### 1. Encrypt to a backup key (recommended, built in)
 
@@ -41,6 +47,31 @@ store. Treat it like a seed phrase.
 > reconstruct it (no single point of loss *or* compromise) is tracked as a future
 > option rather than hand-rolled here. See the repo issues.
 
+### 3. Retain the latest locator off-box (built in)
+
+The identity decrypts, but you still need to know *where the latest ciphertext lives*.
+`push --save-locator <path>` writes `<locator>\t<backend>` to a small file, rewritten on
+every push so it always holds the **most recent** snapshot's locator:
+
+```sh
+cipher-brain push --in brain-$(date +%F).age --backend ton \
+  --save-locator ~/.cipher-brain/latest-locator.tsv
+```
+
+Back this file up **off-box, next to the backup identity** (same encrypted USB / secure
+note). Recovery on a fresh machine then needs only those two things — no `index.tsv`:
+
+```sh
+cipher-brain pull --from-locator-file ~/restore/latest-locator.tsv --out latest.age
+cipher-brain restore --in latest.age --out-dir ./restored --pg "$PG_RESTORE"
+```
+
+For full version history (not just the latest), keep backing up the whole `index.tsv`
+(below) — but the single latest-locator file is the minimum that makes disk-death
+recoverable. *(A stable name that always resolves to the newest snapshot — a `.ton` DNS
+record or an ArNS mutable pointer — is a future option; until then this file is the
+durable pointer.)*
+
 ## Cadence
 
 gbrain re-synthesizes nightly, so a **nightly** snapshot is the natural cadence.
@@ -58,7 +89,10 @@ cipher-brain snapshot --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.
 # Optionally set CIPHER_BRAIN_MAX_SPEND=<n> (native units: winston for arweave L1,
 # winc for turbo) to abort when the cost estimate exceeds your budget.
 export CIPHER_BRAIN_YES=1        # omit for file/ton backends (no charge)
-LOC=$(cipher-brain push --in "$OUT" --backend "$BACKEND")   # file | ton | arweave | turbo
+# --save-locator keeps a one-line file with the LATEST locator; back it up off-box
+# next to the backup identity so disk-death is recoverable (see Key recovery #3).
+LOC=$(cipher-brain push --in "$OUT" --backend "$BACKEND" \
+  --save-locator "$HOME/.cipher-brain/latest-locator.tsv")   # file | ton | arweave | turbo
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$(shasum -a 256 "$OUT" | cut -d" " -f1)" \
   >> "$HOME/brain-snapshots/index.tsv"
 ```
@@ -84,8 +118,11 @@ or a tx id assigned *after* upload (`arweave`/`turbo`; not a content hash). Keep
 append-only
 `index.tsv` of `timestamp · locator · sha256` (the cadence script above does this).
 That index *is* your version history — every line is an independently restorable
-point in time. A "latest" pointer (the newest line, or a `.ton` DNS record updated
-to the newest BagID) is how a fresh machine finds the most recent backup.
+point in time. To find the *most recent* backup, a fresh machine reads the latest
+line of `index.tsv`, or the one-line `--save-locator` file (Key recovery #3) if it
+has only that. *(A self-resolving stable name — a `.ton` DNS record or ArNS pointer
+updated to the newest locator — would let a fresh machine find the latest with no
+local file at all; that is a future option, not yet implemented.)*
 
 ## Restore runbook
 

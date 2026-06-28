@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 
 const PORT = Number(process.env.CB_ARLOCAL_PORT || 1984);
@@ -136,6 +137,33 @@ try {
   (mg.status === 0 && sha(await readFile(join(tmp, 'mg.age'))) === cipherSha)
     ? pass('multi-gateway: read falls through a dead gateway to a live one')
     : fail(`multi-gateway did not serve from the second gateway: ${mg.stderr || 'bytes differ'}`);
+
+  // AGE_MAGIC gate (#29): a gateway that serves a non-ciphertext HTTP 200 (a soft-404
+  // page / "tx pending" placeholder / CDN interstitial) must NOT be promoted to --out.
+  // (1) bad-200 the ONLY gateway, L1 dead-ended (AR_PORT=1): pull must FAIL and leave
+  //     no garbage at --out (the old code wrote the bad body and "succeeded").
+  const badGw = createServer((_q, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<html>tx pending — not ciphertext</html>'); });
+  await new Promise((r) => badGw.listen(0, '127.0.0.1', r));
+  const badPort = badGw.address().port;
+  const bgOut = join(tmp, 'badgate.age');
+  const bg = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', bgOut],
+    { env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${badPort}` }, encoding: 'utf8' });
+  let bgWrote = false; try { await readFile(bgOut); bgWrote = true; } catch { /* not written = good */ }
+  (bg.status !== 0 && !bgWrote)
+    ? pass('AGE_MAGIC gate: a non-ciphertext 200 is not promoted (pull fails, no garbage at --out)')
+    : fail(`bad-200 body was promoted to --out (status=${bg.status}, wrote=${bgWrote})`);
+  badGw.close();
+  // (2) bad-200 first, healthy arlocal second: the read must FALL THROUGH to the good
+  //     gateway and produce the real, byte-identical ciphertext.
+  const badGw2 = createServer((_q, res) => { res.writeHead(200); res.end('not ciphertext'); });
+  await new Promise((r) => badGw2.listen(0, '127.0.0.1', r));
+  const badPort2 = badGw2.address().port;
+  const ft = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'ft.age')],
+    { env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${badPort2},http://localhost:${PORT}` }, encoding: 'utf8' });
+  (ft.status === 0 && sha(await readFile(join(tmp, 'ft.age'))) === cipherSha)
+    ? pass('AGE_MAGIC gate: read falls through a non-ciphertext 200 to a healthy gateway')
+    : fail(`did not fall through bad-200 to a healthy gateway: ${ft.stderr || 'bytes differ'}`);
+  badGw2.close();
 } catch (e) {
   fail(`exception: ${e.message}`);
 } finally {

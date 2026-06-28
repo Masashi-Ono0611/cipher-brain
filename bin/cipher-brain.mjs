@@ -808,6 +808,15 @@ async function snapshot(o) {
     console.error(`recipient pin OK: all recipient(s) are allowlisted`);
   }
 
+  // The #1 footgun (documented in MANAGEMENT.md): a single-recipient snapshot is
+  // recoverable by exactly one identity — lose it and the brain is gone. The cadence
+  // examples use two keys, but a copy-the-README run can forget the backup. Warn loudly
+  // (to stderr, so it surfaces in unattended logs) rather than silently producing a
+  // single-key permanent archive.
+  if (recs.length === 1) {
+    console.error('⚠  snapshot encrypted to a SINGLE recipient — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.');
+  }
+
   installStageSignalGuard();
   // mkdtempSync (not async mkdtemp) so dir-creation and the ACTIVE_STAGE assignment
   // happen in one tick with no event-loop yield between them — otherwise a signal that
@@ -815,13 +824,16 @@ async function snapshot(o) {
   // leave the just-created stage dir behind.
   const stage = mkdtempSync(join(tmpdir(), 'cipher-brain-'));
   ACTIVE_STAGE = stage; // a signal now erases this staged plaintext (see installStageSignalGuard)
+  const createdAt = new Date().toISOString(); // when this snapshot run began (top-level)
   try {
     const components = [];
     if (o.pg) {
       const dumpPath = join(stage, 'db.dump');
       const tableArgs = o.tables.flatMap((t) => ['-t', t]);
       await run(pgTool('pg_dump'), ['-Fc', '--no-owner', '--no-privileges', ...tableArgs, '-f', dumpPath, o.pg]);
-      components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all' });
+      // captured_at right AFTER pg_dump (pg_dump -Fc is internally point-in-time consistent
+      // via one REPEATABLE READ txn; only the DB↔file boundary needs aligning — #44).
+      components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all', captured_at: new Date().toISOString() });
     }
     const usedNames = new Set();
     for (const d of o.dirs) {
@@ -831,12 +843,13 @@ async function snapshot(o) {
       for (let n = 1; usedNames.has(name); n++) name = `${basename(abs)}-${n}.tar.gz`;
       usedNames.add(name);
       await run('tar', ['-czf', join(stage, name), '-C', dirname(abs), basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar
-      components.push({ name, kind: 'dir', source: abs });
+      components.push({ name, kind: 'dir', source: abs, captured_at: new Date().toISOString() }); // skew vs the DB is now detectable on restore
     }
-    // manifest carries NO secrets — just what's inside, so restore is self-describing
+    // manifest carries NO secrets — just what's inside (+ capture timestamps so a
+    // DB↔files skew is detectable after the fact), so restore is self-describing.
     await writeFile(
       join(stage, 'manifest.json'),
-      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), components }, null, 2) + '\n',
+      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, components }, null, 2) + '\n',
     );
     // tar the staged components into one stream, encrypt to all recipients. Write to a
     // PER-RUN-UNIQUE .part so overlapping snapshots to the same --out never share/clobber

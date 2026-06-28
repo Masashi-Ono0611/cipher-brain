@@ -57,10 +57,14 @@ present. The `turbo` backend additionally needs `@ardrive/turbo-sdk`
 ```sh
 cipher-brain keygen                 # one-time: creates ~/.cipher-brain/{identity.age,recipient.txt}
 
-# encrypt a gbrain snapshot (pg_dump + the ~/.gbrain dir) to your PUBLIC key:
+# encrypt a gbrain snapshot (pg_dump + the ~/.gbrain dir) to your PUBLIC key.
+# Add a second --recipient (an OFFLINE backup public key) so losing one identity
+# never loses the brain — single-key snapshots warn on stderr. See MANAGEMENT.md.
 cipher-brain snapshot \
   --pg "postgres://user@localhost:5432/gbrain" \
   --dir ~/.gbrain \
+  --recipient ~/.cipher-brain/recipient.txt \
+  --recipient ~/.cipher-brain-backup/recipient.txt \
   --out brain-2026-06-27.age
 
 cipher-brain verify --in brain-2026-06-27.age      # real ciphertext? wrong key rejected?

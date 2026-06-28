@@ -176,6 +176,30 @@ try {
     : fail(`did not fall through bad-200 to a healthy gateway: ${ft.stderr || 'bytes differ'}`);
   badGw2.close();
 
+  // User-Agent header: arweave.net redirects a bundled-item read to a sandbox subdomain
+  // that 403s a header-less request (node:http.get sends no default UA, unlike the fetch
+  // this replaced — the real-world full-brain pull regressed silently). A SEPARATE-process
+  // stub (spawnSync blocks an in-process server) serves the ciphertext ONLY when a
+  // User-Agent is present, 403 otherwise; the pull must succeed → proves cipher-brain
+  // sends a UA. (A header-less read would 403 → fail → no bytes.)
+  const uaSrvFile = join(tmp, 'ua-stub.mjs');
+  await writeFile(uaSrvFile,
+    "import {createServer} from 'node:http'; import {readFileSync} from 'node:fs';\n" +
+    "const f=process.argv[2];\n" +
+    "const s=createServer((q,res)=>{ if(!q.headers['user-agent']){res.writeHead(403);res.end('<html>403</html>');return;} res.writeHead(200);res.end(readFileSync(f)); });\n" +
+    "s.listen(0,'127.0.0.1',()=>console.log('READY:'+s.address().port));\n");
+  const uaSrv = spawn('node', [uaSrvFile, join(tmp, 'snap.age')], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const uaPort = await new Promise((res, rej) => {
+    const to = setTimeout(() => rej(new Error('ua stub did not start')), 8000);
+    uaSrv.stdout.on('data', (d) => { const m = String(d).match(/READY:(\d+)/); if (m) { clearTimeout(to); res(m[1]); } });
+  });
+  const ua = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'ua.age')],
+    { env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${uaPort}` }, encoding: 'utf8' });
+  (ua.status === 0 && sha(await readFile(join(tmp, 'ua.age'))) === cipherSha)
+    ? pass('User-Agent: the gateway read sends a UA (a UA-gated gateway serves the ciphertext)')
+    : fail(`gateway read did not send a UA (UA-gated gateway 403'd): status=${ua.status} ${ua.stderr?.slice(0, 160) || 'bytes differ'}`);
+  uaSrv.kill('SIGKILL');
+
   // SSRF guard (#39): a gateway that 302-redirects to an internal/IMDS address must be
   // refused, not transparently followed. The stub runs in a SEPARATE process — the pull
   // below is spawnSync (blocking), so an in-process server could never answer it (the

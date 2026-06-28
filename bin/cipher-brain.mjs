@@ -129,16 +129,25 @@ function pipe2(prodCmd, prodArgs, consCmd, consArgs, { consStdout = 'inherit', t
     const doneChildren = () => { ACTIVE_CHILDREN.delete(prod); ACTIVE_CHILDREN.delete(cons); };
     let pErr = '', cErr = '', left = 2, settled = false, timer, killTimer;
     const stopTimers = () => { clearTimeout(timer); clearTimeout(killTimer); };
+    // resolve once a child has actually exited (close/exit), or immediately if it already has
+    const childExit = (c) => new Promise((r) => {
+      if (c.exitCode !== null || c.signalCode !== null) return r();
+      c.once('close', r); c.once('exit', r);
+    });
     const fail = (e) => {
       if (settled) return;
       settled = true;
       stopTimers();
-      doneChildren();
       prod.kill('SIGTERM'); cons.kill('SIGTERM'); // ask the survivor (or still-decrypting child) to stop
       // escalate: a child that ignores SIGTERM must not linger holding plaintext open.
       killTimer = setTimeout(() => { try { prod.kill('SIGKILL'); } catch {} try { cons.kill('SIGKILL'); } catch {} }, 2000);
       killTimer.unref?.(); // don't keep the event loop alive just for the escalation
-      rej(e);
+      // Reject ONLY after both children are dead — otherwise the caller's catch/finally
+      // (rm of .part / stage / out-dir) could race a still-writing age/tar that then
+      // recreates partial plaintext or ciphertext after we cleaned up (same recreate-
+      // after-unlink hazard the signal guard fixes). Children stay in ACTIVE_CHILDREN
+      // until they exit, so a signal in the meantime still SIGKILLs them.
+      Promise.all([childExit(prod), childExit(cons)]).then(() => { clearTimeout(killTimer); doneChildren(); rej(e); });
     };
     const ok = () => { if (settled) return; if (--left === 0) { settled = true; stopTimers(); doneChildren(); res(); } };
     if (timeoutMs) {
@@ -808,13 +817,15 @@ async function snapshot(o) {
     console.error(`recipient pin OK: all recipient(s) are allowlisted`);
   }
 
-  // The #1 footgun (documented in MANAGEMENT.md): a single-recipient snapshot is
-  // recoverable by exactly one identity — lose it and the brain is gone. The cadence
-  // examples use two keys, but a copy-the-README run can forget the backup. Warn loudly
-  // (to stderr, so it surfaces in unattended logs) rather than silently producing a
-  // single-key permanent archive.
-  if (recs.length === 1) {
-    console.error('⚠  snapshot encrypted to a SINGLE recipient — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.');
+  // The #1 footgun (documented in MANAGEMENT.md): a snapshot recoverable by exactly one
+  // key — lose that identity and the brain is gone. The cadence examples use two keys, but
+  // a copy-the-README run can forget the backup. Count DISTINCT effective recipient keys
+  // (not --recipient args): a file may hold several keys, and two args may name the same
+  // one — so dedupe across all entries. Warn loudly (stderr → unattended logs) on exactly one.
+  const effectiveKeys = new Set();
+  for (const r of recs) for (const e of await recipientEntries(r)) effectiveKeys.add(e);
+  if (effectiveKeys.size === 1) {
+    console.error('⚠  snapshot encrypted to a SINGLE recipient key — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.');
   }
 
   installStageSignalGuard();

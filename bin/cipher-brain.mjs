@@ -123,7 +123,8 @@ async function backendFor(name) {
   if (name === 'file') return fileBackend();
   if (name === 'ton') return tonBackend();
   if (name === 'arweave') return arweaveBackend();
-  throw new Error(`unknown backend: ${name || '(none)'} — use --backend file|ton|arweave`);
+  if (name === 'turbo') return turboBackend();
+  throw new Error(`unknown backend: ${name || '(none)'} — use --backend file|ton|arweave|turbo`);
 }
 
 // file backend: a local content-addressed store. Needs no daemon and no network,
@@ -333,6 +334,47 @@ async function arweaveBackend() {
   };
 }
 
+// turbo backend: upload ciphertext to Arweave via a bundler (ar.io / ArDrive Turbo),
+// payable with ETH/USDC — uploads <100KB are free, larger spend Turbo Credits funded to
+// the signer's address (top up at app.ardrive.io with MetaMask, no key export). The data
+// item is ANS-104 *bundled*, so reads reuse the arweave backend (multi-gateway, bundled-
+// capable). @ardrive/turbo-sdk is heavy, so it is lazily imported ONLY when this backend
+// is used (run `npm install @ardrive/turbo-sdk`).
+function turboBackend() {
+  return {
+    async put(file) {
+      // import + wallet load live HERE (not the constructor) so a turbo PULL needs
+      // neither @ardrive/turbo-sdk nor a wallet — only an upload does.
+      let TurboFactory, ArweaveSigner;
+      try { ({ TurboFactory, ArweaveSigner } = await import('@ardrive/turbo-sdk')); }
+      catch (e) {
+        if (e && e.code === 'ERR_MODULE_NOT_FOUND') throw new Error('turbo backend needs the `@ardrive/turbo-sdk` package — run: npm install @ardrive/turbo-sdk');
+        throw e;
+      }
+      if (!AR_WALLET) throw new Error('turbo put needs CIPHER_BRAIN_AR_WALLET (a JWK signer; uploads <100KB are free, larger spend Turbo Credits funded to its address)');
+      let jwk;
+      try { jwk = JSON.parse(await readFile(AR_WALLET, 'utf8')); }
+      catch (e) { throw new Error(`turbo: cannot read JWK wallet at ${AR_WALLET}: ${e.message}`); }
+      const turbo = TurboFactory.authenticated({ signer: new ArweaveSigner(jwk) });
+      const abs = resolve(file);
+      const { size } = await stat(abs); // stream the file (don't buffer an ~850MB brain) and give Turbo its size
+      const res = await turbo.uploadFile({
+        fileStreamFactory: () => createReadStream(abs),
+        fileSizeFactory: () => size,
+        dataItemOpts: { tags: [{ name: 'App-Name', value: 'cipher-brain' }, { name: 'Content-Type', value: 'application/octet-stream' }] },
+      });
+      if (!res || !res.id) throw new Error(`turbo upload returned no data item id: ${JSON.stringify(res).slice(0, 200)}`);
+      return res.id; // 43-char data item id — retrievable like any bundled item
+    },
+    // reads are identical to the arweave backend (Turbo items are bundled). Pure
+    // delegation, so a turbo PULL needs neither @ardrive/turbo-sdk nor a wallet —
+    // the "a fresh machine needs only the tx id" recovery property holds.
+    get(locator, out) {
+      return arweaveBackend().then((b) => b.get(locator, out));
+    },
+  };
+}
+
 const BOOL_FLAGS = new Set(['force']); // flags that take no value
 
 function parseArgs(argv) {
@@ -446,7 +488,7 @@ async function restore(o) {
 // second, independent node) is the operator script's job, not the verb's.
 async function push(o) {
   if (!o.in) throw new Error('--in <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|ton|arweave> required'); // no silent default
+  if (!o.backend) throw new Error('--backend <file|ton|arweave|turbo> required'); // no silent default
   if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
   // storage must only ever see ciphertext — refuse to push a non-age artifact
   // (e.g. an accidental plaintext path), which would be the last gate before a
@@ -463,7 +505,7 @@ async function push(o) {
 async function pull(o) {
   if (!o.locator) throw new Error('--locator <id> required');
   if (!o.out) throw new Error('--out <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|ton|arweave> required');
+  if (!o.backend) throw new Error('--backend <file|ton|arweave|turbo> required');
   const backend = await backendFor(o.backend);
   // --wait <seconds>: keep retrying while the item is not yet retrievable. A fresh
   // Turbo/ArDrive upload takes ~5-8 min to propagate to the gateway (bundle -> mine
@@ -574,11 +616,11 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
   cipher-brain verify --in <file.age>
       Assert it is real age ciphertext AND a wrong key cannot open it.
 
-  cipher-brain push --in <file.age> --backend <file|ton|arweave>
+  cipher-brain push --in <file.age> --backend <file|ton|arweave|turbo>
       Upload ciphertext to storage. Prints ONLY the locator to stdout
       (file: store path; ton: hex BagID; arweave: tx id). Storage sees ciphertext only.
 
-  cipher-brain pull --locator <id> --backend <file|ton|arweave> --out <file.age> [--wait <seconds>]
+  cipher-brain pull --locator <id> --backend <file|ton|arweave|turbo> --out <file.age> [--wait <seconds>]
       Fetch ciphertext by locator into --out. --wait retries while the item is not yet
       retrievable (a fresh Turbo/Arweave upload takes ~5-8 min to propagate); default 0.
 

@@ -18,9 +18,13 @@
   },
   "license": "MIT",
   "peerDependencies": {
+    "@ardrive/turbo-sdk": "^1.42.0",
     "arweave": "^1.15.0"
   },
   "peerDependenciesMeta": {
+    "@ardrive/turbo-sdk": {
+      "optional": true
+    },
     "arweave": {
       "optional": true
     }

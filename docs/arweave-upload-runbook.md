@@ -31,6 +31,21 @@ that decrypts stays off it.
    serves the bytes. *Not* the **Metadata Tx ID**, and *not* the ArFS **File ID**
    (a UUID).
 
+### Or: upload from the CLI (`--backend turbo`)
+
+For large blobs (the full brain) the browser is heavy. Upload straight from the host
+instead — `push` prints the data item id, no browser needed:
+
+```sh
+npm install @ardrive/turbo-sdk                      # optional, heavy — only for this backend
+CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
+  cipher-brain push --in brain.age --backend turbo  # <100KB free; larger spends Turbo Credits
+```
+
+The signer is the JWK at `CIPHER_BRAIN_AR_WALLET`. For a paid (>100 KB) upload, top up
+**that wallet's address** with Turbo Credits at app.ardrive.io (pay with MetaMask
+ETH/USDC — you fund the address, no key export). The printed id is the **Data Tx ID**.
+
 ## 3. Pull it back from a public gateway (no wallet)
 
 ```sh
@@ -58,5 +73,6 @@ decrypts them. That is the whole claim: public + permanent + unreadable without 
   **multiple public gateways in turn** (`arweave.net`, then `permagate.io`) so one lagging
   gateway doesn't fail the pull; override the list with `CIPHER_BRAIN_AR_GATEWAYS`
   (comma-separated) or pin one with `CIPHER_BRAIN_AR_GATEWAY`.
-- A self-contained `cipher-brain push --backend turbo` (programmatic ETH/USDC upload)
-  is tracked in #20.
+- `cipher-brain push --backend turbo` (the CLI upload above) is operator-proven against
+  real Arweave by `node scripts/turbo-roundtrip.mjs` (a free <100 KB upload → pull →
+  decrypt; needs `@ardrive/turbo-sdk` + a JWK at `CIPHER_BRAIN_AR_WALLET`).

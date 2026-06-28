@@ -150,8 +150,9 @@ Arweave as the durable cold archive + a TON copy for `.ton`-addressable hot acce
 - **#3 Management** — key recovery (backup key, CI-proven ✅) + versioning ✅;
   cadence / restore runbook documented in [`MANAGEMENT.md`](MANAGEMENT.md).
 - **Backends** — `file` (CI ✅) · `ton` (store/decrypt ✅, cross-node PARTIAL, #6) ·
-  `arweave` (parity CI-proven against arlocal ✅, #9). The abstraction is validated
-  across content-addressed *and* post-assigned-id backends.
+  `arweave` (parity CI-proven against arlocal ✅, #9) · `turbo` (upload via a bundler,
+  payable with **ETH/USDC** — `<100KB` free; operator-proven real round-trip, #20). The
+  abstraction is validated across content-addressed *and* post-assigned-id backends.
 
 The cipher layer is backend-agnostic by design — proven, not just asserted, now that
 both a content-addressed (`ton`) and a post-assigned-id (`arweave`) backend round-trip.

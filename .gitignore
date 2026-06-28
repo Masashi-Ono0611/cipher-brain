@@ -3,3 +3,10 @@ node_modules/
 work/
 logs
 
+# secrets — never commit a key. (Not a bare *.json: package.json etc. are tracked.)
+*wallet*.json
+*.jwk
+ar-*-wallet.json
+identity*
+recipient.txt
+

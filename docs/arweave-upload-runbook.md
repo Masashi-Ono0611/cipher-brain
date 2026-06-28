@@ -61,6 +61,14 @@ Credits, and Turbo charges the **signer's** reachable credits — so they must b
 
 The printed id is the **Data Tx ID**.
 
+> **Treat the JWK as a spend-capable bearer key.** While any Credit Share Approval names
+> its address, whoever holds the JWK can spend those credits — it is not "low value". So:
+> `chmod 600` it (cipher-brain warns on a group/other-readable wallet); keep it in the
+> 0700 `~/.cipher-brain` dir; never commit it (the repo `.gitignore` covers `*wallet*.json`
+> / `*.jwk`, but verify before pushing). When sharing an approval, **bound its amount and
+> expiry** at [turbo.ar.io](https://turbo.ar.io), and **revoke it after the upload** so a
+> later leak of the JWK can't drain the sharer's credits.
+
 ## 3. Pull it back from a public gateway (no wallet)
 
 ```sh

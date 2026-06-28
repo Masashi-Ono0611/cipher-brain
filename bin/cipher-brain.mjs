@@ -143,6 +143,19 @@ function pipe2(prodCmd, prodArgs, consCmd, consArgs, { consStdout = 'inherit' } 
 const exists = (p) => access(p, FS.F_OK).then(() => true).catch(() => false);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Warn (don't refuse) if a secret-bearing key file is group/other-accessible. The age
+// identity is created 0600; an Arweave JWK is a spend-capable bearer credential (a Turbo
+// Credit Share Approval is granted TO its address) yet may be dropped in with loose modes.
+// We warn rather than hard-fail so an unusual-but-intentional setup still works.
+async function warnIfLooseKeyPerms(path, what) {
+  try {
+    const { mode } = await stat(path);
+    if (mode & 0o077) {
+      process.stderr.write(`⚠  ${what} at ${path} is group/other-accessible (mode ${(mode & 0o777).toString(8)}); chmod 600 it — it is a secret.\n`);
+    }
+  } catch { /* unreadable / missing perms info — the caller's own read will surface real errors */ }
+}
+
 function sha256(file) {
   return new Promise((res, rej) => {
     const h = createHash('sha256');
@@ -330,6 +343,7 @@ async function arweaveBackend() {
   };
   const loadWallet = async () => {
     if (!AR_WALLET) throw new Error('arweave put needs CIPHER_BRAIN_AR_WALLET (path to a JWK key file)');
+    await warnIfLooseKeyPerms(AR_WALLET, 'arweave JWK wallet');
     try { return JSON.parse(await readFile(AR_WALLET, 'utf8')); }
     catch (e) { throw new Error(`arweave: cannot read JWK wallet at ${AR_WALLET}: ${e.message}`); }
   };
@@ -425,6 +439,7 @@ function turboBackend() {
         throw e;
       }
       if (!AR_WALLET) throw new Error('turbo put needs CIPHER_BRAIN_AR_WALLET (a JWK signer; uploads <100KB are free, larger spend Turbo Credits funded to its address)');
+      await warnIfLooseKeyPerms(AR_WALLET, 'turbo JWK wallet (spend-capable bearer key)');
       let jwk;
       try { jwk = JSON.parse(await readFile(AR_WALLET, 'utf8')); }
       catch (e) { throw new Error(`turbo: cannot read JWK wallet at ${AR_WALLET}: ${e.message}`); }
@@ -496,7 +511,10 @@ function parseArgs(argv) {
 // ---------- commands ----------
 
 async function keygen(o) {
-  await mkdir(HOME, { recursive: true });
+  // 0700: HOME holds the private identity (and often the JWK wallet) — it must not be
+  // world/group-listable. chmod too, in case it pre-existed with a looser mode.
+  await mkdir(HOME, { recursive: true, mode: 0o700 });
+  await chmod(HOME, 0o700).catch(() => {});
   if (await exists(IDENTITY)) {
     if (!o.force) {
       throw new Error(`identity already exists at ${IDENTITY} (refusing to overwrite — losing it = losing the brain). Pass --force only if you are certain.`);

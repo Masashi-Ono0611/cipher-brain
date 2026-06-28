@@ -44,8 +44,9 @@ no GC. For a "impossible to delete" brain backup this is a categorically stronge
 durability story than rented TON storage: it is the cold archive that survives neglect.
 
 The trade: you pay AR up front (per-byte, one time), and retrieval is via a gateway
-(slower, not `.ton`-native). Reads need no wallet (a fresh machine restores with just
-the tx id — see #9).
+(slower, not `.ton`-native). Reads need no wallet AND no npm dependency — the gateway
+pull path is pure `fetch`, so a fresh machine restores with just the tx id (the
+`arweave` package is needed only to push, or for the rare L1 chunk fallback — see #9).
 
 ## Recommended model: redundancy across backends
 

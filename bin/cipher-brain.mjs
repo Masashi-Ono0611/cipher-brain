@@ -297,16 +297,24 @@ async function streamArweaveGateway(url, part, timeoutMs) {
 // arweave backend: stores the ciphertext as an Arweave transaction. The locator is
 // the tx id — assigned AFTER upload, NOT a content hash — which is exactly the case
 // the StorageBackend interface must handle (vs file/ton's pre-known content ids).
-// Uses the official `arweave` SDK, lazily imported so the core stays dependency-free
-// unless this backend is used (run `npm install arweave`).
+// The `arweave` SDK is imported LAZILY and only where it is actually needed — uploads
+// (put) and the rare L1 chunk fallback. The primary READ path (gateway HTTP, path 1
+// below) is pure native fetch, so a fresh machine recovers a bundled/Turbo brain from
+// just the tx id with NO npm dependency — keeping the documented "tx id is all you need"
+// recovery true (a missing `arweave` install no longer fails a gateway pull at construction).
 async function arweaveBackend() {
-  let Arweave;
-  try { Arweave = (await import('arweave')).default; }
-  catch (e) {
-    if (e && e.code === 'ERR_MODULE_NOT_FOUND') throw new Error('arweave backend needs the `arweave` package — run: npm install arweave');
-    throw e;
-  }
-  const ar = Arweave.init({ host: AR_HOST, port: AR_PORT, protocol: AR_PROTOCOL });
+  let _ar;
+  const getAr = async () => {
+    if (_ar) return _ar;
+    let Arweave;
+    try { Arweave = (await import('arweave')).default; }
+    catch (e) {
+      if (e && e.code === 'ERR_MODULE_NOT_FOUND') { const err = new Error('arweave backend needs the `arweave` package — run: npm install arweave'); err.sdkMissing = true; throw err; }
+      throw e;
+    }
+    _ar = Arweave.init({ host: AR_HOST, port: AR_PORT, protocol: AR_PROTOCOL });
+    return _ar;
+  };
   const loadWallet = async () => {
     if (!AR_WALLET) throw new Error('arweave put needs CIPHER_BRAIN_AR_WALLET (path to a JWK key file)');
     try { return JSON.parse(await readFile(AR_WALLET, 'utf8')); }
@@ -314,6 +322,7 @@ async function arweaveBackend() {
   };
   return {
     async put(file) {
+      const ar = await getAr(); // uploads genuinely need the SDK (createTransaction/sign/post)
       const jwk = await loadWallet(); // only uploads need a wallet/signature
       const data = await readFile(file); // PoC: small ciphertext fits one tx; chunked upload for big blobs is future (#8-adjacent)
       const tx = await ar.createTransaction({ data }, jwk);
@@ -349,11 +358,16 @@ async function arweaveBackend() {
       // 2) arweave-js chunk read — robust for L1 txs even when every gateway HTTP front
       //    is flaky (they can 5xx for L1 ids whose chunks the node still serves). This
       //    buffers in arweave-js, but it is the rare L1 fallback; a bundled brain takes
-      //    the streamed path above. getData THROWS for an unknown / not-yet-seeded id,
-      //    so treat a throw the same as "no data" (retryable below).
-      let d = null;
-      try { d = await ar.transactions.getData(locator, { decode: true }); } catch { /* not found / chunk error → not (yet) available */ }
-      if (d && d.length) { await writeFile(out, Buffer.from(d)); return; }
+      //    the streamed path above. Needs the SDK: if `arweave` isn't installed, SKIP
+      //    this fallback (the gateway path serves bundled items anyway) and let the
+      //    retryable error below keep `--wait` polling — so a no-SDK machine still pulls.
+      let ar = null;
+      try { ar = await getAr(); } catch (e) { if (!e.sdkMissing) throw e; /* no SDK → skip L1 fallback */ }
+      if (ar) {
+        let d = null;
+        try { d = await ar.transactions.getData(locator, { decode: true }); } catch { /* not found / chunk error → not (yet) available */ }
+        if (d && d.length) { await writeFile(out, Buffer.from(d)); return; }
+      }
       // a fresh upload may simply be propagating — mark this retryable so `pull --wait`
       // keeps trying (fatal errors like an invalid locator are NOT tagged, so they
       // fail fast even under --wait).
@@ -852,7 +866,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
 Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
      CIPHER_BRAIN_PIN_RECIPIENTS (snapshot: allowlist of age1… pubkeys, inline or a file — refuse to encrypt to any other recipient).
 Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);
-         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave — needs the 'arweave' npm package).`;
+         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none).`;
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);

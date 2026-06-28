@@ -24,3 +24,5 @@ jobs:
         run: npm run selftest:recovery
       - name: arweave backend parity selftest (arlocal, no real AR)
         run: npm run selftest:arweave
+      - name: arweave no-deps gateway pull (recovery needs no npm package)
+        run: npm run selftest:arweave-nodeps

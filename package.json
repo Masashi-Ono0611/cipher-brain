@@ -11,7 +11,8 @@
     "selftest": "bash scripts/selftest.sh",
     "selftest:storage": "bash scripts/selftest-storage.sh",
     "selftest:recovery": "bash scripts/selftest-recovery.sh",
-    "selftest:arweave": "node scripts/arweave-roundtrip.mjs"
+    "selftest:arweave": "node scripts/arweave-roundtrip.mjs",
+    "selftest:arweave-nodeps": "node scripts/selftest-arweave-nodeps.mjs"
   },
   "engines": {
     "node": ">=18"

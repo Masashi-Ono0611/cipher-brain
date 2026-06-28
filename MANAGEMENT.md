@@ -50,16 +50,21 @@ store. Treat it like a seed phrase.
 ### 3. Retain the latest locator off-box (built in)
 
 The identity decrypts, but you still need to know *where the latest ciphertext lives*.
-`push --save-locator <path>` writes `<locator>\t<backend>` to a small file, rewritten on
-every push so it always holds the **most recent** snapshot's locator:
+`push --save-locator <path>` writes `<locator>\t<backend>\t<sha256>` to a small file,
+rewritten atomically on every push so it always holds the **most recent** snapshot's
+locator plus an integrity pin:
 
 ```sh
 cipher-brain push --in brain-$(date +%F).age --backend ton \
   --save-locator ~/.cipher-brain/latest-locator.tsv
 ```
 
+> **Use a network backend here.** For `--backend file` the locator is a *local* store
+> path, useless on a fresh machine — only `ton`/`arweave`/`turbo` locators are portable.
+
 Back this file up **off-box, next to the backup identity** (same encrypted USB / secure
-note). Recovery on a fresh machine then needs only those two things — no `index.tsv`:
+note). Recovery on a fresh machine then needs only those two things — no `index.tsv`. The
+saved sha256 is applied automatically, so a substituted ciphertext is rejected:
 
 ```sh
 cipher-brain pull --from-locator-file ~/restore/latest-locator.tsv --out latest.age

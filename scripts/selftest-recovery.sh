@@ -67,9 +67,13 @@ STORE="$TMP/store"; LOCFILE="$TMP/offbox/latest-locator.tsv"
 CIPHER_BRAIN_FILE_DIR="$STORE" cb "$PRIMARY" push --in "$TMP/latest.age" --backend file \
   --save-locator "$LOCFILE" >/dev/null
 test -f "$LOCFILE" || { echo "[FAIL] --save-locator wrote no file"; exit 1; }
-# the saved file must carry the backend so pull needs no other knowledge
-grep -q $'\tfile' "$LOCFILE" || { echo "[FAIL] locator file missing backend tag"; cat "$LOCFILE"; exit 1; }
-echo "[PASS] push --save-locator wrote <locator>\\t<backend>"
+# the saved file must carry the backend AND an integrity pin (sha256) so pull needs no
+# other knowledge and is fail-closed against a substituted ciphertext.
+SAVED_BACKEND=$(cut -f2 "$LOCFILE"); SAVED_SHA=$(cut -f3 "$LOCFILE")
+[ "$SAVED_BACKEND" = "file" ] || { echo "[FAIL] locator file backend column != file"; cat "$LOCFILE"; exit 1; }
+[ "$SAVED_SHA" = "$(shasum -a 256 "$TMP/latest.age" | cut -d' ' -f1)" ] \
+  || { echo "[FAIL] locator file sha256 column does not match the ciphertext"; cat "$LOCFILE"; exit 1; }
+echo "[PASS] push --save-locator wrote <locator>\\t<backend>\\t<sha256>"
 # fresh machine: BACKUP identity present, index.tsv absent, only the locator file + store
 CIPHER_BRAIN_FILE_DIR="$STORE" cb "$BACKUP" pull --from-locator-file "$LOCFILE" --out "$TMP/recovered.age" >/dev/null
 cmp -s "$TMP/latest.age" "$TMP/recovered.age" || { echo "[FAIL] --from-locator-file fetched different bytes"; exit 1; }
@@ -78,6 +82,26 @@ tar -xzf "$TMP/r-loc/brain.tar.gz" -C "$TMP/r-loc"
 grep -q "$LATESTMARK" "$TMP/r-loc/brain/note.txt" \
   && echo "[PASS] fresh machine recovered latest snapshot from identity + saved locator alone" \
   || { echo "[FAIL] locator-file recovery content mismatch"; exit 1; }
+# the saved sha256 must actually fail-close: corrupt the stored object and confirm a
+# --from-locator-file pull rejects it (the integrity pin fires) and leaves no --out.
+STORED_OBJ=$(cut -f1 "$LOCFILE")
+cp "$STORED_OBJ" "$TMP/obj.bak"
+printf 'TAMPERED' >> "$STORED_OBJ"   # same locator (path), different bytes
+if CIPHER_BRAIN_FILE_DIR="$STORE" cb "$BACKUP" pull --from-locator-file "$LOCFILE" --out "$TMP/tampered.age" 2>/dev/null; then
+  echo "[FAIL] recovery accepted a tampered ciphertext (integrity pin did not fire)"; exit 1
+fi
+test ! -f "$TMP/tampered.age" || { echo "[FAIL] tampered --out was left behind (not fail-closed)"; exit 1; }
+cp "$TMP/obj.bak" "$STORED_OBJ"      # restore the good object
+echo "[PASS] saved sha256 fail-closes recovery against a substituted ciphertext"
+# malformed locator file (no backend column) must error clearly, not fall through to the
+# generic "--backend required" message.
+printf 'just-a-locator-no-tab\n' > "$TMP/bad-locator.tsv"
+set +e
+BADOUT=$(CIPHER_BRAIN_FILE_DIR="$STORE" cb "$BACKUP" pull --from-locator-file "$TMP/bad-locator.tsv" --out "$TMP/x.age" 2>&1); BADRC=$?
+set -e
+[ "$BADRC" != "0" ] || { echo "[FAIL] malformed locator file did not error"; exit 1; }
+printf '%s' "$BADOUT" | grep -q "must contain" || { echo "[FAIL] malformed locator file error is not specific"; echo "$BADOUT"; exit 1; }
+echo "[PASS] malformed locator file (missing backend) errors clearly"
 # --save-locator must be overwrite-only (always the LATEST), not appended
 printf 'brain-v3-%s\n' "$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')" > "$SRC/note.txt"
 cb "$PRIMARY" snapshot --dir "$SRC" --recipient "$PRIMARY/recipient.txt" --out "$TMP/v3.age"

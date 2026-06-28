@@ -58,9 +58,18 @@ printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$(shasum -a 256 "$OUT" | cut 
   >> "$HOME/brain-snapshots/index.tsv"
 ```
 
-Snapshotting needs only the **public** key, so a compromise of the always-on box
-leaks nothing. A full snapshot is ~850 MB today (pg_dump ~630 MB + `~/.gbrain`
-~220 MB); incremental snapshots are a future optimization.
+Snapshotting needs only the **public** key, so the snapshots the always-on box
+writes (and anything storage sees) are ciphertext only. Two caveats: that box also
+runs gbrain, so the live plaintext is on it regardless (keep it full-disk-encrypted);
+and a box that can rewrite `recipient.txt` could re-key *future* snapshots — set
+`CIPHER_BRAIN_PIN_RECIPIENTS` (an allowlist of `age1…` keys) so snapshot refuses any
+recipient you did not pin. A full snapshot is ~850 MB today (pg_dump ~630 MB +
+`~/.gbrain` ~220 MB); incremental snapshots are a future optimization.
+
+Prove restorability where the identity lives, on a cadence: a `verify` on the
+public-key-only snapshotting box reports **PARTIAL** (exit 2) because it cannot run
+the decrypt proof, so periodically pull a recent snapshot to a machine that holds the
+identity and run `verify` there (a full **PASS** = restorable by you). `scripts/selftest-recovery.sh` is the off-box drill in miniature.
 
 ## Versioning
 

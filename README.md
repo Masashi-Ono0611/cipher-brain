@@ -22,8 +22,18 @@ with an **asymmetric** keypair:
 - **recipient** (public key) — all the snapshotting machine needs.
 
 So the always-on box that runs gbrain (e.g. a Mac mini) holds **only the public
-key**. It can produce snapshots forever but can never read them back. Compromising
-that machine — or the storage backend — leaks no brain content.
+key**. It can produce snapshots forever but can never read them back: the
+**snapshots it writes, and anything the storage backend ever sees, are ciphertext
+only** — that is the property this design guarantees.
+
+Two honest caveats, since this is a security tool. (1) That box also *runs* gbrain,
+so the live plaintext (its Postgres + `~/.gbrain`) is on it regardless — cipher-brain
+protects the snapshots you ship off-box, not the source machine; keep it
+full-disk-encrypted. (2) A box that can rewrite `recipient.txt` (or inject an extra
+`--recipient`) could silently re-key *future* snapshots to an attacker while your own
+restore still works. Pin the allowed recipients with `CIPHER_BRAIN_PIN_RECIPIENTS`
+(snapshot refuses any recipient not on the list), and prove restorability where the
+identity lives — `verify` on a public-key-only box reports **PARTIAL**, never PASS.
 
 ## Install
 

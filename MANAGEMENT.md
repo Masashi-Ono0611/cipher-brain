@@ -53,7 +53,7 @@ OUT="$HOME/brain-snapshots/brain-$(date +%F).age"
 cipher-brain snapshot --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.gbrain" \
   --recipient ~/.cipher-brain/recipient.txt --recipient ~/.cipher-brain-backup/recipient.txt \
   --out "$OUT"
-LOC=$(cipher-brain push --in "$OUT" --backend "$BACKEND")   # file | ton | (later) arweave
+LOC=$(cipher-brain push --in "$OUT" --backend "$BACKEND")   # file | ton | arweave | turbo
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$(shasum -a 256 "$OUT" | cut -d" " -f1)" \
   >> "$HOME/brain-snapshots/index.tsv"
 ```
@@ -73,8 +73,10 @@ identity and run `verify` there (a full **PASS** = restorable by you). `scripts/
 
 ## Versioning
 
-Each snapshot is immutable and content-addressed: `push` returns a **locator**
-(a store path for the `file` backend, a hex BagID for `ton`). Keep an append-only
+Each snapshot is immutable: `push` returns a **locator** whose form depends on the
+backend — a store path (`file`), a hex BagID that is a content fingerprint (`ton`),
+or a tx id assigned *after* upload (`arweave`/`turbo`; not a content hash). Keep an
+append-only
 `index.tsv` of `timestamp · locator · sha256` (the cadence script above does this).
 That index *is* your version history — every line is an independently restorable
 point in time. A "latest" pointer (the newest line, or a `.ton` DNS record updated
@@ -108,5 +110,7 @@ under `./restored` yourself.
 |---|---|
 | Backup-key recovery (any one identity restores), versioning round-trip | **proven** — `selftest:recovery` (CI) |
 | `file` backend store/fetch | **proven** — `selftest:storage` (CI) |
+| `arweave` backend round-trip | **proven** — `selftest:arweave` (CI, against arlocal); real-network gateway pull confirmed operator-run |
+| `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |
 | `ton` cross-node fetch | **PARTIAL** — blocked on seeder reachability (see issues) |
 | Cadence script, identity off-box backup, Shamir M-of-N | **recommended practice / future** — not enforced by code |

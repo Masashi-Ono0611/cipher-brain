@@ -71,8 +71,11 @@ cipher-brain restore \
 required — there is no default). The **`file`** backend is a local
 content-addressed store (no daemon, used by CI); the **`ton`** backend shells out
 to a TON Storage `storage-daemon` (`locator` = hex BagID, a content fingerprint).
-The same `snapshot → push … pull → restore` pipeline will hold for an Arweave
-backend later — that is the point of the abstraction.
+The **`arweave`** and **`turbo`** backends are also shipped: they push to the
+Arweave network (turbo accepts ETH/USDC for the bundler fee) and pull from any
+Arweave gateway via plain HTTP — the `locator` is the tx id assigned after upload
+(not a content hash). The backend abstraction is what makes the same
+`snapshot → push … pull → restore` pipeline work across all four.
 
 Each component (the `pg_dump`, each `--dir` archive) is staged into a private
 (0700) temp dir, then the bundle is streamed `tar -> age`, so the final ciphertext
@@ -142,8 +145,9 @@ control address, key paths, and download timeout for the ton backend).
 ## Managing snapshots over time
 
 [`MANAGEMENT.md`](MANAGEMENT.md) covers cadence (a nightly snapshot+push recipe),
-versioning (each push → an immutable content-addressed locator + an append-only
-index), the restore runbook, and **key recovery** — the primary-plus-offline-backup
+versioning (each push → an immutable locator + an append-only
+index — content-addressed for `file`/`ton`, a tx id for `arweave`/`turbo`), the
+restore runbook, and **key recovery** — the primary-plus-offline-backup
 model above, so losing one identity never loses the brain.
 
 **Durability** (will the bytes survive a year of neglect?) is a separate question from

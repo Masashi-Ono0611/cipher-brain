@@ -40,6 +40,14 @@ const RECIPIENT = join(HOME, 'recipient.txt');   // public key — all snapshot 
 
 const AGE_MAGIC = 'age-encryption.org/v1';
 
+// Optional recipient allowlist. When set, snapshot refuses to encrypt unless EVERY
+// effective recipient is on this list — so a tampered recipient.txt / an injected
+// extra --recipient (which would silently re-key future snapshots to an attacker)
+// is caught at the input, before any ciphertext is produced. Inline (space/comma/
+// newline-separated age1… keys) OR a path to a file of them.
+const PIN_RECIPIENTS = process.env.CIPHER_BRAIN_PIN_RECIPIENTS || '';
+const AGE_PUBKEY_RE = /age1[0-9a-z]{50,63}/g; // an age X25519 recipient (age1 + bech32); bounded so two unseparated keys can't fuse
+
 // ---------- storage backend config (pluggable: storage only ever sees ciphertext) ----------
 const FILE_DIR = process.env.CIPHER_BRAIN_FILE_DIR || join(HOME, 'store'); // file backend object store
 const TON_CLI = process.env.CIPHER_BRAIN_TON_CLI || 'storage-daemon-cli';
@@ -426,6 +434,36 @@ async function keygen(o) {
   console.log('\n⚠  Back up the identity file now. If you lose it, the snapshots are unrecoverable.');
 }
 
+// Return EVERY recipient entry a value feeds to age: an `age1…` literal is one
+// entry; anything else is read as a recipients file and split into its non-blank,
+// non-comment lines (mirrors snapshot's own age1-or-file rule). We must enumerate
+// whole LINES, not just age1… tokens — `age -R` also accepts SSH recipients
+// (`ssh-ed25519 …`), so an attacker who appends an ssh line to a tampered
+// recipient.txt would slip past an age1-only scan. The pin enforces the INPUTS,
+// since age ciphertext never exposes its recipient pubkeys.
+async function recipientEntries(rec) {
+  if (rec.startsWith('age1')) return [rec.trim()];
+  const text = await readFile(rec, 'utf8');
+  return text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+}
+
+// Resolve CIPHER_BRAIN_PIN_RECIPIENTS to a set of allowed pubkeys. File-first: if the
+// value names an existing file, read it (so a path that happens to contain "age1",
+// e.g. age1-pins.txt, is not mistaken for an inline list); otherwise treat the value
+// itself as an inline list of age1… keys. Parsed line-by-line, SKIPPING comment lines
+// (mirrors recipientEntries) — a key left commented-out (e.g. a rotated/revoked one)
+// must NOT count as allowed, or the pin could be defeated by a stale comment.
+async function resolvePinnedRecipients(val) {
+  const text = (await exists(val)) ? await readFile(val, 'utf8') : val;
+  const keys = new Set();
+  for (const line of text.split('\n')) {
+    const l = line.trim();
+    if (!l || l.startsWith('#')) continue;
+    for (const m of l.matchAll(AGE_PUBKEY_RE)) keys.add(m[0]);
+  }
+  return keys;
+}
+
 // snapshot() stages the full *plaintext* brain into a 0700 temp dir and leans on
 // its finally-block to erase it. But a signal (operator Ctrl-C, or launchd/shutdown
 // SIGTERM in service mode) tears the process down WITHOUT unwinding the suspended
@@ -466,6 +504,25 @@ async function snapshot(o) {
       if (!(await exists(r))) throw new Error(`no recipient at ${r} — run "cipher-brain keygen" first, or pass an age1... pubkey`);
       recArgs.push('-R', r);
     }
+  }
+
+  // Recipient pin (opt-in): fail-fast if any effective recipient is not allowlisted,
+  // so a tampered recipient.txt or an injected extra --recipient cannot silently
+  // re-key this (and every future) snapshot to an attacker.
+  if (PIN_RECIPIENTS) {
+    const allowed = await resolvePinnedRecipients(PIN_RECIPIENTS);
+    if (allowed.size === 0) throw new Error('CIPHER_BRAIN_PIN_RECIPIENTS is set but lists no age1… pubkeys — refusing to snapshot');
+    for (const r of recs) {
+      const entries = await recipientEntries(r);
+      if (entries.length === 0) throw new Error(`recipient "${r}" has no recipients to check against CIPHER_BRAIN_PIN_RECIPIENTS (refusing to snapshot)`);
+      for (const e of entries) {
+        // Fail-closed: every entry must be an allowlisted age1… key. A non-age1
+        // recipient (e.g. an injected `ssh-ed25519 …` line) can't be on the
+        // age1-only allowlist, so it is rejected — which is the point.
+        if (!allowed.has(e)) throw new Error(`recipient "${e}" (via "${r}") is NOT in CIPHER_BRAIN_PIN_RECIPIENTS — refusing to snapshot (an unexpected recipient could decrypt your brain)`);
+      }
+    }
+    console.error(`recipient pin OK: all recipient(s) are allowlisted`);
   }
 
   installStageSignalGuard();
@@ -582,7 +639,9 @@ async function pull(o) {
 //      makes PASS mean "restorable by you", and it catches truncation/corruption
 //      that a wrong-key test alone would miss.
 // On a public-key-only box the positive control is skipped (no identity present),
-// so verify there only attests the header + that a stranger's key cannot read it.
+// so verify there attests only the header + that a stranger's key cannot read it —
+// and reports VERDICT: PARTIAL (exit 2), never PASS, so it is not read as proof the
+// snapshot is restorable by you.
 async function verify(o) {
   if (!o.in) throw new Error('--in <file.age> required');
   const sz = (await stat(o.in)).size;
@@ -607,6 +666,7 @@ async function verify(o) {
   // bundle. Streamed (age -d | tar -t) so it never buffers a multi-GB plaintext.
   const identity = o.identity || IDENTITY;
   let positiveOk = true;
+  let positiveSkipped = false;
   if (await exists(identity)) {
     try {
       await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-tf', '-'], { consStdout: 'ignore' });
@@ -616,12 +676,23 @@ async function verify(o) {
       console.log('[FAIL] your identity could not decrypt the artifact (corrupt/truncated, or not encrypted to you)');
     }
   } else {
+    positiveSkipped = true;
     console.log('[SKIP] positive control — no private identity on this machine (public-key-only box)');
   }
 
-  const ok = isAge && wrongKeyRejected && positiveOk;
-  console.log(ok ? '\nVERDICT: PASS' : '\nVERDICT: FAIL');
-  if (!ok) process.exitCode = 1;
+  // Three verdicts, not two. The header + wrong-key checks alone do NOT prove the
+  // artifact is restorable BY YOU, so on a public-key-only box (positive control
+  // skipped) we must NOT print PASS / exit 0 — a cron/log reading "PASS" would be
+  // false-green and could mask a month of snapshots encrypted to a wrong/lost key.
+  if (!isAge || !wrongKeyRejected || !positiveOk) {
+    console.log('\nVERDICT: FAIL');
+    process.exitCode = 1;
+  } else if (positiveSkipped) {
+    console.log('\nVERDICT: PARTIAL — header + wrong-key checks passed, but decryptability was NOT proven on this box (no private identity here). Run verify where the identity lives to prove it is restorable by you.');
+    process.exitCode = 2; // distinct from PASS(0) and FAIL(1) so automation can tell them apart
+  } else {
+    console.log('\nVERDICT: PASS');
+  }
 }
 
 // ---------- utils ----------
@@ -658,8 +729,11 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
   cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>]
       Decrypt with the PRIVATE identity; optionally pg_restore the db.dump.
 
-  cipher-brain verify --in <file.age>
-      Assert it is real age ciphertext AND a wrong key cannot open it.
+  cipher-brain verify --in <file.age> [--identity <file>]
+      Assert it is real age ciphertext, a wrong key cannot open it, AND (when the
+      private identity is on this box) that YOUR key decrypts it into a well-formed
+      bundle. VERDICT: PASS (exit 0) / FAIL (exit 1) / PARTIAL (exit 2 — decryptability
+      not proven, e.g. on a public-key-only box).
 
   cipher-brain push --in <file.age> --backend <file|ton|arweave|turbo>
       Upload ciphertext to storage. Prints ONLY the locator to stdout
@@ -670,6 +744,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       retrievable (a fresh Turbo/Arweave upload takes ~5-8 min to propagate); default 0.
 
 Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
+     CIPHER_BRAIN_PIN_RECIPIENTS (snapshot: allowlist of age1… pubkeys, inline or a file — refuse to encrypt to any other recipient).
 Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);
          CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave — needs the 'arweave' npm package).`;
 

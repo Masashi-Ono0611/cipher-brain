@@ -95,5 +95,66 @@ if [ "$LEFTOVERS" != "0" ]; then
 fi
 echo "[PASS] SIGINT mid-snapshot left no staged plaintext"
 
+echo "== verify on a public-key-only box is PARTIAL (exit 2), never a false-green PASS =="
+# A box with only recipient.txt (no identity) cannot prove decryptability. verify
+# must say PARTIAL and exit 2 so cron/logs don't read it as a full PASS.
+PUBONLY="$TMP/pubonly"; mkdir -p "$PUBONLY"
+cp "$TMP/keys/recipient.txt" "$PUBONLY/recipient.txt"   # public key only — deliberately NO identity.age
+set +e
+OUT=$(CIPHER_BRAIN_HOME="$PUBONLY" node "$BIN" verify --in "$TMP/snap.age" 2>&1); RC=$?
+set -e
+if [ "$RC" != "2" ]; then echo "FAIL: public-key-only verify exited $RC, expected 2"; echo "$OUT"; exit 1; fi
+if ! printf '%s' "$OUT" | grep -q "VERDICT: PARTIAL"; then echo "FAIL: expected VERDICT: PARTIAL"; echo "$OUT"; exit 1; fi
+if printf '%s' "$OUT" | grep -q "VERDICT: PASS"; then echo "FAIL: public-key-only verify falsely printed PASS"; exit 1; fi
+echo "[PASS] public-key-only verify is PARTIAL/exit 2"
+
+echo "== recipient pin: snapshot refuses an out-of-allowlist recipient =="
+PINHOME="$TMP/keys"   # the original keypair from the top of this test
+MYPUB=$(cat "$PINHOME/recipient.txt")
+# (a) matching allowlist -> snapshot succeeds
+CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$MYPUB" \
+  node "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-ok.age" >/dev/null
+echo "[PASS] snapshot allowed when the recipient is on the allowlist"
+# (b) a DIFFERENT key's pin -> snapshot must refuse (the injected-recipient case)
+OTHER="$TMP/other-key"; mkdir -p "$OTHER"
+CIPHER_BRAIN_HOME="$OTHER" node "$BIN" keygen >/dev/null
+OTHERPUB=$(cat "$OTHER/recipient.txt")
+set +e
+CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$OTHERPUB" \
+  node "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-bad.age" >/dev/null 2>&1; RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: snapshot encrypted to a non-allowlisted recipient"; exit 1; fi
+test ! -f "$TMP/pin-bad.age"
+echo "[PASS] snapshot refused a recipient not on the allowlist"
+# (c) a recipients FILE that keeps the allowed age key but ALSO adds an ssh recipient
+# (age -R accepts ssh-ed25519) must be refused — an age1-only scan would miss it.
+SSHMIX="$TMP/recipient-ssh-mix.txt"
+printf '%s\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIINJECTEDATTACKERKEYxxxxxxxxxxxxxxxxxxxxxx attacker\n' "$MYPUB" > "$SSHMIX"
+set +e
+CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$MYPUB" \
+  node "$BIN" snapshot --dir "$SRC" --recipient "$SSHMIX" --out "$TMP/pin-ssh.age" >/dev/null 2>&1; RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: pin let through a file with an injected ssh recipient"; exit 1; fi
+test ! -f "$TMP/pin-ssh.age"
+echo "[PASS] snapshot refused a recipient file with an injected ssh recipient"
+# (d) a FILE allowlist whose path contains "age1" must be read as a file, not parsed
+# as an inline key (regression for the includes('age1') path-detection bug).
+PINFILE="$TMP/age1-pins.txt"; printf '%s\n' "$MYPUB" > "$PINFILE"
+CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$PINFILE" \
+  node "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-file.age" >/dev/null
+test -f "$TMP/pin-file.age"
+echo "[PASS] snapshot honored a file-based allowlist whose path contains 'age1'"
+# (e) a key present only in a COMMENT line of the allowlist file is NOT allowed
+# (e.g. a rotated/revoked key left commented out must not silently pass the pin).
+PINCOMMENT="$TMP/pins-with-comment.txt"
+printf '%s\n# rotated-out: %s\n' "$MYPUB" "$OTHERPUB" > "$PINCOMMENT"
+set +e
+CIPHER_BRAIN_HOME="$OTHER" CIPHER_BRAIN_PIN_RECIPIENTS="$PINCOMMENT" \
+  node "$BIN" snapshot --dir "$SRC" --recipient "$OTHER/recipient.txt" --out "$TMP/pin-comment.age" >/dev/null 2>&1; RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: pin allowed a key that was only in a comment line"; exit 1; fi
+test ! -f "$TMP/pin-comment.age"
+echo "[PASS] snapshot refused a recipient whose key was only commented-out in the allowlist"
+
 echo
 echo "SELFTEST PASS"

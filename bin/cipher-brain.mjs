@@ -10,9 +10,11 @@
 // Crypto: age (X25519 + ChaCha20-Poly1305) via the audited `age` binary. Each
 // component (the pg_dump, each directory archive) is staged into a private (0700)
 // temp dir, then the bundle is streamed `tar -> age` so the final ciphertext never
-// loads into memory. The staged plaintext is erased even on failure (the snapshot
-// finally-block), so it doesn't linger. Staging needs scratch space ~the size of
-// the snapshot, so point TMPDIR at a disk with room for large brains.
+// loads into memory. The staged plaintext is erased on a normal failure (the
+// snapshot finally-block) AND on Ctrl-C / SIGTERM / SIGHUP (a signal handler that
+// rmSync's the active stage dir, since a signal tears the process down without
+// unwinding the finally), so it doesn't linger. Staging needs scratch space ~the
+// size of the snapshot, so point TMPDIR at a disk with room for large brains.
 //
 // Backend-agnostic: this produces ONE encrypted artifact (`*.age`). Where those
 // bytes get parked (TON Storage / Arweave / anything) is a separate, pluggable
@@ -20,7 +22,7 @@
 
 import { spawn } from 'node:child_process';
 import { mkdir, writeFile, rm, chmod, access, stat, readFile, mkdtemp, copyFile, readdir, rename } from 'node:fs/promises';
-import { createReadStream, createWriteStream, constants as FS } from 'node:fs';
+import { createReadStream, createWriteStream, constants as FS, rmSync, mkdtempSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { homedir, hostname, tmpdir } from 'node:os';
@@ -424,6 +426,31 @@ async function keygen(o) {
   console.log('\n⚠  Back up the identity file now. If you lose it, the snapshots are unrecoverable.');
 }
 
+// snapshot() stages the full *plaintext* brain into a 0700 temp dir and leans on
+// its finally-block to erase it. But a signal (operator Ctrl-C, or launchd/shutdown
+// SIGTERM in service mode) tears the process down WITHOUT unwinding the suspended
+// async stack, so the finally never runs and the plaintext brain would linger in
+// TMPDIR — the exact on-disk exposure the threat model exists to prevent. Track the
+// active stage dir and erase it synchronously from a signal handler (async rm can't
+// finish before the process dies), then re-raise so the exit code is correct.
+let ACTIVE_STAGE = null;
+let SIGNAL_GUARD_INSTALLED = false;
+function installStageSignalGuard() {
+  if (SIGNAL_GUARD_INSTALLED) return;
+  SIGNAL_GUARD_INSTALLED = true;
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    const handler = () => {
+      if (ACTIVE_STAGE) { try { rmSync(ACTIVE_STAGE, { recursive: true, force: true }); } catch {} ACTIVE_STAGE = null; }
+      // adding a listener suppressed Node's default auto-terminate — remove only our
+      // own handler (not any unrelated listener) and re-raise so the process exits
+      // with the correct signal code instead of hanging.
+      process.off(sig, handler);
+      process.kill(process.pid, sig);
+    };
+    process.on(sig, handler);
+  }
+}
+
 async function snapshot(o) {
   if (!o.out) throw new Error('--out <file.age> required');
   if (!o.pg && o.dirs.length === 0) throw new Error('nothing to snapshot: pass --pg <conn> and/or --dir <path>');
@@ -441,7 +468,13 @@ async function snapshot(o) {
     }
   }
 
-  const stage = await mkdtemp(join(tmpdir(), 'cipher-brain-'));
+  installStageSignalGuard();
+  // mkdtempSync (not async mkdtemp) so dir-creation and the ACTIVE_STAGE assignment
+  // happen in one tick with no event-loop yield between them — otherwise a signal that
+  // lands during the await could fire the handler while ACTIVE_STAGE is still null and
+  // leave the just-created stage dir behind.
+  const stage = mkdtempSync(join(tmpdir(), 'cipher-brain-'));
+  ACTIVE_STAGE = stage; // a signal now erases this staged plaintext (see installStageSignalGuard)
   try {
     const components = [];
     if (o.pg) {
@@ -472,6 +505,7 @@ async function snapshot(o) {
     console.log(`components: ${components.map((c) => c.name).join(', ')}`);
   } finally {
     await rm(stage, { recursive: true, force: true });
+    ACTIVE_STAGE = null;
   }
 }
 

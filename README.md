@@ -44,6 +44,14 @@ git clone https://github.com/Masashi-Ono0611/cipher-brain
 cd cipher-brain && npm link        # exposes `cipher-brain`
 ```
 
+**Prerequisites for `--pg`:** the `pg_dump`/`pg_restore` client tools (e.g.
+`brew install libpq` or your distro's `postgresql-client`) — without them the
+headline `--pg` flow fails with a cryptic `spawn pg_dump ENOENT`. If they are not
+on `PATH`, point `CIPHER_BRAIN_PG_BIN` at their directory. `tar` is assumed
+present. The `turbo` backend additionally needs `@ardrive/turbo-sdk`
+(`npm install @ardrive/turbo-sdk`); the `arweave` package is already installed by
+`npm link`.
+
 ## Usage
 
 ```sh

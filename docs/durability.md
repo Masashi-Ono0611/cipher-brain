@@ -37,19 +37,32 @@ guarantee is something you must actively pay for or operate.
 
 ## Arweave: durability is bought once, by design
 
-The `arweave` backend (already shipped, #9) has the opposite economic model:
+**Arweave the network** has the opposite economic model to rented TON storage:
 **pay once, stored ~forever.** An upload funds an endowment that pays for perpetual
 replication across the network — no ongoing proofs to run, no single seeder to babysit,
 no GC. For a "impossible to delete" brain backup this is a categorically stronger
-durability story than rented TON storage: it is the cold archive that survives neglect.
+durability story: it is the cold archive that survives neglect.
 
-The trade: you pay AR up front (per-byte, one time), and retrieval is via a gateway
-(slower, not `.ton`-native). Reads need no wallet AND no npm dependency — the gateway
-pull path is pure `fetch`, so a fresh machine restores with just the tx id (the
-`arweave` package is needed only to push, or for the rare L1 chunk fallback — see #9).
-You must still *retain* that tx id off-box, though: it is not self-discoverable, so
-back up the latest locator (`push --save-locator`, MANAGEMENT.md "Key recovery #3")
-next to your identity. A self-resolving stable name (`.ton` DNS / ArNS) is future work.
+cipher-brain reaches that network two ways — pick by **size**:
+
+- **`--backend turbo`** — the path for real, brain-sized snapshots. It *streams* the
+  ciphertext and uploads an ANS-104 *bundled* data item via a bundler (ArDrive Turbo),
+  payable with **ETH/USDC** (`<100 KB` free). This is the "push every snapshot for
+  permanence" path. Use it.
+- **`--backend arweave`** — the raw single-tx backend. It posts the whole artifact
+  inline in **one L1 transaction**, which gateways cap at ~12 MiB, so it suits small
+  artifacts only. To avoid a brain-sized upload buffering the lot and then failing with
+  a bare `HTTP 400`, `put()` now refuses anything over ~10 MiB up front and tells you to
+  switch to `turbo` (override with `CIPHER_BRAIN_AR_L1_MAX` for a deliberate large L1 post).
+
+Both produce an Arweave tx / data-item id. The trade vs TON: you pay up front (per-byte,
+one time), and retrieval is via a gateway (slower, not `.ton`-native). Reads need no
+wallet AND no npm dependency — the gateway pull path is pure `fetch`, so a fresh machine
+restores with just the id (the `arweave` package is needed only for the raw `arweave`
+push, or for the rare L1 chunk fallback — see #9). You must still *retain* that id
+off-box, though: it is not self-discoverable, so back up the latest locator
+(`push --save-locator`, MANAGEMENT.md "Key recovery #3") next to your identity. A
+self-resolving stable name (`.ton` DNS / ArNS) is future work.
 
 ## Recommended model: redundancy across backends
 
@@ -62,10 +75,11 @@ These two backends are complements, not competitors:
 | Speed / native | fast, TON-native | gateway fetch |
 | Best role | **hot copy** | **durable cold archive** |
 
-For a personal brain that must not vanish: **push every snapshot to Arweave for
-permanence, and keep a TON copy for `.ton`-addressable hot access.** The cipher layer is
-backend-agnostic (#9), so this is just two `push` calls. Storage sees only ciphertext
-either way. Cross-backend = no single point of durability failure.
+For a personal brain that must not vanish: **push every snapshot to Arweave (via
+`--backend turbo` for real sizes) for permanence, and keep a TON copy for
+`.ton`-addressable hot access.** The cipher layer is backend-agnostic (#9), so this is
+just two `push` calls. Storage sees only ciphertext either way. Cross-backend = no
+single point of durability failure.
 
 ## What actually closing #7 needs (a funding decision)
 

@@ -73,6 +73,16 @@ try {
   const cipher = await readFile(join(tmp, 'snap.age'));
   const cipherSha = sha(cipher);
 
+  // size guard (#37): the raw arweave backend posts one inline L1 tx; an oversized
+  // artifact must be REJECTED up front with an actionable redirect to --backend turbo,
+  // not buffered and 400'd. Force a tiny limit so the ~10 KB snapshot trips it.
+  log('size guard: oversized L1 push is refused with a turbo redirect');
+  const sg = spawnSync('node', [BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'],
+    { env: { ...env, CIPHER_BRAIN_AR_L1_MAX: '1' }, encoding: 'utf8' });
+  (sg.status !== 0 && /--backend turbo/.test(sg.stderr) && /exceeds/.test(sg.stderr))
+    ? pass('size guard: oversized L1 push is refused with a turbo redirect')
+    : fail(`size guard did not fire as expected: status=${sg.status} stderr=${(sg.stderr || '').slice(0, 160)}`);
+
   // push -> the locator is the Arweave tx id (assigned at upload, not the content hash)
   log('push --backend arweave'); const loc = cb('push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave');
   log(`pushed, tx=${loc}`);

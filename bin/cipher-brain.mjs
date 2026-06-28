@@ -71,6 +71,10 @@ const AR_HTTP_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_AR_HTTP_TIMEOUT || 60
 //     when the upload is well under budget.
 const CIPHER_YES = !!process.env.CIPHER_BRAIN_YES;
 const AR_MAX_SPEND = process.env.CIPHER_BRAIN_MAX_SPEND ? BigInt(process.env.CIPHER_BRAIN_MAX_SPEND) : 0n;
+// The raw `arweave` backend posts one inline L1 tx; gateways reject single-tx bodies
+// past ~12 MiB. Guard at a conservative 10 MiB and redirect large uploads to `turbo`
+// (which streams + ANS-104-bundles). Override for a deliberate large L1 post.
+const AR_L1_MAX_BYTES = Number(process.env.CIPHER_BRAIN_AR_L1_MAX || 10 * 1024 * 1024);
 
 // ---------- small process helpers (array args only — no shell, no injection) ----------
 
@@ -331,9 +335,17 @@ async function arweaveBackend() {
   };
   return {
     async put(file, _opts = {}) {
+      // Fast size guard BEFORE buffering: the raw arweave backend posts the whole
+      // artifact inline in ONE signed tx, and gateways reject single-tx bodies past
+      // ~12 MiB — a brain-sized snapshot would buffer the lot and then fail with a bare
+      // "HTTP 400". Redirect to the turbo backend (streams + ANS-104 bundles) instead.
+      const { size: l1Size } = await stat(resolve(file));
+      if (l1Size > AR_L1_MAX_BYTES) {
+        throw new Error(`arweave: ${l1Size} bytes exceeds the ~${(AR_L1_MAX_BYTES / 1048576).toFixed(0)} MiB single-tx limit of the raw arweave backend — use --backend turbo (it streams + bundles large uploads). Override the limit with CIPHER_BRAIN_AR_L1_MAX if you really mean to post one large L1 tx.`);
+      }
       const ar = await getAr(); // uploads genuinely need the SDK (createTransaction/sign/post)
       const jwk = await loadWallet(); // only uploads need a wallet/signature
-      const data = await readFile(file); // PoC: small ciphertext fits one tx; chunked upload for big blobs is future (#8-adjacent)
+      const data = await readFile(file); // small ciphertext fits one tx (guarded above); large blobs go via --backend turbo
       // inform before signing — the --yes guard in push() already confirmed intent;
       // this surfaces the size so the operator knows what they're committing to.
       // (ar.createTransaction fetches the network price internally when no reward is
@@ -945,7 +957,8 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
 
   cipher-brain push --in <file.age> --backend <file|ton|arweave|turbo> [--yes] [--save-locator <path>]
       Upload ciphertext to storage. Prints ONLY the locator to stdout
-      (file: store path; ton: hex BagID; arweave/turbo: tx id). Storage sees ciphertext only.
+      (file: store path; ton: hex BagID; arweave: tx id; turbo: ANS-104 data item id).
+      Storage sees ciphertext only.
       arweave/turbo are paid permanent stores — require --yes or CIPHER_BRAIN_YES=1.
       --save-locator writes "<locator>\\t<backend>\\t<sha256>" to a file (rewritten
       atomically each push, so it always holds the LATEST + an integrity pin). Back this
@@ -965,7 +978,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
 Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
      CIPHER_BRAIN_PIN_RECIPIENTS (snapshot: allowlist of age1… pubkeys, inline or a file — refuse to encrypt to any other recipient).
 Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);
-         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none).`;
+         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none);
+         turbo: CIPHER_BRAIN_AR_WALLET (JWK signer) + optional CIPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
+Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the turbo estimate (winc).`;
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);

@@ -1,8 +1,9 @@
 # cipher-brain
 
-Encrypt a [gbrain](https://github.com/) snapshot so that **only you** can read it,
-then park the resulting ciphertext anywhere — including censorship-resistant
-storage that you don't control.
+Encrypt a gbrain snapshot so that **only you** can read it, then park the
+resulting ciphertext anywhere — including censorship-resistant storage that you
+don't control. (*gbrain* is a personal "second brain": a local Postgres + `~/.gbrain`
+knowledge store that re-synthesizes nightly.)
 
 This repo is the **Cipher layer** of Cipher Brain: the part that turns your
 growing second brain into a single encrypted artifact. *Where* those bytes live
@@ -42,6 +43,14 @@ identity lives — `verify` on a public-key-only box reports **PARTIAL**, never 
 git clone https://github.com/Masashi-Ono0611/cipher-brain
 cd cipher-brain && npm link        # exposes `cipher-brain`
 ```
+
+**Prerequisites for `--pg`:** the `pg_dump`/`pg_restore` client tools (e.g.
+`brew install libpq` or your distro's `postgresql-client`) — without them the
+headline `--pg` flow fails with a cryptic `spawn pg_dump ENOENT`. If they are not
+on `PATH`, point `CIPHER_BRAIN_PG_BIN` at their directory. `tar` is assumed
+present. The `turbo` backend additionally needs `@ardrive/turbo-sdk`
+(`npm install @ardrive/turbo-sdk`); the `arweave` package is already installed by
+`npm link`.
 
 ## Usage
 

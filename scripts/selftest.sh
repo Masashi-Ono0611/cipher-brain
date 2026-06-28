@@ -246,5 +246,46 @@ printf '%s' "$OUT2" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
   && { echo "[FAIL] CIPHER_BRAIN_YES=1 still hitting the --yes gate"; echo "$OUT2"; exit 1; } || true
 echo "[PASS] push arweave with CIPHER_BRAIN_YES=1 passes the --yes guard (fails further in: wallet/SDK)"
 
+echo "== pipe2 timeout: a wedged, SIGTERM-IGNORING age can't hang the CLI (#38) =="
+# Replace `age` with a node stub that IGNORES SIGTERM and stays alive 30s (no grandchild,
+# so SIGKILL on the stub leaks nothing). This exercises the hard path: the pipeline must
+# (a) time out, (b) escalate SIGTERM→SIGKILL so the child actually dies, and (c) only THEN
+# reject — so cleanup runs after the child is dead, leaving no output / .part / staged
+# plaintext. If escalation failed, the run would block on the stub's full 30s.
+AGESTUB="$TMP/age-ignore-term.mjs"
+printf 'process.on("SIGTERM",()=>{});\nprocess.stdin.resume();\nsetTimeout(()=>process.exit(0),30000);\n' > "$AGESTUB"
+AGEWRAP="$TMP/age-wrap.sh"
+printf '#!/bin/sh\nexec node "%s"\n' "$AGESTUB" > "$AGEWRAP"; chmod +x "$AGEWRAP"
+TOUT="$TMP/timeout-snap.age"
+START=$(date +%s)
+set +e
+TERR=$(CIPHER_BRAIN_AGE="$AGEWRAP" CIPHER_BRAIN_PIPE_TIMEOUT=600 cb snapshot --dir "$SRC" --out "$TOUT" 2>&1); TRC=$?
+set -e
+ELAPSED=$(( $(date +%s) - START ))
+[ "$TRC" != "0" ] || { echo "[FAIL] wedged-age snapshot exited 0"; exit 1; }
+printf '%s' "$TERR" | grep -qi "timed out" || { echo "[FAIL] no timeout error surfaced"; echo "$TERR"; exit 1; }
+# < 15s proves the SIGKILL escalation fired (timeout 0.6s + 2s SIGKILL + overhead),
+# NOT that we waited out the stub's 30s sleep.
+[ "$ELAPSED" -lt 15 ] || { echo "[FAIL] pipeline took ${ELAPSED}s — SIGKILL escalation did not bound it (< the 30s stub)"; exit 1; }
+test ! -f "$TOUT"                                       # no finished output
+[ -z "$(find "$TMP" -name '*.part' 2>/dev/null)" ] || { echo "[FAIL] a .part lingered after timeout"; exit 1; }
+# the staged plaintext dir must be erased by snapshot's finally on the timeout path
+[ -z "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cipher-brain-*' -newermt "@$START" 2>/dev/null)" ] \
+  || { echo "[FAIL] a staged-plaintext cipher-brain-* dir lingered after timeout"; exit 1; }
+echo "[PASS] SIGTERM-ignoring age killed via SIGKILL escalation in ${ELAPSED}s; no output / .part / staged plaintext"
+
+echo "== single-key warning counts DISTINCT keys, not --recipient args (#43) =="
+# one --recipient file holding TWO keys must NOT warn (recovery exists); a duplicate
+# (two args, same key) MUST warn.
+keygen2() { CIPHER_BRAIN_HOME="$1" node "$BIN" keygen >/dev/null 2>&1; }
+keygen2 "$TMP/k-a"; keygen2 "$TMP/k-b"
+MULTIREC="$TMP/multi-recipient.txt"
+cat "$TMP/k-a/recipient.txt" "$TMP/k-b/recipient.txt" > "$MULTIREC"
+W1=$(cb snapshot --dir "$SRC" --recipient "$MULTIREC" --out "$TMP/mk.age" 2>&1 | grep -ic "SINGLE recipient" || true)
+[ "$W1" = "0" ] || { echo "[FAIL] warned on a 2-key recipient FILE"; exit 1; }
+W2=$(cb snapshot --dir "$SRC" --recipient "$TMP/k-a/recipient.txt" --recipient "$TMP/k-a/recipient.txt" --out "$TMP/dup.age" 2>&1 | grep -ic "SINGLE recipient" || true)
+[ "$W2" != "0" ] || { echo "[FAIL] did NOT warn on two args naming the SAME key"; exit 1; }
+echo "[PASS] single-key warning is by distinct key, not arg count (2-key file silent; dup-arg warns)"
+
 echo
 echo "SELFTEST PASS"

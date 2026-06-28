@@ -79,6 +79,11 @@ const AR_MAX_SPEND = process.env.CIPHER_BRAIN_MAX_SPEND ? BigInt(process.env.CIP
 // past ~12 MiB. Guard at a conservative 10 MiB and redirect large uploads to `turbo`
 // (which streams + ANS-104-bundles). Override for a deliberate large L1 post.
 const AR_L1_MAX_BYTES = Number(process.env.CIPHER_BRAIN_AR_L1_MAX || 10 * 1024 * 1024);
+// Overall wall-clock cap for the tar|age / age|tar streaming pipelines and the pre-stage
+// tar, so a wedged binary (or a FIFO/special file under --dir) can't hang the CLI forever.
+// Generous default (1h) — a real ~850 MB brain streams in seconds, so this only ever trips
+// on a genuine hang. Override with CIPHER_BRAIN_PIPE_TIMEOUT (ms) for very large brains.
+const PIPE_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_PIPE_TIMEOUT || 60 * 60 * 1000);
 
 // ---------- small process helpers (array args only — no shell, no injection) ----------
 
@@ -112,22 +117,42 @@ function run(cmd, args, { input, timeoutMs } = {}) {
 }
 
 // Pipe producer.stdout -> consumer.stdin and wait for both. Used for the
-// tar|age (snapshot) and age|tar (restore) streaming pipelines.
-function pipe2(prodCmd, prodArgs, consCmd, consArgs, { consStdout = 'inherit' } = {}) {
+// tar|age (snapshot) and age|tar (restore) streaming pipelines. `timeoutMs` bounds the
+// WHOLE pipeline (like run()'s per-child timeout) so a wedged age/tar can't hang the CLI
+// forever; on failure children are SIGTERM'd then SIGKILL'd ~2s later so a SIGTERM-ignoring
+// child can't linger after the promise rejects.
+function pipe2(prodCmd, prodArgs, consCmd, consArgs, { consStdout = 'inherit', timeoutMs } = {}) {
   return new Promise((res, rej) => {
     const prod = spawn(prodCmd, prodArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
     const cons = spawn(consCmd, consArgs, { stdio: ['pipe', consStdout, 'pipe'] });
     ACTIVE_CHILDREN.add(prod); ACTIVE_CHILDREN.add(cons);
     const doneChildren = () => { ACTIVE_CHILDREN.delete(prod); ACTIVE_CHILDREN.delete(cons); };
-    let pErr = '', cErr = '', left = 2, settled = false;
+    let pErr = '', cErr = '', left = 2, settled = false, timer, killTimer;
+    const stopTimers = () => { clearTimeout(timer); clearTimeout(killTimer); };
+    // resolve once a child has actually exited (close/exit), or immediately if it already has
+    const childExit = (c) => new Promise((r) => {
+      if (c.exitCode !== null || c.signalCode !== null) return r();
+      c.once('close', r); c.once('exit', r);
+    });
     const fail = (e) => {
       if (settled) return;
       settled = true;
-      doneChildren();
-      prod.kill(); cons.kill(); // don't leave the survivor running (or still decrypting)
-      rej(e);
+      stopTimers();
+      prod.kill('SIGTERM'); cons.kill('SIGTERM'); // ask the survivor (or still-decrypting child) to stop
+      // escalate: a child that ignores SIGTERM must not linger holding plaintext open.
+      killTimer = setTimeout(() => { try { prod.kill('SIGKILL'); } catch {} try { cons.kill('SIGKILL'); } catch {} }, 2000);
+      killTimer.unref?.(); // don't keep the event loop alive just for the escalation
+      // Reject ONLY after both children are dead — otherwise the caller's catch/finally
+      // (rm of .part / stage / out-dir) could race a still-writing age/tar that then
+      // recreates partial plaintext or ciphertext after we cleaned up (same recreate-
+      // after-unlink hazard the signal guard fixes). Children stay in ACTIVE_CHILDREN
+      // until they exit, so a signal in the meantime still SIGKILLs them.
+      Promise.all([childExit(prod), childExit(cons)]).then(() => { clearTimeout(killTimer); doneChildren(); rej(e); });
     };
-    const ok = () => { if (settled) return; if (--left === 0) { settled = true; doneChildren(); res(); } };
+    const ok = () => { if (settled) return; if (--left === 0) { settled = true; stopTimers(); doneChildren(); res(); } };
+    if (timeoutMs) {
+      timer = setTimeout(() => fail(new Error(`${prodCmd}|${consCmd} pipeline timed out after ${timeoutMs}ms`)), timeoutMs);
+    }
     prod.stderr.on('data', (d) => (pErr += d));
     cons.stderr.on('data', (d) => (cErr += d));
     prod.on('error', fail);
@@ -792,6 +817,17 @@ async function snapshot(o) {
     console.error(`recipient pin OK: all recipient(s) are allowlisted`);
   }
 
+  // The #1 footgun (documented in MANAGEMENT.md): a snapshot recoverable by exactly one
+  // key — lose that identity and the brain is gone. The cadence examples use two keys, but
+  // a copy-the-README run can forget the backup. Count DISTINCT effective recipient keys
+  // (not --recipient args): a file may hold several keys, and two args may name the same
+  // one — so dedupe across all entries. Warn loudly (stderr → unattended logs) on exactly one.
+  const effectiveKeys = new Set();
+  for (const r of recs) for (const e of await recipientEntries(r)) effectiveKeys.add(e);
+  if (effectiveKeys.size === 1) {
+    console.error('⚠  snapshot encrypted to a SINGLE recipient key — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.');
+  }
+
   installStageSignalGuard();
   // mkdtempSync (not async mkdtemp) so dir-creation and the ACTIVE_STAGE assignment
   // happen in one tick with no event-loop yield between them — otherwise a signal that
@@ -799,13 +835,16 @@ async function snapshot(o) {
   // leave the just-created stage dir behind.
   const stage = mkdtempSync(join(tmpdir(), 'cipher-brain-'));
   ACTIVE_STAGE = stage; // a signal now erases this staged plaintext (see installStageSignalGuard)
+  const createdAt = new Date().toISOString(); // when this snapshot run began (top-level)
   try {
     const components = [];
     if (o.pg) {
       const dumpPath = join(stage, 'db.dump');
       const tableArgs = o.tables.flatMap((t) => ['-t', t]);
       await run(pgTool('pg_dump'), ['-Fc', '--no-owner', '--no-privileges', ...tableArgs, '-f', dumpPath, o.pg]);
-      components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all' });
+      // captured_at right AFTER pg_dump (pg_dump -Fc is internally point-in-time consistent
+      // via one REPEATABLE READ txn; only the DB↔file boundary needs aligning — #44).
+      components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all', captured_at: new Date().toISOString() });
     }
     const usedNames = new Set();
     for (const d of o.dirs) {
@@ -814,13 +853,14 @@ async function snapshot(o) {
       // multiple --dir with the same basename must not overwrite each other in the stage
       for (let n = 1; usedNames.has(name); n++) name = `${basename(abs)}-${n}.tar.gz`;
       usedNames.add(name);
-      await run('tar', ['-czf', join(stage, name), '-C', dirname(abs), basename(abs)]);
-      components.push({ name, kind: 'dir', source: abs });
+      await run('tar', ['-czf', join(stage, name), '-C', dirname(abs), basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar
+      components.push({ name, kind: 'dir', source: abs, captured_at: new Date().toISOString() }); // skew vs the DB is now detectable on restore
     }
-    // manifest carries NO secrets — just what's inside, so restore is self-describing
+    // manifest carries NO secrets — just what's inside (+ capture timestamps so a
+    // DB↔files skew is detectable after the fact), so restore is self-describing.
     await writeFile(
       join(stage, 'manifest.json'),
-      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), components }, null, 2) + '\n',
+      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, components }, null, 2) + '\n',
     );
     // tar the staged components into one stream, encrypt to all recipients. Write to a
     // PER-RUN-UNIQUE .part so overlapping snapshots to the same --out never share/clobber
@@ -831,7 +871,7 @@ async function snapshot(o) {
     const part = `${o.out}.${process.pid}.${randomBytes(4).toString('hex')}.part`;
     ACTIVE_OUT_PART = part; // a signal now also erases this partial ciphertext
     try {
-      await pipe2('tar', ['-cf', '-', '-C', stage, '.'], AGE, [...recArgs, '-o', part]);
+      await pipe2('tar', ['-cf', '-', '-C', stage, '.'], AGE, [...recArgs, '-o', part], { timeoutMs: PIPE_TIMEOUT_MS });
       await promoteSnapshot(part, o.out);
       ACTIVE_OUT_PART = null;
     } catch (e) {
@@ -863,7 +903,7 @@ async function restore(o) {
   // able to set hostile ownership or modes on extraction (defense-in-depth — the
   // bytes can be attacker-chosen if storage is compromised; see verify --sha256).
   try {
-    await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir]);
+    await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
   } catch (e) {
     if (!outDirPreExisted) await rm(o.out_dir, { recursive: true, force: true });
     else console.error(`warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`);
@@ -1043,7 +1083,7 @@ async function verify(o) {
   let positiveSkipped = false;
   if (await exists(identity)) {
     try {
-      await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-tf', '-'], { consStdout: 'ignore' });
+      await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-tf', '-'], { consStdout: 'ignore', timeoutMs: PIPE_TIMEOUT_MS });
       console.log('[PASS] your identity decrypts the artifact into a well-formed bundle');
     } catch {
       positiveOk = false;

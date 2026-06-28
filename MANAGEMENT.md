@@ -125,6 +125,15 @@ public-key-only snapshotting box reports **PARTIAL** (exit 2) because it cannot 
 the decrypt proof, so periodically pull a recent snapshot to a machine that holds the
 identity and run `verify` there (a full **PASS** = restorable by you). `scripts/selftest-recovery.sh` is the off-box drill in miniature.
 
+**Avoid the write window.** A run `pg_dump`s the DB and then tars `~/.gbrain` at
+*different instants*, so a snapshot that straddles gbrain's nightly re-synthesis can
+pair a newer DB with older files (or vice versa). Schedule the snapshot *outside* that
+window (gbrain re-synthesizes overnight — snapshot well after it settles). The manifest
+now records a top-level `created_at` and a per-component `captured_at` (echoed by
+`restore`/`verify`), so any DB↔files skew is detectable after the fact. (`pg_dump -Fc`
+is itself point-in-time consistent via one REPEATABLE READ txn — only the DB↔file
+boundary needs aligning.)
+
 ## Versioning
 
 Each snapshot is immutable: `push` returns a **locator** whose form depends on the

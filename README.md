@@ -1,8 +1,9 @@
 # cipher-brain
 
-Encrypt a [gbrain](https://github.com/) snapshot so that **only you** can read it,
-then park the resulting ciphertext anywhere — including censorship-resistant
-storage that you don't control.
+Encrypt a gbrain snapshot so that **only you** can read it, then park the
+resulting ciphertext anywhere — including censorship-resistant storage that you
+don't control. (*gbrain* is a personal "second brain": a local Postgres + `~/.gbrain`
+knowledge store that re-synthesizes nightly.)
 
 This repo is the **Cipher layer** of Cipher Brain: the part that turns your
 growing second brain into a single encrypted artifact. *Where* those bytes live

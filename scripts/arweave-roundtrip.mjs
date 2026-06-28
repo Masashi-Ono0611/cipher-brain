@@ -42,7 +42,7 @@ try {
   const jwk = await ar.wallets.generate();
   const addr = await ar.wallets.jwkToAddress(jwk);
   const walletPath = join(tmp, 'wallet.json');
-  await writeFile(walletPath, JSON.stringify(jwk));
+  await writeFile(walletPath, JSON.stringify(jwk), { mode: 0o600 }); // 0600: avoid the loose-perms warning (#35)
   await fetch(`http://localhost:${PORT}/mint/${addr}/100000000000000`);
   log('wallet funded');
 
@@ -175,6 +175,40 @@ try {
     ? pass('AGE_MAGIC gate: read falls through a non-ciphertext 200 to a healthy gateway')
     : fail(`did not fall through bad-200 to a healthy gateway: ${ft.stderr || 'bytes differ'}`);
   badGw2.close();
+
+  // SSRF guard (#39): a gateway that 302-redirects to an internal/IMDS address must be
+  // refused, not transparently followed. The stub runs in a SEPARATE process — the pull
+  // below is spawnSync (blocking), so an in-process server could never answer it (the
+  // same reason the nodeps mock is out-of-process). The redirect target comes from argv;
+  // assert each pull (a) fails, (b) writes no --out, and (c) logs the SSRF refusal — i.e.
+  // it never fetched the private/loopback target.
+  const ssrfSrvFile = join(tmp, 'ssrf-stub.mjs');
+  await writeFile(ssrfSrvFile,
+    "import {createServer} from 'node:http';\n" +
+    "const target=process.argv[2];\n" +
+    "const s=createServer((q,res)=>{res.writeHead(302,{location:target});res.end();});\n" +
+    "s.listen(0,'127.0.0.1',()=>console.log('READY:'+s.address().port));\n");
+  // Two redirect forms: the dotted IMDS literal, and the canonical HEX-QUAD IPv4-mapped
+  // loopback `[::ffff:7f00:1]` (= 127.0.0.1) — the form that bypassed a dotted-only guard.
+  const ssrfCases = [
+    { target: 'http://169.254.169.254/latest/meta-data/', desc: 'a redirect to a link-local/IMDS address is refused' },
+    { target: 'http://[::ffff:7f00:1]/latest/meta-data/', desc: 'a redirect to a hex-quad IPv4-mapped loopback ([::ffff:7f00:1]) is refused' },
+  ];
+  for (const c of ssrfCases) {
+    const ssrfSrv = spawn('node', [ssrfSrvFile, c.target], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const ssrfPort = await new Promise((res, rej) => {
+      const to = setTimeout(() => rej(new Error('ssrf stub did not start')), 8000);
+      ssrfSrv.stdout.on('data', (d) => { const m = String(d).match(/READY:(\d+)/); if (m) { clearTimeout(to); res(m[1]); } });
+    });
+    const ssrfOut = join(tmp, `ssrf-${ssrfPort}.age`);
+    const ss = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', ssrfOut],
+      { env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${ssrfPort}` }, encoding: 'utf8' });
+    let ssrfWrote = false; try { await readFile(ssrfOut); ssrfWrote = true; } catch { /* not written = good */ }
+    (ss.status !== 0 && !ssrfWrote && /SSRF guard|private\/loopback\/link-local/.test(ss.stderr))
+      ? pass(`SSRF guard: ${c.desc}`)
+      : fail(`SSRF redirect not refused (${c.target}; status=${ss.status}, wrote=${ssrfWrote}): ${(ss.stderr || '').slice(0, 200)}`);
+    ssrfSrv.kill('SIGKILL');
+  }
 } catch (e) {
   fail(`exception: ${e.message}`);
 } finally {

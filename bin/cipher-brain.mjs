@@ -24,10 +24,14 @@ import { spawn } from 'node:child_process';
 import { mkdir, writeFile, rm, chmod, access, stat, readFile, mkdtemp, copyFile, readdir, rename, link } from 'node:fs/promises';
 import { createReadStream, createWriteStream, constants as FS, rmSync, mkdtempSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
-import { Readable, Transform } from 'node:stream';
+import { Transform } from 'node:stream';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { join, basename, dirname, resolve } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+import http from 'node:http';
+import https from 'node:https';
 
 const HOME = process.env.CIPHER_BRAIN_HOME || join(homedir(), '.cipher-brain');
 const AGE = process.env.CIPHER_BRAIN_AGE || 'age';
@@ -291,20 +295,92 @@ function arGateways() {
   return [derived, ...(AR_HOST === 'arweave.net' ? AR_DEFAULT_EXTRA_GATEWAYS : [])];
 }
 
+// SSRF guard for redirect targets (#13/#39). A loopback / link-local / private address
+// must never be the target of a gateway redirect — otherwise a compromised public mirror
+// could 3xx a public-IP host into GETting an internal/IMDS endpoint (169.254.169.254,
+// RFC1918, ::1). IPv4 + IPv6 (incl. IPv4-mapped). The INITIAL gateway URL is operator-
+// configured and trusted (it may legitimately be 127.0.0.1 in tests); only redirect
+// TARGETS — attacker-controlled — are screened here.
+function isPrivateAddr(ip) {
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    if (a === 0 || a === 127 || a === 10) return true;            // this-host / loopback / private
+    if (a === 169 && b === 254) return true;                      // link-local (AWS/GCP IMDS)
+    if (a === 172 && b >= 16 && b <= 31) return true;             // private
+    if (a === 192 && b === 168) return true;                      // private
+    if (a >= 224) return true;                                    // multicast / reserved
+    return false;
+  }
+  const low = ip.toLowerCase().replace(/^\[|\]$/g, '');
+  if (low === '::1' || low === '::') return true;                 // loopback / unspecified
+  if (low.startsWith('fe80')) return true;                        // link-local
+  if (low.startsWith('fc') || low.startsWith('fd')) return true;  // unique-local
+  const m = low.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);           // IPv4-mapped
+  if (m) return isPrivateAddr(m[1]);
+  return false;
+}
+
+// Reject a redirect target that is non-http(s) or resolves to a private/loopback/
+// link-local address. Throws on refusal (the caller logs + skips the gateway).
+async function assertPublicRedirectTarget(u) {
+  const parsed = new URL(u);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`refusing non-http(s) redirect to ${u}`);
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  const addrs = isIP(host) ? [{ address: host }] : await lookup(host, { all: true });
+  for (const { address } of addrs) {
+    if (isPrivateAddr(address)) {
+      throw new Error(`redirect to ${parsed.hostname} resolves to a private/loopback/link-local address (${address})`);
+    }
+  }
+}
+
+// One GET over node:http(s), resolving with the IncomingMessage so the caller can read
+// statusCode/headers AND stream the body. We use node:http instead of fetch because the
+// Fetch standard's `redirect:'manual'` returns an opaque response (status 0, no Location),
+// so manual SSRF-screened redirect following (#39) is impossible with fetch.
+function gatewayGet(url, signal) {
+  return new Promise((res, rej) => {
+    const lib = url.startsWith('https:') ? https : http;
+    // autoSelectFamily: match fetch/undici's happy-eyeballs so a dual-stack host
+    // (e.g. `localhost` → ::1 then 127.0.0.1) connects to whichever family answers,
+    // instead of failing on the first AAAA when the server is IPv4-only.
+    const req = lib.get(url, { signal, autoSelectFamily: true }, (resp) => res(resp));
+    req.on('error', rej);
+  });
+}
+
 // Stream an Arweave gateway GET to `part`; resolve true iff it produced a non-empty
 // file (the caller then promotes it to `out`). A STALL timeout (reset per chunk) bounds
 // a stalled gateway WITHOUT capping a large but progressing transfer (#17). Accept ONLY
-// HTTP 200 (a 202 "pending" / soft-404 means "not here, try the next gateway").
+// HTTP 200 (a 202 "pending" / soft-404 means "not here, try the next gateway"). Redirects
+// are followed MANUALLY (#39) so each hop's target is SSRF-screened before we fetch it.
 async function streamArweaveGateway(url, part, timeoutMs) {
   const ctl = new AbortController();
   let stall;
   const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), timeoutMs); };
   try {
-    arm();
-    const r = await fetch(url, { redirect: 'follow', signal: ctl.signal });
-    if (r.status === 200 && r.body) {
+    let current = url;
+    let resp;
+    for (let hop = 0; ; hop++) {
+      arm();
+      resp = await gatewayGet(current, ctl.signal);
+      const sc = resp.statusCode;
+      if (sc >= 300 && sc < 400 && resp.headers.location) {
+        resp.resume(); // drain & discard the redirect body so the socket frees
+        if (hop >= 3) { console.error(`arweave: too many redirects from ${url} — skipping gateway`); clearTimeout(stall); await rm(part, { force: true }); return false; }
+        const next = new URL(resp.headers.location, current).href;
+        try { await assertPublicRedirectTarget(next); }
+        catch (e) { console.error(`arweave: ${e.message} — refusing redirect, skipping gateway (SSRF guard)`); clearTimeout(stall); await rm(part, { force: true }); return false; }
+        current = next;
+        continue;
+      }
+      break; // not a redirect (or a 3xx with no Location) → handle the response below
+    }
+    if (resp.statusCode === 200) {
       const tap = new Transform({ transform(c, _e, cb) { arm(); cb(null, c); } }); // each chunk resets the stall deadline
-      await pipeline(Readable.fromWeb(r.body), tap, createWriteStream(part));
+      await pipeline(resp, tap, createWriteStream(part));
       clearTimeout(stall);
       // Accept the body only if it is actually age ciphertext (every stored object
       // is — push enforces the same header). A gateway that serves a non-ciphertext
@@ -313,6 +389,8 @@ async function streamArweaveGateway(url, part, timeoutMs) {
       // then the L1 chunk read, then the retryable error that drives `pull --wait`,
       // instead of writing garbage to --out during the propagation window.
       if ((await stat(part)).size > 0 && (await readHead(part, 64)).startsWith(AGE_MAGIC)) return true;
+    } else {
+      resp.resume(); // drain a non-200 (202 pending / 404) so the socket frees
     }
   } catch { /* stall / network / mid-stream error — try the next gateway */ }
   finally { clearTimeout(stall); }

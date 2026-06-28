@@ -21,13 +21,13 @@
 // concern — storage only ever sees ciphertext.
 
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile, rm, chmod, access, stat, readFile, mkdtemp, copyFile, readdir, rename } from 'node:fs/promises';
+import { mkdir, writeFile, rm, chmod, access, stat, readFile, mkdtemp, copyFile, readdir, rename, link } from 'node:fs/promises';
 import { createReadStream, createWriteStream, constants as FS, rmSync, mkdtempSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { join, basename, dirname, resolve } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 const HOME = process.env.CIPHER_BRAIN_HOME || join(homedir(), '.cipher-brain');
 const AGE = process.env.CIPHER_BRAIN_AGE || 'age';
@@ -65,9 +65,18 @@ const AR_HTTP_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_AR_HTTP_TIMEOUT || 60
 
 // ---------- small process helpers (array args only — no shell, no injection) ----------
 
+// Every spawned child registers here while running, so the signal handler can SIGKILL
+// them BEFORE it rmSync's the stage / .part — otherwise a signal delivered to node
+// alone (e.g. launchd stopping the service, or `kill <pid>`) leaves the children alive
+// to re-create the very files the handler just removed (a still-writing age would
+// re-make ${out}.part after we unlinked it). See installStageSignalGuard().
+const ACTIVE_CHILDREN = new Set();
+
 function run(cmd, args, { input, timeoutMs } = {}) {
   return new Promise((res, rej) => {
     const p = spawn(cmd, args, { stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    ACTIVE_CHILDREN.add(p);
+    const doneChild = () => ACTIVE_CHILDREN.delete(p);
     let out = '', err = '', timer;
     if (timeoutMs) {
       // a stuck child (e.g. a storage-daemon-cli call that never returns) must not
@@ -76,9 +85,9 @@ function run(cmd, args, { input, timeoutMs } = {}) {
     }
     p.stdout.on('data', (d) => (out += d));
     p.stderr.on('data', (d) => (err += d));
-    p.on('error', (e) => { clearTimeout(timer); rej(e); });
+    p.on('error', (e) => { clearTimeout(timer); doneChild(); rej(e); });
     p.on('close', (code) => {
-      clearTimeout(timer);
+      clearTimeout(timer); doneChild();
       code === 0 ? res({ out, err }) : rej(new Error(`${cmd} exited ${code}: ${err.trim() || out.trim()}`));
     });
     if (input) { p.stdin.write(input); p.stdin.end(); }
@@ -91,14 +100,17 @@ function pipe2(prodCmd, prodArgs, consCmd, consArgs, { consStdout = 'inherit' } 
   return new Promise((res, rej) => {
     const prod = spawn(prodCmd, prodArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
     const cons = spawn(consCmd, consArgs, { stdio: ['pipe', consStdout, 'pipe'] });
+    ACTIVE_CHILDREN.add(prod); ACTIVE_CHILDREN.add(cons);
+    const doneChildren = () => { ACTIVE_CHILDREN.delete(prod); ACTIVE_CHILDREN.delete(cons); };
     let pErr = '', cErr = '', left = 2, settled = false;
     const fail = (e) => {
       if (settled) return;
       settled = true;
+      doneChildren();
       prod.kill(); cons.kill(); // don't leave the survivor running (or still decrypting)
       rej(e);
     };
-    const ok = () => { if (settled) return; if (--left === 0) { settled = true; res(); } };
+    const ok = () => { if (settled) return; if (--left === 0) { settled = true; doneChildren(); res(); } };
     prod.stderr.on('data', (d) => (pErr += d));
     cons.stderr.on('data', (d) => (cErr += d));
     prod.on('error', fail);
@@ -479,13 +491,19 @@ async function resolvePinnedRecipients(val) {
 // active stage dir and erase it synchronously from a signal handler (async rm can't
 // finish before the process dies), then re-raise so the exit code is correct.
 let ACTIVE_STAGE = null;
+let ACTIVE_OUT_PART = null; // the partial ${out}.part being written; erased on signal so no stray ciphertext lingers
 let SIGNAL_GUARD_INSTALLED = false;
 function installStageSignalGuard() {
   if (SIGNAL_GUARD_INSTALLED) return;
   SIGNAL_GUARD_INSTALLED = true;
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     const handler = () => {
+      // Kill the pipeline children FIRST so a still-writing age/tar can't re-create the
+      // stage or .part after we remove them (the signal may have hit node alone).
+      for (const c of ACTIVE_CHILDREN) { try { c.kill('SIGKILL'); } catch {} }
+      ACTIVE_CHILDREN.clear();
       if (ACTIVE_STAGE) { try { rmSync(ACTIVE_STAGE, { recursive: true, force: true }); } catch {} ACTIVE_STAGE = null; }
+      if (ACTIVE_OUT_PART) { try { rmSync(ACTIVE_OUT_PART, { force: true }); } catch {} ACTIVE_OUT_PART = null; }
       // adding a listener suppressed Node's default auto-terminate — remove only our
       // own handler (not any unrelated listener) and re-raise so the process exits
       // with the correct signal code instead of hanging.
@@ -496,9 +514,36 @@ function installStageSignalGuard() {
   }
 }
 
+// Promote a finished .part to its final --out, no-clobber. Prefer link(): it is atomic
+// and fails with EEXIST if out appeared meanwhile, giving a true exclusive no-clobber
+// even under overlapping snapshots. But hard links are unsupported on exFAT/FAT and some
+// network/cloud mounts (common backup media), where link throws EPERM/ENOTSUP — there,
+// fall back to a re-checked rename (best-effort no-clobber with a tiny TOCTOU window,
+// the same the original `age -o` write had). Atomicity-on-success holds either way.
+async function promoteSnapshot(part, out) {
+  const clobberErr = () => new Error(`${out} already exists — refusing to overwrite a prior snapshot (move it aside or choose a new --out)`);
+  try {
+    await link(part, out);
+  } catch (e) {
+    if (e && e.code === 'EEXIST') throw clobberErr();
+    if (e && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(e.code)) {
+      if (await exists(out)) throw clobberErr();
+      await rename(part, out);
+      return;
+    }
+    throw e;
+  }
+  await rm(part, { force: true }); // drop the redundant link; out is the durable copy
+}
+
 async function snapshot(o) {
   if (!o.out) throw new Error('--out <file.age> required');
   if (!o.pg && o.dirs.length === 0) throw new Error('nothing to snapshot: pass --pg <conn> and/or --dir <path>');
+  // No-clobber: refuse to overwrite an existing snapshot (this is a backup tool — a
+  // silent overwrite could destroy a prior, possibly only, copy of the brain). The old
+  // `age -o o.out` write left this to age's version-dependent overwrite policy; the
+  // atomic rename below would ALWAYS clobber, so enforce the safe behavior explicitly.
+  if (await exists(o.out)) throw new Error(`${o.out} already exists — refusing to overwrite a prior snapshot (move it aside or choose a new --out)`);
   // Recipients = who can decrypt. Each --recipient is an `age1...` pubkey OR a
   // file of pubkeys; default to the keypair's own recipient. Passing more than one
   // is key recovery: encrypt to a primary AND an offline backup key so that losing
@@ -562,8 +607,23 @@ async function snapshot(o) {
       join(stage, 'manifest.json'),
       JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), components }, null, 2) + '\n',
     );
-    // tar the staged components into one stream, encrypt to all recipients
-    await pipe2('tar', ['-cf', '-', '-C', stage, '.'], AGE, [...recArgs, '-o', o.out]);
+    // tar the staged components into one stream, encrypt to all recipients. Write to a
+    // PER-RUN-UNIQUE .part so overlapping snapshots to the same --out never share/clobber
+    // each other's in-progress file, and rename only on success, so a mid-pipeline failure
+    // (tar error, ENOSPC, a SIGTERM-killed age) never leaves a TRUNCATED *.age at o.out —
+    // which would still start with the age magic and thus pass push()'s header-only gate,
+    // letting an operator publish unrecoverable ciphertext to permanent paid storage.
+    const part = `${o.out}.${process.pid}.${randomBytes(4).toString('hex')}.part`;
+    ACTIVE_OUT_PART = part; // a signal now also erases this partial ciphertext
+    try {
+      await pipe2('tar', ['-cf', '-', '-C', stage, '.'], AGE, [...recArgs, '-o', part]);
+      await promoteSnapshot(part, o.out);
+      ACTIVE_OUT_PART = null;
+    } catch (e) {
+      await rm(part, { force: true });
+      ACTIVE_OUT_PART = null;
+      throw e;
+    }
     const sz = (await stat(o.out)).size;
     console.log(`wrote ${o.out} (${fmtBytes(sz)}, encrypted to ${recs.length} recipient(s): ${recs.join(', ')})`);
     console.log(`components: ${components.map((c) => c.name).join(', ')}`);
@@ -578,12 +638,22 @@ async function restore(o) {
   if (!o.out_dir) throw new Error('--out-dir <dir> required');
   const identity = o.identity || IDENTITY;
   if (!(await exists(identity))) throw new Error(`no identity at ${identity} — cannot decrypt without the private key`);
+  // age streams plaintext chunk-by-chunk, so a truncated/corrupt artifact errors only
+  // AFTER tar has already extracted the leading components — leaving a partial tree.
+  // Track whether we created out_dir so we can remove it (or warn) on a mid-stream fail.
+  const outDirPreExisted = await exists(o.out_dir);
   await mkdir(o.out_dir, { recursive: true });
   // age -d -i identity in | tar -xf - -C out-dir
   // --no-same-owner/--no-same-permissions: a substituted/forged archive must not be
   // able to set hostile ownership or modes on extraction (defense-in-depth — the
   // bytes can be attacker-chosen if storage is compromised; see verify --sha256).
-  await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir]);
+  try {
+    await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir]);
+  } catch (e) {
+    if (!outDirPreExisted) await rm(o.out_dir, { recursive: true, force: true });
+    else console.error(`warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`);
+    throw e;
+  }
   console.log(`restored components into ${o.out_dir}`);
   const manifestPath = join(o.out_dir, 'manifest.json');
   if (await exists(manifestPath)) console.log(await readFile(manifestPath, 'utf8'));

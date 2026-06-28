@@ -46,6 +46,14 @@ if LC_ALL=C grep -a -q "$MARKER" "$TMP/snap.age"; then
 fi
 echo "[PASS] marker absent from ciphertext"
 
+echo "== no-clobber: snapshot refuses to overwrite an existing --out =="
+set +e
+OUT=$(cb snapshot --dir "$SRC" --out "$TMP/snap.age" 2>&1); RC=$?   # snap.age already exists
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: snapshot overwrote an existing --out"; exit 1; fi
+printf '%s' "$OUT" | grep -q "already exists" || { echo "FAIL: wrong error for existing --out"; echo "$OUT"; exit 1; }
+echo "[PASS] snapshot refused to overwrite an existing snapshot"
+
 echo "== restore + compare =="
 cb restore --in "$TMP/snap.age" --out-dir "$TMP/out"
 tar -xzf "$TMP/out/brain-src.tar.gz" -C "$TMP/out"
@@ -73,7 +81,30 @@ LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/nul
 if [ "$LEFTOVERS" != "0" ]; then
   echo "FAIL: $LEFTOVERS staged plaintext dir(s) left behind after a failed snapshot"; exit 1
 fi
-echo "[PASS] failed snapshot exited cleanly and left no staged plaintext"
+# atomic output: a failed snapshot must leave NEITHER a truncated *.age NOR its (now
+# per-run-randomized "<out>.<pid>.<hex>.part") partial — glob, not the old fixed name.
+npart() { find "$1" -maxdepth 1 -name "$(basename "$2").*.part" 2>/dev/null | wc -l | tr -d ' '; }
+test ! -f "$TMP/bad.age" || { echo "FAIL: failed snapshot left a (truncated) bad.age"; exit 1; }
+[ "$(npart "$TMP" "$TMP/bad.age")" = "0" ] || { echo "FAIL: failed snapshot left a bad.age .part"; exit 1; }
+echo "[PASS] failed snapshot exited cleanly and left no staged plaintext / no partial *.age"
+# a SUCCESSFUL snapshot promotes the .part and leaves none behind
+test -f "$TMP/snap.age" && [ "$(npart "$TMP" "$TMP/snap.age")" = "0" ] \
+  && echo "[PASS] successful snapshot left no .part (atomic promote)" || { echo "FAIL: snap.age .part lingered"; exit 1; }
+
+echo "== restore of a corrupt artifact fails and removes the tree it created =="
+# Drop the LAST bytes of a valid snapshot (snap.age holds a 1 MB blob => multiple age
+# STREAM chunks): the leading chunks still decrypt and tar extracts a PARTIAL tree, then
+# age fails on the broken final chunk. Use the ORIGINAL keypair ($TMP/keys) so the
+# failure is the truncation, not a wrong key (CIPHER_BRAIN_HOME is $TMP/keys2 here).
+SNAPSZ=$(wc -c < "$TMP/snap.age" | tr -d ' ')
+head -c $((SNAPSZ - 500)) "$TMP/snap.age" > "$TMP/trunc.age"
+RDIR="$TMP/restore-corrupt"   # does NOT pre-exist -> restore creates it -> must remove it on failure
+set +e
+CIPHER_BRAIN_HOME="$TMP/keys" node "$BIN" restore --in "$TMP/trunc.age" --out-dir "$RDIR" >/dev/null 2>&1; RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: restore of a truncated artifact unexpectedly succeeded"; exit 1; fi
+test ! -e "$RDIR" || { echo "FAIL: restore left a partial tree at $RDIR"; exit 1; }
+echo "[PASS] restore of a corrupt artifact failed and removed the partial tree"
 
 echo "== P1 regression: SIGINT mid-snapshot must not leave staged plaintext =="
 # A signal tears the process down WITHOUT running the finally-block, so this is the
@@ -88,7 +119,10 @@ exec age "\$@"
 EOF
 chmod +x "$SLOWAGE"
 export TMPDIR="$TMP/stagedir-sig"; mkdir -p "$TMPDIR"
-CIPHER_BRAIN_AGE="$SLOWAGE" cb snapshot --dir "$SRC" --out "$TMP/sig.age" >/dev/null 2>&1 &
+# Invoke `node` DIRECTLY (not the cb() function): backgrounding a shell function makes
+# $! the subshell's pid, so `kill -INT $!` would hit the subshell and leave node
+# orphaned to run to completion — the signal would never reach the handler under test.
+CIPHER_BRAIN_AGE="$SLOWAGE" node "$BIN" snapshot --dir "$SRC" --out "$TMP/sig.age" >/dev/null 2>&1 &
 SNAP_PID=$!
 APPEARED=0
 for _ in $(seq 1 50); do
@@ -104,7 +138,28 @@ LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/nul
 if [ "$LEFTOVERS" != "0" ]; then
   echo "FAIL: $LEFTOVERS staged plaintext dir(s) left behind after SIGINT"; exit 1
 fi
-echo "[PASS] SIGINT mid-snapshot left no staged plaintext"
+# the signal handler also kills the pipeline children, so no partial ciphertext lingers
+[ "$(npart "$TMP" "$TMP/sig.age")" = "0" ] || { echo "FAIL: SIGINT left a sig.age .part (child not killed)"; exit 1; }
+test ! -f "$TMP/sig.age" || { echo "FAIL: SIGINT left a partial sig.age"; exit 1; }
+echo "[PASS] SIGINT mid-snapshot left no staged plaintext / no partial ciphertext"
+
+echo "== race: an --out that appears mid-snapshot is NOT clobbered (link promote is exclusive) =="
+# Start a slow snapshot (passes the early exists() check while --out is absent), then
+# create --out externally before it promotes. link()+EEXIST must refuse, preserving the
+# external file — a plain rename would have clobbered it.
+RACE="$TMP/race-out.age"
+CIPHER_BRAIN_AGE="$SLOWAGE" node "$BIN" snapshot --dir "$SRC" --out "$RACE" >/dev/null 2>&1 &
+RACE_PID=$!
+for _ in $(seq 1 50); do find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | grep -q . && break; sleep 0.1; done
+printf 'PRE-EXISTING-WINNER\n' > "$RACE"   # a "concurrent run" finished first
+set +e
+wait "$RACE_PID"; RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: snapshot clobbered an --out that appeared mid-run"; exit 1; fi
+[ "$(cat "$RACE")" = "PRE-EXISTING-WINNER" ] || { echo "FAIL: the pre-existing --out was overwritten"; exit 1; }
+LEFTPART=$(find "$(dirname "$RACE")" -maxdepth 1 -name "$(basename "$RACE").*.part" 2>/dev/null | wc -l | tr -d ' ')
+[ "$LEFTPART" = "0" ] || { echo "FAIL: a .part lingered after the refused promote"; exit 1; }
+echo "[PASS] a mid-run --out is not clobbered and no .part lingers"
 
 echo "== verify on a public-key-only box is PARTIAL (exit 2), never a false-green PASS =="
 # A box with only recipient.txt (no identity) cannot prove decryptability. verify

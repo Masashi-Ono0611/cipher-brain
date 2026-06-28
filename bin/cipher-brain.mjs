@@ -268,7 +268,13 @@ async function streamArweaveGateway(url, part, timeoutMs) {
       const tap = new Transform({ transform(c, _e, cb) { arm(); cb(null, c); } }); // each chunk resets the stall deadline
       await pipeline(Readable.fromWeb(r.body), tap, createWriteStream(part));
       clearTimeout(stall);
-      if ((await stat(part)).size > 0) return true;
+      // Accept the body only if it is actually age ciphertext (every stored object
+      // is — push enforces the same header). A gateway that serves a non-ciphertext
+      // HTTP 200 (a soft-404 page, a "tx pending" placeholder, a CDN interstitial)
+      // must NOT be promoted: returning false here falls through to the next gateway,
+      // then the L1 chunk read, then the retryable error that drives `pull --wait`,
+      // instead of writing garbage to --out during the propagation window.
+      if ((await stat(part)).size > 0 && (await readHead(part, 64)).startsWith(AGE_MAGIC)) return true;
     }
   } catch { /* stall / network / mid-stream error — try the next gateway */ }
   finally { clearTimeout(stall); }
@@ -319,8 +325,9 @@ async function arweaveBackend() {
       //    *bundled* data items (Turbo/Irys — the pay-with-ETH/USDC path), which the
       //    chunk read below cannot fetch. The body is STREAMED to disk (#17), so a
       //    multi-hundred-MB brain never loads into memory; .part is promoted only on a
-      //    clean, non-empty download (a 202 / soft-404 / 200 error page just moves on —
-      //    the last caught downstream when age decryption rejects the non-ciphertext).
+      //    clean, non-empty download that is actually age ciphertext — a 202 / soft-404
+      //    / non-ciphertext 200 error page is rejected by streamArweaveGateway's
+      //    AGE_MAGIC check and falls through to the next gateway (then the chunk read).
       for (const gw of arGateways()) {
         if (await streamArweaveGateway(`${gw.replace(/\/+$/, '')}/${locator}`, part, AR_HTTP_TIMEOUT_MS)) {
           await rename(part, out);
@@ -573,7 +580,10 @@ async function restore(o) {
   if (!(await exists(identity))) throw new Error(`no identity at ${identity} — cannot decrypt without the private key`);
   await mkdir(o.out_dir, { recursive: true });
   // age -d -i identity in | tar -xf - -C out-dir
-  await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-xf', '-', '-C', o.out_dir]);
+  // --no-same-owner/--no-same-permissions: a substituted/forged archive must not be
+  // able to set hostile ownership or modes on extraction (defense-in-depth — the
+  // bytes can be attacker-chosen if storage is compromised; see verify --sha256).
+  await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir]);
   console.log(`restored components into ${o.out_dir}`);
   const manifestPath = join(o.out_dir, 'manifest.json');
   if (await exists(manifestPath)) console.log(await readFile(manifestPath, 'utf8'));
@@ -628,6 +638,20 @@ async function pull(o) {
       await sleep(naptime);
     }
   }
+  // --sha256 <hex>: bind the fetched bytes to a hash known out-of-band (from a TRUSTED
+  // source, e.g. an off-box index.tsv — NOT the maybe-compromised snapshotting box).
+  // For the post-assigned-id backends (arweave/turbo) the locator is not a content
+  // hash, so without this a gateway/storage attacker could serve a rolled-back or
+  // substituted (but still age-decryptable) ciphertext. Fail-closed: delete and error
+  // on mismatch so a bad artifact never lands at --out.
+  if (o.sha256) {
+    const got = await sha256(o.out);
+    if (got.toLowerCase() !== String(o.sha256).toLowerCase()) {
+      await rm(o.out, { force: true });
+      throw new Error(`sha256 mismatch: fetched ${got}, expected ${o.sha256} — deleted ${o.out} (the storage/gateway served bytes that do not match the pinned hash)`);
+    }
+    console.error(`sha256 OK: ${got}`);
+  }
   console.error(`pulled ${o.backend}:${o.locator} -> ${o.out}`);
 }
 
@@ -649,6 +673,16 @@ async function verify(o) {
   const isAge = head.startsWith(AGE_MAGIC);
   console.log(`file: ${o.in} (${fmtBytes(sz)})`);
   console.log(`[${isAge ? 'PASS' : 'FAIL'}] age ciphertext header present`);
+
+  // optional integrity pin: --sha256 binds the artifact to a hash known out-of-band
+  // (e.g. from a trusted off-box index.tsv), catching a rolled-back/substituted
+  // ciphertext that age would still decrypt. A mismatch is a hard FAIL.
+  let hashOk = true;
+  if (o.sha256) {
+    const got = await sha256(o.in);
+    hashOk = got.toLowerCase() === String(o.sha256).toLowerCase();
+    console.log(`[${hashOk ? 'PASS' : 'FAIL'}] sha256 matches the expected hash${hashOk ? '' : ` (expected ${o.sha256}, got ${got})`}`);
+  }
 
   // negative control: a throwaway key must NOT decrypt
   const tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-verify-'));
@@ -684,7 +718,7 @@ async function verify(o) {
   // artifact is restorable BY YOU, so on a public-key-only box (positive control
   // skipped) we must NOT print PASS / exit 0 — a cron/log reading "PASS" would be
   // false-green and could mask a month of snapshots encrypted to a wrong/lost key.
-  if (!isAge || !wrongKeyRejected || !positiveOk) {
+  if (!isAge || !wrongKeyRejected || !positiveOk || !hashOk) {
     console.log('\nVERDICT: FAIL');
     process.exitCode = 1;
   } else if (positiveSkipped) {
@@ -729,19 +763,21 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
   cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>]
       Decrypt with the PRIVATE identity; optionally pg_restore the db.dump.
 
-  cipher-brain verify --in <file.age> [--identity <file>]
+  cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>]
       Assert it is real age ciphertext, a wrong key cannot open it, AND (when the
       private identity is on this box) that YOUR key decrypts it into a well-formed
-      bundle. VERDICT: PASS (exit 0) / FAIL (exit 1) / PARTIAL (exit 2 — decryptability
-      not proven, e.g. on a public-key-only box).
+      bundle. --sha256 also pins the artifact to an expected hash. VERDICT: PASS (exit 0)
+      / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not proven, e.g. public-key-only box).
 
   cipher-brain push --in <file.age> --backend <file|ton|arweave|turbo>
       Upload ciphertext to storage. Prints ONLY the locator to stdout
       (file: store path; ton: hex BagID; arweave: tx id). Storage sees ciphertext only.
 
-  cipher-brain pull --locator <id> --backend <file|ton|arweave|turbo> --out <file.age> [--wait <seconds>]
+  cipher-brain pull --locator <id> --backend <file|ton|arweave|turbo> --out <file.age> [--wait <seconds>] [--sha256 <hex>]
       Fetch ciphertext by locator into --out. --wait retries while the item is not yet
       retrievable (a fresh Turbo/Arweave upload takes ~5-8 min to propagate); default 0.
+      --sha256 fail-closes the fetch: the bytes must match the expected hash (sourced
+      out-of-band from a trusted index) or --out is deleted and pull errors.
 
 Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
      CIPHER_BRAIN_PIN_RECIPIENTS (snapshot: allowlist of age1… pubkeys, inline or a file — refuse to encrypt to any other recipient).

@@ -29,6 +29,17 @@ cb snapshot --dir "$SRC" --out "$TMP/snap.age"
 echo "== verify =="
 cb verify --in "$TMP/snap.age"
 
+echo "== verify --sha256: correct hash PASSes, wrong hash FAILs =="
+SNAPSHA=$(shasum -a 256 "$TMP/snap.age" | cut -d' ' -f1)
+cb verify --in "$TMP/snap.age" --sha256 "$SNAPSHA" | grep -q "VERDICT: PASS" \
+  && echo "[PASS] verify --sha256 (correct) is PASS" || { echo "FAIL: correct --sha256 not PASS"; exit 1; }
+set +e
+OUT=$(cb verify --in "$TMP/snap.age" --sha256 "deadbeef" 2>&1); RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: verify --sha256 (wrong) exited 0"; echo "$OUT"; exit 1; fi
+printf '%s' "$OUT" | grep -q "VERDICT: FAIL" || { echo "FAIL: wrong --sha256 not VERDICT FAIL"; echo "$OUT"; exit 1; }
+echo "[PASS] verify --sha256 (wrong) is FAIL/non-zero"
+
 echo "== ciphertext must not leak plaintext =="
 if LC_ALL=C grep -a -q "$MARKER" "$TMP/snap.age"; then
   echo "FAIL: plaintext marker found in ciphertext"; exit 1

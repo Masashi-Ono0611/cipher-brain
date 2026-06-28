@@ -42,6 +42,16 @@ tar -xzf "$TMP/out/brain-src.tar.gz" -C "$TMP/out"
 diff -r "$SRC" "$TMP/out/brain-src"
 echo "[PASS] decrypt + restore byte-identical to source"
 
+echo "== pull --sha256: correct hash passes, wrong hash fail-closes (deletes --out) =="
+cb pull --locator "$LOC" --backend file --out "$TMP/got-ok.age" --sha256 "$ORIG"
+[ "$(sha "$TMP/got-ok.age")" = "$ORIG" ] && echo "[PASS] pull --sha256 (correct) kept the bytes" || { echo "[FAIL] correct --sha256 rejected"; exit 1; }
+WRONG="0000000000000000000000000000000000000000000000000000000000000000"
+if cb pull --locator "$LOC" --backend file --out "$TMP/got-bad.age" --sha256 "$WRONG" 2>/dev/null; then
+  echo "[FAIL] pull --sha256 accepted a mismatching hash"; exit 1
+fi
+test ! -f "$TMP/got-bad.age"   # fail-closed: the bad artifact must not be left at --out
+echo "[PASS] pull --sha256 (wrong) errored and deleted --out"
+
 echo "== negative control: an absent locator must fail =="
 if cb pull --locator "$CIPHER_BRAIN_FILE_DIR/deadbeef.age" --backend file --out "$TMP/no.age" 2>/dev/null; then
   echo "[FAIL] absent locator returned bytes"; exit 1

@@ -71,6 +71,10 @@ const AR_HTTP_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_AR_HTTP_TIMEOUT || 60
 //     when the upload is well under budget.
 const CIPHER_YES = !!process.env.CIPHER_BRAIN_YES;
 const AR_MAX_SPEND = process.env.CIPHER_BRAIN_MAX_SPEND ? BigInt(process.env.CIPHER_BRAIN_MAX_SPEND) : 0n;
+// The raw `arweave` backend posts one inline L1 tx; gateways reject single-tx bodies
+// past ~12 MiB. Guard at a conservative 10 MiB and redirect large uploads to `turbo`
+// (which streams + ANS-104-bundles). Override for a deliberate large L1 post.
+const AR_L1_MAX_BYTES = Number(process.env.CIPHER_BRAIN_AR_L1_MAX || 10 * 1024 * 1024);
 
 // ---------- small process helpers (array args only — no shell, no injection) ----------
 
@@ -331,9 +335,17 @@ async function arweaveBackend() {
   };
   return {
     async put(file, _opts = {}) {
+      // Fast size guard BEFORE buffering: the raw arweave backend posts the whole
+      // artifact inline in ONE signed tx, and gateways reject single-tx bodies past
+      // ~12 MiB — a brain-sized snapshot would buffer the lot and then fail with a bare
+      // "HTTP 400". Redirect to the turbo backend (streams + ANS-104 bundles) instead.
+      const { size: l1Size } = await stat(resolve(file));
+      if (l1Size > AR_L1_MAX_BYTES) {
+        throw new Error(`arweave: ${l1Size} bytes exceeds the ~${(AR_L1_MAX_BYTES / 1048576).toFixed(0)} MiB single-tx limit of the raw arweave backend — use --backend turbo (it streams + bundles large uploads). Override the limit with CIPHER_BRAIN_AR_L1_MAX if you really mean to post one large L1 tx.`);
+      }
       const ar = await getAr(); // uploads genuinely need the SDK (createTransaction/sign/post)
       const jwk = await loadWallet(); // only uploads need a wallet/signature
-      const data = await readFile(file); // PoC: small ciphertext fits one tx; chunked upload for big blobs is future (#8-adjacent)
+      const data = await readFile(file); // small ciphertext fits one tx (guarded above); large blobs go via --backend turbo
       // inform before signing — the --yes guard in push() already confirmed intent;
       // this surfaces the size so the operator knows what they're committing to.
       // (ar.createTransaction fetches the network price internally when no reward is

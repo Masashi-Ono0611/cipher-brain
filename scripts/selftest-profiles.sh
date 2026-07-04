@@ -123,6 +123,27 @@ printf '%s' "$ERR" | grep -q "no export zip" || { echo "[FAIL] missing-zip error
 printf '%s' "$ERR2" | grep -q "does not end in .zip" || { echo "[FAIL] non-zip error unclear"; echo "$ERR2"; exit 1; }
 echo "[PASS] chatgpt-export refuses a missing or non-.zip input"
 
+echo "== symlinked --vault / --zip are dereferenced (archive the data, not the link) =="
+ln -s "$VAULT" "$TMP/linked-vault"
+cb snapshot --profile obsidian --vault "$TMP/linked-vault" --out "$TMP/ob-ln.age" >/dev/null 2>&1 \
+  || { echo "[FAIL] symlinked vault snapshot failed"; exit 1; }
+cb restore --in "$TMP/ob-ln.age" --out-dir "$TMP/ob-ln-out" >/dev/null
+tar -xzf "$TMP/ob-ln-out/vault.tar.gz" -C "$TMP/ob-ln-out" 2>/dev/null \
+  || { echo "[FAIL] symlinked vault archived under the link name (expected the dereferenced vault.tar.gz)"; ls "$TMP/ob-ln-out"; exit 1; }
+diff -r "$VAULT" "$TMP/ob-ln-out/vault" || { echo "[FAIL] restored vault (via symlink) differs from the real vault"; exit 1; }
+[ "$(find "$TMP/ob-ln-out/vault" -type l | wc -l | tr -d ' ')" = "0" ] \
+  || { echo "[FAIL] restored tree contains symlinks — archived the pointer, not the data"; exit 1; }
+ln -s "$ZIP" "$TMP/linked-export.zip"
+cb snapshot --profile chatgpt-export --zip "$TMP/linked-export.zip" --out "$TMP/gpt-ln.age" >/dev/null 2>&1 \
+  || { echo "[FAIL] symlinked zip snapshot failed"; exit 1; }
+cb restore --in "$TMP/gpt-ln.age" --out-dir "$TMP/gpt-ln-out" >/dev/null
+tar -xzf "$TMP/gpt-ln-out/chatgpt-export.zip.tar.gz" -C "$TMP/gpt-ln-out"
+{ test -f "$TMP/gpt-ln-out/chatgpt-export.zip" && test ! -L "$TMP/gpt-ln-out/chatgpt-export.zip"; } \
+  || { echo "[FAIL] restored zip is missing or is a symlink"; exit 1; }
+LSHA=$(shasum -a 256 "$TMP/gpt-ln-out/chatgpt-export.zip" | cut -d' ' -f1)
+[ "$ZSHA" = "$LSHA" ] || { echo "[FAIL] zip restored via symlink is not byte-identical"; exit 1; }
+echo "[PASS] symlinked vault and zip are dereferenced to the real data"
+
 echo "== unknown profile lists the valid ones =="
 set +e
 ERR=$(cb snapshot --profile nope --out "$TMP/nope.age" 2>&1); RC=$?

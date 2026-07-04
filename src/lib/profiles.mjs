@@ -5,8 +5,10 @@
 // as directories). No new snapshot machinery. Explicit --dir flags compose with
 // a profile: they are appended AFTER the profile's paths. Every profile fails
 // fast with an actionable error when its inputs are missing, so a mistyped run
-// can never produce an empty "backup".
-import { readdir, stat } from 'node:fs/promises';
+// can never produce an empty "backup". Every returned path is realpath()-
+// dereferenced: tar archives a symlink argument as the symlink itself, which
+// would silently back up a pointer instead of the data.
+import { readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { exists } from './util.mjs';
@@ -39,9 +41,9 @@ async function claudeCodePaths() {
   for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!e.isDirectory()) continue;
     const mem = join(projects, e.name, 'memory');
-    if (await exists(mem)) paths.push(mem);
+    if (await exists(mem)) paths.push(await realpath(mem));
   }
-  if (await exists(claudeMd)) paths.push(claudeMd);
+  if (await exists(claudeMd)) paths.push(await realpath(claudeMd));
   if (paths.length === 0) {
     throw new Error(`profile claude-code found nothing to snapshot — looked for ${join(projects, '*', 'memory')} and ${claudeMd}`);
   }
@@ -60,7 +62,7 @@ async function obsidianPaths(o) {
   if (!(await exists(join(vault, '.obsidian'))) && !o.force_vault) {
     throw new Error(`${vault} does not look like an Obsidian vault (no .obsidian/ inside) — pass --force-vault to snapshot it anyway`);
   }
-  return [vault];
+  return [await realpath(vault)];
 }
 
 // chatgpt-export: the official ChatGPT data-export zip, taken AS-IS. It is
@@ -72,5 +74,5 @@ async function chatgptExportPaths(o) {
   const st = await stat(zip).catch(() => null);
   if (!st || !st.isFile()) throw new Error(`no export zip at ${zip} — profile chatgpt-export takes the official ChatGPT export zip`);
   if (!zip.endsWith('.zip')) throw new Error(`${zip} does not end in .zip — profile chatgpt-export takes the official export zip as-is (not an extracted tree; use --dir for that)`);
-  return [zip];
+  return [await realpath(zip)];
 }

@@ -1,0 +1,453 @@
+// cipher-brain-mcp — MCP server so an AI agent can snapshot/verify its own brain.
+//
+// Second entry point next to src/cli.mjs (same shape as ton-mesh-harness's CLI +
+// MCP two-face design). Every tool is a thin wrapper over the SAME src/lib
+// functions the CLI dispatches to — no re-implemented logic, no shelling out.
+//
+// Transport: stdio only. Stdout is MCP JSON-RPC framing; the lib functions
+// print progress via console.log/console.error, so tool handlers run inside
+// captureCall() which redirects both into per-call buffers (stdout lines are
+// data — e.g. push() prints the locator there — stderr lines are progress) and
+// snapshots process.exitCode (verify() reports its verdict through it).
+//
+// Uses the LOW-LEVEL `Server` + `setRequestHandler` API (not the high-level
+// McpServer helper) so validation lives in our handlers and errors come back
+// as one structured {code, message} payload instead of SDK plain-text errors.
+//
+// Spend safety: snapshot_now is the ONLY tool that can spend money (push to
+// arweave/turbo — paid, permanent). It requires an explicit confirm_paid=true
+// for those backends, checked BEFORE any work happens; the CIPHER_BRAIN_YES
+// env escape hatch the CLI honors is deliberately NOT honored here, so an
+// agent can never spend without saying so in the call itself.
+
+import { stat, readFile, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+
+import { HOME, AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS } from './lib/config.mjs';
+import { snapshot } from './lib/snapshot.mjs';
+import { verify } from './lib/restore.mjs';
+import { push, pull } from './lib/pushpull.mjs';
+import { exists, sha256 } from './lib/util.mjs';
+
+const SERVER_NAME = 'cipher-brain-mcp';
+const SERVER_VERSION = '0.0.1'; // keep in sync with package.json "version"
+
+const BACKENDS = ['file', 'ton', 'arweave', 'turbo'];
+const PAID_BACKENDS = new Set(['arweave', 'turbo']);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// stdout hygiene + per-call output capture
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Safety net: nothing outside a captured call may write to stdout (it would
+// corrupt the JSON-RPC framing). Rebind console.log at module load; the capture
+// below swaps in per-call buffers on top of this.
+const rawStderrLine = (s) => process.stderr.write(s + '\n');
+console.log = (...a) => rawStderrLine(a.map(String).join(' '));
+console.error = (...a) => rawStderrLine(a.map(String).join(' '));
+
+// Run one lib call with console.log/console.error captured and process.exitCode
+// snapshotted. Calls are serialized through a promise-chain mutex because the
+// capture mutates process-global state (console + exitCode).
+let callChain = Promise.resolve();
+function captureCall(fn) {
+  const run = callChain.then(async () => {
+    const out = [];
+    const err = [];
+    const prevLog = console.log;
+    const prevErr = console.error;
+    const prevExit = process.exitCode;
+    process.exitCode = undefined;
+    console.log = (...a) => out.push(a.map(String).join(' '));
+    console.error = (...a) => {
+      const s = a.map(String).join(' ');
+      err.push(s);
+      rawStderrLine(s); // progress stays visible on the server's stderr too
+    };
+    try {
+      const value = await fn();
+      return { value, out, err, exitCode: process.exitCode ?? 0 };
+    } finally {
+      console.log = prevLog;
+      console.error = prevErr;
+      process.exitCode = prevExit;
+    }
+  });
+  callChain = run.then(() => {}, () => {});
+  return run;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Result + validation helpers (structured {code, message} error contract)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class ToolError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+function structuredOk(payload) {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+    structuredContent: payload,
+  };
+}
+
+function structuredErr(errObj) {
+  const payload = {
+    code: errObj instanceof ToolError ? errObj.code : 'ERR_INTERNAL',
+    message: errObj instanceof Error ? errObj.message : String(errObj),
+  };
+  return {
+    content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+    structuredContent: payload,
+    isError: true,
+  };
+}
+
+const isStr = (v) => typeof v === 'string' && v.length > 0;
+const isStrArray = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+
+function requireBackend(value, what) {
+  if (!BACKENDS.includes(value)) {
+    throw new ToolError('ERR_INVALID_INPUT', `${what} must be one of ${BACKENDS.join('|')} — got ${JSON.stringify(value)}`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tool descriptors (JSON Schemas advertised via tools/list)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SNAPSHOT_NOW_TOOL = {
+  name: 'snapshot_now',
+  description:
+    '⚠ CAN SPEND MONEY (only tool in this server that can). Take an encrypted age snapshot of ' +
+    'directories and/or a Postgres database, and optionally push the ciphertext to a storage ' +
+    'backend. Backends "file" and "ton" are free; "arweave" and "turbo" are PAID, PERMANENT ' +
+    'stores — pushing to them REQUIRES confirm_paid=true (the MCP equivalent of the CLI --yes ' +
+    'guard; the CIPHER_BRAIN_YES env escape hatch is NOT honored here, so nothing can be spent ' +
+    'without an explicit confirm_paid in the call). Snapshotting itself needs only the PUBLIC ' +
+    'recipient key(s); storage only ever sees ciphertext.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      dirs: { type: 'array', items: { type: 'string' }, description: 'Directories to include (tar.gz each). At least one of dirs/pg is required.' },
+      pg: { type: 'string', description: 'Postgres connection string to pg_dump into the snapshot.' },
+      recipients: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'age recipients (age1… pubkey or a recipients file path). Pass 2+ (primary + offline backup) for key recovery.' },
+      out: { type: 'string', description: 'Output path for the .age ciphertext (must not already exist — no-clobber).' },
+      backend: { type: 'string', enum: BACKENDS, description: 'When given, push the snapshot: file|ton (free) or arweave|turbo (PAID — needs confirm_paid).' },
+      locator_file: { type: 'string', description: 'Path for push --save-locator: writes "<locator>\\t<backend>\\t<sha256>" (the durable recovery pointer; back it up off-box).' },
+      confirm_paid: { type: 'boolean', description: 'REQUIRED true to push to arweave/turbo. Confirms you accept an irreversible, real-money upload.' },
+    },
+    required: ['recipients', 'out'],
+    additionalProperties: false,
+  },
+};
+
+const LAST_SNAPSHOT_STATUS_TOOL = {
+  name: 'last_snapshot_status',
+  description:
+    'Read-only, spends nothing. Report the most recent snapshot push: locator, backend, sha256, ' +
+    'timestamp and age, read from the save-locator file (written by snapshot_now/push ' +
+    'locator_file — "<locator>\\t<backend>\\t<sha256>", timestamped by file mtime) and/or an ' +
+    'append-only index.tsv ("<timestamp>\\t<locator>\\t<sha256>" per line, newest last). With no ' +
+    'arguments it tries the default save-locator path $CIPHER_BRAIN_HOME/latest-locator.tsv.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      locator_file: { type: 'string', description: 'Path to a push --save-locator file. Default: <CIPHER_BRAIN_HOME>/latest-locator.tsv' },
+      index_file: { type: 'string', description: 'Path to an append-only index.tsv (timestamp<TAB>locator<TAB>sha256 lines).' },
+    },
+    additionalProperties: false,
+  },
+};
+
+const VERIFY_RESTORE_TOOL = {
+  name: 'verify_restore',
+  description:
+    'Read-only for your wallet (downloads only, never uploads or spends). Prove a snapshot is ' +
+    'restorable: pull the ciphertext by locator (or use a local file) and run the verify checks ' +
+    '(age header, wrong-key rejection, and — when a private identity is available — a full ' +
+    'decrypt proof). Returns the HONEST verdict mirroring the CLI exit codes: PASS (exit 0, ' +
+    'restorable by you), FAIL (exit 1), or PARTIAL (exit 2 — decryptability NOT proven, e.g. no ' +
+    'private identity on this box; PARTIAL is never inflated to PASS).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      locator: { type: 'string', description: 'Storage locator to pull first (requires backend). Exactly one of locator/file.' },
+      file: { type: 'string', description: 'Local .age file to verify directly. Exactly one of locator/file.' },
+      backend: { type: 'string', enum: BACKENDS, description: 'Backend to pull the locator from (required with locator).' },
+      identity: { type: 'string', description: 'Private identity file for the decrypt proof. Default: <CIPHER_BRAIN_HOME>/identity.age' },
+    },
+    additionalProperties: false,
+  },
+};
+
+const ESTIMATE_COST_TOOL = {
+  name: 'estimate_cost',
+  description:
+    'Read-only, spends nothing (price queries only). Estimate what pushing a payload of the ' +
+    'given size to a backend would cost: turbo → Turbo upload cost in winc via @ardrive/turbo-sdk ' +
+    '(<100KB is free; a clear note is returned when that optional dependency is not installed); ' +
+    'arweave → network price in winston from the gateway /price endpoint; file/ton → free ' +
+    '(local disk / self-hosted TON storage), returned with a zero-cost note.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      file: { type: 'string', description: 'Path of the payload to size (exactly one of file/size_bytes).' },
+      size_bytes: { type: 'number', minimum: 0, description: 'Payload size in bytes (exactly one of file/size_bytes).' },
+      backend: { type: 'string', enum: BACKENDS, description: 'Backend to estimate for.' },
+    },
+    required: ['backend'],
+    additionalProperties: false,
+  },
+};
+
+const ALL_TOOLS = [SNAPSHOT_NOW_TOOL, LAST_SNAPSHOT_STATUS_TOOL, VERIFY_RESTORE_TOOL, ESTIMATE_COST_TOOL];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Handlers
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function handleSnapshotNow(args) {
+  const { dirs = [], pg, recipients, out, backend, locator_file: locatorFile, confirm_paid: confirmPaid } = args;
+  if (!isStrArray(recipients) || recipients.length === 0) throw new ToolError('ERR_INVALID_INPUT', 'recipients must be a non-empty array of strings (age1… pubkeys or recipient file paths)');
+  if (!isStr(out)) throw new ToolError('ERR_INVALID_INPUT', 'out (string path for the .age ciphertext) is required');
+  if (!isStrArray(dirs)) throw new ToolError('ERR_INVALID_INPUT', 'dirs must be an array of strings');
+  if (backend !== undefined) requireBackend(backend, 'backend');
+  // Spend gate FIRST — before any snapshot work — so a refused paid push does no
+  // work and leaves no artifact behind. Never silently spend: the CLI accepts
+  // CIPHER_BRAIN_YES=1 for unattended cadence loops, but via MCP the consent
+  // must be in the call itself.
+  if (backend && PAID_BACKENDS.has(backend) && confirmPaid !== true) {
+    throw new ToolError(
+      'ERR_CONFIRM_REQUIRED',
+      `backend "${backend}" is a PAID, PERMANENT Arweave store — pushing spends real funds ` +
+      `irreversibly. Re-call snapshot_now with confirm_paid=true to consent (the MCP equivalent ` +
+      `of the CLI --yes guard). The CIPHER_BRAIN_YES environment escape hatch is not honored ` +
+      `over MCP, so no call can spend without this flag.`,
+    );
+  }
+
+  const snap = await captureCall(() => snapshot({ out, pg, dirs, tables: [], recipients }));
+  const size = (await stat(out)).size;
+  const digest = await sha256(out);
+
+  const result = {
+    out,
+    size_bytes: size,
+    sha256: digest,
+    pushed: false,
+    log: [...snap.out, ...snap.err],
+  };
+
+  if (backend) {
+    const pushRes = await captureCall(() => push({ in: out, backend, yes: confirmPaid === true, save_locator: locatorFile }));
+    const locator = pushRes.out.join('\n').trim(); // push() prints ONLY the locator to stdout
+    result.pushed = true;
+    result.backend = backend;
+    result.locator = locator;
+    if (locatorFile) result.locator_file = locatorFile;
+    result.log.push(...pushRes.err);
+  }
+  return structuredOk(result);
+}
+
+// Parse one save-locator file ("<locator>\t<backend>\t<sha256>", latest only;
+// timestamp = file mtime since push does not record one in it).
+async function readLocatorFile(path) {
+  const text = await readFile(path, 'utf8');
+  const line = text.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+  if (!line) throw new ToolError('ERR_INVALID_INPUT', `locator file ${path} has no locator line`);
+  const [locator, backend, digest] = line.split('\t');
+  if (!locator || !backend) throw new ToolError('ERR_INVALID_INPUT', `locator file ${path} must contain "<locator>\\t<backend>[\\t<sha256>]" — got: ${JSON.stringify(line)}`);
+  const { mtime } = await stat(path);
+  return { source: 'locator_file', path, locator, backend, sha256: digest || null, timestamp: mtime.toISOString() };
+}
+
+// Parse an append-only index.tsv ("<timestamp>\t<locator>\t<sha256>", newest LAST).
+async function readIndexFile(path) {
+  const text = await readFile(path, 'utf8');
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  if (lines.length === 0) throw new ToolError('ERR_INVALID_INPUT', `index file ${path} has no entries`);
+  const last = lines[lines.length - 1];
+  const [timestamp, locator, digest] = last.split('\t');
+  if (!timestamp || !locator) throw new ToolError('ERR_INVALID_INPUT', `index file ${path} lines must be "<timestamp>\\t<locator>[\\t<sha256>]" — got: ${JSON.stringify(last)}`);
+  // The index records timestamp+locator+sha256 but not the backend — that lives
+  // in the save-locator file / the push command itself.
+  return { source: 'index_file', path, locator, backend: null, sha256: digest || null, timestamp, entries: lines.length };
+}
+
+const ageSeconds = (iso) => {
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? null : Math.max(0, Math.round((Date.now() - t) / 1000));
+};
+
+async function handleLastSnapshotStatus(args) {
+  let { locator_file: locatorFile, index_file: indexFile } = args;
+  if (locatorFile !== undefined && !isStr(locatorFile)) throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
+  if (indexFile !== undefined && !isStr(indexFile)) throw new ToolError('ERR_INVALID_INPUT', 'index_file must be a string path');
+  let defaulted = false;
+  if (!locatorFile && !indexFile) {
+    locatorFile = join(HOME, 'latest-locator.tsv'); // the MANAGEMENT.md cadence default
+    defaulted = true;
+    if (!(await exists(locatorFile))) {
+      throw new ToolError('ERR_INVALID_INPUT', `no locator_file/index_file given and the default save-locator file does not exist: ${locatorFile}. Pass locator_file (a push --save-locator file) or index_file (an append-only index.tsv).`);
+    }
+  }
+  const sources = [];
+  if (locatorFile) {
+    if (!(await exists(locatorFile))) throw new ToolError('ERR_INVALID_INPUT', `no such locator file: ${locatorFile}`);
+    sources.push(await readLocatorFile(locatorFile));
+  }
+  if (indexFile) {
+    if (!(await exists(indexFile))) throw new ToolError('ERR_INVALID_INPUT', `no such index file: ${indexFile}`);
+    sources.push(await readIndexFile(indexFile));
+  }
+  for (const s of sources) s.age_seconds = ageSeconds(s.timestamp);
+  // latest = the newest-timestamped entry across whichever sources were readable
+  const latest = sources.slice().sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))[0];
+  return structuredOk({ latest, sources, defaulted_to: defaulted ? locatorFile : undefined });
+}
+
+async function handleVerifyRestore(args) {
+  const { locator, file, backend, identity } = args;
+  if ((locator === undefined) === (file === undefined)) {
+    throw new ToolError('ERR_INVALID_INPUT', 'pass exactly one of locator (pull first) or file (verify a local .age)');
+  }
+  let target = file;
+  let tdir = null;
+  let pulled;
+  try {
+    if (locator !== undefined) {
+      if (!isStr(locator)) throw new ToolError('ERR_INVALID_INPUT', 'locator must be a string');
+      requireBackend(backend, 'backend (required with locator)');
+      tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-mcp-'));
+      target = join(tdir, 'pulled.age');
+      await captureCall(() => pull({ locator, backend, out: target }));
+      pulled = { backend, locator };
+    } else if (!isStr(file)) {
+      throw new ToolError('ERR_INVALID_INPUT', 'file must be a string path');
+    }
+    const res = await captureCall(() => verify({ in: target, identity }));
+    // verify() reports through process.exitCode: 0 PASS, 1 FAIL, 2 PARTIAL.
+    const verdict = res.exitCode === 0 ? 'PASS' : res.exitCode === 2 ? 'PARTIAL' : 'FAIL';
+    return structuredOk({
+      verdict,
+      exit_code: res.exitCode,
+      restorable_proven: verdict === 'PASS', // PARTIAL ≠ PASS: decryptability was not proven
+      checks: res.out,
+      ...(pulled ? { pulled } : {}),
+      ...(verdict === 'PARTIAL'
+        ? { note: 'header + wrong-key checks passed but no private identity could prove decryptability on this box — run verify_restore where the identity lives for a full PASS.' }
+        : {}),
+    });
+  } finally {
+    if (tdir) await rm(tdir, { recursive: true, force: true });
+  }
+}
+
+async function handleEstimateCost(args) {
+  const { file, size_bytes: sizeBytes, backend } = args;
+  requireBackend(backend, 'backend');
+  if ((file === undefined) === (sizeBytes === undefined)) {
+    throw new ToolError('ERR_INVALID_INPUT', 'pass exactly one of file (a path to size) or size_bytes');
+  }
+  let size;
+  if (file !== undefined) {
+    if (!isStr(file)) throw new ToolError('ERR_INVALID_INPUT', 'file must be a string path');
+    if (!(await exists(file))) throw new ToolError('ERR_INVALID_INPUT', `no such file: ${file}`);
+    size = (await stat(file)).size;
+  } else {
+    if (typeof sizeBytes !== 'number' || !Number.isFinite(sizeBytes) || sizeBytes < 0) throw new ToolError('ERR_INVALID_INPUT', 'size_bytes must be a non-negative number');
+    size = Math.ceil(sizeBytes);
+  }
+
+  if (backend === 'file' || backend === 'ton') {
+    return structuredOk({
+      backend,
+      size_bytes: size,
+      cost: '0',
+      note: backend === 'file'
+        ? 'file backend is a local content-addressed store — no upload cost (disk space only).'
+        : 'ton backend uploads to a self-hosted TON storage daemon — no per-upload payment (you run the infrastructure).',
+    });
+  }
+
+  if (backend === 'turbo') {
+    let TurboFactory;
+    try {
+      ({ TurboFactory } = await import('@ardrive/turbo-sdk'));
+    } catch (e) {
+      if (e && e.code === 'ERR_MODULE_NOT_FOUND') {
+        return structuredOk({ backend, size_bytes: size, cost: null, note: 'estimate unavailable (optional dependency not installed) — run: npm install @ardrive/turbo-sdk. Uploads <100KB are free; larger ones spend Turbo Credits.' });
+      }
+      throw e;
+    }
+    try {
+      const turbo = TurboFactory.unauthenticated();
+      const [{ winc }] = await turbo.getUploadCosts({ bytes: [size] });
+      return structuredOk({ backend, size_bytes: size, cost: String(winc), unit: 'winc', approx_ar: Number(BigInt(winc)) / 1e12, note: 'Turbo upload cost estimate (uploads <100KB are free). Paid with Turbo Credits (fundable via ETH/USDC/fiat).' });
+    } catch (e) {
+      return structuredOk({ backend, size_bytes: size, cost: null, note: `estimate unavailable (Turbo pricing query failed: ${e.message})` });
+    }
+  }
+
+  // arweave (raw L1): the gateway /price endpoint returns the network reward in
+  // winston for a payload of this size — the same price createTransaction would
+  // fetch at push time.
+  try {
+    const ctl = AbortSignal.timeout(AR_HTTP_TIMEOUT_MS);
+    const res = await fetch(`${AR_PROTOCOL}://${AR_HOST}:${AR_PORT}/price/${size}`, { signal: ctl });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const winston = (await res.text()).trim();
+    if (!/^\d+$/.test(winston)) throw new Error(`unexpected price response: ${winston.slice(0, 80)}`);
+    return structuredOk({ backend, size_bytes: size, cost: winston, unit: 'winston', approx_ar: Number(BigInt(winston)) / 1e12, note: 'Arweave L1 network price (the reward createTransaction would set at push time). Paid in AR from the JWK wallet.' });
+  } catch (e) {
+    return structuredOk({ backend, size_bytes: size, cost: null, note: `estimate unavailable (gateway price query failed: ${e.message})` });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Server bootstrap
+// ─────────────────────────────────────────────────────────────────────────────
+
+const server = new Server(
+  { name: SERVER_NAME, version: SERVER_VERSION },
+  { capabilities: { tools: {} } },
+);
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: ALL_TOOLS }));
+
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const name = request.params.name;
+  const args = request.params.arguments ?? {};
+  try {
+    switch (name) {
+      case 'snapshot_now': return await handleSnapshotNow(args);
+      case 'last_snapshot_status': return await handleLastSnapshotStatus(args);
+      case 'verify_restore': return await handleVerifyRestore(args);
+      case 'estimate_cost': return await handleEstimateCost(args);
+      default: return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
+    }
+  } catch (err) {
+    return structuredErr(err);
+  }
+});
+
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+main().catch((err) => {
+  process.stderr.write(`cipher-brain-mcp: fatal startup error: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+});

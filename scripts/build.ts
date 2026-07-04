@@ -1,7 +1,8 @@
 // scripts/build.ts — bundle the CLI with Bun (adapted from ton-mesh-harness).
 //
-//   - entry: src/cli.mjs → dist/cli.mjs (one self-contained file; the shipped
-//     artifact a fresh machine can run with plain `node dist/cli.mjs`).
+//   - entries: src/cli.mjs → dist/cli.mjs and src/mcp.mjs → dist/mcp.mjs (each a
+//     self-contained file; the shipped artifacts a fresh machine can run with
+//     plain `node dist/cli.mjs` / `node dist/mcp.mjs`).
 //   - format: ESM (the source is ESM .mjs), target: node (engines node>=22);
 //     the built CLI runs on plain Node, never Bun — consumers use `npx` / `node`.
 //   - a shebang banner is prepended so dist/cli.mjs is directly executable.
@@ -37,7 +38,7 @@ const external = [
 
 rmSync(dist, { recursive: true, force: true })
 const result = await Bun.build({
-  entrypoints: [join(root, 'src/cli.mjs')],
+  entrypoints: [join(root, 'src/cli.mjs'), join(root, 'src/mcp.mjs')],
   outdir: dist,
   target: 'node',
   format: 'esm',

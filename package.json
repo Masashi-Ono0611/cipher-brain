@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Encrypt a gbrain snapshot so only the key holder can read it (age X25519). Produces one backend-agnostic ciphertext for censorship-resistant storage.",
   "bin": {
-    "cipher-brain": "bin/cipher-brain.mjs"
+    "cipher-brain": "bin/cipher-brain.mjs",
+    "cipher-brain-mcp": "bin/cipher-brain-mcp.mjs"
   },
   "scripts": {
     "build": "bun run scripts/build.ts",
@@ -38,6 +39,7 @@
     "arweave": "^1.15.7"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "age-encryption": "^0.3.0"
   }
 }

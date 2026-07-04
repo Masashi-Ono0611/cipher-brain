@@ -39,6 +39,11 @@ const SERVER_VERSION = '0.0.1'; // keep in sync with package.json "version"
 
 const BACKENDS = ['file', 'ton', 'arweave', 'turbo'];
 const PAID_BACKENDS = new Set(['arweave', 'turbo']);
+// arweave/turbo locators are post-assigned tx/upload ids, NOT content hashes —
+// pulling by bare locator cannot detect a rolled-back/substituted (yet still
+// age-decryptable) ciphertext unless a sha256 pin binds the fetched bytes.
+const NON_CONTENT_ADDRESSED_BACKENDS = new Set(['arweave', 'turbo']);
+const SHA256_HEX = /^[0-9a-fA-F]{64}$/;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // stdout hygiene + per-call output capture
@@ -173,17 +178,25 @@ const VERIFY_RESTORE_TOOL = {
   name: 'verify_restore',
   description:
     'Read-only for your wallet (downloads only, never uploads or spends). Prove a snapshot is ' +
-    'restorable: pull the ciphertext by locator (or use a local file) and run the verify checks ' +
-    '(age header, wrong-key rejection, and — when a private identity is available — a full ' +
-    'decrypt proof). Returns the HONEST verdict mirroring the CLI exit codes: PASS (exit 0, ' +
-    'restorable by you), FAIL (exit 1), or PARTIAL (exit 2 — decryptability NOT proven, e.g. no ' +
-    'private identity on this box; PARTIAL is never inflated to PASS).',
+    'restorable: pull the ciphertext by locator, or verify a local file, or pass locator_file ' +
+    '(a push --save-locator file) which supplies the locator, its backend AND the sha256 ' +
+    'integrity pin in one — the same fail-closed recovery path as the CLI --from-locator-file. ' +
+    'Then run the verify checks (age header, wrong-key rejection, and — when a private ' +
+    'identity is available — a full decrypt proof). IMPORTANT: arweave/turbo locators are NOT ' +
+    'content hashes, so verifying a bare locator without a sha256 pin cannot detect a gateway ' +
+    'rollback/substitution that still decrypts with your key — pass sha256 (or use ' +
+    'locator_file) to pin the fetched bytes; an unpinned arweave/turbo pull returns a warning ' +
+    'field. Returns the HONEST verdict mirroring the CLI exit codes: PASS (exit 0, restorable ' +
+    'by you), FAIL (exit 1), or PARTIAL (exit 2 — decryptability NOT proven, e.g. no private ' +
+    'identity on this box; PARTIAL is never inflated to PASS).',
   inputSchema: {
     type: 'object',
     properties: {
-      locator: { type: 'string', description: 'Storage locator to pull first (requires backend). Exactly one of locator/file.' },
-      file: { type: 'string', description: 'Local .age file to verify directly. Exactly one of locator/file.' },
-      backend: { type: 'string', enum: BACKENDS, description: 'Backend to pull the locator from (required with locator).' },
+      locator: { type: 'string', description: 'Storage locator to pull first (requires backend). Exactly one of locator/file/locator_file.' },
+      file: { type: 'string', description: 'Local .age file to verify directly. Exactly one of locator/file/locator_file.' },
+      locator_file: { type: 'string', description: 'Path to a push --save-locator file ("<locator>\\t<backend>\\t<sha256>"): pull using its recorded locator + backend, with its saved sha256 applied as the integrity pin (the CLI --from-locator-file recovery path). Exactly one of locator/file/locator_file; do not also pass backend.' },
+      backend: { type: 'string', enum: BACKENDS, description: 'Backend to pull the locator from (required with locator; not allowed with locator_file — the file records it).' },
+      sha256: { type: 'string', description: 'Optional integrity pin: 64-hex sha256 of the expected ciphertext, sourced from a TRUSTED off-box record (index.tsv / a backed-up save-locator file). A pulled artifact that does not match is deleted and the call fails closed (no verdict); with file the mismatch is a hard FAIL verdict. Overrides the pin recorded in locator_file.' },
       identity: { type: 'string', description: 'Private identity file for the decrypt proof. Default: <CIPHER_BRAIN_HOME>/identity.age' },
     },
     additionalProperties: false,
@@ -318,25 +331,58 @@ async function handleLastSnapshotStatus(args) {
 }
 
 async function handleVerifyRestore(args) {
-  const { locator, file, backend, identity } = args;
-  if ((locator === undefined) === (file === undefined)) {
-    throw new ToolError('ERR_INVALID_INPUT', 'pass exactly one of locator (pull first) or file (verify a local .age)');
+  const { locator, file, backend, identity, sha256: pin, locator_file: locatorFile } = args;
+  const given = [locator, file, locatorFile].filter((v) => v !== undefined).length;
+  if (given !== 1) {
+    throw new ToolError('ERR_INVALID_INPUT', 'pass exactly one of locator (pull first), file (verify a local .age), or locator_file (a push --save-locator file: locator + backend + sha256 pin in one)');
+  }
+  if (locatorFile !== undefined) {
+    if (!isStr(locatorFile)) throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
+    if (backend !== undefined) throw new ToolError('ERR_INVALID_INPUT', 'backend cannot be combined with locator_file — the file records the backend itself');
+  }
+  if (pin !== undefined && !(isStr(pin) && SHA256_HEX.test(pin))) {
+    throw new ToolError('ERR_INVALID_INPUT', 'sha256 must be a 64-char hex string (the expected ciphertext digest, from a trusted off-box record)');
   }
   let target = file;
+  let effectivePin = pin;
   let tdir = null;
   let pulled;
+  let warning;
   try {
-    if (locator !== undefined) {
-      if (!isStr(locator)) throw new ToolError('ERR_INVALID_INPUT', 'locator must be a string');
-      requireBackend(backend, 'backend (required with locator)');
+    if (file === undefined) {
+      if (locator !== undefined) {
+        if (!isStr(locator)) throw new ToolError('ERR_INVALID_INPUT', 'locator must be a string');
+        requireBackend(backend, 'backend (required with locator)');
+      }
       tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-mcp-'));
       target = join(tdir, 'pulled.age');
-      await captureCall(() => pull({ locator, backend, out: target }));
-      pulled = { backend, locator };
+      // pull() natively understands from_locator_file — the SAME parsing + pin
+      // application as the CLI recovery path (src/lib/pushpull.mjs) — and fills
+      // the resolved locator/backend/sha256 back into this options object. A
+      // sha256 mismatch deletes the artifact and throws: fail closed, no verdict.
+      const pullOpts = { locator, backend, out: target, sha256: pin, from_locator_file: locatorFile };
+      await captureCall(() => pull(pullOpts));
+      effectivePin = pullOpts.sha256;
+      pulled = {
+        backend: pullOpts.backend,
+        locator: pullOpts.locator,
+        sha256_pin: effectivePin ?? null,
+        ...(locatorFile !== undefined ? { locator_file: locatorFile } : {}),
+      };
+      if (!effectivePin && NON_CONTENT_ADDRESSED_BACKENDS.has(pullOpts.backend)) {
+        warning =
+          `integrity pin NOT applied: ${pullOpts.backend} locators are post-assigned ids, not content hashes, ` +
+          'so a gateway rollback/substitution that still decrypts with your key would go undetected by this ' +
+          'verdict. Pass sha256 (the expected ciphertext digest from a trusted off-box record, e.g. index.tsv) ' +
+          'or use locator_file (a push --save-locator file, which carries the pin) to fail closed like the CLI recovery path.';
+      }
     } else if (!isStr(file)) {
       throw new ToolError('ERR_INVALID_INPUT', 'file must be a string path');
     }
-    const res = await captureCall(() => verify({ in: target, identity }));
+    // The pin (explicit or read from locator_file) is ALSO handed to verify() so
+    // the checks record "[PASS] sha256 matches the expected hash" like the CLI;
+    // for a local file this is where the pin is enforced (mismatch = FAIL).
+    const res = await captureCall(() => verify({ in: target, identity, sha256: effectivePin }));
     // verify() reports through process.exitCode: 0 PASS, 1 FAIL, 2 PARTIAL.
     const verdict = res.exitCode === 0 ? 'PASS' : res.exitCode === 2 ? 'PARTIAL' : 'FAIL';
     return structuredOk({
@@ -345,6 +391,7 @@ async function handleVerifyRestore(args) {
       restorable_proven: verdict === 'PASS', // PARTIAL ≠ PASS: decryptability was not proven
       checks: res.out,
       ...(pulled ? { pulled } : {}),
+      ...(warning ? { warning } : {}),
       ...(verdict === 'PARTIAL'
         ? { note: 'header + wrong-key checks passed but no private identity could prove decryptability on this box — run verify_restore where the identity lives for a full PASS.' }
         : {}),

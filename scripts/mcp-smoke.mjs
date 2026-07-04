@@ -6,8 +6,10 @@
 //      estimate_cost).
 //   2. a REAL snapshot_now round-trip against the free `file` backend inside a
 //      temp CIPHER_BRAIN_HOME/CIPHER_BRAIN_FILE_DIR (keygen via the existing
-//      lib first), then last_snapshot_status + verify_restore + estimate_cost
-//      on the result.
+//      lib first), then last_snapshot_status + verify_restore (by bare locator;
+//      by locator_file, asserting its sha256 integrity pin was applied; and a
+//      wrong-sha256 negative control that must fail closed with no verdict)
+//      + estimate_cost on the result.
 //   3. the spend gate: snapshot_now with backend=turbo and no confirm_paid
 //      must be refused with ERR_CONFIRM_REQUIRED — even with CIPHER_BRAIN_YES
 //      set in the environment (never silently spend).
@@ -155,10 +157,48 @@ async function run(tmp) {
     }
     if (!Array.isArray(verSc.checks) || verSc.checks.length === 0) throw new Error('verify_restore checks output missing');
 
-    // 2e. estimate_cost on the free file backend (offline + deterministic —
+    // 2e. verify_restore via locator_file — the save-locator file supplies the
+    // locator, its backend AND the sha256 integrity pin in one (the CLI
+    // --from-locator-file recovery path); the response must show the pin was
+    // applied (pulled.sha256_pin + the sha256 check line) and carry no warning.
+    send({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'verify_restore', arguments: { locator_file: locatorFile } } });
+    const verPinned = await waitFor(7);
+    const verPinnedSc = verPinned.result?.structuredContent;
+    if (verPinned.result?.isError) throw new Error(`verify_restore(locator_file) failed: ${JSON.stringify(verPinnedSc).slice(0, 500)}`);
+    if (verPinnedSc?.verdict !== 'PASS' || verPinnedSc?.restorable_proven !== true) {
+      throw new Error(`verify_restore(locator_file) expected a full PASS, got: ${JSON.stringify(verPinnedSc).slice(0, 500)}`);
+    }
+    if (verPinnedSc?.pulled?.locator !== snapSc.locator || verPinnedSc?.pulled?.backend !== 'file') {
+      throw new Error(`verify_restore(locator_file) pulled the wrong artifact: ${JSON.stringify(verPinnedSc?.pulled)}`);
+    }
+    if (verPinnedSc?.pulled?.sha256_pin !== snapSc.sha256) {
+      throw new Error(`verify_restore(locator_file) did not apply the sha256 integrity pin: ${JSON.stringify(verPinnedSc?.pulled)}`);
+    }
+    if (!(verPinnedSc.checks ?? []).some((l) => /\[PASS\] sha256 matches/.test(l))) {
+      throw new Error(`verify_restore(locator_file) checks are missing the sha256 pin line: ${JSON.stringify(verPinnedSc.checks)}`);
+    }
+    if (verPinnedSc?.warning !== undefined) throw new Error(`verify_restore(locator_file) unexpected warning: ${JSON.stringify(verPinnedSc.warning)}`);
+
+    // 2f. negative control: an explicitly WRONG sha256 pin must fail CLOSED —
+    // an error result with NO verdict field, never a PASS.
+    const wrongSha = (snapSc.sha256[0] === '0' ? '1' : '0') + snapSc.sha256.slice(1);
+    send({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'verify_restore', arguments: { locator: snapSc.locator, backend: 'file', sha256: wrongSha } } });
+    const verWrong = await waitFor(8);
+    const verWrongSc = verWrong.result?.structuredContent;
+    if (verWrong.result?.isError !== true) {
+      throw new Error(`wrong-sha256 pin did NOT fail closed: ${JSON.stringify(verWrong.result).slice(0, 500)}`);
+    }
+    if (!/sha256 mismatch/.test(verWrongSc?.message ?? '')) {
+      throw new Error(`wrong-sha256 pin failed for the wrong reason: ${JSON.stringify(verWrongSc).slice(0, 300)}`);
+    }
+    if (verWrongSc?.verdict !== undefined) {
+      throw new Error(`wrong-sha256 pin still produced a verdict: ${JSON.stringify(verWrongSc).slice(0, 300)}`);
+    }
+
+    // 2g. estimate_cost on the free file backend (offline + deterministic —
     // exercises the fourth tool's dispatch without a network dependency).
-    send({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'estimate_cost', arguments: { file: outAge, backend: 'file' } } });
-    const est = await waitFor(7);
+    send({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'estimate_cost', arguments: { file: outAge, backend: 'file' } } });
+    const est = await waitFor(9);
     const estSc = est.result?.structuredContent;
     if (est.result?.isError) throw new Error(`estimate_cost failed: ${JSON.stringify(estSc).slice(0, 500)}`);
     if (estSc?.cost !== '0' || estSc?.size_bytes !== snapSc.size_bytes || !estSc?.note) {
@@ -167,7 +207,8 @@ async function run(tmp) {
 
     process.stdout.write(
       `MCP SMOKE: PASS — tools=[${names.join(', ')}], spend gate=ERR_CONFIRM_REQUIRED, ` +
-      `file round-trip locator=${snapSc.locator.split('/').pop()}, status.age=${latest.age_seconds}s, verify=${verSc.verdict}, estimate(file)=0\n`,
+      `file round-trip locator=${snapSc.locator.split('/').pop()}, status.age=${latest.age_seconds}s, verify=${verSc.verdict}, ` +
+      `verify(locator_file pin)=${verPinnedSc.verdict}, wrong-pin=fail-closed, estimate(file)=0\n`,
     );
   } finally {
     try { child.stdin.end(); } catch { /* ignore */ }

@@ -1,5 +1,11 @@
 # Making the TON seeder publicly reachable (closes the #2 PARTIAL → #6)
 
+> **Status: iceboxed (#6).** The project is Arweave-first (#60): `--backend turbo` is
+> the recommended mainline and the `ton` backend is experimental — a 2026-06 re-probe
+> found the TON mainnet storage-provider market empty
+> ([`durability.md`](durability.md)), so this path only makes sense for operators
+> running their own seeder. The doc below remains the runbook if it is reactivated.
+
 The `ton` backend round-trip is **PARTIAL** today for one reason: the seeder runs on a
 home NAT. It can hold a bag (`active_upload: true`) but it shows **`Peers: 0`** — it
 can't advertise an address that other nodes can reach, so the testnet DHT never lets a

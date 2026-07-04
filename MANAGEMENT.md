@@ -65,12 +65,12 @@ rewritten atomically on every push so it always holds the **most recent** snapsh
 locator plus an integrity pin:
 
 ```sh
-cipher-brain push --in brain-$(date +%F).age --backend ton \
+cipher-brain push --in brain-$(date +%F).age --backend turbo --yes \
   --save-locator ~/.cipher-brain/latest-locator.tsv
 ```
 
 > **Use a network backend here.** For `--backend file` the locator is a *local* store
-> path, useless on a fresh machine — only `ton`/`arweave`/`turbo` locators are portable.
+> path, useless on a fresh machine — only `turbo`/`arweave`/`ton` locators are portable.
 
 Back this file up **off-box, next to the backup identity** (same encrypted USB / secure
 note). Recovery on a fresh machine then needs only those two things — no `index.tsv`. The
@@ -99,15 +99,17 @@ OUT="$HOME/brain-snapshots/brain-$(date +%F).age"
 cipher-brain snapshot --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.gbrain" \
   --recipient ~/.cipher-brain/recipient.txt --recipient ~/.cipher-brain-backup/recipient.txt \
   --out "$OUT"
-# arweave/turbo are paid, permanent stores — CIPHER_BRAIN_YES=1 suppresses the
-# interactive --yes guard when running unattended. Remove if using file/ton only.
-# Optionally set CIPHER_BRAIN_MAX_SPEND=<n> (native units: winston for arweave L1,
-# winc for turbo) to abort when the cost estimate exceeds your budget.
-export CIPHER_BRAIN_YES=1        # omit for file/ton backends (no charge)
+# turbo (the recommended backend) is a paid, permanent store — CIPHER_BRAIN_YES=1
+# suppresses the interactive --yes guard when running unattended. Omit it (and the
+# wallet) for the free backends (file, or the experimental ton).
+export CIPHER_BRAIN_YES=1
+export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer for turbo
+# Optionally set CIPHER_BRAIN_MAX_SPEND=<n> (native units: winc for turbo, winston
+# for arweave L1) to abort when the cost estimate exceeds your budget.
 # --save-locator keeps a one-line file with the LATEST locator; back it up off-box
 # next to the backup identity so disk-death is recoverable (see Key recovery #3).
-LOC=$(cipher-brain push --in "$OUT" --backend "$BACKEND" \
-  --save-locator "$HOME/.cipher-brain/latest-locator.tsv")   # file | ton | arweave | turbo
+LOC=$(cipher-brain push --in "$OUT" --backend turbo \
+  --save-locator "$HOME/.cipher-brain/latest-locator.tsv")   # or: file | arweave | ton
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$(shasum -a 256 "$OUT" | cut -d" " -f1)" \
   >> "$HOME/brain-snapshots/index.tsv"
 ```
@@ -178,6 +180,6 @@ under `./restored` yourself.
 | `file` backend store/fetch | **proven** — `selftest:storage` (CI) |
 | `arweave` backend round-trip | **proven** — `selftest:arweave` (CI, against arlocal); real-network gateway pull confirmed operator-run |
 | `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |
-| `ton` cross-node fetch | **PARTIAL** — blocked on seeder reachability (see issues) |
+| `ton` cross-node fetch (experimental backend) | **PARTIAL** — blocked on seeder reachability; the TON leg is iceboxed (see issues) |
 | Identity at rest (passphrase-wrap via `keygen --passphrase`; FDE on the identity host) | **available / recommended** — `--passphrase` ships; FDE is operator config, not enforced by code |
 | Cadence script, identity off-box backup, Shamir M-of-N | **recommended practice / future** — not enforced by code |

@@ -15,7 +15,7 @@
     "selftest:arweave-nodeps": "node scripts/selftest-arweave-nodeps.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "license": "MIT",
   "peerDependencies": {

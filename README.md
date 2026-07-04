@@ -1,14 +1,22 @@
 # cipher-brain
 
-Encrypt a gbrain snapshot so that **only you** can read it, then park the
-resulting ciphertext anywhere — including censorship-resistant storage that you
-don't control. (*gbrain* is a personal "second brain": a local Postgres + `~/.gbrain`
-knowledge store that re-synthesizes nightly.)
+Encrypt your growing second brain — the AI memory, conversation history, and
+knowledge store you build up over years — so that **only you** can read it,
+then park the ciphertext **permanently on Arweave**: pay once at upload, and
+the network's endowment keeps the bytes replicated with no server of yours to
+keep alive. Recovery is deliberately minimal: a fresh machine restores with
+just the locator and your identity file — the pull is a plain HTTP gateway
+fetch, no wallet, no npm package. (*gbrain* is the second brain this was built
+for: a local Postgres + `~/.gbrain` knowledge store that re-synthesizes
+nightly.)
 
 This repo is the **Cipher layer** of Cipher Brain: the part that turns your
-growing second brain into a single encrypted artifact. *Where* those bytes live
-(TON Storage / Arweave / anything) is a separate, pluggable concern — storage
-only ever sees ciphertext.
+growing second brain into a single encrypted artifact. Storage is a pluggable
+backend behind one `push`/`pull` interface, and it only ever sees ciphertext.
+Arweave via the **`turbo`** backend is the recommended mainline; a local
+`file` backend covers dev and CI; an **experimental** `ton` backend exists for
+operators who already run TON Storage infrastructure (see
+[Backends](#backends)).
 
 > Status: proof-of-concept for [issue #1](https://github.com/Masashi-Ono0611/cipher-brain/issues/1).
 > The round-trip is validated end-to-end against real gbrain data (see below).
@@ -36,10 +44,17 @@ restore still works. Pin the allowed recipients with `CIPHER_BRAIN_PIN_RECIPIENT
 (snapshot refuses any recipient not on the list), and prove restorability where the
 identity lives — `verify` on a public-key-only box reports **PARTIAL**, never PASS.
 
+Permanence adds a third caveat: **harvest now, decrypt later.** Ciphertext parked
+on a permanent public network can never be recalled — anyone can copy it today and
+wait for the cryptography to fail. age's X25519 recipient scheme is **not
+post-quantum secure**, and rotating keys cannot protect snapshots already pushed:
+the old ciphertext stays public forever. Weigh what you park against that horizon.
+A post-quantum hybrid recipient (via an age plugin) is on the roadmap.
+
 ## Install
 
 ```sh
-# requires: node >= 18, and the `age` binary (brew install age)
+# requires: node >= 22, and the `age` binary (brew install age)
 git clone https://github.com/Masashi-Ono0611/cipher-brain
 cd cipher-brain && npm link        # exposes `cipher-brain`
 ```
@@ -69,9 +84,13 @@ cipher-brain snapshot \
 
 cipher-brain verify --in brain-2026-06-27.age      # real ciphertext? wrong key rejected?
 
-# park the ciphertext on a storage backend (storage only ever sees ciphertext):
-BAG=$(cipher-brain push --in brain-2026-06-27.age --backend ton)   # prints the locator (BagID)
-cipher-brain pull --locator "$BAG" --backend ton --out got.age     # fetch it back, anywhere
+# park the ciphertext permanently on Arweave (storage only ever sees ciphertext).
+# push pays a one-time bundler fee (<100 KB free) and needs a JWK wallet;
+# pull is a plain gateway fetch — no wallet, no npm package.
+TX=$(CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
+  cipher-brain push --in brain-2026-06-27.age --backend turbo --yes)  # prints the locator (tx id)
+cipher-brain pull --locator "$TX" --backend turbo --out got.age \
+  --wait 1200    # fetch it back, anywhere (a fresh upload takes minutes to hit gateways)
 
 # later, on the machine that holds your PRIVATE identity:
 cipher-brain restore \
@@ -79,16 +98,6 @@ cipher-brain restore \
   --out-dir ./restored \
   --pg "postgres://user@localhost:5432/gbrain_restore"
 ```
-
-`push`/`pull` are storage primitives over a pluggable backend (`--backend` is
-required — there is no default). The **`file`** backend is a local
-content-addressed store (no daemon, used by CI); the **`ton`** backend shells out
-to a TON Storage `storage-daemon` (`locator` = hex BagID, a content fingerprint).
-The **`arweave`** and **`turbo`** backends are also shipped: they push to the
-Arweave network (turbo accepts ETH/USDC for the bundler fee) and pull from any
-Arweave gateway via plain HTTP — the `locator` is the tx id assigned after upload
-(not a content hash). The backend abstraction is what makes the same
-`snapshot → push … pull → restore` pipeline work across all four.
 
 Each component (the `pg_dump`, each `--dir` archive) is staged into a private
 (0700) temp dir, then the bundle is streamed `tar -> age`, so the final ciphertext
@@ -102,6 +111,30 @@ for non-PATH installs: `CIPHER_BRAIN_AGE`, `CIPHER_BRAIN_PG_BIN` (dir holding
 `CIPHER_BRAIN_FILE_DIR` (file backend object store) and
 `CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT}` (the `storage-daemon-cli` path,
 control address, key paths, and download timeout for the ton backend).
+
+## Backends
+
+`push`/`pull` are storage primitives over a pluggable backend (`--backend` is
+required — there is no default). Four ship, but they are not peers:
+
+- **`turbo` — the recommended mainline.** Uploads the ciphertext to the Arweave
+  network as an ANS-104 bundled data item via a bundler (ArDrive Turbo), payable
+  with **ETH/USDC** (`<100 KB` free); pushing needs `@ardrive/turbo-sdk` and a
+  JWK wallet. The `locator` is the data-item id assigned after upload. Pulling
+  needs neither — it is a plain HTTP read from any Arweave gateway.
+- **`arweave`** — the raw single-L1-transaction path to the same network, for
+  small artifacts only (a ~10 MiB guard redirects anything larger to `turbo`).
+- **`file`** — a local content-addressed store (no daemon, no network); used by
+  CI and for local drills.
+- **`ton` — experimental.** Shells out to a TON Storage `storage-daemon`
+  (`locator` = hex BagID, a content fingerprint). Only meaningful if you already
+  operate a TON Storage seeder: the TON mainnet storage-provider market is empty
+  as of a 2026-06 re-probe (see [`docs/durability.md`](docs/durability.md)), so
+  TON durability is something you run yourself, not something you can buy.
+
+The backend abstraction is what makes the same `snapshot → push … pull → restore`
+pipeline work across all four — content-addressed (`file`/`ton`) and
+post-assigned-id (`arweave`/`turbo`) locators alike.
 
 ## Validation
 
@@ -164,9 +197,10 @@ restore runbook, and **key recovery** — the primary-plus-offline-backup
 model above, so losing one identity never loses the brain.
 
 **Durability** (will the bytes survive a year of neglect?) is a separate question from
-the round-trip: [`docs/durability.md`](docs/durability.md) lays out the paths to a real
-guarantee — Arweave's pay-once permanence vs TON's proof-based rental — and recommends
-Arweave as the durable cold archive + a TON copy for `.ton`-addressable hot access (#7).
+the round-trip: [`docs/durability.md`](docs/durability.md) lays out why Arweave's
+pay-once permanence (via `--backend turbo`) is the one recommended path, and why the
+TON alternative is an advanced run-it-yourself recipe — with the measured state of the
+TON provider market behind that call (#7).
 
 ## Roadmap
 
@@ -176,12 +210,16 @@ Arweave as the durable cold archive + a TON copy for `.ton`-addressable hot acce
   seeder reachability (PARTIAL — tracked as a follow-up).
 - **#3 Management** — key recovery (backup key, CI-proven ✅) + versioning ✅;
   cadence / restore runbook documented in [`MANAGEMENT.md`](MANAGEMENT.md).
-- **Backends** — `file` (CI ✅) · `ton` (store/decrypt ✅, cross-node PARTIAL, #6) ·
-  `arweave` (parity CI-proven against arlocal ✅, #9) · `turbo` (upload via a bundler,
-  payable with **ETH/USDC** — `<100KB` free; operator-proven real round-trip, #20). The
-  abstraction is validated across content-addressed *and* post-assigned-id backends.
+- **Backends** — `turbo` (**recommended** — upload via a bundler, payable with
+  **ETH/USDC**, `<100KB` free; operator-proven real round-trip, #20) · `arweave`
+  (raw L1; parity CI-proven against arlocal ✅, #9) · `file` (local/CI ✅) · `ton`
+  (**experimental** — store/decrypt ✅, cross-node PARTIAL, #6). The abstraction is
+  validated across content-addressed *and* post-assigned-id backends.
 
 The cipher layer is backend-agnostic by design — proven, not just asserted, now that
 both a content-addressed (`ton`) and a post-assigned-id (`arweave`) backend round-trip.
-The remaining **Arweave-vs-TON-for-real** decision is about durability/cost/UX on
-*real* networks (#6 reachability, #7 persistence), not the abstraction.
+The **Arweave-vs-TON** call is made (#60): Arweave is the mainline because its
+durability is purchasable (pay once), while TON's is operational — the mainnet
+provider market measured empty ([`docs/durability.md`](docs/durability.md)) — so the
+TON leg (#6 reachability, #7 persistence) is iceboxed, kept as proof of the
+abstraction and as optionality if that market matures.

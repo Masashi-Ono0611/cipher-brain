@@ -41,7 +41,7 @@ guarantee is something you must actively pay for or operate.
 **pay once, stored ~forever.** An upload funds an endowment that pays for perpetual
 replication across the network — no ongoing proofs to run, no single seeder to babysit,
 no GC. For a "impossible to delete" brain backup this is a categorically stronger
-durability story: it is the cold archive that survives neglect.
+durability story: it is the archive that survives neglect.
 
 cipher-brain reaches that network two ways — pick by **size**:
 
@@ -64,22 +64,28 @@ off-box, though: it is not self-discoverable, so back up the latest locator
 (`push --save-locator`, MANAGEMENT.md "Key recovery #3") next to your identity. A
 self-resolving stable name (`.ton` DNS / ArNS) is future work.
 
-## Recommended model: redundancy across backends
+## Recommended model: Arweave is the mainline
 
-These two backends are complements, not competitors:
+The default — and the only path this project recommends — is **Arweave via
+`--backend turbo`**: push every snapshot once, and permanence is the network's job
+rather than a service you keep alive. Recovery matches: the pull is a plain gateway
+fetch, so a fresh machine needs only the locator and the identity. Storage sees only
+ciphertext.
 
-| | TON Storage (self-hosted seeder) | Arweave |
+| | Arweave (`turbo`) | TON Storage (self-hosted seeder) |
 |---|---|---|
-| Durability | rented / operational (you keep it alive) | **pay-once, perpetual** |
-| Address | `.ton` DNS → BagID (human-routable) | tx id (opaque) |
-| Speed / native | fast, TON-native | gateway fetch |
-| Best role | **hot copy** | **durable cold archive** |
+| Durability | **pay-once, perpetual** | rented / operational (you keep it alive) |
+| Address | tx id (opaque) | `.ton` DNS → BagID (human-routable) |
+| Speed / native | gateway fetch | fast, TON-native |
+| Role | **the mainline** | optional hot copy (advanced) |
 
-For a personal brain that must not vanish: **push every snapshot to Arweave (via
-`--backend turbo` for real sizes) for permanence, and keep a TON copy for
-`.ton`-addressable hot access.** The cipher layer is backend-agnostic (#9), so this is
-just two `push` calls. Storage sees only ciphertext either way. Cross-backend = no
-single point of durability failure.
+A TON hot copy is an **advanced recipe, not part of the default**: it only makes
+sense if you *already* operate an always-on seeder (and, for a real guarantee, your
+own mainnet provider — the market is empty, as measured above). For such an operator
+the cipher layer being backend-agnostic (#9) makes the hot copy one extra
+`push --backend ton`, and a cross-backend copy removes any single point of durability
+failure. If you don't already run that infrastructure, don't start for this — the
+operational cost buys you speed and a `.ton` address, not durability.
 
 ## What actually closing #7 needs (a funding decision)
 
@@ -94,6 +100,6 @@ which is the user's call:
   interval with the provider getting paid.
 
 Until one of those runs, durability is **designed and documented, not yet demonstrated** —
-exactly the honest status #7 was filed to track. The recommendation (Arweave for
-permanence + TON for hot access) does not depend on which TON-vs-Arweave "winner" you
-pick for the hot copy; the permanence anchor is Arweave either way.
+exactly the honest status #7 was filed to track. The mainline keeps the funding
+decision simple: the permanence anchor is Arweave, and the TON path is only worth
+funding if you are running the provider anyway.

@@ -11,6 +11,10 @@
 // lazily-imported optional backends — `arweave` and `@ardrive/turbo-sdk` — stay
 // external: bundling them would break the documented "a gateway pull needs no
 // npm dependency" recovery property (and the selftest that proves it).
+//
+// INLINE is the deliberate exception (same pattern ton-mesh-harness uses for
+// @ton/walletkit): `age-encryption` (typage) IS the crypto layer — it must land
+// inside dist/cli.mjs so the shipped CLI runs with zero runtime deps (#64).
 
 import { readFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -24,10 +28,12 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
   peerDependencies?: Record<string, string>
 }
 
+const INLINE = new Set(['age-encryption'])
+
 const external = [
   ...Object.keys(pkg.dependencies ?? {}),
   ...Object.keys(pkg.peerDependencies ?? {}),
-]
+].filter((d) => !INLINE.has(d))
 
 rmSync(dist, { recursive: true, force: true })
 const result = await Bun.build({

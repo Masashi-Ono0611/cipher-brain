@@ -6,10 +6,12 @@
 // and is the sole thing that can restore. Compromising the snapshotting machine
 // therefore leaks no brain content.
 //
-// Crypto: age (X25519 + ChaCha20-Poly1305) via the audited `age` binary. Each
-// component (the pg_dump, each directory archive) is staged into a private (0700)
-// temp dir, then the bundle is streamed `tar -> age` so the final ciphertext never
-// loads into memory. The staged plaintext is erased on a normal failure (the
+// Crypto: age (X25519 + ChaCha20-Poly1305) via typage (npm `age-encryption`,
+// FiloSottile's official TypeScript implementation), bundled into the CLI — no
+// external `age` binary is needed, and the format stays byte-compatible with it.
+// Each component (the pg_dump, each directory archive) is staged into a private
+// (0700) temp dir, then the bundle is streamed `tar -> age` so the final ciphertext
+// never loads into memory. The staged plaintext is erased on a normal failure (the
 // snapshot finally-block) AND on Ctrl-C / SIGTERM / SIGHUP (a signal handler that
 // rmSync's the active stage dir, since a signal tears the process down without
 // unwinding the finally), so it doesn't linger. Staging needs scratch space ~the
@@ -88,7 +90,8 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       --sha256 fail-closes the fetch: the bytes must match the expected hash (sourced
       out-of-band from a trusted index) or --out is deleted and pull errors.
 
-Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_AGE, CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
+Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
+     CIPHER_BRAIN_PASSPHRASE (non-interactive passphrase for a wrapped identity — automation/CI; otherwise prompted on the TTY).
      CIPHER_BRAIN_PIN_RECIPIENTS (snapshot: allowlist of age1… pubkeys, inline or a file — refuse to encrypt to any other recipient).
 Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);
          CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none);

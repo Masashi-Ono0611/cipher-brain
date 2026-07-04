@@ -10,14 +10,12 @@ import { ACTIVE_CHILDREN } from './proc.mjs';
 
 let ACTIVE_STAGE = null;
 let ACTIVE_OUT_PART = null; // the partial ${out}.part being written; erased on signal so no stray ciphertext lingers
-let ACTIVE_RAW_KEY = null;  // the unwrapped identity temp during keygen --passphrase; erased on signal so the plaintext key never lingers
 let SIGNAL_GUARD_INSTALLED = false;
 
-// ESM live bindings are read-only from the importing side, so the modules that own a
-// stage / .part / raw key (snapshot, keygen) register them through these setters.
+// ESM live bindings are read-only from the importing side, so the module that owns a
+// stage / .part (snapshot) registers them through these setters.
 export const setActiveStage = (v) => { ACTIVE_STAGE = v; };
 export const setActiveOutPart = (v) => { ACTIVE_OUT_PART = v; };
-export const setActiveRawKey = (v) => { ACTIVE_RAW_KEY = v; };
 
 export function installStageSignalGuard() {
   if (SIGNAL_GUARD_INSTALLED) return;
@@ -30,7 +28,6 @@ export function installStageSignalGuard() {
       ACTIVE_CHILDREN.clear();
       if (ACTIVE_STAGE) { try { rmSync(ACTIVE_STAGE, { recursive: true, force: true }); } catch {} ACTIVE_STAGE = null; }
       if (ACTIVE_OUT_PART) { try { rmSync(ACTIVE_OUT_PART, { force: true }); } catch {} ACTIVE_OUT_PART = null; }
-      if (ACTIVE_RAW_KEY) { try { rmSync(ACTIVE_RAW_KEY, { force: true }); } catch {} ACTIVE_RAW_KEY = null; }
       // adding a listener suppressed Node's default auto-terminate — remove only our
       // own handler (not any unrelated listener) and re-raise so the process exits
       // with the correct signal code instead of hanging.

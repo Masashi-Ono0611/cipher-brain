@@ -1,0 +1,262 @@
+// arweave backend: stores the ciphertext as an Arweave transaction (plus the shared
+// gateway-read helpers the turbo backend reuses).
+import { mkdir, writeFile, rm, stat, readFile, rename } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { Transform } from 'node:stream';
+import { dirname, resolve } from 'node:path';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+import http from 'node:http';
+import https from 'node:https';
+import {
+  AGE_MAGIC, AR_HOST, AR_PORT, AR_PROTOCOL, AR_WALLET, AR_DEFAULT_EXTRA_GATEWAYS,
+  AR_HTTP_TIMEOUT_MS, AR_MAX_SPEND, AR_L1_MAX_BYTES,
+} from '../config.mjs';
+import { warnIfLooseKeyPerms, readHead } from '../util.mjs';
+
+// The public gateways to try (in order) for the HTTP read, before the L1 chunk
+// fallback (#21). Override the whole list with CIPHER_BRAIN_AR_GATEWAYS (comma-
+// separated), or pin a single one with CIPHER_BRAIN_AR_GATEWAY; otherwise the derived
+// host (CIPHER_BRAIN_AR_HOST/PORT/PROTOCOL — arweave.net, or arlocal in tests) is tried
+// first, then the extra public mirrors.
+function arGateways() {
+  if (process.env.CIPHER_BRAIN_AR_GATEWAYS) {
+    const list = process.env.CIPHER_BRAIN_AR_GATEWAYS.split(',').map((s) => s.trim()).filter(Boolean);
+    if (list.length) return list; // ignore an all-blank override → fall through to the default
+  }
+  if (process.env.CIPHER_BRAIN_AR_GATEWAY) return [process.env.CIPHER_BRAIN_AR_GATEWAY];
+  // the derived host first, plus the public mirrors ONLY when the host is the default
+  // arweave.net — a custom CIPHER_BRAIN_AR_HOST must not silently egress to them.
+  const derived = `${AR_PROTOCOL}://${AR_HOST}:${AR_PORT}`;
+  return [derived, ...(AR_HOST === 'arweave.net' ? AR_DEFAULT_EXTRA_GATEWAYS : [])];
+}
+
+// SSRF guard for redirect targets (#13/#39). A loopback / link-local / private address
+// must never be the target of a gateway redirect — otherwise a compromised public mirror
+// could 3xx a public-IP host into GETting an internal/IMDS endpoint (169.254.169.254,
+// RFC1918, ::1). IPv4 + IPv6 (incl. IPv4-mapped). The INITIAL gateway URL is operator-
+// configured and trusted (it may legitimately be 127.0.0.1 in tests); only redirect
+// TARGETS — attacker-controlled — are screened here.
+function isPrivateAddr(ip) {
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    if (a === 0 || a === 127 || a === 10) return true;            // this-host / loopback / private
+    if (a === 169 && b === 254) return true;                      // link-local (AWS/GCP IMDS)
+    if (a === 172 && b >= 16 && b <= 31) return true;             // private
+    if (a === 192 && b === 168) return true;                      // private
+    if (a === 100 && b >= 64 && b <= 127) return true;            // CGNAT (RFC 6598) — carrier/cloud internal
+    if (a >= 224) return true;                                    // multicast / reserved
+    return false;
+  }
+  const low = ip.toLowerCase().replace(/^\[|\]$/g, '');
+  if (low === '::1' || low === '::') return true;                 // loopback / unspecified
+  if (/^fe[89ab]/.test(low)) return true;                         // link-local fe80::/10 (fe80–febf)
+  if (low.startsWith('fc') || low.startsWith('fd')) return true;  // unique-local
+  // IPv4-mapped ::ffff:a.b.c.d — dotted form, OR the canonical hex-quad form
+  // ::ffff:7f00:1 (which isIP() reports as v6, so it must be normalised here or a
+  // hex-encoded loopback/IMDS literal would slip past the v4 checks above).
+  const mDot = low.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mDot) return isPrivateAddr(mDot[1]);
+  const mHex = low.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mHex) {
+    const n = ((parseInt(mHex[1], 16) << 16) | parseInt(mHex[2], 16)) >>> 0;
+    return isPrivateAddr([(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff].join('.'));
+  }
+  return false;
+}
+
+// Reject a redirect target that is non-http(s) or resolves to a private/loopback/
+// link-local address. Throws on refusal. On success returns the SCREENED address +
+// family so the caller can PIN the connection to exactly the vetted IP — closing the
+// DNS-rebinding TOCTOU where a low-TTL host returns a public IP for this check and a
+// private one for the actual connect.
+async function assertPublicRedirectTarget(u) {
+  const parsed = new URL(u);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`refusing non-http(s) redirect to ${u}`);
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  const fam = isIP(host);
+  const addrs = fam ? [{ address: host, family: fam }] : await lookup(host, { all: true });
+  for (const { address } of addrs) {
+    if (isPrivateAddr(address)) {
+      throw new Error(`redirect to ${parsed.hostname} resolves to a private/loopback/link-local address (${address})`);
+    }
+  }
+  return { address: addrs[0].address, family: addrs[0].family || isIP(addrs[0].address) };
+}
+
+// One GET over node:http(s), resolving with the IncomingMessage so the caller can read
+// statusCode/headers AND stream the body. We use node:http instead of fetch because the
+// Fetch standard's `redirect:'manual'` returns an opaque response (status 0, no Location),
+// so manual SSRF-screened redirect following (#39) is impossible with fetch.
+// `pin` (optional) is a {address, family} from assertPublicRedirectTarget: when set, the
+// connection is pinned to that exact IP via a custom lookup, so the bytes come from the
+// SAME address we screened (no DNS-rebinding between the check and the connect). The URL's
+// hostname still drives the Host header / TLS SNI, so cert validation is unaffected.
+function gatewayGet(url, signal, pin) {
+  return new Promise((res, rej) => {
+    const lib = url.startsWith('https:') ? https : http;
+    // autoSelectFamily: match fetch/undici's happy-eyeballs so a dual-stack host
+    // (e.g. `localhost` → ::1 then 127.0.0.1) connects to whichever family answers,
+    // instead of failing on the first AAAA when the server is IPv4-only.
+    // Send a User-Agent (and Accept): arweave.net 302-redirects a bundled-item read
+    // to a sandbox subdomain (euzcbl….arweave.net) that returns 403 to a header-less
+    // request — node:http.get sends NO default headers, unlike the fetch() this replaced
+    // in #39, which silently regressed the real-world full-brain (Turbo/bundled) pull.
+    const opts = { signal, autoSelectFamily: true, headers: { 'user-agent': 'cipher-brain', accept: '*/*' } };
+    if (pin) opts.lookup = (_h, lopts, cb) => (lopts && lopts.all ? cb(null, [{ address: pin.address, family: pin.family }]) : cb(null, pin.address, pin.family));
+    const req = lib.get(url, opts, (resp) => res(resp));
+    req.on('error', rej);
+  });
+}
+
+// Stream an Arweave gateway GET to `part`; resolve true iff it produced a non-empty
+// file (the caller then promotes it to `out`). A STALL timeout (reset per chunk) bounds
+// a stalled gateway WITHOUT capping a large but progressing transfer (#17). Accept ONLY
+// HTTP 200 (a 202 "pending" / soft-404 means "not here, try the next gateway"). Redirects
+// are followed MANUALLY (#39) so each hop's target is SSRF-screened before we fetch it.
+async function streamArweaveGateway(url, part, timeoutMs) {
+  const ctl = new AbortController();
+  let stall;
+  const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), timeoutMs); };
+  try {
+    let current = url;
+    let pin = null; // {address, family} screened for the NEXT request — pins out DNS-rebinding
+    let resp;
+    for (let hop = 0; ; hop++) {
+      arm();
+      resp = await gatewayGet(current, ctl.signal, pin);
+      const sc = resp.statusCode;
+      if (sc >= 300 && sc < 400 && resp.headers.location) {
+        resp.resume(); // drain & discard the redirect body so the socket frees
+        if (hop >= 3) { console.error(`arweave: too many redirects from ${url} — skipping gateway`); clearTimeout(stall); await rm(part, { force: true }); return false; }
+        const next = new URL(resp.headers.location, current).href;
+        try { pin = await assertPublicRedirectTarget(next); }
+        catch (e) { console.error(`arweave: ${e.message} — refusing redirect, skipping gateway (SSRF guard)`); clearTimeout(stall); await rm(part, { force: true }); return false; }
+        current = next;
+        continue;
+      }
+      break; // not a redirect (or a 3xx with no Location) → handle the response below
+    }
+    if (resp.statusCode === 200) {
+      const tap = new Transform({ transform(c, _e, cb) { arm(); cb(null, c); } }); // each chunk resets the stall deadline
+      await pipeline(resp, tap, createWriteStream(part));
+      clearTimeout(stall);
+      // Accept the body only if it is actually age ciphertext (every stored object
+      // is — push enforces the same header). A gateway that serves a non-ciphertext
+      // HTTP 200 (a soft-404 page, a "tx pending" placeholder, a CDN interstitial)
+      // must NOT be promoted: returning false here falls through to the next gateway,
+      // then the L1 chunk read, then the retryable error that drives `pull --wait`,
+      // instead of writing garbage to --out during the propagation window.
+      if ((await stat(part)).size > 0 && (await readHead(part, 64)).startsWith(AGE_MAGIC)) return true;
+    } else {
+      resp.resume(); // drain a non-200 (202 pending / 404) so the socket frees
+    }
+  } catch { /* stall / network / mid-stream error — try the next gateway */ }
+  finally { clearTimeout(stall); }
+  await rm(part, { force: true });
+  return false;
+}
+
+// arweave backend: stores the ciphertext as an Arweave transaction. The locator is
+// the tx id — assigned AFTER upload, NOT a content hash — which is exactly the case
+// the StorageBackend interface must handle (vs file/ton's pre-known content ids).
+// The `arweave` SDK is imported LAZILY and only where it is actually needed — uploads
+// (put) and the rare L1 chunk fallback. The primary READ path (gateway HTTP, path 1
+// below) is pure native fetch, so a fresh machine recovers a bundled/Turbo brain from
+// just the tx id with NO npm dependency — keeping the documented "tx id is all you need"
+// recovery true (a missing `arweave` install no longer fails a gateway pull at construction).
+export async function arweaveBackend() {
+  let _ar;
+  const getAr = async () => {
+    if (_ar) return _ar;
+    let Arweave;
+    try { Arweave = (await import('arweave')).default; }
+    catch (e) {
+      if (e && e.code === 'ERR_MODULE_NOT_FOUND') { const err = new Error('arweave backend needs the `arweave` package — run: npm install arweave'); err.sdkMissing = true; throw err; }
+      throw e;
+    }
+    _ar = Arweave.init({ host: AR_HOST, port: AR_PORT, protocol: AR_PROTOCOL });
+    return _ar;
+  };
+  const loadWallet = async () => {
+    if (!AR_WALLET) throw new Error('arweave put needs CIPHER_BRAIN_AR_WALLET (path to a JWK key file)');
+    await warnIfLooseKeyPerms(AR_WALLET, 'arweave JWK wallet');
+    try { return JSON.parse(await readFile(AR_WALLET, 'utf8')); }
+    catch (e) { throw new Error(`arweave: cannot read JWK wallet at ${AR_WALLET}: ${e.message}`); }
+  };
+  return {
+    async put(file, _opts = {}) {
+      // Fast size guard BEFORE buffering: the raw arweave backend posts the whole
+      // artifact inline in ONE signed tx, and gateways reject single-tx bodies past
+      // ~12 MiB — a brain-sized snapshot would buffer the lot and then fail with a bare
+      // "HTTP 400". Redirect to the turbo backend (streams + ANS-104 bundles) instead.
+      const { size: l1Size } = await stat(resolve(file));
+      if (l1Size > AR_L1_MAX_BYTES) {
+        throw new Error(`arweave: ${l1Size} bytes exceeds the ~${(AR_L1_MAX_BYTES / 1048576).toFixed(0)} MiB single-tx limit of the raw arweave backend — use --backend turbo (it streams + bundles large uploads). Override the limit with CIPHER_BRAIN_AR_L1_MAX if you really mean to post one large L1 tx.`);
+      }
+      const ar = await getAr(); // uploads genuinely need the SDK (createTransaction/sign/post)
+      const jwk = await loadWallet(); // only uploads need a wallet/signature
+      const data = await readFile(file); // small ciphertext fits one tx (guarded above); large blobs go via --backend turbo
+      // inform before signing — the --yes guard in push() already confirmed intent;
+      // this surfaces the size so the operator knows what they're committing to.
+      // (ar.createTransaction fetches the network price internally when no reward is
+      // preset, so we avoid a redundant pre-flight /price call here.)
+      process.stderr.write(`arweave: L1 upload — ${data.length} bytes, wallet ${AR_WALLET}\n`);
+      if (AR_MAX_SPEND > 0n) {
+        process.stderr.write(`arweave: CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} set — cannot pre-flight L1 cost without an extra network round-trip; the actual reward is set by createTransaction\n`);
+      }
+      const tx = await ar.createTransaction({ data }, jwk);
+      tx.addTag('App-Name', 'cipher-brain');
+      tx.addTag('Content-Type', 'application/octet-stream');
+      await ar.transactions.sign(tx, jwk);
+      const res = await ar.transactions.post(tx);
+      if (res.status !== 200 && res.status !== 208) throw new Error(`arweave post failed: HTTP ${res.status}`);
+      return tx.id; // 43-char base64url tx id
+    },
+    async get(locator, out) {
+      // reads are unauthenticated — a fresh machine needs only the tx id, no wallet.
+      // The locator is interpolated into a gateway URL below, so validate it is a
+      // clean Arweave tx id first (this also closes a path-traversal/SSRF foot-gun).
+      if (!/^[A-Za-z0-9_-]{43}$/.test(locator)) {
+        throw new Error(`arweave: invalid tx id (expected 43-char base64url): ${locator}`);
+      }
+      await mkdir(dirname(resolve(out)), { recursive: true });
+      const part = `${out}.part`;
+      // 1) try each public gateway's HTTP endpoint in turn (#21). It serves ANS-104
+      //    *bundled* data items (Turbo/Irys — the pay-with-ETH/USDC path), which the
+      //    chunk read below cannot fetch. The body is STREAMED to disk (#17), so a
+      //    multi-hundred-MB brain never loads into memory; .part is promoted only on a
+      //    clean, non-empty download that is actually age ciphertext — a 202 / soft-404
+      //    / non-ciphertext 200 error page is rejected by streamArweaveGateway's
+      //    AGE_MAGIC check and falls through to the next gateway (then the chunk read).
+      for (const gw of arGateways()) {
+        if (await streamArweaveGateway(`${gw.replace(/\/+$/, '')}/${locator}`, part, AR_HTTP_TIMEOUT_MS)) {
+          await rename(part, out);
+          return;
+        }
+      }
+      // 2) arweave-js chunk read — robust for L1 txs even when every gateway HTTP front
+      //    is flaky (they can 5xx for L1 ids whose chunks the node still serves). This
+      //    buffers in arweave-js, but it is the rare L1 fallback; a bundled brain takes
+      //    the streamed path above. Needs the SDK: if `arweave` isn't installed, SKIP
+      //    this fallback (the gateway path serves bundled items anyway) and let the
+      //    retryable error below keep `--wait` polling — so a no-SDK machine still pulls.
+      let ar = null;
+      try { ar = await getAr(); } catch (e) { if (!e.sdkMissing) throw e; /* no SDK → skip L1 fallback */ }
+      if (ar) {
+        let d = null;
+        try { d = await ar.transactions.getData(locator, { decode: true }); } catch { /* not found / chunk error → not (yet) available */ }
+        if (d && d.length) { await writeFile(out, Buffer.from(d)); return; }
+      }
+      // a fresh upload may simply be propagating — mark this retryable so `pull --wait`
+      // keeps trying (fatal errors like an invalid locator are NOT tagged, so they
+      // fail fast even under --wait).
+      const err = new Error(`arweave: no data for tx ${locator} (not mined / not found / not yet seeded)`);
+      err.retryable = true;
+      throw err;
+    },
+  };
+}

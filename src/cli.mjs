@@ -31,7 +31,7 @@ import { snapshot } from './lib/snapshot.mjs';
 import { restore, verify } from './lib/restore.mjs';
 import { push, pull } from './lib/pushpull.mjs';
 
-const BOOL_FLAGS = new Set(['force', 'passphrase', 'yes']); // flags that take no value
+const BOOL_FLAGS = new Set(['force', 'passphrase', 'yes', 'force_vault']); // flags that take no value
 
 function parseArgs(argv) {
   const o = { dirs: [], tables: [], recipients: [] };
@@ -55,11 +55,19 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       --passphrase wraps the identity at rest with a scrypt passphrase (prompted on the
       TTY); restore/verify then prompt for it. Identity = ${IDENTITY}
 
-  cipher-brain snapshot --out <file.age> [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
+  cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
       Pass --recipient more than once (a primary + an offline backup key) for key
       recovery: any one of those identities can restore. The snapshotting machine
       never needs a private key.
+      --profile is a one-flag source preset (recorded in the manifest); extra --dir
+      flags are appended after the profile's paths:
+        claude-code                  ~/.claude/projects/*/memory/ + ~/.claude/CLAUDE.md
+                                     (whichever exist; errors if none do)
+        obsidian --vault <path>      the vault directory (must contain .obsidian/;
+                                     --force-vault to snapshot a vault-less dir anyway)
+        chatgpt-export --zip <path>  the official ChatGPT export zip, archived as-is
+                                     (never extracted)
 
   cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>]
       Decrypt with the PRIVATE identity; optionally pg_restore the db.dump.

@@ -103,6 +103,23 @@ cipher-brain restore \
   --pg "postgres://user@localhost:5432/gbrain_restore"
 ```
 
+Not running gbrain? `--profile` is a one-flag entry point for the common
+sources — it resolves to the same `--dir` assembly (extra `--dir` flags are
+appended after the profile's paths) and records the profile name in the
+manifest:
+
+```sh
+# Claude Code: every ~/.claude/projects/*/memory/ + ~/.claude/CLAUDE.md
+# (whichever exist; errors if none do)
+cipher-brain snapshot --profile claude-code --out claude-memory.age
+
+# Obsidian: the whole vault (must contain .obsidian/; --force-vault to override)
+cipher-brain snapshot --profile obsidian --vault ~/Vaults/main --out vault.age
+
+# ChatGPT: the official data-export zip, archived as-is (never extracted)
+cipher-brain snapshot --profile chatgpt-export --zip ~/Downloads/chatgpt-export.zip --out chatgpt.age
+```
+
 Each component (the `pg_dump`, each `--dir` archive) is staged into a private
 (0700) temp dir, then the bundle is streamed `tar -> age`, so the final ciphertext
 never loads into memory. The staged plaintext is erased even on failure, so it

@@ -9,6 +9,7 @@ import { run } from './proc.mjs';
 import { newEncrypter, encryptToFile } from './crypt.mjs';
 import { exists, fmtBytes } from './util.mjs';
 import { recipientEntries, resolvePinnedRecipients } from './keys.mjs';
+import { resolveProfilePaths } from './profiles.mjs';
 import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.mjs';
 
 // Promote a finished .part to its final --out, no-clobber. Prefer link(): it is atomic
@@ -35,7 +36,11 @@ async function promoteSnapshot(part, out) {
 
 export async function snapshot(o) {
   if (!o.out) throw new Error('--out <file.age> required');
-  if (!o.pg && o.dirs.length === 0) throw new Error('nothing to snapshot: pass --pg <conn> and/or --dir <path>');
+  // --profile is a thin veneer over --dir: it resolves to concrete source paths
+  // (see profiles.mjs) staged exactly like explicit --dir flags. Profile paths
+  // come first; any extra --dir flags the user passed are appended after them.
+  if (o.profile) o.dirs = [...(await resolveProfilePaths(o)), ...o.dirs];
+  if (!o.pg && o.dirs.length === 0) throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
   // No-clobber: refuse to overwrite an existing snapshot (this is a backup tool — a
   // silent overwrite could destroy a prior, possibly only, copy of the brain). The old
   // `age -o o.out` write left this to age's version-dependent overwrite policy; the
@@ -123,14 +128,18 @@ export async function snapshot(o) {
       // multiple --dir with the same basename must not overwrite each other in the stage
       for (let n = 1; usedNames.has(name); n++) name = `${basename(abs)}-${n}.tar.gz`;
       usedNames.add(name);
+      // a path can be a directory OR a single file (profiles pass e.g. CLAUDE.md,
+      // a ChatGPT export zip) — tar archives both; record which in the manifest.
+      const kind = (await stat(abs)).isDirectory() ? 'dir' : 'file';
       await run('tar', ['-czf', join(stage, name), '-C', dirname(abs), basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar
-      components.push({ name, kind: 'dir', source: abs, captured_at: new Date().toISOString() }); // skew vs the DB is now detectable on restore
+      components.push({ name, kind, source: abs, captured_at: new Date().toISOString() }); // skew vs the DB is now detectable on restore
     }
     // manifest carries NO secrets — just what's inside (+ capture timestamps so a
-    // DB↔files skew is detectable after the fact), so restore is self-describing.
+    // DB↔files skew is detectable after the fact, + which --profile produced it,
+    // if any), so restore is self-describing.
     await writeFile(
       join(stage, 'manifest.json'),
-      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, components }, null, 2) + '\n',
+      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, ...(o.profile ? { profile: o.profile } : {}), components }, null, 2) + '\n',
     );
     // tar the staged components into one stream, encrypt to all recipients (in-process
     // typage, streaming — bounded RSS at any snapshot size). Write to a PER-RUN-UNIQUE

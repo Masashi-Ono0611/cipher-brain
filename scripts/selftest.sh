@@ -91,6 +91,22 @@ echo "[PASS] failed snapshot exited cleanly and left no staged plaintext / no pa
 test -f "$TMP/snap.age" && [ "$(npart "$TMP" "$TMP/snap.age")" = "0" ] \
   && echo "[PASS] successful snapshot left no .part (atomic promote)" || { echo "FAIL: snap.age .part lingered"; exit 1; }
 
+echo "== P1 regression: a recipients file with only comments/blank lines must refuse to snapshot =="
+# Such a file flattens to ZERO recipients. typage would happily encrypt to an EMPTY
+# stanza list — valid-looking ciphertext NO identity can ever decrypt (the old external
+# `age -R` errored here). snapshot must fail fast with a clear stderr error and leave
+# no output / .part behind.
+printf '# rotated out, keys to follow\n\n# (none yet)\n' > "$TMP/comments-only-recipient.txt"
+set +e
+ERR=$(cb snapshot --dir "$SRC" --recipient "$TMP/comments-only-recipient.txt" --out "$TMP/norecip.age" 2>&1 >/dev/null); RC=$?
+set -e
+[ "$RC" != "0" ] || { echo "[FAIL] snapshot with a zero-recipient file exited 0"; exit 1; }
+printf '%s' "$ERR" | grep -q "NO identity can ever decrypt" \
+  || { echo "[FAIL] empty-recipient refusal lacks a clear stderr error"; echo "$ERR"; exit 1; }
+test ! -f "$TMP/norecip.age" || { echo "[FAIL] refused snapshot still created norecip.age"; exit 1; }
+[ "$(npart "$TMP" "$TMP/norecip.age")" = "0" ] || { echo "[FAIL] refused snapshot left a norecip.age .part"; exit 1; }
+echo "[PASS] snapshot refused a recipients file that resolves to zero entries (nothing written)"
+
 echo "== restore of a corrupt artifact fails and removes the tree it created =="
 # Drop the LAST bytes of a valid snapshot (snap.age holds a 1 MB blob => multiple age
 # STREAM chunks): the leading chunks still decrypt and tar extracts a PARTIAL tree, then

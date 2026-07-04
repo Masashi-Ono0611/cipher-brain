@@ -54,6 +54,16 @@ export async function snapshot(o) {
     entriesByRec.set(r, await recipientEntries(r));
   }
 
+  // Fail-fast on a flattened recipient list of ZERO entries (e.g. every recipients
+  // file held only blank/comment lines): typage would happily encrypt to an EMPTY
+  // stanza list — valid-looking ciphertext that NO identity can ever decrypt. The
+  // old external `age -R` errored here; so must we, and at THIS point — before any
+  // plaintext is staged or a .part is opened — so a refused run leaves nothing behind.
+  const recipientList = [...entriesByRec.values()].flat();
+  if (recipientList.length === 0) {
+    throw new Error(`recipient file(s) ${recs.join(', ')} resolved to ZERO recipients (only blank/comment lines?) — refusing to snapshot: encrypting to an empty recipient list would create a snapshot NO identity can ever decrypt`);
+  }
+
   // Recipient pin (opt-in): fail-fast if any effective recipient is not allowlisted,
   // so a tampered recipient.txt or an injected extra --recipient cannot silently
   // re-key this (and every future) snapshot to an attacker.
@@ -86,7 +96,7 @@ export async function snapshot(o) {
 
   // Build the encrypter up front: an invalid recipient line (typage takes native age
   // recipients only) must fail HERE, before any plaintext is staged or a .part opened.
-  const encrypter = newEncrypter([...entriesByRec.values()].flat());
+  const encrypter = newEncrypter(recipientList);
 
   installStageSignalGuard();
   // mkdtempSync (not async mkdtemp) so dir-creation and the ACTIVE_STAGE assignment

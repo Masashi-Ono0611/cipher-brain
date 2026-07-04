@@ -7,7 +7,7 @@
 //
 // The mock gateway runs in a SEPARATE process: the pull is spawnSync (blocking), so an
 // in-process server could not answer it. This script itself imports NO third-party pkg.
-import { mkdtemp, mkdir, writeFile, readFile, copyFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, copyFile, cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,9 +49,13 @@ try {
     server.on('exit', (c) => { clearTimeout(to); rej(new Error(`mock gateway exited early (${c})`)); });
   });
 
-  // 3) a COPY of the CLI in a dir with NO node_modules -> import('arweave') fails there
+  // 3) a COPY of the CLI in a dir with NO node_modules -> import('arweave') fails there.
+  //    The CLI is now bin/ (shim) + src/ (modules), so mirror that layout into the
+  //    isolated dir — the isolation property (no resolvable node_modules) is unchanged.
   const isoDir = join(tmp, 'iso'); await mkdir(isoDir, { recursive: true });
-  const isoBin = join(isoDir, 'cipher-brain.mjs');
+  await mkdir(join(isoDir, 'bin'), { recursive: true });
+  await cp(join(HERE, '..', 'src'), join(isoDir, 'src'), { recursive: true });
+  const isoBin = join(isoDir, 'bin', 'cipher-brain.mjs');
   await copyFile(BIN, isoBin);
 
   // control: confirm arweave is genuinely unresolvable from the isolated dir, so the

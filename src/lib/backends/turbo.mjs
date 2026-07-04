@@ -1,0 +1,76 @@
+// turbo backend: upload ciphertext to Arweave via a bundler (ar.io / ArDrive Turbo),
+// payable with ETH/USDC — uploads <100KB are free, larger spend Turbo Credits funded to
+// the signer's address (top up at app.ardrive.io with MetaMask, no key export). The data
+// item is ANS-104 *bundled*, so reads reuse the arweave backend (multi-gateway, bundled-
+// capable). @ardrive/turbo-sdk is heavy, so it is lazily imported ONLY when this backend
+// is used (run `npm install @ardrive/turbo-sdk`).
+import { stat, readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { resolve } from 'node:path';
+import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND } from '../config.mjs';
+import { warnIfLooseKeyPerms } from '../util.mjs';
+import { arweaveBackend } from './arweave.mjs';
+
+export function turboBackend() {
+  return {
+    async put(file, _opts = {}) {
+      // import + wallet load live HERE (not the constructor) so a turbo PULL needs
+      // neither @ardrive/turbo-sdk nor a wallet — only an upload does.
+      let TurboFactory, ArweaveSigner;
+      try { ({ TurboFactory, ArweaveSigner } = await import('@ardrive/turbo-sdk')); }
+      catch (e) {
+        if (e && e.code === 'ERR_MODULE_NOT_FOUND') throw new Error('turbo backend needs the `@ardrive/turbo-sdk` package — run: npm install @ardrive/turbo-sdk');
+        throw e;
+      }
+      if (!AR_WALLET) throw new Error('turbo put needs CIPHER_BRAIN_AR_WALLET (a JWK signer; uploads <100KB are free, larger spend Turbo Credits funded to its address)');
+      await warnIfLooseKeyPerms(AR_WALLET, 'turbo JWK wallet (spend-capable bearer key)');
+      let jwk;
+      try { jwk = JSON.parse(await readFile(AR_WALLET, 'utf8')); }
+      catch (e) { throw new Error(`turbo: cannot read JWK wallet at ${AR_WALLET}: ${e.message}`); }
+      const turbo = TurboFactory.authenticated({ signer: new ArweaveSigner(jwk) });
+      const abs = resolve(file);
+      const { size } = await stat(abs); // stream the file (don't buffer an ~850MB brain) and give Turbo its size
+      // cost estimate + balance before committing to an irreversible spend.
+      // Uploads <100KB are free (0 winc); larger ones draw from Turbo Credits.
+      try {
+        const [{ winc: uploadWincStr }] = await turbo.getUploadCosts({ bytes: [size] });
+        const uploadWinc = BigInt(uploadWincStr);
+        process.stderr.write(`turbo: upload cost estimate: ${uploadWinc} winc (~${(Number(uploadWinc) / 1e12).toFixed(8)} AR, ${size} bytes)\n`);
+        try {
+          const { winc: balWincStr } = await turbo.getBalance();
+          const balWinc = BigInt(balWincStr);
+          process.stderr.write(`turbo: Turbo Credit balance: ${balWinc} winc (~${(Number(balWinc) / 1e12).toFixed(8)} AR)\n`);
+        } catch { /* paidBy wallet has no personal balance on this signer — non-fatal */ }
+        if (AR_MAX_SPEND > 0n && uploadWinc > AR_MAX_SPEND) {
+          throw new Error(`turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
+        }
+      } catch (e) {
+        if (e.message && e.message.startsWith('turbo: upload cost')) throw e; // re-raise the cap guard
+        process.stderr.write(`turbo: could not estimate upload cost (${e.message}); proceeding\n`);
+      }
+      // paidBy (x-paid-by header): when set, Turbo pays from a Credit Share Approval the
+      // named address granted THIS signer, before the signer's own balance. It funds the
+      // CLI path when credits were bought on a wallet we can't sign with (e.g. MetaMask)
+      // and shared to this JWK. Not URL-interpolated (header only), but sanity-check the
+      // shape (Arweave/Ethereum/Solana address) to reject header-breaking input.
+      const dataItemOpts = { tags: [{ name: 'App-Name', value: 'cipher-brain' }, { name: 'Content-Type', value: 'application/octet-stream' }] };
+      if (AR_PAID_BY) {
+        if (!/^[A-Za-z0-9_-]{30,64}$/.test(AR_PAID_BY)) throw new Error(`turbo: CIPHER_BRAIN_AR_PAID_BY must be a plain wallet address (Arweave/Ethereum/Solana): ${AR_PAID_BY}`);
+        dataItemOpts.paidBy = [AR_PAID_BY];
+      }
+      const res = await turbo.uploadFile({
+        fileStreamFactory: () => createReadStream(abs),
+        fileSizeFactory: () => size,
+        dataItemOpts,
+      });
+      if (!res || !res.id) throw new Error(`turbo upload returned no data item id: ${JSON.stringify(res).slice(0, 200)}`);
+      return res.id; // 43-char data item id — retrievable like any bundled item
+    },
+    // reads are identical to the arweave backend (Turbo items are bundled). Pure
+    // delegation, so a turbo PULL needs neither @ardrive/turbo-sdk nor a wallet —
+    // the "a fresh machine needs only the tx id" recovery property holds.
+    get(locator, out) {
+      return arweaveBackend().then((b) => b.get(locator, out));
+    },
+  };
+}

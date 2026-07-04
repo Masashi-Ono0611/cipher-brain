@@ -10,3 +10,8 @@ ar-*-wallet.json
 identity*
 recipient.txt
 
+
+# build output + local selftest logs
+dist/
+_baseline-logs/
+_newlayout-logs/

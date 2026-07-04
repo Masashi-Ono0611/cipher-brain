@@ -1,20 +1,23 @@
 // scripts/build.ts — bundle the CLI with Bun (adapted from ton-mesh-harness).
 //
-//   - entry: src/cli.mjs → dist/cli.mjs (one self-contained file; the shipped
-//     artifact a fresh machine can run with plain `node dist/cli.mjs`).
+//   - entries: src/cli.mjs → dist/cli.mjs and src/mcp.mjs → dist/mcp.mjs (each a
+//     self-contained file; the shipped artifacts a fresh machine can run with
+//     plain `node dist/cli.mjs` / `node dist/mcp.mjs`).
 //   - format: ESM (the source is ESM .mjs), target: node (engines node>=22);
 //     the built CLI runs on plain Node, never Bun — consumers use `npx` / `node`.
 //   - a shebang banner is prepended so dist/cli.mjs is directly executable.
 //
 // The externals list is DERIVED from package.json (dependencies +
-// peerDependencies) so it never drifts when a dep is added. In particular the
-// lazily-imported optional backends — `arweave` and `@ardrive/turbo-sdk` — stay
-// external: bundling them would break the documented "a gateway pull needs no
-// npm dependency" recovery property (and the selftest that proves it).
-//
-// INLINE is the deliberate exception (same pattern ton-mesh-harness uses for
-// @ton/walletkit): `age-encryption` (typage) IS the crypto layer — it must land
-// inside dist/cli.mjs so the shipped CLI runs with zero runtime deps (#64).
+// peerDependencies) so it never drifts when a dep is added — minus the INLINE
+// set, which is bundled INTO dist so the shipped artifacts stay self-contained
+// (same pattern ton-mesh-harness uses for @ton/walletkit):
+//   - `age-encryption` (typage) IS the crypto layer — it must land inside
+//     dist/cli.mjs so the shipped CLI runs with zero runtime deps (#64).
+//   - `@modelcontextprotocol/sdk` is inlined so dist/mcp.mjs runs on a fresh
+//     machine with no node_modules at all (#65).
+//   - the lazily-imported optional backends — `arweave` and `@ardrive/turbo-sdk`
+//     — stay external: bundling them would break the documented "a gateway pull
+//     needs no npm dependency" recovery property (and the selftest that proves it).
 
 import { readFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -28,7 +31,7 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
   peerDependencies?: Record<string, string>
 }
 
-const INLINE = new Set(['age-encryption'])
+const INLINE = new Set(['age-encryption', '@modelcontextprotocol/sdk'])
 
 const external = [
   ...Object.keys(pkg.dependencies ?? {}),
@@ -37,7 +40,7 @@ const external = [
 
 rmSync(dist, { recursive: true, force: true })
 const result = await Bun.build({
-  entrypoints: [join(root, 'src/cli.mjs')],
+  entrypoints: [join(root, 'src/cli.mjs'), join(root, 'src/mcp.mjs')],
   outdir: dist,
   target: 'node',
   format: 'esm',

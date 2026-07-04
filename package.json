@@ -5,11 +5,12 @@
   "type": "module",
   "description": "Encrypt a gbrain snapshot so only the key holder can read it (age X25519). Produces one backend-agnostic ciphertext for censorship-resistant storage.",
   "bin": {
-    "cipher-brain": "bin/cipher-brain.mjs"
+    "cipher-brain": "bin/cipher-brain.mjs",
+    "cipher-brain-mcp": "bin/cipher-brain-mcp.mjs"
   },
   "scripts": {
     "build": "bun run scripts/build.ts",
-    "verify": "npm run build && npm run selftest && npm run selftest:interop && npm run selftest:storage && npm run selftest:recovery && npm run selftest:arweave && npm run selftest:arweave-nodeps && bash scripts/cli-smoke.sh",
+    "verify": "npm run build && npm run selftest && npm run selftest:interop && npm run selftest:storage && npm run selftest:recovery && npm run selftest:arweave && npm run selftest:arweave-nodeps && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
     "selftest": "bash scripts/selftest.sh",
     "selftest:interop": "bash scripts/selftest-interop.sh",
     "selftest:storage": "bash scripts/selftest-storage.sh",
@@ -38,6 +39,7 @@
     "arweave": "^1.15.7"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "age-encryption": "^0.3.0"
   }
 }

@@ -227,3 +227,36 @@ durability is purchasable (pay once), while TON's is operational — the mainnet
 provider market measured empty ([`docs/durability.md`](docs/durability.md)) — so the
 TON leg (#6 reachability, #7 persistence) is iceboxed, kept as proof of the
 abstraction and as optionality if that market matures.
+
+## MCP server
+
+`cipher-brain-mcp` (stdio) lets an AI agent snapshot and verify its own brain by
+calling the same `src/lib` functions the CLI uses:
+
+```sh
+node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-mcp.mjs
+```
+
+| Tool | Money | What it does |
+|---|---|---|
+| `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP) |
+| `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
+| `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
+| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file/ton (free) |
+
+Claude Code config (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "cipher-brain": {
+      "command": "node",
+      "args": ["/path/to/cipher-brain/dist/mcp.mjs"]
+    }
+  }
+}
+```
+
+`scripts/mcp-smoke.mjs` (part of `npm run verify`) proves initialize/tools-list,
+a real `snapshot_now` round-trip on the `file` backend, and that the paid-backend
+spend gate refuses without `confirm_paid`.

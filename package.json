@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "bun run scripts/build.ts",
-    "verify": "npm run build && npm run selftest && npm run selftest:interop && npm run selftest:storage && npm run selftest:recovery && npm run selftest:arweave && npm run selftest:arweave-nodeps && bash scripts/cli-smoke.sh",
+    "verify": "npm run build && npm run selftest && npm run selftest:interop && npm run selftest:storage && npm run selftest:recovery && npm run selftest:arweave && npm run selftest:arweave-nodeps && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
     "selftest": "bash scripts/selftest.sh",
     "selftest:interop": "bash scripts/selftest-interop.sh",
     "selftest:storage": "bash scripts/selftest-storage.sh",

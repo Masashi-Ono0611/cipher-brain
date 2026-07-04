@@ -4,25 +4,29 @@ on:
     branches: [main]
   pull_request:
 jobs:
-  selftest:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['22', '24']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
       - uses: actions/setup-node@v5
         with:
-          node-version: '22'
-      - name: install age
+          node-version: ${{ matrix.node }}
+      - name: install age (ubuntu)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y age
+      - name: install age (macos)
+        if: runner.os == 'macOS'
+        run: brew install age
       - name: install deps (arweave + arlocal for the arweave backend test)
-        run: npm ci
-      - name: crypto round-trip selftest
-        run: npm run selftest
-      - name: storage round-trip selftest (file backend, no daemon)
-        run: npm run selftest:storage
-      - name: key-recovery + versioning selftest
-        run: npm run selftest:recovery
-      - name: arweave backend parity selftest (arlocal, no real AR)
-        run: npm run selftest:arweave
-      - name: arweave no-deps gateway pull (recovery needs no npm package)
-        run: npm run selftest:arweave-nodeps
+        run: bun install --frozen-lockfile
+      - name: verify (build + all selftests + CLI smoke)
+        run: npm run verify

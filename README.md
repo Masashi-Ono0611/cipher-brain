@@ -54,7 +54,7 @@ A post-quantum hybrid recipient (via an age plugin) is on the roadmap.
 ## Install
 
 ```sh
-# requires: node >= 18, and the `age` binary (brew install age)
+# requires: node >= 22, and the `age` binary (brew install age)
 git clone https://github.com/Masashi-Ono0611/cipher-brain
 cd cipher-brain && npm link        # exposes `cipher-brain`
 ```

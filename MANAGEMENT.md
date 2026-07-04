@@ -43,7 +43,7 @@ The identity is a short text file — copy it somewhere durable and private:
 a password manager (secure note), a printed copy in a safe, or a hardware-backed
 store. Treat it like a seed phrase.
 
-**Protect it at rest.** A bare `age-keygen` identity is an unwrapped secret guarded
+**Protect it at rest.** A bare `keygen` identity (the standard age secret-key file) is an unwrapped secret guarded
 only by file perms (0600) — theft of the file = every snapshot decryptable. Two
 defenses, ideally both:
 - **Passphrase-wrap it:** `cipher-brain keygen --passphrase` encrypts the identity with

@@ -68,11 +68,22 @@ npm install -g cipher-brain        # or on PATH permanently: `cipher-brain`, `ci
 The packaged bins are the bundled `dist/` artifacts — self-contained single
 files that run on plain Node.
 
-Or run from source (the `bin/` shims run straight off `src/`, no build step):
+Or run from source (the committed `bin/` shims run straight off `src/`, no
+build step):
 
 ```sh
 git clone https://github.com/Masashi-Ono0611/cipher-brain
-cd cipher-brain && npm link        # exposes `cipher-brain` from the checkout
+cd cipher-brain && npm install
+node bin/cipher-brain.mjs --help   # bin/cipher-brain-mcp.mjs is the MCP server
+```
+
+To expose the `cipher-brain` / `cipher-brain-mcp` commands from a checkout,
+build first — the package `bin` entries point at the gitignored `dist/`
+bundles, so a bare `npm link` silently creates no commands ([Bun](https://bun.sh)
+required for the build):
+
+```sh
+npm run build && npm link
 ```
 
 **Prerequisites for `--pg`:** the `pg_dump`/`pg_restore` client tools (e.g.
@@ -82,8 +93,8 @@ on `PATH`, point `CIPHER_BRAIN_PG_BIN` at their directory. `tar` is assumed
 present. The paid **upload** backends need their optional peer package next to
 your project: `npm install arweave` for `--backend arweave`,
 `npm install @ardrive/turbo-sdk` for `--backend turbo` (a from-source checkout
-already has `arweave` via `npm link`). Recovery pulls from an Arweave gateway
-need no extra dependency.
+already has `arweave` from its `npm install`). Recovery pulls from an Arweave
+gateway need no extra dependency.
 
 ## Usage
 

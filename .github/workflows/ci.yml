@@ -20,10 +20,13 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
-      - name: install age (ubuntu)
+      # the age binary is NOT a runtime dependency any more (typage is bundled, #64) —
+      # it is installed here solely so selftest-interop.sh can assert CLI<->binary
+      # format interop (X25519 + scrypt, both directions). Without it that test SKIPs.
+      - name: install age (ubuntu, interop assertion only)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y age
-      - name: install age (macos)
+      - name: install age (macos, interop assertion only)
         if: runner.os == 'macOS'
         run: brew install age
       - name: install deps (arweave + arlocal for the arweave backend test)

@@ -24,7 +24,11 @@ operators who already run TON Storage infrastructure (see
 ## Threat model — "the key is only mine"
 
 `cipher-brain` uses [age](https://age-encryption.org) (X25519 + ChaCha20-Poly1305)
-with an **asymmetric** keypair:
+with an **asymmetric** keypair. The crypto runs in-process via
+[typage](https://github.com/FiloSottile/typage) (`age-encryption`, by age's
+author), bundled into the CLI — no external `age` binary is required, and every
+format stays byte-compatible with it (CI asserts both directions, including
+scrypt passphrase wrapping):
 
 - **identity** (private key) — lives off your always-on machine; the *only* thing
   that can decrypt. Lose it and the snapshots are unrecoverable.
@@ -54,7 +58,7 @@ A post-quantum hybrid recipient (via an age plugin) is on the roadmap.
 ## Install
 
 ```sh
-# requires: node >= 22, and the `age` binary (brew install age)
+# requires: node >= 22 — the age crypto layer is bundled, nothing else to install
 git clone https://github.com/Masashi-Ono0611/cipher-brain
 cd cipher-brain && npm link        # exposes `cipher-brain`
 ```
@@ -106,7 +110,7 @@ doesn't linger — but staging needs scratch space about the size of the snapsho
 so point `TMPDIR` at a disk with room for large brains. The Postgres connection
 string is passed as a process argument; for password auth use `~/.pgpass` or
 `PGPASSWORD` so secrets stay out of the process list. Binary paths are overridable
-for non-PATH installs: `CIPHER_BRAIN_AGE`, `CIPHER_BRAIN_PG_BIN` (dir holding
+for non-PATH installs: `CIPHER_BRAIN_PG_BIN` (dir holding
 `pg_dump`/`pg_restore`), `CIPHER_BRAIN_HOME`. Storage backends read
 `CIPHER_BRAIN_FILE_DIR` (file backend object store) and
 `CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT}` (the `storage-daemon-cli` path,

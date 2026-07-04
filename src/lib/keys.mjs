@@ -1,10 +1,8 @@
 // keygen + identity/recipient helpers.
 import { mkdir, writeFile, rm, chmod, readFile } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
-import { HOME, AGE, AGE_KEYGEN, IDENTITY, RECIPIENT, AGE_PUBKEY_RE } from './config.mjs';
-import { run, runInteractive } from './proc.mjs';
+import { HOME, IDENTITY, RECIPIENT, AGE_PUBKEY_RE } from './config.mjs';
+import { generateKeypair, identityFileText, askNewPassphrase, wrapIdentity } from './crypt.mjs';
 import { exists } from './util.mjs';
-import { installStageSignalGuard, setActiveRawKey } from './signal-guard.mjs';
 
 export async function keygen(o) {
   // 0700: HOME holds the private identity (and often the JWK wallet) — it must not be
@@ -15,51 +13,34 @@ export async function keygen(o) {
     if (!o.force) {
       throw new Error(`identity already exists at ${IDENTITY} (refusing to overwrite — losing it = losing the brain). Pass --force only if you are certain.`);
     }
-    await rm(IDENTITY, { force: true }); // age-keygen -o uses O_EXCL, so the old key must go first
+    await rm(IDENTITY, { force: true }); // the exclusive write below refuses to clobber, so the old key must go first
   }
-  let pub;
+  // The key is generated in-process (typage) and — on the passphrase path — wrapped
+  // in memory too (#36): unlike the old external `age -p` flow there is no unwrapped
+  // temp file on disk, so nothing can linger even on Ctrl-C at the prompt.
+  const { identity, recipient } = await generateKeypair();
+  const text = identityFileText(identity, recipient); // the standard age-keygen file layout
+  let payload = text;
   if (o.passphrase) {
-    // Passphrase-wrap the identity at rest (#36): generate the raw key to a temp file,
-    // derive the recipient from it, then encrypt it with a scrypt passphrase via `age -p`
-    // (which prompts interactively on the TTY). Decrypt is unchanged — `age -d -i` prompts
-    // for the passphrase when the identity file is itself encrypted.
-    const raw = `${IDENTITY}.${process.pid}.${randomBytes(4).toString('hex')}.raw`;
-    // A Ctrl-C/SIGHUP at the interactive `age -p` prompt tears the process down without
-    // unwinding the finally, so register the raw path with the signal guard too — it
-    // rmSync's the unwrapped key synchronously before re-raising (the finally still
-    // covers the normal-error path).
-    installStageSignalGuard();
-    setActiveRawKey(raw);
-    try {
-      await run(AGE_KEYGEN, ['-o', raw]);
-      await chmod(raw, 0o600);
-      pub = (await run(AGE_KEYGEN, ['-y', raw])).out.trim(); // derive recipient BEFORE wrapping (needs the plaintext)
-      console.log('Set a passphrase to protect the identity at rest (you will enter it on restore/verify):');
-      await runInteractive(AGE, ['-p', '-o', IDENTITY, raw]); // prompts for the passphrase on the TTY
-      await chmod(IDENTITY, 0o600);
-    } finally {
-      await rm(raw, { force: true }); // never leave the unwrapped key behind
-      setActiveRawKey(null);
-    }
-  } else {
-    await run(AGE_KEYGEN, ['-o', IDENTITY]);
-    await chmod(IDENTITY, 0o600);
-    pub = (await run(AGE_KEYGEN, ['-y', IDENTITY])).out.trim(); // derive recipient (public key)
+    console.log('Set a passphrase to protect the identity at rest (you will enter it on restore/verify):');
+    payload = await wrapIdentity(text, await askNewPassphrase()); // scrypt, same format `age -p` writes
   }
-  await writeFile(RECIPIENT, pub + '\n', { mode: 0o644 });
+  // wx: exclusive create — a concurrent keygen that won the race must not be clobbered
+  await writeFile(IDENTITY, payload, { mode: 0o600, flag: 'wx' });
+  await writeFile(RECIPIENT, recipient + '\n', { mode: 0o644 });
   console.log(`identity (PRIVATE, keep offline): ${IDENTITY}${o.passphrase ? ' (passphrase-wrapped)' : ''}`);
   console.log(`recipient (PUBLIC, safe to copy):  ${RECIPIENT}`);
-  console.log(`recipient = ${pub}`);
+  console.log(`recipient = ${recipient}`);
   console.log('\n⚠  Back up the identity file now. If you lose it, the snapshots are unrecoverable.');
 }
 
-// Return EVERY recipient entry a value feeds to age: an `age1…` literal is one
-// entry; anything else is read as a recipients file and split into its non-blank,
-// non-comment lines (mirrors snapshot's own age1-or-file rule). We must enumerate
-// whole LINES, not just age1… tokens — `age -R` also accepts SSH recipients
-// (`ssh-ed25519 …`), so an attacker who appends an ssh line to a tampered
-// recipient.txt would slip past an age1-only scan. The pin enforces the INPUTS,
-// since age ciphertext never exposes its recipient pubkeys.
+// Return EVERY recipient entry a value feeds to the encrypter: an `age1…` literal
+// is one entry; anything else is read as a recipients file and split into its
+// non-blank, non-comment lines (mirrors snapshot's own age1-or-file rule). We must
+// enumerate whole LINES, not just age1… tokens — a non-age1 line (e.g. an injected
+// `ssh-ed25519 …`) in a tampered recipient.txt would slip past an age1-only scan.
+// The pin enforces the INPUTS, since age ciphertext never exposes its recipient
+// pubkeys. (typage itself also rejects non-native recipients — defense in depth.)
 export async function recipientEntries(rec) {
   if (rec.startsWith('age1')) return [rec.trim()];
   const text = await readFile(rec, 'utf8');

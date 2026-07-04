@@ -1,9 +1,9 @@
 // restore + verify — the decrypt half and its falsifiable proof.
-import { mkdir, rm, stat, readFile, mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { AGE, AGE_KEYGEN, AGE_MAGIC, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.mjs';
-import { run, pipe2 } from './proc.mjs';
+import { AGE_MAGIC, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.mjs';
+import { run } from './proc.mjs';
+import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.mjs';
 import { exists, sha256, readHead, fmtBytes } from './util.mjs';
 
 export async function restore(o) {
@@ -11,17 +11,20 @@ export async function restore(o) {
   if (!o.out_dir) throw new Error('--out-dir <dir> required');
   const identity = o.identity || IDENTITY;
   if (!(await exists(identity))) throw new Error(`no identity at ${identity} — cannot decrypt without the private key`);
+  // Load the identity FIRST (this prompts for the passphrase if the file is wrapped)
+  // so a wrong passphrase / unreadable identity fails before out_dir is even created.
+  const decrypter = newDecrypter(await loadIdentities(identity));
   // age streams plaintext chunk-by-chunk, so a truncated/corrupt artifact errors only
   // AFTER tar has already extracted the leading components — leaving a partial tree.
   // Track whether we created out_dir so we can remove it (or warn) on a mid-stream fail.
   const outDirPreExisted = await exists(o.out_dir);
   await mkdir(o.out_dir, { recursive: true });
-  // age -d -i identity in | tar -xf - -C out-dir
+  // decrypt(in) | tar -xf - -C out-dir
   // --no-same-owner/--no-same-permissions: a substituted/forged archive must not be
   // able to set hostile ownership or modes on extraction (defense-in-depth — the
   // bytes can be attacker-chosen if storage is compromised; see verify --sha256).
   try {
-    await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
+    await decryptToChild(decrypter, o.in, 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
   } catch (e) {
     if (!outDirPreExisted) await rm(o.out_dir, { recursive: true, force: true });
     else console.error(`warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`);
@@ -67,26 +70,19 @@ export async function verify(o) {
     console.log(`[${hashOk ? 'PASS' : 'FAIL'}] sha256 matches the expected hash${hashOk ? '' : ` (expected ${o.sha256}, got ${got})`}`);
   }
 
-  // negative control: a throwaway key must NOT decrypt
-  const tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-verify-'));
-  let wrongKeyRejected = false;
-  try {
-    const wrongId = join(tdir, 'wrong.age');
-    await run(AGE_KEYGEN, ['-o', wrongId]);
-    try { await run(AGE, ['-d', '-i', wrongId, o.in]); } catch { wrongKeyRejected = true; }
-  } finally {
-    await rm(tdir, { recursive: true, force: true });
-  }
+  // negative control: a throwaway key must NOT decrypt (header-only check — fast on any size)
+  const wrongKeyRejected = await wrongKeyRejects(o.in);
   console.log(`[${wrongKeyRejected ? 'PASS' : 'FAIL'}] a wrong key is rejected`);
 
   // positive control: your identity decrypts the whole thing into a well-formed
-  // bundle. Streamed (age -d | tar -t) so it never buffers a multi-GB plaintext.
+  // bundle. Streamed (decrypt | tar -t) so it never buffers a multi-GB plaintext.
   const identity = o.identity || IDENTITY;
   let positiveOk = true;
   let positiveSkipped = false;
   if (await exists(identity)) {
     try {
-      await pipe2(AGE, ['-d', '-i', identity, o.in], 'tar', ['-tf', '-'], { consStdout: 'ignore', timeoutMs: PIPE_TIMEOUT_MS });
+      const decrypter = newDecrypter(await loadIdentities(identity)); // prompts if passphrase-wrapped
+      await decryptToChild(decrypter, o.in, 'tar', ['-tf', '-'], { consStdout: 'ignore', timeoutMs: PIPE_TIMEOUT_MS });
       console.log('[PASS] your identity decrypts the artifact into a well-formed bundle');
     } catch {
       positiveOk = false;

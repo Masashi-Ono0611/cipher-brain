@@ -4,8 +4,9 @@ import { mkdtempSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join, basename, dirname, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { AGE, RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, pgTool } from './config.mjs';
-import { run, pipe2 } from './proc.mjs';
+import { RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, pgTool } from './config.mjs';
+import { run } from './proc.mjs';
+import { newEncrypter, encryptToFile } from './crypt.mjs';
 import { exists, fmtBytes } from './util.mjs';
 import { recipientEntries, resolvePinnedRecipients } from './keys.mjs';
 import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.mjs';
@@ -44,14 +45,23 @@ export async function snapshot(o) {
   // file of pubkeys; default to the keypair's own recipient. Passing more than one
   // is key recovery: encrypt to a primary AND an offline backup key so that losing
   // the primary identity does NOT lose the brain (any one identity restores).
-  const recArgs = [];
   const recs = o.recipients.length ? o.recipients : [RECIPIENT];
+  const entriesByRec = new Map(); // recipient arg -> its effective age1… entries
   for (const r of recs) {
-    if (r.startsWith('age1')) recArgs.push('-r', r);
-    else {
-      if (!(await exists(r))) throw new Error(`no recipient at ${r} — run "cipher-brain keygen" first, or pass an age1... pubkey`);
-      recArgs.push('-R', r);
+    if (!r.startsWith('age1') && !(await exists(r))) {
+      throw new Error(`no recipient at ${r} — run "cipher-brain keygen" first, or pass an age1... pubkey`);
     }
+    entriesByRec.set(r, await recipientEntries(r));
+  }
+
+  // Fail-fast on a flattened recipient list of ZERO entries (e.g. every recipients
+  // file held only blank/comment lines): typage would happily encrypt to an EMPTY
+  // stanza list — valid-looking ciphertext that NO identity can ever decrypt. The
+  // old external `age -R` errored here; so must we, and at THIS point — before any
+  // plaintext is staged or a .part is opened — so a refused run leaves nothing behind.
+  const recipientList = [...entriesByRec.values()].flat();
+  if (recipientList.length === 0) {
+    throw new Error(`recipient file(s) ${recs.join(', ')} resolved to ZERO recipients (only blank/comment lines?) — refusing to snapshot: encrypting to an empty recipient list would create a snapshot NO identity can ever decrypt`);
   }
 
   // Recipient pin (opt-in): fail-fast if any effective recipient is not allowlisted,
@@ -61,7 +71,7 @@ export async function snapshot(o) {
     const allowed = await resolvePinnedRecipients(PIN_RECIPIENTS);
     if (allowed.size === 0) throw new Error('CIPHER_BRAIN_PIN_RECIPIENTS is set but lists no age1… pubkeys — refusing to snapshot');
     for (const r of recs) {
-      const entries = await recipientEntries(r);
+      const entries = entriesByRec.get(r);
       if (entries.length === 0) throw new Error(`recipient "${r}" has no recipients to check against CIPHER_BRAIN_PIN_RECIPIENTS (refusing to snapshot)`);
       for (const e of entries) {
         // Fail-closed: every entry must be an allowlisted age1… key. A non-age1
@@ -79,10 +89,14 @@ export async function snapshot(o) {
   // (not --recipient args): a file may hold several keys, and two args may name the same
   // one — so dedupe across all entries. Warn loudly (stderr → unattended logs) on exactly one.
   const effectiveKeys = new Set();
-  for (const r of recs) for (const e of await recipientEntries(r)) effectiveKeys.add(e);
+  for (const entries of entriesByRec.values()) for (const e of entries) effectiveKeys.add(e);
   if (effectiveKeys.size === 1) {
     console.error('⚠  snapshot encrypted to a SINGLE recipient key — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.');
   }
+
+  // Build the encrypter up front: an invalid recipient line (typage takes native age
+  // recipients only) must fail HERE, before any plaintext is staged or a .part opened.
+  const encrypter = newEncrypter(recipientList);
 
   installStageSignalGuard();
   // mkdtempSync (not async mkdtemp) so dir-creation and the ACTIVE_STAGE assignment
@@ -118,16 +132,17 @@ export async function snapshot(o) {
       join(stage, 'manifest.json'),
       JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, components }, null, 2) + '\n',
     );
-    // tar the staged components into one stream, encrypt to all recipients. Write to a
-    // PER-RUN-UNIQUE .part so overlapping snapshots to the same --out never share/clobber
-    // each other's in-progress file, and rename only on success, so a mid-pipeline failure
-    // (tar error, ENOSPC, a SIGTERM-killed age) never leaves a TRUNCATED *.age at o.out —
-    // which would still start with the age magic and thus pass push()'s header-only gate,
+    // tar the staged components into one stream, encrypt to all recipients (in-process
+    // typage, streaming — bounded RSS at any snapshot size). Write to a PER-RUN-UNIQUE
+    // .part so overlapping snapshots to the same --out never share/clobber each other's
+    // in-progress file, and rename only on success, so a mid-pipeline failure (tar
+    // error, ENOSPC, a killed run) never leaves a TRUNCATED *.age at o.out — which
+    // would still start with the age magic and thus pass push()'s header-only gate,
     // letting an operator publish unrecoverable ciphertext to permanent paid storage.
     const part = `${o.out}.${process.pid}.${randomBytes(4).toString('hex')}.part`;
     setActiveOutPart(part); // a signal now also erases this partial ciphertext
     try {
-      await pipe2('tar', ['-cf', '-', '-C', stage, '.'], AGE, [...recArgs, '-o', part], { timeoutMs: PIPE_TIMEOUT_MS });
+      await encryptToFile(encrypter, 'tar', ['-cf', '-', '-C', stage, '.'], part, { timeoutMs: PIPE_TIMEOUT_MS });
       await promoteSnapshot(part, o.out);
       setActiveOutPart(null);
     } catch (e) {

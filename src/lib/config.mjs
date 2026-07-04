@@ -3,8 +3,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 export const HOME = process.env.CIPHER_BRAIN_HOME || join(homedir(), '.cipher-brain');
-export const AGE = process.env.CIPHER_BRAIN_AGE || 'age';
-export const AGE_KEYGEN = process.env.CIPHER_BRAIN_AGE_KEYGEN || 'age-keygen';
+// #64: age runs in-process (typage, bundled) — the external-binary overrides are obsolete.
+for (const v of ['CIPHER_BRAIN_AGE', 'CIPHER_BRAIN_AGE_KEYGEN']) {
+  if (process.env[v]) console.error(`cipher-brain: ${v} is deprecated and ignored — age is bundled in-process (typage); no external age binary is used`);
+}
 export const PG_BIN = process.env.CIPHER_BRAIN_PG_BIN || ''; // dir holding pg_dump/pg_restore; '' => PATH
 export const pgTool = (name) => (PG_BIN ? join(PG_BIN, name) : name);
 

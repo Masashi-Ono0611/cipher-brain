@@ -9,7 +9,7 @@
 #   CB_PG_URL      source gbrain connection (required), e.g. postgres://you@localhost:5432/gbrain
 #   CB_TABLE       table to round-trip (default: dream_verdicts) — pick a small, FK-free one
 #   CB_SCRATCH_DB  scratch db name (default: gbrain_cipher_test)
-#   CIPHER_BRAIN_PG_BIN / CIPHER_BRAIN_AGE   if pg tools / age aren't on PATH
+#   CIPHER_BRAIN_PG_BIN   if the pg client tools are not on PATH (age is bundled in-process)
 set -euo pipefail
 
 : "${CB_PG_URL:?set CB_PG_URL to your gbrain connection string}"

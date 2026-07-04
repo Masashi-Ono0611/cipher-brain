@@ -69,9 +69,9 @@ fi
 echo "[PASS] a different identity cannot restore"
 
 echo "== P1 regression: a failed snapshot must not leave staged plaintext =="
-# a recipient file with garbage makes `age` exit immediately while `tar` is still
-# streaming -> exercises the EPIPE path. The fix must (a) fail cleanly and (b) let
-# the finally-block erase the staged plaintext.
+# a recipient file with garbage makes the encrypter setup fail (typage rejects the
+# line up front, before any plaintext is staged). The run must (a) fail cleanly and
+# (b) leave no staged plaintext and no partial output behind.
 export TMPDIR="$TMP/stagedir"; mkdir -p "$TMPDIR"
 printf 'not-a-valid-age-recipient\n' > "$TMP/bad-recipient.txt"
 if cb snapshot --dir "$SRC" --recipient "$TMP/bad-recipient.txt" --out "$TMP/bad.age" 2>/dev/null; then
@@ -91,6 +91,22 @@ echo "[PASS] failed snapshot exited cleanly and left no staged plaintext / no pa
 test -f "$TMP/snap.age" && [ "$(npart "$TMP" "$TMP/snap.age")" = "0" ] \
   && echo "[PASS] successful snapshot left no .part (atomic promote)" || { echo "FAIL: snap.age .part lingered"; exit 1; }
 
+echo "== P1 regression: a recipients file with only comments/blank lines must refuse to snapshot =="
+# Such a file flattens to ZERO recipients. typage would happily encrypt to an EMPTY
+# stanza list — valid-looking ciphertext NO identity can ever decrypt (the old external
+# `age -R` errored here). snapshot must fail fast with a clear stderr error and leave
+# no output / .part behind.
+printf '# rotated out, keys to follow\n\n# (none yet)\n' > "$TMP/comments-only-recipient.txt"
+set +e
+ERR=$(cb snapshot --dir "$SRC" --recipient "$TMP/comments-only-recipient.txt" --out "$TMP/norecip.age" 2>&1 >/dev/null); RC=$?
+set -e
+[ "$RC" != "0" ] || { echo "[FAIL] snapshot with a zero-recipient file exited 0"; exit 1; }
+printf '%s' "$ERR" | grep -q "NO identity can ever decrypt" \
+  || { echo "[FAIL] empty-recipient refusal lacks a clear stderr error"; echo "$ERR"; exit 1; }
+test ! -f "$TMP/norecip.age" || { echo "[FAIL] refused snapshot still created norecip.age"; exit 1; }
+[ "$(npart "$TMP" "$TMP/norecip.age")" = "0" ] || { echo "[FAIL] refused snapshot left a norecip.age .part"; exit 1; }
+echo "[PASS] snapshot refused a recipients file that resolves to zero entries (nothing written)"
+
 echo "== restore of a corrupt artifact fails and removes the tree it created =="
 # Drop the LAST bytes of a valid snapshot (snap.age holds a 1 MB blob => multiple age
 # STREAM chunks): the leading chunks still decrypt and tar extracts a PARTIAL tree, then
@@ -106,23 +122,46 @@ if [ "$RC" = "0" ]; then echo "FAIL: restore of a truncated artifact unexpectedl
 test ! -e "$RDIR" || { echo "FAIL: restore left a partial tree at $RDIR"; exit 1; }
 echo "[PASS] restore of a corrupt artifact failed and removed the partial tree"
 
+echo "== tar dying mid-stream must fail the snapshot (no valid-looking truncated .age) =="
+# With in-process encryption (typage), a tar that dies after emitting some bytes just
+# EOFs its stdout — which the encrypter would happily finalize into VALID ciphertext
+# of a TRUNCATED archive. encryptToFile gates success on tar's exit code; prove it.
+# The stub tar intercepts ONLY the snapshot pipeline invocation (`tar -cf - …`) and
+# dispatches on TAR_STUB_MODE; every other tar call passes through to the real tar.
+REALTAR="$(command -v tar)"
+STUBBIN="$TMP/stubbin"; mkdir -p "$STUBBIN"
+cat > "$STUBBIN/tar" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "-cf" ] && [ "\$2" = "-" ]; then
+  case "\${TAR_STUB_MODE:-}" in
+    slow)  sleep "\${TAR_STUB_SLEEP:-3}" ;;          # hold the pipeline open, then behave
+    fail)  printf 'partial-tar-bytes'; exit 1 ;;      # die mid-stream after emitting bytes
+    wedge) exec node "$TMP/tar-ignore-term.mjs" ;;    # ignore SIGTERM and hang (timeout test)
+  esac
+fi
+exec "$REALTAR" "\$@"
+EOF
+chmod +x "$STUBBIN/tar"
+set +e
+OUT=$(PATH="$STUBBIN:$PATH" TAR_STUB_MODE=fail node "$BIN" snapshot --dir "$SRC" --out "$TMP/midfail.age" 2>&1); RC=$?
+set -e
+[ "$RC" != "0" ] || { echo "FAIL: snapshot with a mid-stream tar death exited 0"; exit 1; }
+test ! -f "$TMP/midfail.age" || { echo "FAIL: mid-stream tar death left a truncated midfail.age"; exit 1; }
+[ "$(npart "$TMP" "$TMP/midfail.age")" = "0" ] || { echo "FAIL: mid-stream tar death left a .part"; exit 1; }
+LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | wc -l | tr -d ' ')
+[ "$LEFTOVERS" = "0" ] || { echo "FAIL: mid-stream tar death left staged plaintext"; exit 1; }
+echo "[PASS] a tar that dies mid-stream fails the snapshot and leaves nothing behind"
+
 echo "== P1 regression: SIGINT mid-snapshot must not leave staged plaintext =="
 # A signal tears the process down WITHOUT running the finally-block, so this is the
-# gap the EPIPE case above does NOT cover. Use a slow `age` to hold the pipeline open
-# while the staged plaintext exists, observe the stage dir appear, then SIGINT and
-# assert the signal handler erased it.
-SLOWAGE="$TMP/slow-age.sh"
-cat > "$SLOWAGE" <<EOF
-#!/usr/bin/env bash
-sleep 5
-exec age "\$@"
-EOF
-chmod +x "$SLOWAGE"
+# gap the failure cases above do NOT cover. Use a slow pipeline tar to hold the run
+# open while the staged plaintext exists, observe the stage dir appear, then SIGINT
+# and assert the signal handler erased it.
 export TMPDIR="$TMP/stagedir-sig"; mkdir -p "$TMPDIR"
 # Invoke `node` DIRECTLY (not the cb() function): backgrounding a shell function makes
 # $! the subshell's pid, so `kill -INT $!` would hit the subshell and leave node
 # orphaned to run to completion — the signal would never reach the handler under test.
-CIPHER_BRAIN_AGE="$SLOWAGE" node "$BIN" snapshot --dir "$SRC" --out "$TMP/sig.age" >/dev/null 2>&1 &
+PATH="$STUBBIN:$PATH" TAR_STUB_MODE=slow TAR_STUB_SLEEP=5 node "$BIN" snapshot --dir "$SRC" --out "$TMP/sig.age" >/dev/null 2>&1 &
 SNAP_PID=$!
 APPEARED=0
 for _ in $(seq 1 50); do
@@ -148,7 +187,7 @@ echo "== race: an --out that appears mid-snapshot is NOT clobbered (link promote
 # create --out externally before it promotes. link()+EEXIST must refuse, preserving the
 # external file — a plain rename would have clobbered it.
 RACE="$TMP/race-out.age"
-CIPHER_BRAIN_AGE="$SLOWAGE" node "$BIN" snapshot --dir "$SRC" --out "$RACE" >/dev/null 2>&1 &
+PATH="$STUBBIN:$PATH" TAR_STUB_MODE=slow TAR_STUB_SLEEP=3 node "$BIN" snapshot --dir "$SRC" --out "$RACE" >/dev/null 2>&1 &
 RACE_PID=$!
 for _ in $(seq 1 50); do find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | grep -q . && break; sleep 0.1; done
 printf 'PRE-EXISTING-WINNER\n' > "$RACE"   # a "concurrent run" finished first
@@ -246,23 +285,21 @@ printf '%s' "$OUT2" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
   && { echo "[FAIL] CIPHER_BRAIN_YES=1 still hitting the --yes gate"; echo "$OUT2"; exit 1; } || true
 echo "[PASS] push arweave with CIPHER_BRAIN_YES=1 passes the --yes guard (fails further in: wallet/SDK)"
 
-echo "== pipe2 timeout: a wedged, SIGTERM-IGNORING age can't hang the CLI (#38) =="
-# Replace `age` with a node stub that IGNORES SIGTERM and stays alive 30s (no grandchild,
-# so SIGKILL on the stub leaks nothing). This exercises the hard path: the pipeline must
-# (a) time out, (b) escalate SIGTERM→SIGKILL so the child actually dies, and (c) only THEN
-# reject — so cleanup runs after the child is dead, leaving no output / .part / staged
-# plaintext. If escalation failed, the run would block on the stub's full 30s.
-AGESTUB="$TMP/age-ignore-term.mjs"
-printf 'process.on("SIGTERM",()=>{});\nprocess.stdin.resume();\nsetTimeout(()=>process.exit(0),30000);\n' > "$AGESTUB"
-AGEWRAP="$TMP/age-wrap.sh"
-printf '#!/bin/sh\nexec node "%s"\n' "$AGESTUB" > "$AGEWRAP"; chmod +x "$AGEWRAP"
+echo "== pipeline timeout: a wedged, SIGTERM-IGNORING tar can't hang the CLI (#38) =="
+# TAR_STUB_MODE=wedge swaps the pipeline tar for a node stub that IGNORES SIGTERM and
+# stays alive 30s (exec'd — no grandchild, so SIGKILL on it leaks nothing). This
+# exercises the hard path: the pipeline must (a) time out, (b) escalate SIGTERM→SIGKILL
+# so the child actually dies, and (c) only THEN reject — so cleanup runs after the child
+# is dead, leaving no output / .part / staged plaintext. If escalation failed, the run
+# would block on the stub's full 30s.
+printf 'process.on("SIGTERM",()=>{});\nsetTimeout(()=>process.exit(0),30000);\nprocess.stdout.write("wedged");\n' > "$TMP/tar-ignore-term.mjs"
 TOUT="$TMP/timeout-snap.age"
 START=$(date +%s)
 set +e
-TERR=$(CIPHER_BRAIN_AGE="$AGEWRAP" CIPHER_BRAIN_PIPE_TIMEOUT=600 cb snapshot --dir "$SRC" --out "$TOUT" 2>&1); TRC=$?
+TERR=$(PATH="$STUBBIN:$PATH" TAR_STUB_MODE=wedge CIPHER_BRAIN_PIPE_TIMEOUT=600 node "$BIN" snapshot --dir "$SRC" --out "$TOUT" 2>&1); TRC=$?
 set -e
 ELAPSED=$(( $(date +%s) - START ))
-[ "$TRC" != "0" ] || { echo "[FAIL] wedged-age snapshot exited 0"; exit 1; }
+[ "$TRC" != "0" ] || { echo "[FAIL] wedged-tar snapshot exited 0"; exit 1; }
 printf '%s' "$TERR" | grep -qi "timed out" || { echo "[FAIL] no timeout error surfaced"; echo "$TERR"; exit 1; }
 # < 15s proves the SIGKILL escalation fired (timeout 0.6s + 2s SIGKILL + overhead),
 # NOT that we waited out the stub's 30s sleep.
@@ -272,7 +309,7 @@ test ! -f "$TOUT"                                       # no finished output
 # the staged plaintext dir must be erased by snapshot's finally on the timeout path
 [ -z "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cipher-brain-*' -newermt "@$START" 2>/dev/null)" ] \
   || { echo "[FAIL] a staged-plaintext cipher-brain-* dir lingered after timeout"; exit 1; }
-echo "[PASS] SIGTERM-ignoring age killed via SIGKILL escalation in ${ELAPSED}s; no output / .part / staged plaintext"
+echo "[PASS] SIGTERM-ignoring tar killed via SIGKILL escalation in ${ELAPSED}s; no output / .part / staged plaintext"
 
 echo "== single-key warning counts DISTINCT keys, not --recipient args (#43) =="
 # one --recipient file holding TWO keys must NOT warn (recovery exists); a duplicate

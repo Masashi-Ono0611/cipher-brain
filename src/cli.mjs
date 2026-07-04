@@ -24,7 +24,7 @@
 // pushpull, backends/).
 
 import { IDENTITY } from './lib/config.mjs';
-import { keygen } from './lib/identity.mjs';
+import { keygen } from './lib/keys.mjs';
 import { snapshot } from './lib/snapshot.mjs';
 import { restore, verify } from './lib/restore.mjs';
 import { push, pull } from './lib/pushpull.mjs';

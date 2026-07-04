@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { AGE, RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, pgTool } from './config.mjs';
 import { run, pipe2 } from './proc.mjs';
 import { exists, fmtBytes } from './util.mjs';
-import { recipientEntries, resolvePinnedRecipients } from './identity.mjs';
+import { recipientEntries, resolvePinnedRecipients } from './keys.mjs';
 import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.mjs';
 
 // Promote a finished .part to its final --out, no-clobber. Prefer link(): it is atomic

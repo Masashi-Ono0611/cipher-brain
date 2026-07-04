@@ -1,15 +1,43 @@
 {
   "name": "cipher-brain",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "description": "Encrypt a gbrain snapshot so only the key holder can read it (age X25519). Produces one backend-agnostic ciphertext for censorship-resistant storage.",
-  "bin": {
-    "cipher-brain": "bin/cipher-brain.mjs",
-    "cipher-brain-mcp": "bin/cipher-brain-mcp.mjs"
+  "keywords": [
+    "age",
+    "encryption",
+    "backup",
+    "arweave",
+    "mcp",
+    "second-brain",
+    "permanent-storage",
+    "snapshot",
+    "x25519",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Masashi-Ono0611/cipher-brain.git"
   },
+  "homepage": "https://github.com/Masashi-Ono0611/cipher-brain#readme",
+  "bugs": {
+    "url": "https://github.com/Masashi-Ono0611/cipher-brain/issues"
+  },
+  "author": "Masashi Ono (https://github.com/Masashi-Ono0611)",
+  "files": [
+    "dist"
+  ],
+  "bin": {
+    "cipher-brain": "dist/cli.mjs",
+    "cipher-brain-mcp": "dist/mcp.mjs"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "scripts": {
     "build": "bun run scripts/build.ts",
+    "prepack": "bun run scripts/build.ts",
     "verify": "npm run build && npm run selftest && npm run selftest:profiles && npm run selftest:interop && npm run selftest:storage && npm run selftest:recovery && npm run selftest:arweave && npm run selftest:arweave-nodeps && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
     "selftest": "bash scripts/selftest.sh",
     "selftest:profiles": "bash scripts/selftest-profiles.sh",

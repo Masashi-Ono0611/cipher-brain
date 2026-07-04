@@ -52,4 +52,6 @@ if (!result.success) {
   for (const message of result.logs) console.error(message)
   process.exit(1)
 }
-console.log(`✓ bun build → dist/ (${result.outputs.length} files, ${external.length} externals)`)
+// stderr, not stdout: this also runs as `prepack`, and `npm pack --json`
+// consumers parse stdout as JSON — a stdout status line would corrupt it.
+console.error(`✓ bun build → dist/ (${result.outputs.length} files, ${external.length} externals)`)

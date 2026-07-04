@@ -57,19 +57,33 @@ A post-quantum hybrid recipient (via an age plugin) is on the roadmap.
 
 ## Install
 
+Install from the registry (requires node >= 22 — the age crypto layer is
+bundled, nothing else to install):
+
 ```sh
-# requires: node >= 22 — the age crypto layer is bundled, nothing else to install
+npx cipher-brain --help            # zero-install, one-off
+npm install -g cipher-brain        # or on PATH permanently: `cipher-brain`, `cipher-brain-mcp`
+```
+
+The packaged bins are the bundled `dist/` artifacts — self-contained single
+files that run on plain Node.
+
+Or run from source (the `bin/` shims run straight off `src/`, no build step):
+
+```sh
 git clone https://github.com/Masashi-Ono0611/cipher-brain
-cd cipher-brain && npm link        # exposes `cipher-brain`
+cd cipher-brain && npm link        # exposes `cipher-brain` from the checkout
 ```
 
 **Prerequisites for `--pg`:** the `pg_dump`/`pg_restore` client tools (e.g.
 `brew install libpq` or your distro's `postgresql-client`) — without them the
 headline `--pg` flow fails with a cryptic `spawn pg_dump ENOENT`. If they are not
 on `PATH`, point `CIPHER_BRAIN_PG_BIN` at their directory. `tar` is assumed
-present. The `turbo` backend additionally needs `@ardrive/turbo-sdk`
-(`npm install @ardrive/turbo-sdk`); the `arweave` package is already installed by
-`npm link`.
+present. The paid **upload** backends need their optional peer package next to
+your project: `npm install arweave` for `--backend arweave`,
+`npm install @ardrive/turbo-sdk` for `--backend turbo` (a from-source checkout
+already has `arweave` via `npm link`). Recovery pulls from an Arweave gateway
+need no extra dependency.
 
 ## Usage
 

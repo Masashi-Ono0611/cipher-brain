@@ -9,16 +9,18 @@
 # registration).
 set -euo pipefail
 
-BIN="$(cd "$(dirname "$0")/.." && pwd)/bin/cipher-brain.mjs"
-# run bin/cipher-brain.mjs straight against src/*.ts (no build step) under plain node —
-# see scripts/dev-ts-resolve-hook.mjs for why both flags are required (#63).
-export NODE_OPTIONS="--experimental-strip-types --import $(cd "$(dirname "$0")/.." && pwd)/scripts/dev-cli-loader.mjs"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/bin/cipher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+# build step) under plain node — see scripts/dev-node-flags.sh (never an exported
+# NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
+source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export CIPHER_BRAIN_HOME="$TMP/home"
 export CIPHER_BRAIN_SCHEDULE_DIR="$TMP/sched"
 export CIPHER_BRAIN_LAUNCHD_DIR="$TMP/launchagents"
 export CIPHER_BRAIN_FILE_DIR="$TMP/store"
-cb() { node "$BIN" "$@"; }
+cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 
 RUNNER="$CIPHER_BRAIN_SCHEDULE_DIR/nightly.sh"
 CONFIG="$CIPHER_BRAIN_SCHEDULE_DIR/schedule.json"
@@ -149,11 +151,10 @@ NODE_BIN="$(command -v node)"
 # `command -v pg_dump` (see resolvePgDumpDir() in src/lib/schedule.ts) — so pg_dump is
 # guaranteed unresolvable no matter what the real host has installed. node is invoked
 # directly via its absolute path ($NODE_BIN), so it needs no entry on PATH itself
-# (NODE_OPTIONS, exported above, still applies — it is inherited via the environment,
-# not looked up on PATH).
+# (BIN_DEV_ARGS is passed as literal argv, not via PATH or an env var).
 ISOLATED_PATH_DIR="$TMP/isolated-path"; mkdir -p "$ISOLATED_PATH_DIR"
 ln -s "$(command -v sh)" "$ISOLATED_PATH_DIR/sh"
-if PATH="$ISOLATED_PATH_DIR" "$NODE_BIN" "$BIN" schedule install --backend file --pg "postgres://x/y" --no-load > "$TMP/install-pg-missing.log" 2>&1; then
+if PATH="$ISOLATED_PATH_DIR" "$NODE_BIN" "${BIN_DEV_ARGS[@]}" "$BIN" schedule install --backend file --pg "postgres://x/y" --no-load > "$TMP/install-pg-missing.log" 2>&1; then
   echo "[FAIL] install (--pg, isolated PATH with no pg_dump) was accepted"; exit 1
 fi
 grep -qi 'pg_dump' "$TMP/install-pg-missing.log" || { echo "[FAIL] install failure does not name the missing pg_dump binary"; cat "$TMP/install-pg-missing.log"; exit 1; }

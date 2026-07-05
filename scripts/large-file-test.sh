@@ -9,14 +9,16 @@
 set -euo pipefail
 
 SIZE_MB="${CB_SIZE_MB:-256}"
-BIN="$(cd "$(dirname "$0")/.." && pwd)/bin/cipher-brain.mjs"
-# run bin/cipher-brain.mjs straight against src/*.ts (no build step) under plain node —
-# see scripts/dev-ts-resolve-hook.mjs for why both flags are required (#63).
-export NODE_OPTIONS="--experimental-strip-types --import $(cd "$(dirname "$0")/.." && pwd)/scripts/dev-cli-loader.mjs"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/bin/cipher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+# build step) under plain node — see scripts/dev-node-flags.sh (never an exported
+# NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
+source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export CIPHER_BRAIN_HOME="$TMP/keys"
 export CIPHER_BRAIN_FILE_DIR="$TMP/store"
-cb() { node "$BIN" "$@"; }
+cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 now() { date +%s; }
 
@@ -28,7 +30,7 @@ cb keygen >/dev/null
 
 echo "== snapshot (measure time + node peak RSS to prove it streams, not buffers) =="
 T0=$(now)
-/usr/bin/time -l node "$BIN" snapshot --dir "$SRC" --out "$TMP/big.age" 2>"$TMP/rss.txt" 1>/dev/null
+/usr/bin/time -l node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/big.age" 2>"$TMP/rss.txt" 1>/dev/null
 T1=$(now)
 RSS_BYTES=$(grep -i 'maximum resident set size' "$TMP/rss.txt" | grep -oE '[0-9]+' | head -1)
 RSS_MB=$(( ${RSS_BYTES:-0} / 1048576 ))

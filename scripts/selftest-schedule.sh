@@ -68,6 +68,30 @@ grep -q "export CIPHER_BRAIN_TON_SERVER='$TMP/ton-server.pub'" "$RUNNER" || { ec
 grep -q "export CIPHER_BRAIN_AR_PAID_BY='1234567890abcdef1234567890ABCDEF12345678'" "$RUNNER" || { echo "[FAIL] runner did not bake CIPHER_BRAIN_AR_PAID_BY"; cat "$RUNNER"; exit 1; }
 echo "[PASS] env-capture: non-default TON/turbo env vars set at install time are baked into the runner"
 
+echo "== (a3) relative --vault/--zip/--recipient file paths resolve to ABSOLUTE in the runner (launchd/cron runs from a DIFFERENT cwd than install); an inline age1... --recipient is left UNCHANGED =="
+# This is the exact issue #69 P2 regression: a relative path baked in verbatim resolves
+# correctly at install time (whatever cwd the operator happened to be in) but not
+# necessarily at scheduled-run time (launchd/cron invoke the runner from a different,
+# unrelated cwd). Run install FROM a subdirectory so cwd truly differs from $TMP.
+mkdir -p "$TMP/subdir/vaultdir"
+touch "$TMP/subdir/exportdata.zip"
+printf '# a recipients file\nage1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqcexskr\n' > "$TMP/subdir/recipients.txt"
+INLINE_KEY="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqcexskr"
+# Canonical form of $TMP/subdir — matches what node:path's resolve()/process.cwd() bakes
+# in (macOS mktemp dirs live under a symlinked /var/folders -> /private/var/folders, so a
+# naive string comparison against the raw $TMP/subdir would false-fail here).
+REALSUB="$(cd "$TMP/subdir" && pwd -P)"
+(cd "$TMP/subdir" && cb schedule install --backend file --dir "$SRC" --vault vaultdir --zip exportdata.zip --recipient recipients.txt --recipient "$INLINE_KEY" --no-load) \
+  > "$TMP/install-a3.log" 2>&1 || { echo "[FAIL] install (relative paths, invoked from a different cwd) exited non-zero"; cat "$TMP/install-a3.log"; exit 1; }
+grep -qF -- "--vault '$REALSUB/vaultdir'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --vault path"; cat "$RUNNER"; exit 1; }
+grep -qF -- "--zip '$REALSUB/exportdata.zip'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --zip path"; cat "$RUNNER"; exit 1; }
+grep -qF -- "--recipient '$REALSUB/recipients.txt'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --recipient FILE path"; cat "$RUNNER"; exit 1; }
+grep -qF -- "--recipient '$INLINE_KEY'" "$RUNNER" || { echo "[FAIL] runner does not bake the inline age1... --recipient value UNCHANGED"; cat "$RUNNER"; exit 1; }
+if grep -qF -- "--vault 'vaultdir'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --vault string"; exit 1; fi
+if grep -qF -- "--zip 'exportdata.zip'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --zip string"; exit 1; fi
+if grep -qF -- "--recipient 'recipients.txt'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --recipient FILE string"; exit 1; fi
+echo "[PASS] relative --vault/--zip/--recipient(file) resolved to absolute in the runner; inline age1... --recipient left unchanged"
+
 echo "== (b) paid backend: refused without --max-spend, spend lines written with it =="
 if cb schedule install --backend turbo --dir "$SRC" --no-load > "$TMP/turbo-refuse.log" 2>&1; then
   echo "[FAIL] install --backend turbo WITHOUT --max-spend was accepted"; exit 1

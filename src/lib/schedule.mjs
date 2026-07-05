@@ -225,13 +225,22 @@ async function install(o) {
     at, hour, minute,
     backend: o.backend,
     ...(o.profile ? { profile: o.profile } : {}),
-    ...(o.vault ? { vault: o.vault } : {}),
-    ...(o.zip ? { zip: o.zip } : {}),
+    // --vault/--zip are always filesystem paths (a directory / a zip file) — resolve
+    // NOW, against the cwd `schedule install` is run from, exactly like --dir below.
+    // launchd/cron invoke the generated runner from a DIFFERENT (often unrelated) cwd,
+    // so a relative string baked in verbatim would resolve to a different file (or
+    // nothing) at scheduled-run time even though it worked interactively at install time.
+    ...(o.vault ? { vault: resolve(o.vault) } : {}),
+    ...(o.zip ? { zip: resolve(o.zip) } : {}),
     ...(o.force_vault ? { force_vault: true } : {}),
     ...(o.pg ? { pg: o.pg } : {}),
     tables: o.tables,
     dirs: o.dirs.map((d) => resolve(d)),
-    recipients: o.recipients,
+    // --recipient is EITHER an inline age1... public key (leave verbatim — it is not a
+    // path) OR a path to a recipients file (resolve it, same reasoning as --vault/--zip
+    // above: it must still name the same file when the runner is invoked from a
+    // different cwd by launchd/cron).
+    recipients: o.recipients.map((r) => (r.startsWith('age1') ? r : resolve(r))),
     save_locator: resolve(o.save_locator || join(HOME, 'latest-locator.tsv')),
     index_file: resolve(o.index_file || join(SCHEDULE_DIR, 'index.tsv')),
     ...(o.max_spend ? { max_spend: String(o.max_spend) } : {}),

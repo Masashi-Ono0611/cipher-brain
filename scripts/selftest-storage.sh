@@ -62,5 +62,85 @@ echo "== backend is required (no silent default) =="
 if cb push --in "$TMP/got.age" 2>/dev/null; then echo "[FAIL] push ran with no --backend"; exit 1; fi
 echo "[PASS] push without --backend is rejected"
 
+# ── same-hash skip (#70): the skip signal is the PLAINTEXT content digest sidecar ──
+# (age ciphertext hashes differ every run — ephemeral file key — so only the
+# plaintext-side digest can say "unchanged").
+
+echo "== digest sidecar: mtime-independent, content-sensitive =="
+SRC2="$TMP/skip-src"; mkdir -p "$SRC2"
+printf 'alpha\n' > "$SRC2/a.txt"
+printf 'beta\n'  > "$SRC2/b.txt"
+cb snapshot --dir "$SRC2" --out "$TMP/s1.age"
+[ -f "$TMP/s1.age.digest" ] || { echo "[FAIL] no digest sidecar next to s1.age"; exit 1; }
+D1=$(cat "$TMP/s1.age.digest")
+# unchanged content, but every mtime moved — the digest must not move with it
+touch -t 202001010101 "$SRC2/a.txt" "$SRC2/b.txt" "$SRC2"
+cb snapshot --dir "$SRC2" --out "$TMP/s2.age"
+D2=$(cat "$TMP/s2.age.digest")
+[ "$D1" = "$D2" ] || { echo "[FAIL] digest changed on an mtime-only change: $D1 vs $D2"; exit 1; }
+echo "[PASS] unchanged content (mtimes touched) -> identical digest"
+printf 'Alpha\n' > "$SRC2/a.txt"   # one changed byte
+cb snapshot --dir "$SRC2" --out "$TMP/s3.age"
+D3=$(cat "$TMP/s3.age.digest")
+[ "$D1" != "$D3" ] || { echo "[FAIL] digest identical after a one-byte content change"; exit 1; }
+echo "[PASS] one changed byte -> different digest"
+
+echo "== push --save-locator writes the 4-field line (locator/backend/sha256/content_digest) =="
+LOCFILE="$TMP/latest-locator.tsv"
+LOC1=$(cb push --in "$TMP/s1.age" --backend file --save-locator "$LOCFILE")
+NF=$(awk -F'\t' 'NR==1{print NF}' "$LOCFILE")
+[ "$NF" = "4" ] || { echo "[FAIL] save-locator line has $NF fields, want 4"; exit 1; }
+[ "$(cut -f4 "$LOCFILE")" = "$D1" ] || { echo "[FAIL] 4th field != sidecar digest"; exit 1; }
+echo "[PASS] save-locator line has 4 fields; 4th == the content digest"
+
+echo "== push #2 (unchanged content) --skip-unchanged: SKIPs, previous locator, exit 0, no new object =="
+COUNT_BEFORE=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
+OUT2=$(cb push --in "$TMP/s2.age" --backend file --save-locator "$LOCFILE" --skip-unchanged 2>"$TMP/skip.err")
+grep -q "SKIPPED" "$TMP/skip.err" || { echo "[FAIL] no SKIPPED line on stderr"; cat "$TMP/skip.err"; exit 1; }
+[ "$OUT2" = "$LOC1" ] || { echo "[FAIL] skip did not print the previous locator: $OUT2"; exit 1; }
+COUNT_AFTER=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
+[ "$COUNT_BEFORE" = "$COUNT_AFTER" ] || { echo "[FAIL] the store gained an object on a skipped push"; exit 1; }
+echo "[PASS] unchanged push skipped: SKIPPED line, previous locator on stdout, store untouched"
+
+echo "== --force pushes anyway =="
+LOC_F=$(cb push --in "$TMP/s2.age" --backend file --save-locator "$LOCFILE" --skip-unchanged --force)
+[ "$LOC_F" != "$LOC1" ] || { echo "[FAIL] --force returned the old locator"; exit 1; }
+COUNT_FORCE=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
+[ "$COUNT_FORCE" = "$((COUNT_AFTER + 1))" ] || { echo "[FAIL] --force did not add a store object"; exit 1; }
+echo "[PASS] --force uploaded despite an identical content digest"
+
+echo "== legacy 3-field save-locator: pull still works AND --skip-unchanged does not skip =="
+LEGACY="$TMP/legacy-locator.tsv"
+printf '%s\t%s\t%s\n' "$LOC1" file "$(sha "$TMP/s1.age")" > "$LEGACY"
+cb pull --from-locator-file "$LEGACY" --out "$TMP/legacy-got.age"
+[ "$(sha "$TMP/legacy-got.age")" = "$(sha "$TMP/s1.age")" ] || { echo "[FAIL] legacy 3-field pull bytes mismatch"; exit 1; }
+echo "[PASS] pull --from-locator-file accepts a legacy 3-field line (recovery unbroken)"
+cb push --in "$TMP/s2.age" --backend file --save-locator "$LEGACY" --skip-unchanged >"$TMP/legacy.out" 2>"$TMP/legacy.err"
+if grep -q "SKIPPED" "$TMP/legacy.err"; then echo "[FAIL] skipped off a legacy 3-field line (no digest to compare)"; exit 1; fi
+NF_LEGACY=$(awk -F'\t' 'NR==1{print NF}' "$LEGACY")
+[ "$NF_LEGACY" = "4" ] || { echo "[FAIL] proceeding push did not upgrade the legacy file to 4 fields"; exit 1; }
+echo "[PASS] legacy 3-field line: push proceeded (no skip) and rewrote a 4-field line"
+
+echo "== changed content with --skip-unchanged: proceeds and rewrites the 4-field line =="
+COUNT_E=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
+cb push --in "$TMP/s3.age" --backend file --save-locator "$LOCFILE" --skip-unchanged >"$TMP/e.out" 2>"$TMP/e.err"
+if grep -q "SKIPPED" "$TMP/e.err"; then echo "[FAIL] changed content was skipped"; exit 1; fi
+COUNT_E2=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
+[ "$COUNT_E2" = "$((COUNT_E + 1))" ] || { echo "[FAIL] changed-content push added no store object"; exit 1; }
+[ "$(cut -f4 "$LOCFILE")" = "$D3" ] || { echo "[FAIL] save-locator 4th field was not rewritten to the new digest"; exit 1; }
+echo "[PASS] changed content pushed; save-locator now carries the new digest"
+
+echo "== --skip-unchanged without a sidecar: proceeds (skip is an optimization, never a gate) =="
+cp "$TMP/s2.age" "$TMP/nosidecar.age"   # same content digest as LOC1's, but NO sidecar next to it
+cb push --in "$TMP/nosidecar.age" --backend file --save-locator "$LOCFILE" --skip-unchanged >"$TMP/ns.out" 2>"$TMP/ns.err"
+if grep -q "SKIPPED" "$TMP/ns.err"; then echo "[FAIL] skipped without any digest source"; exit 1; fi
+echo "[PASS] no sidecar and no --digest -> pushed normally"
+
+echo "== --skip-unchanged requires --save-locator =="
+if cb push --in "$TMP/s2.age" --backend file --skip-unchanged 2>/dev/null; then
+  echo "[FAIL] --skip-unchanged ran without --save-locator"; exit 1
+fi
+echo "[PASS] --skip-unchanged without --save-locator is rejected"
+
 echo
 echo "STORAGE SELFTEST (file backend) PASS"

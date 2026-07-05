@@ -8,6 +8,31 @@ import { AGE_MAGIC, CIPHER_YES } from './config.mjs';
 import { exists, sleep, sha256, readHead } from './util.mjs';
 import { backendFor } from './backends/index.mjs';
 
+// The plaintext content digest for the artifact being pushed: an explicit --digest
+// wins, else the "<in>.digest" sidecar snapshot writes next to its output. Returns
+// lowercased hex or null — never throws: the digest only powers the --skip-unchanged
+// optimization and the 4th save-locator field, so a missing/unreadable piece must
+// degrade to "no digest" (proceed normally), never to an error.
+async function contentDigestFor(o) {
+  if (o.digest) return String(o.digest).trim().toLowerCase();
+  try {
+    const line = (await readFile(`${o.in}.digest`, 'utf8')).split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+    return line ? line.toLowerCase() : null;
+  } catch { return null; }
+}
+
+// Parse the FIRST locator line of a save-locator file into its (up to 4) fields.
+// Returns null when the file is missing/empty — callers treat that as "no previous
+// push recorded". Both the 3-field legacy format and the 4-field one parse here.
+async function readSavedLocatorLine(path) {
+  let text;
+  try { text = await readFile(path, 'utf8'); } catch { return null; }
+  const line = text.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+  if (!line) return null;
+  const [locator, backend, sha, contentDigest] = line.split('\t');
+  return { locator, backend, sha, contentDigest };
+}
+
 export async function push(o) {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.backend) throw new Error('--backend <file|ton|arweave|turbo> required'); // no silent default
@@ -17,6 +42,27 @@ export async function push(o) {
   // backend can publish bytes externally.
   if (!(await readHead(o.in, 64)).startsWith(AGE_MAGIC)) {
     throw new Error(`${o.in} is not age ciphertext (header mismatch) — refusing to push non-ciphertext to storage`);
+  }
+  // --skip-unchanged: don't re-push (and, on arweave/turbo, re-pay for) content that
+  // has not changed since the previous push. The signal is the PLAINTEXT content
+  // digest snapshot records in the "<out>.digest" sidecar — it can never be the
+  // ciphertext hash, because age's ephemeral file key makes identical content encrypt
+  // to different bytes every run. Compared against the 4th field of the current
+  // --save-locator file for the SAME backend. Any missing piece (no sidecar/--digest,
+  // a legacy 3-field file, a different backend) proceeds normally: skip is an
+  // optimization, never a correctness gate. --force pushes anyway. Checked before the
+  // paid-backend consent gate: a skipped push contacts nothing and spends nothing.
+  if (o.skip_unchanged) {
+    if (!o.save_locator) throw new Error('--skip-unchanged requires --save-locator <file> (the previous content digest lives in its 4th field)');
+    if (!o.force) {
+      const cur = await contentDigestFor(o);
+      const prev = await readSavedLocatorLine(o.save_locator);
+      if (cur && prev && prev.locator && prev.backend === o.backend && prev.contentDigest && prev.contentDigest.toLowerCase() === cur) {
+        console.error(`SKIPPED: content unchanged (digest ${cur}) — already pushed to ${o.backend} as ${prev.locator} (--force to push anyway)`);
+        console.log(prev.locator); // stdout contract unchanged: a script still captures a valid locator
+        return;
+      }
+    }
   }
   const yes = !!o.yes || CIPHER_YES;
   // arweave and turbo are paid, permanent stores — require an explicit opt-in so
@@ -36,18 +82,22 @@ export async function push(o) {
   // The file is rewritten on each push — it always holds the most recent locator.
   if (o.save_locator) {
     await mkdir(dirname(resolve(o.save_locator)), { recursive: true });
-    // Record "<locator>\t<backend>\t<sha256>". The sha256 — computed here off the bytes
-    // we just pushed — binds the locator to its ciphertext, so a recovery via
-    // --from-locator-file is fail-closed: for arweave/turbo (locator != content hash) a
-    // gateway/storage attacker can't later serve a substituted, still-age-decryptable
-    // artifact. The hash is trustworthy because this file is backed up OFF-BOX (the same
-    // trusted-source rule the existing --sha256 pin relies on).
+    // Record "<locator>\t<backend>\t<sha256>[\t<content_digest>]". The sha256 — computed
+    // here off the bytes we just pushed — binds the locator to its ciphertext, so a
+    // recovery via --from-locator-file is fail-closed: for arweave/turbo (locator !=
+    // content hash) a gateway/storage attacker can't later serve a substituted,
+    // still-age-decryptable artifact. The hash is trustworthy because this file is
+    // backed up OFF-BOX (the same trusted-source rule the existing --sha256 pin relies
+    // on). The 4th field is the PLAINTEXT content digest (from the "<in>.digest"
+    // sidecar / --digest) — the comparison target for the next push --skip-unchanged;
+    // omitted when no digest is available (parsers accept both widths).
     const digest = await sha256(o.in);
+    const contentDigest = await contentDigestFor(o);
     // Atomic write: a crash / ENOSPC mid-rewrite must not leave the recovery pointer
     // empty AND destroy the previous good locator. Write a temp sibling, then rename.
     const tmp = `${o.save_locator}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     try {
-      await writeFile(tmp, `${locator}\t${o.backend}\t${digest}\n`, { flag: 'w' });
+      await writeFile(tmp, `${locator}\t${o.backend}\t${digest}${contentDigest ? `\t${contentDigest}` : ''}\n`, { flag: 'w' });
       await rename(tmp, o.save_locator);
     } catch (e) {
       await rm(tmp, { force: true });
@@ -68,11 +118,14 @@ export async function pull(o) {
     if (!(await exists(o.from_locator_file))) throw new Error(`no such locator file: ${o.from_locator_file}`);
     const line = (await readFile(o.from_locator_file, 'utf8')).split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
     if (!line) throw new Error(`locator file ${o.from_locator_file} has no locator line`);
+    // Accept BOTH the legacy 3-field line and the 4-field one (a trailing
+    // content_digest, written since --skip-unchanged): recovery of every existing
+    // save-locator file must keep working, so extra columns are simply ignored here.
     const [savedLoc, savedBackend, savedSha] = line.split('\t');
     // A truncated / hand-mangled file missing the backend column would otherwise fall
     // through to the generic "--backend required" error, hiding the real cause.
     if (!savedLoc || !savedBackend) {
-      throw new Error(`locator file ${o.from_locator_file} must contain "<locator>\\t<backend>[\\t<sha256>]" — got: ${JSON.stringify(line)}`);
+      throw new Error(`locator file ${o.from_locator_file} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>]]" — got: ${JSON.stringify(line)}`);
     }
     if (!o.locator) o.locator = savedLoc;
     if (!o.backend) o.backend = savedBackend;

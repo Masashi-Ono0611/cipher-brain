@@ -64,7 +64,9 @@ echo "[PASS] push without --backend is rejected"
 
 # ── same-hash skip (#70): the skip signal is the PLAINTEXT content digest sidecar ──
 # (age ciphertext hashes differ every run — ephemeral file key — so only the
-# plaintext-side digest can say "unchanged").
+# plaintext-side digest can say "unchanged") PLUS (round 2) a recipients fingerprint
+# sidecar, so a changed --recipient set is never masked by unchanged plaintext.
+umask 022   # deterministic tar-extraction permission bits for the chmod test below
 
 echo "== digest sidecar: mtime-independent, content-sensitive =="
 SRC2="$TMP/skip-src"; mkdir -p "$SRC2"
@@ -108,7 +110,9 @@ tar -xzf "$TMP/race-restored/race-src.tar.gz" -C "$TMP/race-restored"
 COMPONENT_DIGEST=$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('$TMP/race-restored/manifest.json','utf8')).components[0].content_digest)")
 BIG_SHA=$(sha "$TMP/race-restored/race-src/big.bin")
 BIG_SIZE=$(wc -c < "$TMP/race-restored/race-src/big.bin" | tr -d ' ')
-EXPECTED=$(printf 'big.bin\tf\t%s\t%s\n' "$BIG_SHA" "$BIG_SIZE" | shasum -a 256 | cut -d' ' -f1)
+# per-file tuple now carries a trailing octal mode field (round 2, permission-bit fix)
+BIG_MODE=$(node -e "console.log((require('node:fs').statSync('$TMP/race-restored/race-src/big.bin').mode & 0o777).toString(8).padStart(3,'0'))")
+EXPECTED=$(printf 'big.bin\tf\t%s\t%s\t%s\n' "$BIG_SHA" "$BIG_SIZE" "$BIG_MODE" | shasum -a 256 | cut -d' ' -f1)
 [ "$COMPONENT_DIGEST" = "$EXPECTED" ] || { echo "[FAIL] component digest does not match a recomputation from the archived bytes: $COMPONENT_DIGEST vs $EXPECTED"; exit 1; }
 echo "[PASS] component digest matches the archived bytes exactly, even with a source mutation racing the tar read"
 
@@ -152,13 +156,67 @@ cb push --in "$TMP/id2.age" --backend file --save-locator "$IDLOCFILE" --skip-un
 if grep -q "SKIPPED" "$TMP/id.err"; then echo "[FAIL] --skip-unchanged skipped a differently-named/sourced component with identical bytes"; exit 1; fi
 echo "[PASS] --skip-unchanged does not skip when the declared source/name differs (even with identical bytes)"
 
-echo "== push --save-locator writes the 4-field line (locator/backend/sha256/content_digest) =="
+echo "== #70 review round 2, issue 1: adding a --recipient must NOT let --skip-unchanged return a stale locator =="
+# A second, independent identity (the "offline recovery key" MANAGEMENT.md's
+# single-recipient warning tells operators to add) -- its recipient.txt is a valid
+# --recipient FILE argument, same as any recipients file.
+CIPHER_BRAIN_HOME="$TMP/keys2" cb keygen >/dev/null
+RECIP2="$TMP/keys2/recipient.txt"
+DEFAULT_RECIP="$TMP/keys/recipient.txt"
+
+SRC5="$TMP/rcpt-src"; mkdir -p "$SRC5"
+printf 'same plaintext across a recipient change\n' > "$SRC5/f.txt"
+RLOC="$TMP/rcpt-locator.tsv"
+cb snapshot --dir "$SRC5" --out "$TMP/r1.age"                                    # default single recipient
+LOC_R1=$(cb push --in "$TMP/r1.age" --backend file --save-locator "$RLOC")
+
+# same plaintext, but a SECOND recipient (the recovery key) is now ALSO encrypted to
+# -- byte-identical content_digest, but a DIFFERENT recipients_fingerprint.
+cb snapshot --dir "$SRC5" --out "$TMP/r2.age" --recipient "$DEFAULT_RECIP" --recipient "$RECIP2"
+[ "$(cat "$TMP/r1.age.digest")" = "$(cat "$TMP/r2.age.digest")" ] || { echo "[FAIL] test setup: r1/r2 content digests differ, they must be identical for this to test the recipients signal"; exit 1; }
+[ "$(cat "$TMP/r1.age.recipients-fingerprint")" != "$(cat "$TMP/r2.age.recipients-fingerprint")" ] || { echo "[FAIL] test setup: recipients-fingerprint did not change after adding a --recipient"; exit 1; }
+OUT_R2=$(cb push --in "$TMP/r2.age" --backend file --save-locator "$RLOC" --skip-unchanged 2>"$TMP/r2.err")
+if grep -q "SKIPPED" "$TMP/r2.err"; then echo "[FAIL] --skip-unchanged skipped after the recipient set changed (added a recovery key)"; exit 1; fi
+[ "$OUT_R2" != "$LOC_R1" ] || { echo "[FAIL] push after a recipient-set change returned the OLD locator"; exit 1; }
+echo "[PASS] adding a --recipient with unchanged plaintext -> --skip-unchanged does NOT skip (proceeds, new locator)"
+
+echo "== #70 review round 2 (no regression): unchanged plaintext AND unchanged recipient set still SKIPs =="
+BLOC="$TMP/same-rcpt-locator.tsv"
+LOC_R1B=$(cb push --in "$TMP/r1.age" --backend file --save-locator "$BLOC")
+cb snapshot --dir "$SRC5" --out "$TMP/r3.age"   # SAME plaintext, SAME default single-recipient set as r1
+OUT_R3=$(cb push --in "$TMP/r3.age" --backend file --save-locator "$BLOC" --skip-unchanged 2>"$TMP/r3.err")
+grep -q "SKIPPED" "$TMP/r3.err" || { echo "[FAIL] --skip-unchanged did not skip when both content AND recipient set are unchanged (regression)"; exit 1; }
+[ "$OUT_R3" = "$LOC_R1B" ] || { echo "[FAIL] skip did not return the previous locator: $OUT_R3"; exit 1; }
+echo "[PASS] content unchanged + recipients unchanged -> --skip-unchanged still skips (core feature intact)"
+
+echo "== #70 review round 2, issue 2: chmod'd file permissions must NOT be masked by --skip-unchanged =="
+SRC6="$TMP/mode-src"; mkdir -p "$SRC6"
+printf '#!/bin/sh\necho hi\n' > "$SRC6/script.sh"
+chmod 644 "$SRC6/script.sh"
+cb snapshot --dir "$SRC6" --out "$TMP/m1.age"
+D_M1=$(cat "$TMP/m1.age.digest")
+MLOC="$TMP/mode-locator.tsv"
+LOC_M1=$(cb push --in "$TMP/m1.age" --backend file --save-locator "$MLOC")
+chmod 755 "$SRC6/script.sh"   # executable bit flipped -- byte content unchanged
+cb snapshot --dir "$SRC6" --out "$TMP/m2.age"
+D_M2=$(cat "$TMP/m2.age.digest")
+[ "$D_M1" != "$D_M2" ] || { echo "[FAIL] digest unchanged after chmod +x (permission bits not folded into the digest)"; exit 1; }
+echo "[PASS] chmod +x on a --dir source file changes the content digest"
+OUT_M2=$(cb push --in "$TMP/m2.age" --backend file --save-locator "$MLOC" --skip-unchanged 2>"$TMP/m2.err")
+if grep -q "SKIPPED" "$TMP/m2.err"; then echo "[FAIL] --skip-unchanged skipped a snapshot whose only change was a file's permission bits"; exit 1; fi
+[ "$OUT_M2" != "$LOC_M1" ] || { echo "[FAIL] chmod-only-change push returned the OLD locator"; exit 1; }
+echo "[PASS] chmod +x on a --dir source file -> --skip-unchanged does NOT skip"
+
+echo "== push --save-locator writes the 5-field line (locator/backend/sha256/content_digest/recipients_fingerprint) =="
+[ -f "$TMP/s1.age.recipients-fingerprint" ] || { echo "[FAIL] no recipients-fingerprint sidecar next to s1.age"; exit 1; }
+RF1=$(cat "$TMP/s1.age.recipients-fingerprint")
 LOCFILE="$TMP/latest-locator.tsv"
 LOC1=$(cb push --in "$TMP/s1.age" --backend file --save-locator "$LOCFILE")
 NF=$(awk -F'\t' 'NR==1{print NF}' "$LOCFILE")
-[ "$NF" = "4" ] || { echo "[FAIL] save-locator line has $NF fields, want 4"; exit 1; }
-[ "$(cut -f4 "$LOCFILE")" = "$D1" ] || { echo "[FAIL] 4th field != sidecar digest"; exit 1; }
-echo "[PASS] save-locator line has 4 fields; 4th == the content digest"
+[ "$NF" = "5" ] || { echo "[FAIL] save-locator line has $NF fields, want 5"; exit 1; }
+[ "$(cut -f4 "$LOCFILE")" = "$D1" ] || { echo "[FAIL] 4th field != content digest sidecar"; exit 1; }
+[ "$(cut -f5 "$LOCFILE")" = "$RF1" ] || { echo "[FAIL] 5th field != recipients-fingerprint sidecar"; exit 1; }
+echo "[PASS] save-locator line has 5 fields; 4th == content digest, 5th == recipients fingerprint"
 
 echo "== push #2 (unchanged content) --skip-unchanged: SKIPs, previous locator, exit 0, no new object =="
 COUNT_BEFORE=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
@@ -185,10 +243,10 @@ echo "[PASS] pull --from-locator-file accepts a legacy 3-field line (recovery un
 cb push --in "$TMP/s2.age" --backend file --save-locator "$LEGACY" --skip-unchanged >"$TMP/legacy.out" 2>"$TMP/legacy.err"
 if grep -q "SKIPPED" "$TMP/legacy.err"; then echo "[FAIL] skipped off a legacy 3-field line (no digest to compare)"; exit 1; fi
 NF_LEGACY=$(awk -F'\t' 'NR==1{print NF}' "$LEGACY")
-[ "$NF_LEGACY" = "4" ] || { echo "[FAIL] proceeding push did not upgrade the legacy file to 4 fields"; exit 1; }
-echo "[PASS] legacy 3-field line: push proceeded (no skip) and rewrote a 4-field line"
+[ "$NF_LEGACY" = "5" ] || { echo "[FAIL] proceeding push did not upgrade the legacy file to 5 fields"; exit 1; }
+echo "[PASS] legacy 3-field line: push proceeded (no skip) and rewrote a 5-field line"
 
-echo "== changed content with --skip-unchanged: proceeds and rewrites the 4-field line =="
+echo "== changed content with --skip-unchanged: proceeds and rewrites the save-locator line =="
 COUNT_E=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
 cb push --in "$TMP/s3.age" --backend file --save-locator "$LOCFILE" --skip-unchanged >"$TMP/e.out" 2>"$TMP/e.err"
 if grep -q "SKIPPED" "$TMP/e.err"; then echo "[FAIL] changed content was skipped"; exit 1; fi

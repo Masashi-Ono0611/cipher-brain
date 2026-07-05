@@ -39,7 +39,7 @@ export const AR_DEFAULT_EXTRA_GATEWAYS = ['https://permagate.io']; // public mir
 export const AR_HTTP_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_AR_HTTP_TIMEOUT || 60000); // bound the gateway read so a stall falls through to the L1 chunk fallback
 // Spend guard: arweave/turbo uploads are irreversible and cost real funds. Require an
 // explicit opt-in so an unattended nightly loop doesn't silently accumulate charges.
-//   CIPHER_BRAIN_YES=1  — set in the cadence script to suppress the --yes prompt
+//   CIPHER_BRAIN_YES=1  — set in the nightly runner (`schedule install` writes it for paid backends) to suppress the --yes prompt
 //   CIPHER_BRAIN_MAX_SPEND — abort if the upload cost estimate (in the backend's native
 //     unit: winston for arweave L1, winc for turbo) exceeds this value; 0/unset = no cap
 //     (the --yes guard still fires). Prevents runaway spend without changing behaviour

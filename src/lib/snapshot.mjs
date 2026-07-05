@@ -1,5 +1,5 @@
 // snapshot — stage components (pg_dump / dirs / manifest.json), then stream tar|age.
-import { mkdir, writeFile, rm, stat, rename, link, readdir, readlink } from 'node:fs/promises';
+import { mkdir, writeFile, rm, stat, lstat, rename, link, readdir, readlink } from 'node:fs/promises';
 import { mkdtempSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join, basename, dirname, resolve, relative, sep } from 'node:path';
@@ -41,14 +41,23 @@ const hexOf = (s) => createHash('sha256').update(s).digest('hex');
 // ephemeral file key per run, so identical content encrypts to DIFFERENT ciphertext
 // bytes every time — the ciphertext sha256 can never say "unchanged". Explicitly
 // independent of mtimes and of the tar byte stream (tar records mtimes/order):
+//   - top-level symlink → the link's OWN identity (what it points to), never its
+//            target's content. tar archives an explicit symlink argument as the
+//            link itself (bsdtar/GNU tar both default to not dereferencing — the
+//            same class of bug profiles.mjs's realpath-dereference comment fixes
+//            for --vault/--zip/claude-code paths), so a target swapped for a
+//            different path — even one with byte-identical content — changes
+//            what actually gets archived and must change the digest too.
 //   - file → the file's sha256
 //   - dir  → sha256 over the "\n"-joined, path-sorted lines
 //            "<relpath>\t<kind>\t<per-file sha256>\t<size>" for everything under it.
-//            Symlinks hash their target string; other specials (FIFOs, sockets) hash
-//            as a bare kind marker — reading them could hang, and their presence
-//            still perturbs the digest.
+//            Nested symlinks hash their target string; other specials (FIFOs,
+//            sockets) hash as a bare kind marker — reading them could hang, and
+//            their presence still perturbs the digest.
 async function contentDigestOfPath(abs) {
-  if (!(await stat(abs)).isDirectory()) return sha256(abs);
+  const top = await lstat(abs);
+  if (top.isSymbolicLink()) return hexOf(`l\t${await readlink(abs)}`);
+  if (!top.isDirectory()) return sha256(abs);
   const lines = [];
   for (const d of await readdir(abs, { recursive: true, withFileTypes: true })) {
     const full = join(d.parentPath, d.name);
@@ -163,16 +172,42 @@ export async function snapshot(o) {
       // a path can be a directory OR a single file (profiles pass e.g. CLAUDE.md,
       // a ChatGPT export zip) — tar archives both; record which in the manifest.
       const kind = (await stat(abs)).isDirectory() ? 'dir' : 'file';
-      // content_digest BEFORE the tar (of the SOURCE, not the archive): tar bytes embed
-      // mtimes, so hashing them would defeat the mtime-independence --skip-unchanged needs.
-      const contentDigest = await contentDigestOfPath(abs);
-      await run('tar', ['-czf', join(stage, name), '-C', dirname(abs), basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar
+      const archivePath = join(stage, name);
+      await run('tar', ['-czf', archivePath, '-C', dirname(abs), basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar
+      // content_digest AFTER the tar, computed from the ARCHIVE'S OWN bytes (extract to a
+      // throwaway dir and hash THAT with the unchanged contentDigestOfPath) rather than a
+      // second, independent read of the live source. Two independent reads (a digest walk,
+      // then tar's own read) leave a race: a source mutated in the narrow window between
+      // them would archive NEW bytes while the digest still describes the OLD ones — a
+      // stale-looking "unchanged" digest sitting next to genuinely different archived
+      // content (#70 review). Hashing what tar itself just wrote closes that gap: the
+      // digest can never describe content other than what got archived. Still independent
+      // of mtimes/order and of the tar byte stream itself — contentDigestOfPath only reads
+      // content bytes / symlink targets from the extraction, never tar's own headers.
+      const extractDir = join(stage, `.extract-${name}`);
+      await mkdir(extractDir);
+      let contentDigest;
+      try {
+        await run('tar', ['-xzf', archivePath, '-C', extractDir], { timeoutMs: PIPE_TIMEOUT_MS });
+        contentDigest = await contentDigestOfPath(join(extractDir, basename(abs)));
+      } finally {
+        // must not leak into the snapshot: the final encryptToFile below tars stage/. whole
+        await rm(extractDir, { recursive: true, force: true });
+      }
       components.push({ name, kind, source: abs, content_digest: contentDigest, captured_at: new Date().toISOString() }); // skew vs the DB is now detectable on restore
     }
-    // Combined content digest = sha256 of the per-component digests joined in
-    // component order. Same content in the same component order → same digest,
-    // regardless of mtimes or the (ephemeral-file-key) ciphertext bytes.
-    const contentDigest = hexOf(components.map((c) => c.content_digest).join('\n') + '\n');
+    // Combined content digest = sha256 over each component's (declared identity, kind,
+    // content_digest) joined in component order. Identity, not just bytes: hashing bare
+    // content digests would leave `--dir old-path` and `--dir new-path` (or a renamed
+    // --vault-like source) indistinguishable whenever the underlying bytes happen to be
+    // byte-identical, so --skip-unchanged could return the OLD locator — whose restored
+    // manifest/archive still labels things under the old name/path — for what was actually
+    // asked to be a differently-named/sourced snapshot (#70 review). Identity is
+    // deliberately the DECLARED source path (or name, for pg_dump which has no source
+    // path) — never anything volatile like mtime. Same content, same identity, same
+    // component order → same digest, regardless of mtimes or the (ephemeral-file-key)
+    // ciphertext bytes.
+    const contentDigest = hexOf(components.map((c) => `${c.source ?? c.name}\t${c.kind}\t${c.content_digest}`).join('\n') + '\n');
     // manifest carries NO secrets — just what's inside (+ capture timestamps so a
     // DB↔files skew is detectable after the fact, + which --profile produced it,
     // if any), so restore is self-describing.

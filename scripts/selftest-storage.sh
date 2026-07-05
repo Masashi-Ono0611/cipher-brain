@@ -85,6 +85,73 @@ D3=$(cat "$TMP/s3.age.digest")
 [ "$D1" != "$D3" ] || { echo "[FAIL] digest identical after a one-byte content change"; exit 1; }
 echo "[PASS] one changed byte -> different digest"
 
+echo "== #70 review fix 1: content_digest reflects the ARCHIVED bytes, not a stale independent pre-tar read =="
+# Race-style repro: mutate the source WHILE snapshot is (possibly) still tar/gzip-ing
+# it. Big + incompressible so the archive step takes measurable wall-clock time,
+# widening the window. The assertion below must hold no matter which content wins
+# the race -- it directly checks the invariant fix 1 provides: the digest can never
+# describe content other than what actually got archived (previously the digest was
+# a SEPARATE, independent walk of the live source taken BEFORE tar read it).
+SRC4="$TMP/race-src"; mkdir -p "$SRC4"
+head -c 8000000 /dev/urandom > "$SRC4/big.bin"
+cb snapshot --dir "$SRC4" --out "$TMP/race.age" &
+SNAP_PID=$!
+sleep 0.05
+head -c 8000000 /dev/urandom > "$SRC4/big.bin"   # mutate mid-flight
+wait "$SNAP_PID"
+[ -f "$TMP/race.age.digest" ] || { echo "[FAIL] no digest sidecar for the race snapshot"; exit 1; }
+cb restore --in "$TMP/race.age" --out-dir "$TMP/race-restored" >/dev/null
+tar -xzf "$TMP/race-restored/race-src.tar.gz" -C "$TMP/race-restored"
+# the per-COMPONENT content_digest (manifest.json, what fix 1 computes) must match a
+# recomputation from what was ACTUALLY archived (the restored/extracted bytes) --
+# exactly, regardless of which content won the race.
+COMPONENT_DIGEST=$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('$TMP/race-restored/manifest.json','utf8')).components[0].content_digest)")
+BIG_SHA=$(sha "$TMP/race-restored/race-src/big.bin")
+BIG_SIZE=$(wc -c < "$TMP/race-restored/race-src/big.bin" | tr -d ' ')
+EXPECTED=$(printf 'big.bin\tf\t%s\t%s\n' "$BIG_SHA" "$BIG_SIZE" | shasum -a 256 | cut -d' ' -f1)
+[ "$COMPONENT_DIGEST" = "$EXPECTED" ] || { echo "[FAIL] component digest does not match a recomputation from the archived bytes: $COMPONENT_DIGEST vs $EXPECTED"; exit 1; }
+echo "[PASS] component digest matches the archived bytes exactly, even with a source mutation racing the tar read"
+
+echo "== #70 review fix 2: a top-level symlinked --dir source hashes the LINK's identity, not its target's content =="
+# tar archives an explicit symlink argument AS the link (not dereferenced) -- same
+# class of bug profiles.mjs's realpath-dereference comment fixes for --vault/--zip.
+# Swapping the target to a DIFFERENT path, even one with byte-identical content,
+# must change the digest: the archived representation (a symlink recording that
+# target) changed, even though a naive content-follow would see no difference.
+mkdir -p "$TMP/symtargetA" "$TMP/symtargetB"
+printf 'identical content\n' > "$TMP/symtargetA/f.txt"
+printf 'identical content\n' > "$TMP/symtargetB/f.txt"
+ln -s "$TMP/symtargetA" "$TMP/symlinked-dir"
+cb snapshot --dir "$TMP/symlinked-dir" --out "$TMP/sym1.age"
+[ -f "$TMP/sym1.age.digest" ] || { echo "[FAIL] no digest sidecar for the symlinked --dir snapshot"; exit 1; }
+SYM_D1=$(cat "$TMP/sym1.age.digest")
+rm -f "$TMP/symlinked-dir"
+ln -s "$TMP/symtargetB" "$TMP/symlinked-dir"   # same link name, byte-identical target content, DIFFERENT target path
+cb snapshot --dir "$TMP/symlinked-dir" --out "$TMP/sym2.age"
+SYM_D2=$(cat "$TMP/sym2.age.digest")
+[ "$SYM_D1" != "$SYM_D2" ] || { echo "[FAIL] digest unchanged after swapping the symlink's target (byte-identical content masked a real archived-representation change)"; exit 1; }
+echo "[PASS] swapping a top-level symlink's target changes the digest, even though the pointed-to content is byte-identical"
+
+echo "== #70 review fix 3: identical bytes under a DIFFERENT declared --dir path/name change the combined digest =="
+# Renaming/moving a --dir source with byte-identical content must not look
+# "unchanged": the restored manifest/archive still labels things under the OLD
+# name/path, so --skip-unchanged returning the old locator would be a correctness
+# violation, not an optimization.
+mkdir -p "$TMP/named-a" "$TMP/named-b"
+printf 'identical bytes\n' > "$TMP/named-a/f.txt"
+printf 'identical bytes\n' > "$TMP/named-b/f.txt"
+cb snapshot --dir "$TMP/named-a" --out "$TMP/id1.age"
+D_ID1=$(cat "$TMP/id1.age.digest")
+cb snapshot --dir "$TMP/named-b" --out "$TMP/id2.age"
+D_ID2=$(cat "$TMP/id2.age.digest")
+[ "$D_ID1" != "$D_ID2" ] || { echo "[FAIL] identically-byted components under different declared names produced the SAME digest"; exit 1; }
+echo "[PASS] same bytes, different declared --dir name -> different digest"
+IDLOCFILE="$TMP/identity-locator.tsv"
+cb push --in "$TMP/id1.age" --backend file --save-locator "$IDLOCFILE" >/dev/null
+cb push --in "$TMP/id2.age" --backend file --save-locator "$IDLOCFILE" --skip-unchanged 2>"$TMP/id.err" >/dev/null
+if grep -q "SKIPPED" "$TMP/id.err"; then echo "[FAIL] --skip-unchanged skipped a differently-named/sourced component with identical bytes"; exit 1; fi
+echo "[PASS] --skip-unchanged does not skip when the declared source/name differs (even with identical bytes)"
+
 echo "== push --save-locator writes the 4-field line (locator/backend/sha256/content_digest) =="
 LOCFILE="$TMP/latest-locator.tsv"
 LOC1=$(cb push --in "$TMP/s1.age" --backend file --save-locator "$LOCFILE")

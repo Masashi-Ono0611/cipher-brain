@@ -25,17 +25,20 @@
 // in src/lib/ (config, proc, util, signal-guard, identity, snapshot, restore,
 // pushpull, backends/).
 
-import { IDENTITY } from './lib/config.mjs';
-import { keygen } from './lib/keys.mjs';
-import { snapshot } from './lib/snapshot.mjs';
-import { restore, verify } from './lib/restore.mjs';
-import { push, pull } from './lib/pushpull.mjs';
-import { schedule } from './lib/schedule.mjs';
+import { IDENTITY } from './lib/config.js';
+import { keygen } from './lib/keys.js';
+import { snapshot } from './lib/snapshot.js';
+import { restore, verify } from './lib/restore.js';
+import { push, pull } from './lib/pushpull.js';
+import { schedule } from './lib/schedule.js';
+import { errMsg } from './lib/util.js';
+import type { CliOptions } from './lib/types.js';
 
 const BOOL_FLAGS = new Set(['force', 'passphrase', 'yes', 'force_vault', 'skip_unchanged', 'no_load']); // flags that take no value
 
-function parseArgs(argv) {
-  const o = { dirs: [], tables: [], recipients: [] };
+function parseArgs(argv: string[]): CliOptions {
+  const o: CliOptions = { dirs: [], tables: [], recipients: [] };
+  const rec = o as unknown as Record<string, string | boolean | undefined>;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dir') o.dirs.push(argv[++i]);
@@ -43,7 +46,7 @@ function parseArgs(argv) {
     else if (a === '--recipient') o.recipients.push(argv[++i]); // repeatable: key recovery
     else if (a.startsWith('--')) {
       const key = a.slice(2).replace(/-/g, '_');
-      o[key] = BOOL_FLAGS.has(key) ? true : argv[++i];
+      rec[key] = BOOL_FLAGS.has(key) ? true : argv[++i];
     } else o._ = a;
   }
   return o;
@@ -155,7 +158,7 @@ Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,T
          turbo: CIPHER_BRAIN_AR_WALLET (JWK signer) + optional CIPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
 Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the turbo estimate (winc).`;
 
-async function main() {
+async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   const o = parseArgs(rest);
   switch (cmd) {
@@ -171,4 +174,4 @@ async function main() {
   }
 }
 
-main().catch((e) => { console.error(`error: ${e.message}`); process.exitCode = 1; });
+main().catch((e: unknown) => { console.error(`error: ${errMsg(e)}`); process.exitCode = 1; });

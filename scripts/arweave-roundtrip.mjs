@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
+import { DEV_ARGS } from './dev-node-flags.mjs';
 
 const PORT = Number(process.env.CB_ARLOCAL_PORT || 1984);
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -54,11 +55,18 @@ try {
     CIPHER_BRAIN_AR_PROTOCOL: 'http',
     CIPHER_BRAIN_AR_WALLET: walletPath,
     CIPHER_BRAIN_YES: '1', // arlocal (test) — no real funds; bypass the interactive --yes guard
+    // $BIN (bin/cipher-brain.mjs) imports src/cli.ts directly (no build step); its
+    // internal imports use the OUTPUT extension (`./lib/config.js`, #63), which plain
+    // node needs help resolving back to the sibling .ts file — see
+    // scripts/dev-ts-resolve-hook.mjs. DEV_ARGS (scripts/dev-node-flags.mjs) is passed
+    // as literal argv elements on every spawnSync('node', [...DEV_ARGS, BIN, ...])
+    // below — NEVER via env.NODE_OPTIONS, which is whitespace-split by node and would
+    // break under a checkout path containing a space.
   };
   // AR_HOST=localhost is not the default arweave.net, so arGateways() yields only the
   // derived arlocal gateway (no public mirrors) — the test never egresses.
   const cb = (...args) => {
-    const r = spawnSync('node', [BIN, ...args], { env, encoding: 'utf8' });
+    const r = spawnSync('node', [...DEV_ARGS, BIN, ...args], { env, encoding: 'utf8' });
     if (r.status !== 0) throw new Error(`cb ${args.join(' ')} failed (${r.status}): ${r.stderr || r.stdout}`);
     return r.stdout.trim();
   };
@@ -77,7 +85,7 @@ try {
   // artifact must be REJECTED up front with an actionable redirect to --backend turbo,
   // not buffered and 400'd. Force a tiny limit so the ~10 KB snapshot trips it.
   log('size guard: oversized L1 push is refused with a turbo redirect');
-  const sg = spawnSync('node', [BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'],
+  const sg = spawnSync('node', [...DEV_ARGS, BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'],
     { env: { ...env, CIPHER_BRAIN_AR_L1_MAX: '1' }, encoding: 'utf8' });
   (sg.status !== 0 && /--backend turbo/.test(sg.stderr) && /exceeds/.test(sg.stderr))
     ? pass('size guard: oversized L1 push is refused with a turbo redirect')
@@ -89,14 +97,14 @@ try {
   // bakes CIPHER_BRAIN_YES=1 into the unattended runner, so this cap is the only thing
   // standing between an operator's requested budget and an uncapped nightly L1 spend.
   log('spend cap: a tiny CIPHER_BRAIN_MAX_SPEND aborts the L1 push before signing');
-  const capFail = spawnSync('node', [BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'],
+  const capFail = spawnSync('node', [...DEV_ARGS, BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'],
     { env: { ...env, CIPHER_BRAIN_MAX_SPEND: '1' }, encoding: 'utf8' });
   (capFail.status !== 0 && /L1 cost estimate/.test(capFail.stderr) && /exceeds CIPHER_BRAIN_MAX_SPEND/.test(capFail.stderr))
     ? pass('spend cap: a 1-winston cap aborts the upload with a real (not skipped) cost estimate')
     : fail(`spend cap did not abort as expected: status=${capFail.status} stderr=${(capFail.stderr || '').slice(0, 200)}`);
 
   log('spend cap: a generous CIPHER_BRAIN_MAX_SPEND still lets the push through');
-  const capOk = spawnSync('node', [BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'],
+  const capOk = spawnSync('node', [...DEV_ARGS, BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'],
     { env: { ...env, CIPHER_BRAIN_MAX_SPEND: '100000000000000' }, encoding: 'utf8' });
   (capOk.status === 0 && TX_RE.test(capOk.stdout.trim()))
     ? pass('spend cap: an under-cap CIPHER_BRAIN_MAX_SPEND still lets the push through')
@@ -115,7 +123,7 @@ try {
   const pullEnv = { ...env };
   delete pullEnv.CIPHER_BRAIN_AR_WALLET;
   log('pull (no wallet)');
-  const rp = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'got.age')], { env: pullEnv, encoding: 'utf8' });
+  const rp = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'got.age')], { env: pullEnv, encoding: 'utf8' });
   rp.status === 0 ? pass('pull works with only the tx id (no upload wallet needed)') : fail(`pull without wallet failed: ${rp.stderr}`);
   const got = await readFile(join(tmp, 'got.age'));
   sha(got) === cipherSha ? pass('pulled bytes == pushed ciphertext (byte-identical)') : fail('pulled bytes differ');
@@ -130,12 +138,12 @@ try {
 
   // negative control: an unknown (but well-formed) tx id returns no bytes
   const badId = 'A'.repeat(43);
-  const r = spawnSync('node', [BIN, 'pull', '--locator', badId, '--backend', 'arweave', '--out', join(tmp, 'bad.age')], { env, encoding: 'utf8' });
+  const r = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', badId, '--backend', 'arweave', '--out', join(tmp, 'bad.age')], { env, encoding: 'utf8' });
   r.status !== 0 ? pass('negative control: unknown tx id fails') : fail('unknown tx id unexpectedly succeeded');
 
   // guard: a malformed locator must be rejected BEFORE it is interpolated into the
   // gateway URL the get() HTTP read builds (path-traversal/SSRF guard)
-  const bad2 = spawnSync('node', [BIN, 'pull', '--locator', '../../etc/passwd', '--backend', 'arweave', '--out', join(tmp, 'bad2.age')], { env, encoding: 'utf8' });
+  const bad2 = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', '../../etc/passwd', '--backend', 'arweave', '--out', join(tmp, 'bad2.age')], { env, encoding: 'utf8' });
   (bad2.status !== 0 && /invalid tx id/.test(bad2.stderr))
     ? pass('guard: malformed locator rejected (no SSRF/path-traversal)')
     : fail('malformed locator was not rejected by the id guard');
@@ -145,7 +153,7 @@ try {
   // Without this the fallback is never exercised — arlocal serves GET /{id}, so the
   // happy path above always wins on path 1.
   const fbEnv = { ...env, CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1' }; // connection refused → path 1 fails fast
-  const fb = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'fb.age')], { env: fbEnv, encoding: 'utf8' });
+  const fb = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'fb.age')], { env: fbEnv, encoding: 'utf8' });
   (fb.status === 0 && sha(await readFile(join(tmp, 'fb.age'))) === cipherSha)
     ? pass('fallback: L1 chunk read serves when the gateway HTTP path is dead')
     : fail(`fallback path did not serve via getData: ${fb.stderr || 'bytes differ'}`);
@@ -153,7 +161,7 @@ try {
   // --wait retry (#19): a not-yet-available id with a wait budget retries (then still
   // fails for a truly-missing id). A short retry interval keeps the test fast.
   const wEnv = { ...env, CIPHER_BRAIN_PULL_RETRY_MS: '150' };
-  const w = spawnSync('node', [BIN, 'pull', '--locator', 'B'.repeat(43), '--backend', 'arweave', '--out', join(tmp, 'w.age'), '--wait', '1'], { env: wEnv, encoding: 'utf8' });
+  const w = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', 'B'.repeat(43), '--backend', 'arweave', '--out', join(tmp, 'w.age'), '--wait', '1'], { env: wEnv, encoding: 'utf8' });
   (w.status !== 0 && /retrying/.test(w.stderr))
     ? pass('--wait retries while not retrievable, then fails for a truly-missing id')
     : fail(`--wait did not retry as expected: status=${w.status} stderr=${(w.stderr || '').slice(0, 160)}`);
@@ -163,7 +171,7 @@ try {
   // the L1 chunk fallback so ONLY gateway-2's HTTP read can satisfy this (otherwise the
   // chunk read would mask a loop that never advanced).
   const mgEnv = { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:1,http://localhost:${PORT}` };
-  const mg = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'mg.age')], { env: mgEnv, encoding: 'utf8' });
+  const mg = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'mg.age')], { env: mgEnv, encoding: 'utf8' });
   (mg.status === 0 && sha(await readFile(join(tmp, 'mg.age'))) === cipherSha)
     ? pass('multi-gateway: read falls through a dead gateway to a live one')
     : fail(`multi-gateway did not serve from the second gateway: ${mg.stderr || 'bytes differ'}`);
@@ -176,7 +184,7 @@ try {
   await new Promise((r) => badGw.listen(0, '127.0.0.1', r));
   const badPort = badGw.address().port;
   const bgOut = join(tmp, 'badgate.age');
-  const bg = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', bgOut],
+  const bg = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', bgOut],
     { env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${badPort}` }, encoding: 'utf8' });
   let bgWrote = false; try { await readFile(bgOut); bgWrote = true; } catch { /* not written = good */ }
   (bg.status !== 0 && !bgWrote)
@@ -188,7 +196,7 @@ try {
   const badGw2 = createServer((_q, res) => { res.writeHead(200); res.end('not ciphertext'); });
   await new Promise((r) => badGw2.listen(0, '127.0.0.1', r));
   const badPort2 = badGw2.address().port;
-  const ft = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'ft.age')],
+  const ft = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'ft.age')],
     { env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${badPort2},http://localhost:${PORT}` }, encoding: 'utf8' });
   (ft.status === 0 && sha(await readFile(join(tmp, 'ft.age'))) === cipherSha)
     ? pass('AGE_MAGIC gate: read falls through a non-ciphertext 200 to a healthy gateway')
@@ -212,7 +220,7 @@ try {
     const to = setTimeout(() => rej(new Error('ua stub did not start')), 8000);
     uaSrv.stdout.on('data', (d) => { const m = String(d).match(/READY:(\d+)/); if (m) { clearTimeout(to); res(m[1]); } });
   });
-  const ua = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'ua.age')],
+  const ua = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'ua.age')],
     { env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${uaPort}` }, encoding: 'utf8' });
   (ua.status === 0 && sha(await readFile(join(tmp, 'ua.age'))) === cipherSha)
     ? pass('User-Agent: the gateway read sends a UA (a UA-gated gateway serves the ciphertext)')
@@ -244,7 +252,7 @@ try {
       ssrfSrv.stdout.on('data', (d) => { const m = String(d).match(/READY:(\d+)/); if (m) { clearTimeout(to); res(m[1]); } });
     });
     const ssrfOut = join(tmp, `ssrf-${ssrfPort}.age`);
-    const ss = spawnSync('node', [BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', ssrfOut],
+    const ss = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', ssrfOut],
       { env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${ssrfPort}` }, encoding: 'utf8' });
     let ssrfWrote = false; try { await readFile(ssrfOut); ssrfWrote = true; } catch { /* not written = good */ }
     (ss.status !== 0 && !ssrfWrote && /SSRF guard|private\/loopback\/link-local/.test(ss.stderr))

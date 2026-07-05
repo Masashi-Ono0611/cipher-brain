@@ -6,11 +6,16 @@
 # machine that holds gbrain.
 set -euo pipefail
 
-BIN="$(cd "$(dirname "$0")/.." && pwd)/bin/cipher-brain.mjs"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/bin/cipher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+# build step) under plain node — see scripts/dev-node-flags.sh (never an exported
+# NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
+source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 export CIPHER_BRAIN_HOME="$TMP/keys"
-cb() { node "$BIN" "$@"; }
+cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 
 MARKER="secret-thought-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
 SRC="$TMP/brain-src"
@@ -116,7 +121,7 @@ SNAPSZ=$(wc -c < "$TMP/snap.age" | tr -d ' ')
 head -c $((SNAPSZ - 500)) "$TMP/snap.age" > "$TMP/trunc.age"
 RDIR="$TMP/restore-corrupt"   # does NOT pre-exist -> restore creates it -> must remove it on failure
 set +e
-CIPHER_BRAIN_HOME="$TMP/keys" node "$BIN" restore --in "$TMP/trunc.age" --out-dir "$RDIR" >/dev/null 2>&1; RC=$?
+CIPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/trunc.age" --out-dir "$RDIR" >/dev/null 2>&1; RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: restore of a truncated artifact unexpectedly succeeded"; exit 1; fi
 test ! -e "$RDIR" || { echo "FAIL: restore left a partial tree at $RDIR"; exit 1; }
@@ -143,7 +148,7 @@ exec "$REALTAR" "\$@"
 EOF
 chmod +x "$STUBBIN/tar"
 set +e
-OUT=$(PATH="$STUBBIN:$PATH" TAR_STUB_MODE=fail node "$BIN" snapshot --dir "$SRC" --out "$TMP/midfail.age" 2>&1); RC=$?
+OUT=$(PATH="$STUBBIN:$PATH" TAR_STUB_MODE=fail node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/midfail.age" 2>&1); RC=$?
 set -e
 [ "$RC" != "0" ] || { echo "FAIL: snapshot with a mid-stream tar death exited 0"; exit 1; }
 test ! -f "$TMP/midfail.age" || { echo "FAIL: mid-stream tar death left a truncated midfail.age"; exit 1; }
@@ -161,7 +166,7 @@ export TMPDIR="$TMP/stagedir-sig"; mkdir -p "$TMPDIR"
 # Invoke `node` DIRECTLY (not the cb() function): backgrounding a shell function makes
 # $! the subshell's pid, so `kill -INT $!` would hit the subshell and leave node
 # orphaned to run to completion — the signal would never reach the handler under test.
-PATH="$STUBBIN:$PATH" TAR_STUB_MODE=slow TAR_STUB_SLEEP=5 node "$BIN" snapshot --dir "$SRC" --out "$TMP/sig.age" >/dev/null 2>&1 &
+PATH="$STUBBIN:$PATH" TAR_STUB_MODE=slow TAR_STUB_SLEEP=5 node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/sig.age" >/dev/null 2>&1 &
 SNAP_PID=$!
 APPEARED=0
 for _ in $(seq 1 50); do
@@ -187,7 +192,7 @@ echo "== race: an --out that appears mid-snapshot is NOT clobbered (link promote
 # create --out externally before it promotes. link()+EEXIST must refuse, preserving the
 # external file — a plain rename would have clobbered it.
 RACE="$TMP/race-out.age"
-PATH="$STUBBIN:$PATH" TAR_STUB_MODE=slow TAR_STUB_SLEEP=3 node "$BIN" snapshot --dir "$SRC" --out "$RACE" >/dev/null 2>&1 &
+PATH="$STUBBIN:$PATH" TAR_STUB_MODE=slow TAR_STUB_SLEEP=3 node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$RACE" >/dev/null 2>&1 &
 RACE_PID=$!
 for _ in $(seq 1 50); do find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | grep -q . && break; sleep 0.1; done
 printf 'PRE-EXISTING-WINNER\n' > "$RACE"   # a "concurrent run" finished first
@@ -206,7 +211,7 @@ echo "== verify on a public-key-only box is PARTIAL (exit 2), never a false-gree
 PUBONLY="$TMP/pubonly"; mkdir -p "$PUBONLY"
 cp "$TMP/keys/recipient.txt" "$PUBONLY/recipient.txt"   # public key only — deliberately NO identity.age
 set +e
-OUT=$(CIPHER_BRAIN_HOME="$PUBONLY" node "$BIN" verify --in "$TMP/snap.age" 2>&1); RC=$?
+OUT=$(CIPHER_BRAIN_HOME="$PUBONLY" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/snap.age" 2>&1); RC=$?
 set -e
 if [ "$RC" != "2" ]; then echo "FAIL: public-key-only verify exited $RC, expected 2"; echo "$OUT"; exit 1; fi
 if ! printf '%s' "$OUT" | grep -q "VERDICT: PARTIAL"; then echo "FAIL: expected VERDICT: PARTIAL"; echo "$OUT"; exit 1; fi
@@ -218,15 +223,15 @@ PINHOME="$TMP/keys"   # the original keypair from the top of this test
 MYPUB=$(cat "$PINHOME/recipient.txt")
 # (a) matching allowlist -> snapshot succeeds
 CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$MYPUB" \
-  node "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-ok.age" >/dev/null
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-ok.age" >/dev/null
 echo "[PASS] snapshot allowed when the recipient is on the allowlist"
 # (b) a DIFFERENT key's pin -> snapshot must refuse (the injected-recipient case)
 OTHER="$TMP/other-key"; mkdir -p "$OTHER"
-CIPHER_BRAIN_HOME="$OTHER" node "$BIN" keygen >/dev/null
+CIPHER_BRAIN_HOME="$OTHER" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
 OTHERPUB=$(cat "$OTHER/recipient.txt")
 set +e
 CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$OTHERPUB" \
-  node "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-bad.age" >/dev/null 2>&1; RC=$?
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-bad.age" >/dev/null 2>&1; RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: snapshot encrypted to a non-allowlisted recipient"; exit 1; fi
 test ! -f "$TMP/pin-bad.age"
@@ -237,7 +242,7 @@ SSHMIX="$TMP/recipient-ssh-mix.txt"
 printf '%s\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIINJECTEDATTACKERKEYxxxxxxxxxxxxxxxxxxxxxx attacker\n' "$MYPUB" > "$SSHMIX"
 set +e
 CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$MYPUB" \
-  node "$BIN" snapshot --dir "$SRC" --recipient "$SSHMIX" --out "$TMP/pin-ssh.age" >/dev/null 2>&1; RC=$?
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --recipient "$SSHMIX" --out "$TMP/pin-ssh.age" >/dev/null 2>&1; RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: pin let through a file with an injected ssh recipient"; exit 1; fi
 test ! -f "$TMP/pin-ssh.age"
@@ -246,7 +251,7 @@ echo "[PASS] snapshot refused a recipient file with an injected ssh recipient"
 # as an inline key (regression for the includes('age1') path-detection bug).
 PINFILE="$TMP/age1-pins.txt"; printf '%s\n' "$MYPUB" > "$PINFILE"
 CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$PINFILE" \
-  node "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-file.age" >/dev/null
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-file.age" >/dev/null
 test -f "$TMP/pin-file.age"
 echo "[PASS] snapshot honored a file-based allowlist whose path contains 'age1'"
 # (e) a key present only in a COMMENT line of the allowlist file is NOT allowed
@@ -255,7 +260,7 @@ PINCOMMENT="$TMP/pins-with-comment.txt"
 printf '%s\n# rotated-out: %s\n' "$MYPUB" "$OTHERPUB" > "$PINCOMMENT"
 set +e
 CIPHER_BRAIN_HOME="$OTHER" CIPHER_BRAIN_PIN_RECIPIENTS="$PINCOMMENT" \
-  node "$BIN" snapshot --dir "$SRC" --recipient "$OTHER/recipient.txt" --out "$TMP/pin-comment.age" >/dev/null 2>&1; RC=$?
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --recipient "$OTHER/recipient.txt" --out "$TMP/pin-comment.age" >/dev/null 2>&1; RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: pin allowed a key that was only in a comment line"; exit 1; fi
 test ! -f "$TMP/pin-comment.age"
@@ -265,8 +270,8 @@ echo "== push arweave/turbo --yes guard: requires explicit opt-in before a paid 
 # Without --yes or CIPHER_BRAIN_YES, push to arweave/turbo must fail at the gate
 # (before the SDK / wallet is even loaded), so this test needs no external deps.
 set +e
-OUT_AR=$(node "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC_AR=$?
-OUT_TU=$(node "$BIN" push --in "$TMP/snap.age" --backend turbo  2>&1); RC_TU=$?
+OUT_AR=$(node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC_AR=$?
+OUT_TU=$(node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend turbo  2>&1); RC_TU=$?
 set -e
 [ "$RC_AR" != "0" ] || { echo "[FAIL] push arweave without --yes exited 0"; exit 1; }
 [ "$RC_TU" != "0" ] || { echo "[FAIL] push turbo without --yes exited 0"; exit 1; }
@@ -278,7 +283,7 @@ echo "[PASS] push arweave/turbo without --yes fails with clear guidance"
 # With CIPHER_BRAIN_YES=1 the --yes guard passes; the error moves further in
 # (wallet / SDK missing), which proves the guard no longer blocks.
 set +e
-OUT2=$(CIPHER_BRAIN_YES=1 node "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC2=$?
+OUT2=$(CIPHER_BRAIN_YES=1 node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC2=$?
 set -e
 [ "$RC2" != "0" ] || { echo "[FAIL] arweave push should fail (no wallet in test env)"; exit 1; }
 printf '%s' "$OUT2" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
@@ -296,7 +301,7 @@ printf 'process.on("SIGTERM",()=>{});\nsetTimeout(()=>process.exit(0),30000);\np
 TOUT="$TMP/timeout-snap.age"
 START=$(date +%s)
 set +e
-TERR=$(PATH="$STUBBIN:$PATH" TAR_STUB_MODE=wedge CIPHER_BRAIN_PIPE_TIMEOUT=600 node "$BIN" snapshot --dir "$SRC" --out "$TOUT" 2>&1); TRC=$?
+TERR=$(PATH="$STUBBIN:$PATH" TAR_STUB_MODE=wedge CIPHER_BRAIN_PIPE_TIMEOUT=600 node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TOUT" 2>&1); TRC=$?
 set -e
 ELAPSED=$(( $(date +%s) - START ))
 [ "$TRC" != "0" ] || { echo "[FAIL] wedged-tar snapshot exited 0"; exit 1; }
@@ -314,7 +319,7 @@ echo "[PASS] SIGTERM-ignoring tar killed via SIGKILL escalation in ${ELAPSED}s; 
 echo "== single-key warning counts DISTINCT keys, not --recipient args (#43) =="
 # one --recipient file holding TWO keys must NOT warn (recovery exists); a duplicate
 # (two args, same key) MUST warn.
-keygen2() { CIPHER_BRAIN_HOME="$1" node "$BIN" keygen >/dev/null 2>&1; }
+keygen2() { CIPHER_BRAIN_HOME="$1" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null 2>&1; }
 keygen2 "$TMP/k-a"; keygen2 "$TMP/k-b"
 MULTIREC="$TMP/multi-recipient.txt"
 cat "$TMP/k-a/recipient.txt" "$TMP/k-b/recipient.txt" > "$MULTIREC"

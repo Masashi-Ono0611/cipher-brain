@@ -38,7 +38,8 @@
   "scripts": {
     "build": "bun run scripts/build.ts",
     "prepack": "bun run scripts/build.ts",
-    "verify": "npm run build && npm run selftest && npm run selftest:profiles && npm run selftest:interop && npm run selftest:storage && npm run selftest:recovery && npm run selftest:schedule && npm run selftest:arweave && npm run selftest:arweave-nodeps && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "verify": "npm run build && npm run typecheck && npm run selftest && npm run selftest:profiles && npm run selftest:interop && npm run selftest:storage && npm run selftest:recovery && npm run selftest:schedule && npm run selftest:arweave && npm run selftest:arweave-nodeps && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
     "selftest": "bash scripts/selftest.sh",
     "selftest:profiles": "bash scripts/selftest-profiles.sh",
     "selftest:interop": "bash scripts/selftest-interop.sh",
@@ -49,7 +50,7 @@
     "selftest:arweave-nodeps": "node scripts/selftest-arweave-nodeps.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.6.0"
   },
   "license": "MIT",
   "peerDependencies": {
@@ -65,8 +66,10 @@
     }
   },
   "devDependencies": {
+    "@types/node": "^26.1.0",
     "arlocal": "^1.1.66",
-    "arweave": "^1.15.7"
+    "arweave": "^1.15.7",
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

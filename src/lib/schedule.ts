@@ -22,11 +22,12 @@
 // on the machine that runs it.
 
 import { mkdir, writeFile, readFile, rm, readdir, chmod } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { homedir } from 'node:os';
-import { join, resolve, basename, dirname } from 'node:path';
-import { HOME } from './config.mjs';
-import { exists } from './util.mjs';
+import { join, resolve, dirname } from 'node:path';
+import { HOME } from './config.js';
+import { exists } from './util.js';
+import type { CliOptions } from './types.js';
 
 export const SCHEDULE_DIR = process.env.CIPHER_BRAIN_SCHEDULE_DIR || join(HOME, 'schedule');
 const LAUNCHD_DIR = process.env.CIPHER_BRAIN_LAUNCHD_DIR || join(homedir(), 'Library', 'LaunchAgents');
@@ -53,7 +54,7 @@ const ENV_CAPTURE_VARS = [
   'CIPHER_BRAIN_AR_HTTP_TIMEOUT', 'CIPHER_BRAIN_AR_L1_MAX', 'CIPHER_BRAIN_PIPE_TIMEOUT',
 ];
 
-// Of ENV_CAPTURE_VARS, the ones config.mjs documents as naming a filesystem path (a
+// Of ENV_CAPTURE_VARS, the ones config.ts documents as naming a filesystem path (a
 // directory or a specific key/JWK file) rather than a bare value (a backend name, a
 // timeout, a spend cap, a hostname/URL/address) or — like CIPHER_BRAIN_TON_CLI, default
 // 'storage-daemon-cli' — a command name meant to be resolved via PATH at RUN time (which
@@ -63,23 +64,23 @@ const ENV_CAPTURE_VARS = [
 // unrelated cwd — so bake the ABSOLUTE path in, same treatment already given to
 // --vault/--zip/--recipient(file) below.
 const PATH_ENV_VARS = new Set([
-  'CIPHER_BRAIN_FILE_DIR', // config.mjs: "file backend object store"
-  'CIPHER_BRAIN_PG_BIN',   // config.mjs: "dir holding pg_dump/pg_restore"
-  'CIPHER_BRAIN_AR_WALLET', // config.mjs: "path to a JWK key file"
-  'CIPHER_BRAIN_TON_CLIENT', // ton.mjs: "storage-daemon-cli key paths" (-k)
-  'CIPHER_BRAIN_TON_SERVER', // ton.mjs: "storage-daemon-cli key paths" (-p)
+  'CIPHER_BRAIN_FILE_DIR', // config.ts: "file backend object store"
+  'CIPHER_BRAIN_PG_BIN',   // config.ts: "dir holding pg_dump/pg_restore"
+  'CIPHER_BRAIN_AR_WALLET', // config.ts: "path to a JWK key file"
+  'CIPHER_BRAIN_TON_CLIENT', // ton.ts: "storage-daemon-cli key paths" (-k)
+  'CIPHER_BRAIN_TON_SERVER', // ton.ts: "storage-daemon-cli key paths" (-p)
 ]);
 
 // Snapshot + resolve, at install time, every ENV_CAPTURE_VARS value that is actually set —
 // so the runner bakes in absolute paths, not values relative to whatever cwd the operator
 // happened to run `schedule install` from.
-async function captureEnv() {
-  const captured = {};
+async function captureEnv(): Promise<Record<string, string>> {
+  const captured: Record<string, string> = {};
   for (const v of ENV_CAPTURE_VARS) {
     const raw = process.env[v];
     if (!raw) continue;
     if (v === 'CIPHER_BRAIN_PIN_RECIPIENTS') {
-      // File-first, exactly like keys.mjs's resolvePinnedRecipients: if the value names
+      // File-first, exactly like keys.ts's resolvePinnedRecipients: if the value names
       // an existing file, it's a path — resolve it. Otherwise it's an inline age1... list
       // (or a not-yet-existing path — either way, resolve() would only mangle it), leave
       // it untouched.
@@ -94,21 +95,52 @@ async function captureEnv() {
 }
 
 // POSIX single-quote an arbitrary string for embedding in the generated script.
-const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+const shq = (s: unknown): string => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
-const parseAt = (at) => {
+const parseAt = (at: string): { hour: number; minute: number } => {
   const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(at);
   if (!m) throw new Error(`--at must be HH:MM (24h), got: ${at}`);
   return { hour: Number(m[1]), minute: Number(m[2]) };
 };
 
-function sh(cmd, args, { input } = {}) {
+function sh(cmd: string, args: string[], { input }: { input?: string } = {}): SpawnSyncReturns<string> {
   return spawnSync(cmd, args, { encoding: 'utf8', input });
 }
 
 // ---------- generated artifact bodies (deterministic) ----------
 
-function runnerBody(cfg) {
+// The resolved, install-time configuration every generated artifact (runner script,
+// launchd plist, cron line) is rendered from — and what schedule.json persists so
+// `status`/`uninstall` can read it back later.
+interface ScheduleConfig {
+  schema: number;
+  at: string;
+  hour: number;
+  minute: number;
+  backend: string;
+  profile?: string;
+  vault?: string;
+  zip?: string;
+  force_vault?: boolean;
+  pg?: string;
+  tables: string[];
+  dirs: string[];
+  recipients: string[];
+  save_locator: string;
+  index_file: string;
+  max_spend?: string;
+  home: string;
+  schedule_dir: string;
+  logs_dir: string;
+  runner: string;
+  node: string;
+  cli: string;
+  trigger: { type: 'launchd'; path: string } | { type: 'cron'; entry_file: string };
+  env: Record<string, string>;
+  tmpdir: string | null;
+}
+
+function runnerBody(cfg: ScheduleConfig): string {
   const cb = `${shq(cfg.node)} ${shq(cfg.cli)}`;
   // Environment the trigger will NOT have (launchd/cron start with a bare env):
   // bake the values that were in effect at install time so the unattended run
@@ -118,7 +150,7 @@ function runnerBody(cfg) {
   // plaintext on a disk with enough room — bake it in too, or a scheduled run silently
   // falls back to the system temp dir even though install was run with TMPDIR set.
   if (cfg.tmpdir) envLines.push(`export TMPDIR=${shq(cfg.tmpdir)}`);
-  // Every CIPHER_BRAIN_* var src/lib/config.mjs reads that a snapshot+push run could need,
+  // Every CIPHER_BRAIN_* var src/lib/config.ts reads that a snapshot+push run could need,
   // EXCEPT: CIPHER_BRAIN_HOME (baked above unconditionally), CIPHER_BRAIN_YES/MAX_SPEND
   // (baked separately below, only for paid backends), CIPHER_BRAIN_AGE/AGE_KEYGEN
   // (deprecated — age is bundled in-process now), and CIPHER_BRAIN_PASSPHRASE (only read
@@ -133,7 +165,7 @@ function runnerBody(cfg) {
   for (const [v, val] of Object.entries(cfg.env)) {
     envLines.push(`export ${v}=${shq(val)}`);
   }
-  const spendLines = [];
+  const spendLines: string[] = [];
   if (PAID.has(cfg.backend)) {
     spendLines.push(
       `# ${cfg.backend} is a paid, PERMANENT store. CIPHER_BRAIN_YES=1 grants the unattended`,
@@ -147,7 +179,7 @@ function runnerBody(cfg) {
       spendLines.push(`# export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer — required to push via ${cfg.backend}`);
     }
   }
-  const snapshotArgs = [];
+  const snapshotArgs: string[] = [];
   if (cfg.profile) snapshotArgs.push('--profile', shq(cfg.profile));
   if (cfg.vault) snapshotArgs.push('--vault', shq(cfg.vault));
   if (cfg.zip) snapshotArgs.push('--zip', shq(cfg.zip));
@@ -178,8 +210,8 @@ ${spendLines.length ? spendLines.join('\n') + '\n' : ''}
 sha256_of() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d ' ' -f 1; else sha256sum "$1" | cut -d ' ' -f 1; fi; }
 
 echo "== cipher-brain nightly run start: $(date -u +%FT%TZ) =="
-# Retry-safe naming: snapshot.mjs refuses to overwrite an existing --out (by design —
-# see src/lib/snapshot.mjs), so a name keyed on the date ALONE collides the moment this
+# Retry-safe naming: snapshot.ts refuses to overwrite an existing --out (by design —
+# see src/lib/snapshot.ts), so a name keyed on the date ALONE collides the moment this
 # runner is invoked twice on the same day (a manual test on install day, or a legitimate
 # retry after a transient failure). Key on date+time-of-day instead, and disambiguate
 # with a numeric suffix in the rare case two invocations land in the same second — this
@@ -204,7 +236,7 @@ echo "pushed -> ${cfg.backend}:$LOC"
 `;
 }
 
-function plistBody(cfg) {
+function plistBody(cfg: ScheduleConfig): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -227,14 +259,14 @@ function plistBody(cfg) {
 `;
 }
 
-const cronLine = (cfg) => `${cfg.minute} ${cfg.hour} * * * /bin/bash "${cfg.runner}" ${CRON_MARKER}`;
+const cronLine = (cfg: ScheduleConfig): string => `${cfg.minute} ${cfg.hour} * * * /bin/bash "${cfg.runner}" ${CRON_MARKER}`;
 
 // Escape a string for embedding as PLIST XML text content (e.g. inside <string>…</string>).
 // & must go first, or the entities the other replacements introduce would themselves be
 // re-escaped. Without this, a path containing any of these characters (plausible in a
 // $HOME or username, e.g. "O'Brien & Co") produces invalid XML that `launchctl bootstrap`
 // rejects even though the runner itself was generated fine.
-const xmlEscape = (s) => String(s)
+const xmlEscape = (s: unknown): string => String(s)
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
   .replace(/>/g, '&gt;')
@@ -243,8 +275,8 @@ const xmlEscape = (s) => String(s)
 
 // ---------- trigger registration ----------
 
-function loadLaunchd() {
-  const uid = process.getuid();
+function loadLaunchd(): void {
+  const uid = process.getuid?.();
   sh('launchctl', ['bootout', `gui/${uid}/${LABEL}`]); // clear a prior registration; failure = was not loaded, fine
   const r = sh('launchctl', ['bootstrap', `gui/${uid}`, PLIST]);
   if (r.error || r.status !== 0) {
@@ -252,26 +284,26 @@ function loadLaunchd() {
   }
 }
 
-function crontabText() {
+function crontabText(): string {
   const r = sh('crontab', ['-l']);
   if (r.error) throw new Error(`crontab not available: ${r.error.message}`);
   return r.status === 0 ? r.stdout : ''; // non-zero = no crontab for this user yet
 }
 
-function loadCron(entry) {
+function loadCron(entry: string): void {
   const kept = crontabText().split('\n').filter((l) => l.trim() && !l.includes(CRON_MARKER));
   const next = [...kept, entry].join('\n') + '\n';
   const r = sh('crontab', ['-'], { input: next });
   if (r.error || r.status !== 0) throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
 }
 
-// Resolve pg_dump's directory the SAME way config.mjs's PG_BIN is consumed (a directory
-// holding pg_dump/pg_restore, joined with the tool name — see config.mjs pgTool()), NOT
+// Resolve pg_dump's directory the SAME way config.ts's PG_BIN is consumed (a directory
+// holding pg_dump/pg_restore, joined with the tool name — see config.ts pgTool()), NOT
 // the pg_dump binary path itself. `command -v` is a POSIX shell builtin (portable across
 // macOS/Linux, unlike the `which` binary which isn't guaranteed present), run via `sh -c`
 // so it resolves against THIS process's current PATH — the same env `schedule install`
 // is running in.
-function resolvePgDumpDir() {
+function resolvePgDumpDir(): string | null {
   const r = sh('sh', ['-c', 'command -v pg_dump']);
   const found = r.status === 0 ? r.stdout.trim() : '';
   return found ? dirname(resolve(found)) : null;
@@ -279,7 +311,7 @@ function resolvePgDumpDir() {
 
 // ---------- subcommands ----------
 
-async function install(o) {
+async function install(o: CliOptions): Promise<void> {
   if (!o.backend) throw new Error('--backend <file|ton|arweave|turbo> required');
   if (!BACKENDS.has(o.backend)) throw new Error(`unknown backend: ${o.backend} (expected file|ton|arweave|turbo)`);
   if (!o.pg && o.dirs.length === 0 && !o.profile) {
@@ -316,7 +348,7 @@ async function install(o) {
     throw new Error(`--max-spend only applies to the paid backends (arweave|turbo); --backend ${o.backend} is free`);
   }
 
-  const cfg = {
+  const cfg: ScheduleConfig = {
     schema: 1,
     at, hour, minute,
     backend: o.backend,
@@ -393,15 +425,15 @@ async function install(o) {
   console.error(`runs log to ${LOGS_DIR}/nightly-YYYY-MM-DD.log (final line: "OK rc=0" or "FAILED rc=N"); check with: cipher-brain schedule status`);
 }
 
-async function readConfig() {
+async function readConfig(): Promise<ScheduleConfig> {
   if (!(await exists(CONFIG))) {
     throw new Error(`schedule not installed (no ${CONFIG}) — run: cipher-brain schedule install`);
   }
   return JSON.parse(await readFile(CONFIG, 'utf8'));
 }
 
-async function lastLog() {
-  let names = [];
+async function lastLog(): Promise<{ name: string; rcLine: string } | null> {
+  let names: string[] = [];
   try {
     names = (await readdir(LOGS_DIR)).filter((n) => /^nightly-\d{4}-\d{2}-\d{2}\.log$/.test(n)).sort();
   } catch { /* logs dir absent = no runs yet */ }
@@ -413,20 +445,20 @@ async function lastLog() {
   return { name, rcLine };
 }
 
-function nextRunAt(hour, minute) {
+function nextRunAt(hour: number, minute: number): string {
   const next = new Date();
   next.setHours(hour, minute, 0, 0);
   if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1);
-  const p = (n) => String(n).padStart(2, '0');
+  const p = (n: number) => String(n).padStart(2, '0');
   return `${next.getFullYear()}-${p(next.getMonth() + 1)}-${p(next.getDate())} ${p(next.getHours())}:${p(next.getMinutes())}`;
 }
 
-async function status() {
+async function status(): Promise<void> {
   const cfg = await readConfig();
   console.log(`configured: daily at ${cfg.at}, backend ${cfg.backend}`);
   console.log(`runner: ${cfg.runner}`);
   if (cfg.trigger.type === 'launchd') {
-    const r = sh('launchctl', ['print', `gui/${process.getuid()}/${LABEL}`]);
+    const r = sh('launchctl', ['print', `gui/${process.getuid?.()}/${LABEL}`]);
     const loaded = !r.error && r.status === 0;
     console.log(`trigger: launchd ${cfg.trigger.path} (loaded: ${loaded ? 'yes' : 'no'})`);
   } else {
@@ -440,10 +472,10 @@ async function status() {
   console.log(`next run: ${nextRunAt(cfg.hour, cfg.minute)} (local)`);
 }
 
-async function uninstall(o) {
-  const removed = [];
+async function uninstall(o: CliOptions): Promise<void> {
+  const removed: string[] = [];
   if (process.platform === 'darwin') {
-    if (!o.no_load) sh('launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`]); // failure = was not loaded
+    if (!o.no_load) sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${LABEL}`]); // failure = was not loaded
     if (await exists(PLIST)) { await rm(PLIST); removed.push(`launchd plist ${PLIST}`); }
   } else {
     if (!o.no_load) {
@@ -468,7 +500,7 @@ async function uninstall(o) {
   }
 }
 
-export async function schedule(o) {
+export async function schedule(o: CliOptions): Promise<void> {
   switch (o._) {
     case 'install': return install(o);
     case 'status': return status();

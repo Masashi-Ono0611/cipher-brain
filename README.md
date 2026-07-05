@@ -57,7 +57,7 @@ A post-quantum hybrid recipient (via an age plugin) is on the roadmap.
 
 ## Install
 
-Install from the registry (requires node >= 22 — the age crypto layer is
+Install from the registry (requires node >= 22.6.0 — the age crypto layer is
 bundled, nothing else to install):
 
 ```sh
@@ -69,7 +69,8 @@ The packaged bins are the bundled `dist/` artifacts — self-contained single
 files that run on plain Node.
 
 Or run from source (the committed `bin/` shims run straight off `src/`, no
-build step):
+build step — this dev path needs Node >=22.6.0, the release that added the
+`--experimental-strip-types` flag the shims re-exec under):
 
 ```sh
 git clone https://github.com/Masashi-Ono0611/cipher-brain

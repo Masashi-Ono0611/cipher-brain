@@ -1,10 +1,11 @@
 // keygen + identity/recipient helpers.
 import { mkdir, writeFile, rm, chmod, readFile } from 'node:fs/promises';
-import { HOME, IDENTITY, RECIPIENT, AGE_PUBKEY_RE } from './config.mjs';
-import { generateKeypair, identityFileText, askNewPassphrase, wrapIdentity } from './crypt.mjs';
-import { exists } from './util.mjs';
+import { HOME, IDENTITY, RECIPIENT, AGE_PUBKEY_RE } from './config.js';
+import { generateKeypair, identityFileText, askNewPassphrase, wrapIdentity } from './crypt.js';
+import { exists } from './util.js';
+import type { CliOptions } from './types.js';
 
-export async function keygen(o) {
+export async function keygen(o: CliOptions): Promise<void> {
   // 0700: HOME holds the private identity (and often the JWK wallet) — it must not be
   // world/group-listable. chmod too, in case it pre-existed with a looser mode.
   await mkdir(HOME, { recursive: true, mode: 0o700 });
@@ -20,7 +21,7 @@ export async function keygen(o) {
   // temp file on disk, so nothing can linger even on Ctrl-C at the prompt.
   const { identity, recipient } = await generateKeypair();
   const text = identityFileText(identity, recipient); // the standard age-keygen file layout
-  let payload = text;
+  let payload: string | Uint8Array = text;
   if (o.passphrase) {
     console.log('Set a passphrase to protect the identity at rest (you will enter it on restore/verify):');
     payload = await wrapIdentity(text, await askNewPassphrase()); // scrypt, same format `age -p` writes
@@ -41,7 +42,7 @@ export async function keygen(o) {
 // `ssh-ed25519 …`) in a tampered recipient.txt would slip past an age1-only scan.
 // The pin enforces the INPUTS, since age ciphertext never exposes its recipient
 // pubkeys. (typage itself also rejects non-native recipients — defense in depth.)
-export async function recipientEntries(rec) {
+export async function recipientEntries(rec: string): Promise<string[]> {
   if (rec.startsWith('age1')) return [rec.trim()];
   const text = await readFile(rec, 'utf8');
   return text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
@@ -53,9 +54,9 @@ export async function recipientEntries(rec) {
 // itself as an inline list of age1… keys. Parsed line-by-line, SKIPPING comment lines
 // (mirrors recipientEntries) — a key left commented-out (e.g. a rotated/revoked one)
 // must NOT count as allowed, or the pin could be defeated by a stale comment.
-export async function resolvePinnedRecipients(val) {
+export async function resolvePinnedRecipients(val: string): Promise<Set<string>> {
   const text = (await exists(val)) ? await readFile(val, 'utf8') : val;
-  const keys = new Set();
+  const keys = new Set<string>();
   for (const line of text.split('\n')) {
     const l = line.trim();
     if (!l || l.startsWith('#')) continue;

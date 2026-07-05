@@ -7,10 +7,15 @@
 #   - two different snapshots are independently restorable (versioning).
 set -euo pipefail
 
-BIN="$(cd "$(dirname "$0")/.." && pwd)/bin/cipher-brain.mjs"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/bin/cipher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+# build step) under plain node — see scripts/dev-node-flags.sh (never an exported
+# NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
+source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 PRIMARY="$TMP/keys-primary"; BACKUP="$TMP/keys-backup"; THIRD="$TMP/keys-third"
-cb() { CIPHER_BRAIN_HOME="$1" node "$BIN" "${@:2}"; }
+cb() { CIPHER_BRAIN_HOME="$1" node "${BIN_DEV_ARGS[@]}" "$BIN" "${@:2}"; }
 
 echo "== three independent keypairs =="
 cb "$PRIMARY" keygen >/dev/null

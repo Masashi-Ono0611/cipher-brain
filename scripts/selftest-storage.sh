@@ -7,11 +7,16 @@
 # (scripts/ton-roundtrip.sh) — that needs a running storage-daemon.
 set -euo pipefail
 
-BIN="$(cd "$(dirname "$0")/.." && pwd)/bin/cipher-brain.mjs"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/bin/cipher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+# build step) under plain node — see scripts/dev-node-flags.sh (never an exported
+# NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
+source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export CIPHER_BRAIN_HOME="$TMP/keys"
 export CIPHER_BRAIN_FILE_DIR="$TMP/store"
-cb() { node "$BIN" "$@"; }
+cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
 MARKER="secret-thought-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
@@ -103,7 +108,7 @@ head -c 8000000 /dev/urandom > "$SRC4/big.bin"   # mutate mid-flight
 wait "$SNAP_PID"
 [ -f "$TMP/race.age.digest" ] || { echo "[FAIL] no digest sidecar for the race snapshot"; exit 1; }
 cb restore --in "$TMP/race.age" --out-dir "$TMP/race-restored" >/dev/null
-# -p (preserve-permissions): the SAME flag the production re-read (src/lib/snapshot.mjs)
+# -p (preserve-permissions): the SAME flag the production re-read (src/lib/snapshot.ts)
 # now uses (round 3, fix 2) -- without it this manual re-extraction's directory/file
 # modes would be masked by this script's own umask instead of reflecting the archive's
 # stored bits, and this recomputation would stop matching production's digest.
@@ -271,7 +276,7 @@ chmod 755 "$SRC9"   # leave a predictable mode behind
 
 echo "== #70 review round 4: a top-level FIFO (--dir arg itself a special file) must not hang, and hashes identity not content =="
 # A FIFO only yields bytes once something writes to the other end -- with no writer,
-# sha256()-ing it would block forever. The fix (src/lib/snapshot.mjs contentDigestOfPath)
+# sha256()-ing it would block forever. The fix (src/lib/snapshot.ts contentDigestOfPath)
 # must detect this at the TOP level the same way the nested-file-walk already does for a
 # special file found inside a --dir, and hash a bare kind marker instead of reading it.
 # with_timeout bounds the snapshot call itself: a regression here must FAIL LOUDLY, not

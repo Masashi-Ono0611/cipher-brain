@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
+import { DEV_ARGS } from './dev-node-flags.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, '..', 'bin', 'cipher-brain.mjs');
@@ -25,7 +26,13 @@ let server;
 try {
   // 1) make a small age artifact — keygen + snapshot are SDK-free
   const home = join(tmp, 'keys');
-  const cb = (...a) => spawnSync('node', [BIN, ...a], { env: { ...process.env, CIPHER_BRAIN_HOME: home }, encoding: 'utf8' });
+  // BIN (bin/cipher-brain.mjs) imports src/cli.ts directly (no build step); plain node
+  // needs help resolving its internal `.js`-specifier imports back to sibling .ts files
+  // (#63) — see scripts/dev-ts-resolve-hook.mjs. isoBin below is dist/cli.mjs (bundled,
+  // pure JS) and needs none of this. DEV_ARGS (scripts/dev-node-flags.mjs) is passed as
+  // literal argv elements — never via env.NODE_OPTIONS, which is whitespace-split by
+  // node and would break under a checkout path containing a space.
+  const cb = (...a) => spawnSync('node', [...DEV_ARGS, BIN, ...a], { env: { ...process.env, CIPHER_BRAIN_HOME: home }, encoding: 'utf8' });
   if (cb('keygen').status !== 0) throw new Error('keygen failed');
   const src = join(tmp, 'brain'); await mkdir(src, { recursive: true });
   await writeFile(join(src, 'note.txt'), 'nodeps\n');

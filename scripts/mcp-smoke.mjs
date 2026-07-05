@@ -16,7 +16,7 @@
 //
 // Exits 0 on success, 1 on any failure with a descriptive message on stderr.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -54,12 +54,22 @@ async function run(tmp) {
   const outAge = join(tmp, 'snap.age');
   const locatorFile = join(tmp, 'latest-locator.tsv');
 
-  // keygen via the existing lib (config.mjs reads env at import time, so set
-  // it BEFORE the dynamic import).
+  // keygen via the bundled CLI (dist/cli.mjs — already built by the time this smoke
+  // test runs in `npm run verify`). Previously this dynamic-imported src/lib/keys.mjs
+  // in-process; since #63 renamed it to keys.ts (internal imports use the OUTPUT
+  // extension, e.g. `./config.js`), a plain in-process `import()` can no longer resolve
+  // it without the same dev-only TS resolve hook the bash selftests use (see
+  // scripts/dev-ts-resolve-hook.mjs) — spawning the already-built CLI is simpler and
+  // exercises the exact artifact this smoke test is otherwise testing against.
   process.env.CIPHER_BRAIN_HOME = home;
   process.env.CIPHER_BRAIN_FILE_DIR = store;
-  const { keygen } = await import(join(ROOT, 'src', 'lib', 'keys.mjs'));
-  await keygen({});
+  const keygenRes = spawnSync(process.execPath, [SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs'), 'keygen'], {
+    env: { ...process.env },
+    encoding: 'utf8',
+  });
+  if (keygenRes.status !== 0) {
+    throw new Error(`keygen failed (${keygenRes.status}): ${keygenRes.stderr || keygenRes.stdout}`);
+  }
   const recipientPath = join(home, 'recipient.txt');
 
   await mkdir(data, { recursive: true });

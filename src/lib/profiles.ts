@@ -9,14 +9,16 @@
 // dereferenced: tar archives a symlink argument as the symlink itself, which
 // would silently back up a pointer instead of the data.
 import { readdir, realpath, stat } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { exists } from './util.mjs';
+import { exists } from './util.js';
+import type { CliOptions } from './types.js';
 
 export const PROFILE_NAMES = ['claude-code', 'obsidian', 'chatgpt-export'];
 
 // Resolve --profile to the concrete source paths it snapshots.
-export async function resolveProfilePaths(o) {
+export async function resolveProfilePaths(o: CliOptions): Promise<string[]> {
   switch (o.profile) {
     case 'claude-code': return claudeCodePaths();
     case 'obsidian': return obsidianPaths(o);
@@ -31,12 +33,12 @@ export async function resolveProfilePaths(o) {
 // NONE exist the profile errors listing what it looked for — a silently-empty
 // snapshot would be worse than a refusal. homedir() honors $HOME, so tests
 // point the profile at a synthetic home by faking that env var.
-async function claudeCodePaths() {
+async function claudeCodePaths(): Promise<string[]> {
   const claude = join(homedir(), '.claude');
   const projects = join(claude, 'projects');
   const claudeMd = join(claude, 'CLAUDE.md');
-  const paths = [];
-  let entries = [];
+  const paths: string[] = [];
+  let entries: Dirent[] = [];
   try { entries = await readdir(projects, { withFileTypes: true }); } catch { /* no projects dir — CLAUDE.md may still exist */ }
   for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!e.isDirectory()) continue;
@@ -53,7 +55,7 @@ async function claudeCodePaths() {
 // obsidian: the vault directory, whole. A real vault contains .obsidian/; a
 // path without it is probably a typo (snapshotting the wrong tree feels like
 // success until restore day), so refuse unless --force-vault says "I know".
-async function obsidianPaths(o) {
+async function obsidianPaths(o: CliOptions): Promise<string[]> {
   if (!o.vault) throw new Error('profile obsidian requires --vault <path> (the vault directory)');
   const vault = resolve(o.vault);
   const st = await stat(vault).catch(() => null);
@@ -68,7 +70,7 @@ async function obsidianPaths(o) {
 // chatgpt-export: the official ChatGPT data-export zip, taken AS-IS. It is
 // archived as one component file and never extracted, so the restored zip is
 // byte-identical to what ChatGPT handed out.
-async function chatgptExportPaths(o) {
+async function chatgptExportPaths(o: CliOptions): Promise<string[]> {
   if (!o.zip) throw new Error('profile chatgpt-export requires --zip <path> (the official ChatGPT export zip)');
   const zip = resolve(o.zip);
   const st = await stat(zip).catch(() => null);

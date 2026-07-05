@@ -1,10 +1,16 @@
 // scripts/build.ts — bundle the CLI with Bun (adapted from ton-mesh-harness).
 //
-//   - entries: src/cli.mjs → dist/cli.mjs and src/mcp.mjs → dist/mcp.mjs (each a
+//   - entries: src/cli.ts → dist/cli.mjs and src/mcp.ts → dist/mcp.mjs (each a
 //     self-contained file; the shipped artifacts a fresh machine can run with
-//     plain `node dist/cli.mjs` / `node dist/mcp.mjs`).
-//   - format: ESM (the source is ESM .mjs), target: node (engines node>=22);
-//     the built CLI runs on plain Node, never Bun — consumers use `npx` / `node`.
+//     plain `node dist/cli.mjs` / `node dist/mcp.mjs`). Bun.build strips the TS
+//     types itself (no separate tsc emit step for the shipped dist/ — #63's
+//     `tsc --noEmit` typecheck gate runs SEPARATELY, see package.json
+//     "typecheck"); the `naming` override below still forces the OUTPUT
+//     extension to .mjs regardless of the .ts source extension, so dist/,
+//     the `bin` field and every existing selftest/smoke script are unchanged.
+//   - format: ESM (the source is ESM, "type": "module"), target: node (engines
+//     node>=22); the built CLI runs on plain Node, never Bun — consumers use
+//     `npx` / `node`.
 //   - a shebang banner is prepended so dist/cli.mjs is directly executable.
 //
 // The externals list is DERIVED from package.json (dependencies +
@@ -40,12 +46,12 @@ const external = [
 
 rmSync(dist, { recursive: true, force: true })
 const result = await Bun.build({
-  entrypoints: [join(root, 'src/cli.mjs'), join(root, 'src/mcp.mjs')],
+  entrypoints: [join(root, 'src/cli.ts'), join(root, 'src/mcp.ts')],
   outdir: dist,
   target: 'node',
   format: 'esm',
   external,
-  naming: '[dir]/[name].mjs', // keep the source's .mjs extension (Bun defaults to .js)
+  naming: '[dir]/[name].mjs', // force the OUTPUT extension to .mjs (Bun defaults .ts sources to .js too)
   banner: '#!/usr/bin/env node',
 })
 if (!result.success) {

@@ -122,7 +122,16 @@ export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer f
 # --force overrides either way).
 LOC=$(cipher-brain push --in "$OUT" --backend turbo --skip-unchanged \
   --save-locator "$HOME/.cipher-brain/latest-locator.tsv")   # or: file | arweave | ton
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$(shasum -a 256 "$OUT" | cut -d" " -f1)" \
+# Read the SHA256 back from the save-locator file's 3rd field rather than re-hashing
+# "$OUT": on a --skip-unchanged SKIP, $LOC is the PREVIOUS run's locator while $OUT is
+# THIS run's freshly re-encrypted (age's ephemeral file key differs every run) and
+# never-uploaded ciphertext — shasum-ing $OUT would pair $LOC with a hash it will never
+# actually produce, breaking any later `pull --locator ... --sha256 ...` check against
+# this index row. The save-locator file's 3rd field already holds the correct hash for
+# whatever $LOC points to (cipher-brain push writes it there on every real push, and
+# leaves it untouched — still correct — on a skip).
+SHA=$(cut -f3 "$HOME/.cipher-brain/latest-locator.tsv")
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$SHA" \
   >> "$HOME/brain-snapshots/index.tsv"
 ```
 

@@ -25,7 +25,12 @@ let server;
 try {
   // 1) make a small age artifact — keygen + snapshot are SDK-free
   const home = join(tmp, 'keys');
-  const cb = (...a) => spawnSync('node', [BIN, ...a], { env: { ...process.env, CIPHER_BRAIN_HOME: home }, encoding: 'utf8' });
+  // BIN (bin/cipher-brain.mjs) imports src/cli.ts directly (no build step); plain node
+  // needs help resolving its internal `.js`-specifier imports back to sibling .ts files
+  // (#63) — see scripts/dev-ts-resolve-hook.mjs. isoBin below is dist/cli.mjs (bundled,
+  // pure JS) and needs none of this.
+  const NODE_OPTIONS = `--experimental-strip-types --import ${join(HERE, 'dev-cli-loader.mjs')}`;
+  const cb = (...a) => spawnSync('node', [BIN, ...a], { env: { ...process.env, CIPHER_BRAIN_HOME: home, NODE_OPTIONS }, encoding: 'utf8' });
   if (cb('keygen').status !== 0) throw new Error('keygen failed');
   const src = join(tmp, 'brain'); await mkdir(src, { recursive: true });
   await writeFile(join(src, 'note.txt'), 'nodeps\n');

@@ -54,6 +54,12 @@ try {
     CIPHER_BRAIN_AR_PROTOCOL: 'http',
     CIPHER_BRAIN_AR_WALLET: walletPath,
     CIPHER_BRAIN_YES: '1', // arlocal (test) — no real funds; bypass the interactive --yes guard
+    // $BIN (bin/cipher-brain.mjs) imports src/cli.ts directly (no build step); its
+    // internal imports use the OUTPUT extension (`./lib/config.js`, #63), which plain
+    // node needs help resolving back to the sibling .ts file — see
+    // scripts/dev-ts-resolve-hook.mjs. Every spawnSync('node', [BIN, ...]) below
+    // inherits this via `env`.
+    NODE_OPTIONS: `--experimental-strip-types --import ${join(HERE, 'dev-cli-loader.mjs')}`,
   };
   // AR_HOST=localhost is not the default arweave.net, so arGateways() yields only the
   // derived arlocal gateway (no public mirrors) — the test never egresses.

@@ -8,6 +8,10 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist/cli.mjs"
 BIN="$ROOT/bin/cipher-brain.mjs"
+# run bin/cipher-brain.mjs straight against src/*.ts (no build step) under plain node —
+# see scripts/dev-ts-resolve-hook.mjs for why both flags are required (#63). Only applies
+# to $BIN invocations below; $DIST is the bundled build and needs neither.
+export NODE_OPTIONS="--experimental-strip-types --import $ROOT/scripts/dev-cli-loader.mjs"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/cb-smoke-XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 

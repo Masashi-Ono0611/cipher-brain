@@ -7,20 +7,21 @@ import { Transform } from 'node:stream';
 import { dirname, resolve } from 'node:path';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
-import http from 'node:http';
+import http, { type IncomingMessage } from 'node:http';
 import https from 'node:https';
 import {
   AGE_MAGIC, AR_HOST, AR_PORT, AR_PROTOCOL, AR_WALLET, AR_DEFAULT_EXTRA_GATEWAYS,
   AR_HTTP_TIMEOUT_MS, AR_MAX_SPEND, AR_L1_MAX_BYTES,
-} from '../config.mjs';
-import { warnIfLooseKeyPerms, readHead } from '../util.mjs';
+} from '../config.js';
+import { warnIfLooseKeyPerms, readHead, errMsg, RetryableError, SdkMissingError } from '../util.js';
+import type { StorageBackend, PutOpts } from '../types.js';
 
 // The public gateways to try (in order) for the HTTP read, before the L1 chunk
 // fallback (#21). Override the whole list with CIPHER_BRAIN_AR_GATEWAYS (comma-
 // separated), or pin a single one with CIPHER_BRAIN_AR_GATEWAY; otherwise the derived
 // host (CIPHER_BRAIN_AR_HOST/PORT/PROTOCOL — arweave.net, or arlocal in tests) is tried
 // first, then the extra public mirrors.
-function arGateways() {
+function arGateways(): string[] {
   if (process.env.CIPHER_BRAIN_AR_GATEWAYS) {
     const list = process.env.CIPHER_BRAIN_AR_GATEWAYS.split(',').map((s) => s.trim()).filter(Boolean);
     if (list.length) return list; // ignore an all-blank override → fall through to the default
@@ -38,7 +39,7 @@ function arGateways() {
 // RFC1918, ::1). IPv4 + IPv6 (incl. IPv4-mapped). The INITIAL gateway URL is operator-
 // configured and trusted (it may legitimately be 127.0.0.1 in tests); only redirect
 // TARGETS — attacker-controlled — are screened here.
-function isPrivateAddr(ip) {
+function isPrivateAddr(ip: string): boolean {
   if (isIP(ip) === 4) {
     const [a, b] = ip.split('.').map(Number);
     if (a === 0 || a === 127 || a === 10) return true;            // this-host / loopback / private
@@ -66,12 +67,17 @@ function isPrivateAddr(ip) {
   return false;
 }
 
+interface ScreenedTarget {
+  address: string;
+  family: number;
+}
+
 // Reject a redirect target that is non-http(s) or resolves to a private/loopback/
 // link-local address. Throws on refusal. On success returns the SCREENED address +
 // family so the caller can PIN the connection to exactly the vetted IP — closing the
 // DNS-rebinding TOCTOU where a low-TTL host returns a public IP for this check and a
 // private one for the actual connect.
-async function assertPublicRedirectTarget(u) {
+async function assertPublicRedirectTarget(u: string): Promise<ScreenedTarget> {
   const parsed = new URL(u);
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`refusing non-http(s) redirect to ${u}`);
@@ -95,7 +101,7 @@ async function assertPublicRedirectTarget(u) {
 // connection is pinned to that exact IP via a custom lookup, so the bytes come from the
 // SAME address we screened (no DNS-rebinding between the check and the connect). The URL's
 // hostname still drives the Host header / TLS SNI, so cert validation is unaffected.
-function gatewayGet(url, signal, pin) {
+function gatewayGet(url: string, signal: AbortSignal, pin: ScreenedTarget | null): Promise<IncomingMessage> {
   return new Promise((res, rej) => {
     const lib = url.startsWith('https:') ? https : http;
     // autoSelectFamily: match fetch/undici's happy-eyeballs so a dual-stack host
@@ -105,8 +111,21 @@ function gatewayGet(url, signal, pin) {
     // to a sandbox subdomain (euzcbl….arweave.net) that returns 403 to a header-less
     // request — node:http.get sends NO default headers, unlike the fetch() this replaced
     // in #39, which silently regressed the real-world full-brain (Turbo/bundled) pull.
-    const opts = { signal, autoSelectFamily: true, headers: { 'user-agent': 'cipher-brain', accept: '*/*' } };
-    if (pin) opts.lookup = (_h, lopts, cb) => (lopts && lopts.all ? cb(null, [{ address: pin.address, family: pin.family }]) : cb(null, pin.address, pin.family));
+    // autoSelectFamily is a real node:net socket-connect option node:http forwards at
+    // runtime, but @types/node's http.RequestOptions (ClientRequestArgs) doesn't
+    // declare it — widen locally rather than losing the rest of the type's checking.
+    const opts: http.RequestOptions & { autoSelectFamily?: boolean } = { signal, autoSelectFamily: true, headers: { 'user-agent': 'cipher-brain', accept: '*/*' } };
+    if (pin) {
+      // node:http's `lookup` option accepts either the `(err, address, family)` or
+      // `(err, [{address, family}])` callback shape depending on whether the caller
+      // asked for `all` — @types/node's LookupFunction union covers both; pin BOTH
+      // outputs to the one screened address, closing the DNS-rebinding TOCTOU.
+      opts.lookup = ((_hostname: string, options: unknown, callback: unknown) => {
+        const wantsAll = typeof options === 'object' && options !== null && (options as { all?: boolean }).all === true;
+        const cb = (typeof options === 'function' ? options : callback) as (...args: unknown[]) => void;
+        return wantsAll ? cb(null, [{ address: pin.address, family: pin.family }]) : cb(null, pin.address, pin.family);
+      }) as http.RequestOptions['lookup'];
+    }
     const req = lib.get(url, opts, (resp) => res(resp));
     req.on('error', rej);
   });
@@ -117,24 +136,24 @@ function gatewayGet(url, signal, pin) {
 // a stalled gateway WITHOUT capping a large but progressing transfer (#17). Accept ONLY
 // HTTP 200 (a 202 "pending" / soft-404 means "not here, try the next gateway"). Redirects
 // are followed MANUALLY (#39) so each hop's target is SSRF-screened before we fetch it.
-async function streamArweaveGateway(url, part, timeoutMs) {
+async function streamArweaveGateway(url: string, part: string, timeoutMs: number): Promise<boolean> {
   const ctl = new AbortController();
-  let stall;
+  let stall: ReturnType<typeof setTimeout> | undefined;
   const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), timeoutMs); };
   try {
     let current = url;
-    let pin = null; // {address, family} screened for the NEXT request — pins out DNS-rebinding
-    let resp;
+    let pin: ScreenedTarget | null = null; // screened for the NEXT request — pins out DNS-rebinding
+    let resp: IncomingMessage;
     for (let hop = 0; ; hop++) {
       arm();
       resp = await gatewayGet(current, ctl.signal, pin);
-      const sc = resp.statusCode;
+      const sc = resp.statusCode ?? 0;
       if (sc >= 300 && sc < 400 && resp.headers.location) {
         resp.resume(); // drain & discard the redirect body so the socket frees
         if (hop >= 3) { console.error(`arweave: too many redirects from ${url} — skipping gateway`); clearTimeout(stall); await rm(part, { force: true }); return false; }
         const next = new URL(resp.headers.location, current).href;
         try { pin = await assertPublicRedirectTarget(next); }
-        catch (e) { console.error(`arweave: ${e.message} — refusing redirect, skipping gateway (SSRF guard)`); clearTimeout(stall); await rm(part, { force: true }); return false; }
+        catch (e) { console.error(`arweave: ${errMsg(e)} — refusing redirect, skipping gateway (SSRF guard)`); clearTimeout(stall); await rm(part, { force: true }); return false; }
         current = next;
         continue;
       }
@@ -160,6 +179,24 @@ async function streamArweaveGateway(url, part, timeoutMs) {
   return false;
 }
 
+// arweave-js's minimal shape (the `arweave` npm package) that this backend actually uses —
+// kept local + narrow rather than depending on the package's full type surface, since it is
+// imported lazily and only optionally installed (a fresh machine's gateway-only pull needs
+// none of this).
+interface ArweaveClient {
+  transactions: {
+    getPrice(byteLength: number): Promise<string>;
+    sign(tx: ArweaveTransaction, jwk: unknown): Promise<void>;
+    post(tx: ArweaveTransaction): Promise<{ status: number }>;
+    getData(id: string, opts?: { decode?: boolean }): Promise<Uint8Array | string>;
+  };
+  createTransaction(attrs: { data: Uint8Array; reward?: string }, jwk: unknown): Promise<ArweaveTransaction>;
+}
+interface ArweaveTransaction {
+  id: string;
+  addTag(name: string, value: string): void;
+}
+
 // arweave backend: stores the ciphertext as an Arweave transaction. The locator is
 // the tx id — assigned AFTER upload, NOT a content hash — which is exactly the case
 // the StorageBackend interface must handle (vs file/ton's pre-known content ids).
@@ -168,27 +205,28 @@ async function streamArweaveGateway(url, part, timeoutMs) {
 // below) is pure native fetch, so a fresh machine recovers a bundled/Turbo brain from
 // just the tx id with NO npm dependency — keeping the documented "tx id is all you need"
 // recovery true (a missing `arweave` install no longer fails a gateway pull at construction).
-export async function arweaveBackend() {
-  let _ar;
-  const getAr = async () => {
+export async function arweaveBackend(): Promise<StorageBackend> {
+  let _ar: ArweaveClient | null = null;
+  const getAr = async (): Promise<ArweaveClient> => {
     if (_ar) return _ar;
-    let Arweave;
-    try { Arweave = (await import('arweave')).default; }
-    catch (e) {
-      if (e && e.code === 'ERR_MODULE_NOT_FOUND') { const err = new Error('arweave backend needs the `arweave` package — run: npm install arweave'); err.sdkMissing = true; throw err; }
+    let ArweaveCtor: { init(opts: { host: string; port: number; protocol: string }): ArweaveClient };
+    try {
+      ArweaveCtor = (await import('arweave')).default as unknown as typeof ArweaveCtor;
+    } catch (e) {
+      if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') throw new SdkMissingError('arweave backend needs the `arweave` package — run: npm install arweave');
       throw e;
     }
-    _ar = Arweave.init({ host: AR_HOST, port: AR_PORT, protocol: AR_PROTOCOL });
+    _ar = ArweaveCtor.init({ host: AR_HOST, port: AR_PORT, protocol: AR_PROTOCOL });
     return _ar;
   };
-  const loadWallet = async () => {
+  const loadWallet = async (): Promise<unknown> => {
     if (!AR_WALLET) throw new Error('arweave put needs CIPHER_BRAIN_AR_WALLET (path to a JWK key file)');
     await warnIfLooseKeyPerms(AR_WALLET, 'arweave JWK wallet');
     try { return JSON.parse(await readFile(AR_WALLET, 'utf8')); }
-    catch (e) { throw new Error(`arweave: cannot read JWK wallet at ${AR_WALLET}: ${e.message}`); }
+    catch (e) { throw new Error(`arweave: cannot read JWK wallet at ${AR_WALLET}: ${errMsg(e)}`); }
   };
   return {
-    async put(file, _opts = {}) {
+    async put(file: string, _opts: PutOpts = {}): Promise<string> {
       // Fast size guard BEFORE buffering: the raw arweave backend posts the whole
       // artifact inline in ONE signed tx, and gateways reject single-tx bodies past
       // ~12 MiB — a brain-sized snapshot would buffer the lot and then fail with a bare
@@ -211,15 +249,15 @@ export async function arweaveBackend() {
       // it again. A schedule-installed runner bakes CIPHER_BRAIN_YES=1 for unattended paid
       // pushes, so this cap is the ONLY thing standing between an install-time --max-spend
       // and an uncapped nightly L1 spend — it must actually gate the upload, not just log.
-      let reward;
+      let reward: bigint | undefined;
       try {
         reward = BigInt(await ar.transactions.getPrice(data.length));
         process.stderr.write(`arweave: L1 cost estimate: ${reward} winston\n`);
       } catch (e) {
         if (AR_MAX_SPEND > 0n) {
-          throw new Error(`arweave: could not verify CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} (price estimate failed: ${e.message}) — aborting to protect your wallet`);
+          throw new Error(`arweave: could not verify CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} (price estimate failed: ${errMsg(e)}) — aborting to protect your wallet`);
         }
-        process.stderr.write(`arweave: could not estimate L1 cost (${e.message}); proceeding\n`);
+        process.stderr.write(`arweave: could not estimate L1 cost (${errMsg(e)}); proceeding\n`);
       }
       if (reward !== undefined && AR_MAX_SPEND > 0n && reward > AR_MAX_SPEND) {
         throw new Error(`arweave: L1 upload cost ${reward} winston exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
@@ -232,7 +270,7 @@ export async function arweaveBackend() {
       if (res.status !== 200 && res.status !== 208) throw new Error(`arweave post failed: HTTP ${res.status}`);
       return tx.id; // 43-char base64url tx id
     },
-    async get(locator, out) {
+    async get(locator: string, out: string): Promise<void> {
       // reads are unauthenticated — a fresh machine needs only the tx id, no wallet.
       // The locator is interpolated into a gateway URL below, so validate it is a
       // clean Arweave tx id first (this also closes a path-traversal/SSRF foot-gun).
@@ -260,19 +298,17 @@ export async function arweaveBackend() {
       //    the streamed path above. Needs the SDK: if `arweave` isn't installed, SKIP
       //    this fallback (the gateway path serves bundled items anyway) and let the
       //    retryable error below keep `--wait` polling — so a no-SDK machine still pulls.
-      let ar = null;
-      try { ar = await getAr(); } catch (e) { if (!e.sdkMissing) throw e; /* no SDK → skip L1 fallback */ }
+      let ar: ArweaveClient | null = null;
+      try { ar = await getAr(); } catch (e) { if (!(e instanceof SdkMissingError)) throw e; /* no SDK → skip L1 fallback */ }
       if (ar) {
-        let d = null;
+        let d: Uint8Array | string | null = null;
         try { d = await ar.transactions.getData(locator, { decode: true }); } catch { /* not found / chunk error → not (yet) available */ }
-        if (d && d.length) { await writeFile(out, Buffer.from(d)); return; }
+        if (d && d.length) { await writeFile(out, Buffer.from(d as Uint8Array)); return; }
       }
       // a fresh upload may simply be propagating — mark this retryable so `pull --wait`
       // keeps trying (fatal errors like an invalid locator are NOT tagged, so they
       // fail fast even under --wait).
-      const err = new Error(`arweave: no data for tx ${locator} (not mined / not found / not yet seeded)`);
-      err.retryable = true;
-      throw err;
+      throw new RetryableError(`arweave: no data for tx ${locator} (not mined / not found / not yet seeded)`);
     },
   };
 }

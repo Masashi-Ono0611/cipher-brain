@@ -4,11 +4,12 @@
 import { mkdir, rm, mkdtemp, copyFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
-import { TON_CLI, TON_API, TON_CLIENT, TON_SERVER, TON_TIMEOUT_S } from '../config.mjs';
-import { run } from '../proc.mjs';
-import { sleep } from '../util.mjs';
+import { TON_CLI, TON_API, TON_CLIENT, TON_SERVER, TON_TIMEOUT_S } from '../config.js';
+import { run } from '../proc.js';
+import { sleep } from '../util.js';
+import type { StorageBackend, PutOpts } from '../types.js';
 
-function tonArgs(cmd) {
+function tonArgs(cmd: string): string[] {
   if (!TON_CLIENT || !TON_SERVER) {
     throw new Error('ton backend needs CIPHER_BRAIN_TON_CLIENT and CIPHER_BRAIN_TON_SERVER (storage-daemon-cli key paths)');
   }
@@ -18,7 +19,7 @@ function tonArgs(cmd) {
 // add-by-hash wants the hex BagID. In --json that is NOT the base64 `hash` field —
 // the hex appears in the root_dir path. Prefer that; else decode base64 hash; else
 // any bare 64-hex. (Confirmed against a real storage-daemon --json blob.)
-function parseBagId(s) {
+function parseBagId(s: string): string {
   let m = s.match(/torrent-files\/([0-9A-Fa-f]{64})/);
   if (m) return m[1].toUpperCase();
   try {
@@ -36,7 +37,7 @@ function parseBagId(s) {
 }
 
 // confirmed against a real `get --json`: the torrent block carries "completed": true
-function bagComplete(s) {
+function bagComplete(s: string): boolean {
   try {
     const j = JSON.parse(s);
     return (j.torrent || j).completed === true;
@@ -46,18 +47,18 @@ function bagComplete(s) {
 
 // the daemon's -c is ONE space-delimited command string (not a shell), so any path
 // embedded in it must be whitespace-free — quoting wouldn't help.
-function assertNoSpace(p, what) {
+function assertNoSpace(p: string, what: string): void {
   if (/\s/.test(p)) throw new Error(`ton backend: ${what} must not contain whitespace: ${p}`);
 }
 
-export function tonBackend() {
+export function tonBackend(): StorageBackend {
   return {
-    async put(file, _opts = {}) {
+    async put(file: string, _opts: PutOpts = {}): Promise<string> {
       assertNoSpace(file, 'file path');
       const { out } = await run(TON_CLI, tonArgs(`create --copy --json ${file}`));
       return parseBagId(out);
     },
-    async get(locator, out) {
+    async get(locator: string, out: string): Promise<void> {
       assertNoSpace(locator, 'locator');
       const base = tmpdir();
       assertNoSpace(base, 'TMPDIR (point it at a space-free path for the ton backend)');

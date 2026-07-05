@@ -7,19 +7,20 @@
 import { stat, readFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { resolve } from 'node:path';
-import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND, AR_HTTP_TIMEOUT_MS } from '../config.mjs';
-import { warnIfLooseKeyPerms, fmtBytes } from '../util.mjs';
-import { arweaveBackend } from './arweave.mjs';
+import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND, AR_HTTP_TIMEOUT_MS } from '../config.js';
+import { warnIfLooseKeyPerms, fmtBytes, errMsg } from '../util.js';
+import { arweaveBackend } from './arweave.js';
+import type { StorageBackend, PutOpts } from '../types.js';
 
 // Current USD price of 1 AR via the Turbo pricing endpoint the SDK exposes (winc is
 // pegged 1:1 to winston; 1 AR = 1e12 of either, so one rate converts both). Returns a
 // positive number or null on ANY failure — SDK not installed, offline, odd response —
 // and is raced against AR_HTTP_TIMEOUT_MS: the USD line is a courtesy estimate that
 // must never block, fail, or stall a push (or an MCP estimate).
-export async function arUsdRate() {
+export async function arUsdRate(): Promise<number | null> {
   try {
     const { TurboFactory } = await import('@ardrive/turbo-sdk');
-    const timeout = new Promise((resolve) => {
+    const timeout = new Promise<null>((resolve) => {
       const t = setTimeout(() => resolve(null), AR_HTTP_TIMEOUT_MS);
       if (typeof t.unref === 'function') t.unref(); // don't keep the process alive for a lost race
     });
@@ -33,27 +34,28 @@ export async function arUsdRate() {
 
 // "~$X USD" for a native amount (winc or winston) at the given USD/AR rate.
 // More decimals for sub-cent estimates so a tiny nightly push isn't shown as $0.00.
-export const usdApprox = (nativeAmount, rate) => {
+export const usdApprox = (nativeAmount: bigint | number, rate: number): string => {
   const usd = (Number(nativeAmount) / 1e12) * rate;
   return `~$${usd.toFixed(usd >= 0.01 ? 2 : 6)} USD`;
 };
 
-export function turboBackend() {
+export function turboBackend(): StorageBackend {
   return {
-    async put(file, _opts = {}) {
+    async put(file: string, _opts: PutOpts = {}): Promise<string> {
       // import + wallet load live HERE (not the constructor) so a turbo PULL needs
       // neither @ardrive/turbo-sdk nor a wallet — only an upload does.
-      let TurboFactory, ArweaveSigner;
+      let TurboFactory: typeof import('@ardrive/turbo-sdk').TurboFactory;
+      let ArweaveSigner: typeof import('@ardrive/turbo-sdk').ArweaveSigner;
       try { ({ TurboFactory, ArweaveSigner } = await import('@ardrive/turbo-sdk')); }
       catch (e) {
-        if (e && e.code === 'ERR_MODULE_NOT_FOUND') throw new Error('turbo backend needs the `@ardrive/turbo-sdk` package — run: npm install @ardrive/turbo-sdk');
+        if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') throw new Error('turbo backend needs the `@ardrive/turbo-sdk` package — run: npm install @ardrive/turbo-sdk');
         throw e;
       }
       if (!AR_WALLET) throw new Error('turbo put needs CIPHER_BRAIN_AR_WALLET (a JWK signer; uploads <100KB are free, larger spend Turbo Credits funded to its address)');
       await warnIfLooseKeyPerms(AR_WALLET, 'turbo JWK wallet (spend-capable bearer key)');
-      let jwk;
+      let jwk: unknown;
       try { jwk = JSON.parse(await readFile(AR_WALLET, 'utf8')); }
-      catch (e) { throw new Error(`turbo: cannot read JWK wallet at ${AR_WALLET}: ${e.message}`); }
+      catch (e) { throw new Error(`turbo: cannot read JWK wallet at ${AR_WALLET}: ${errMsg(e)}`); }
       const turbo = TurboFactory.authenticated({ signer: new ArweaveSigner(jwk) });
       const abs = resolve(file);
       const { size } = await stat(abs); // stream the file (don't buffer an ~850MB brain) and give Turbo its size
@@ -79,15 +81,16 @@ export function turboBackend() {
           throw new Error(`turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
         }
       } catch (e) {
-        if (e.message && e.message.startsWith('turbo: upload cost')) throw e; // re-raise the cap guard
-        process.stderr.write(`turbo: could not estimate upload cost (${e.message}); proceeding\n`);
+        const msg = errMsg(e);
+        if (msg.startsWith('turbo: upload cost')) throw e; // re-raise the cap guard
+        process.stderr.write(`turbo: could not estimate upload cost (${msg}); proceeding\n`);
       }
       // paidBy (x-paid-by header): when set, Turbo pays from a Credit Share Approval the
       // named address granted THIS signer, before the signer's own balance. It funds the
       // CLI path when credits were bought on a wallet we can't sign with (e.g. MetaMask)
       // and shared to this JWK. Not URL-interpolated (header only), but sanity-check the
       // shape (Arweave/Ethereum/Solana address) to reject header-breaking input.
-      const dataItemOpts = { tags: [{ name: 'App-Name', value: 'cipher-brain' }, { name: 'Content-Type', value: 'application/octet-stream' }] };
+      const dataItemOpts: { tags: { name: string; value: string }[]; paidBy?: string[] } = { tags: [{ name: 'App-Name', value: 'cipher-brain' }, { name: 'Content-Type', value: 'application/octet-stream' }] };
       if (AR_PAID_BY) {
         if (!/^[A-Za-z0-9_-]{30,64}$/.test(AR_PAID_BY)) throw new Error(`turbo: CIPHER_BRAIN_AR_PAID_BY must be a plain wallet address (Arweave/Ethereum/Solana): ${AR_PAID_BY}`);
         dataItemOpts.paidBy = [AR_PAID_BY];
@@ -103,7 +106,7 @@ export function turboBackend() {
     // reads are identical to the arweave backend (Turbo items are bundled). Pure
     // delegation, so a turbo PULL needs neither @ardrive/turbo-sdk nor a wallet —
     // the "a fresh machine needs only the tx id" recovery property holds.
-    get(locator, out) {
+    get(locator: string, out: string): Promise<void> {
       return arweaveBackend().then((b) => b.get(locator, out));
     },
   };

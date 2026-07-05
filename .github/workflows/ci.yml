@@ -31,5 +31,18 @@ jobs:
         run: brew install age
       - name: install deps (arweave + arlocal for the arweave backend test)
         run: bun install --frozen-lockfile
+      # A dedicated, early step (not just typecheck's place inside `npm run verify`'s
+      # chain) so a type error fails the job fast, before the slower selftest suite even
+      # starts, and shows as its own distinct check in the Actions UI. `npm run verify`
+      # below still runs `npm run typecheck` again as part of its chain — a few extra
+      # seconds per matrix cell (strict tsc over ~3k lines is fast) traded for that
+      # fail-fast/visibility property and for local-vs-CI parity (verify behaves
+      # identically here and on a dev machine). tsc's own output is OS/node-invariant
+      # (pure type-checking against one pinned @types/node, not runtime behavior), so
+      # running it 4x (once per matrix cell) is a little redundant — but riding along on
+      # the existing per-cell job is simpler than adding a 5th standalone job just to
+      # dedupe a couple of CPU-seconds.
+      - name: typecheck (strict tsc --noEmit)
+        run: npm run typecheck
       - name: verify (build + all selftests + CLI smoke)
         run: npm run verify

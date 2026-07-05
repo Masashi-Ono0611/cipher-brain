@@ -43,6 +43,56 @@ const CRON_ENTRY_FILE = join(SCHEDULE_DIR, 'cron.entry'); // Linux: the exact re
 const BACKENDS = new Set(['file', 'ton', 'arweave', 'turbo']);
 const PAID = new Set(['arweave', 'turbo']);
 
+// Every CIPHER_BRAIN_* var a snapshot+push run could need that this runner does NOT
+// already bake unconditionally or separately (see the comment above envLines' loop
+// in runnerBody for the full exclusion list).
+const ENV_CAPTURE_VARS = [
+  'CIPHER_BRAIN_FILE_DIR', 'CIPHER_BRAIN_PG_BIN', 'CIPHER_BRAIN_PIN_RECIPIENTS',
+  'CIPHER_BRAIN_TON_CLI', 'CIPHER_BRAIN_TON_API', 'CIPHER_BRAIN_TON_CLIENT', 'CIPHER_BRAIN_TON_SERVER', 'CIPHER_BRAIN_TON_TIMEOUT',
+  'CIPHER_BRAIN_AR_HOST', 'CIPHER_BRAIN_AR_PORT', 'CIPHER_BRAIN_AR_PROTOCOL', 'CIPHER_BRAIN_AR_WALLET', 'CIPHER_BRAIN_AR_PAID_BY',
+  'CIPHER_BRAIN_AR_HTTP_TIMEOUT', 'CIPHER_BRAIN_AR_L1_MAX', 'CIPHER_BRAIN_PIPE_TIMEOUT',
+];
+
+// Of ENV_CAPTURE_VARS, the ones config.mjs documents as naming a filesystem path (a
+// directory or a specific key/JWK file) rather than a bare value (a backend name, a
+// timeout, a spend cap, a hostname/URL/address) or — like CIPHER_BRAIN_TON_CLI, default
+// 'storage-daemon-cli' — a command name meant to be resolved via PATH at RUN time (which
+// path-resolving here would break, the same class of bug --pg's pg_dump auto-detect
+// already guards against). A relative value here resolves fine at install time (against
+// the operator's interactive cwd), but launchd/cron invoke the runner from a DIFFERENT,
+// unrelated cwd — so bake the ABSOLUTE path in, same treatment already given to
+// --vault/--zip/--recipient(file) below.
+const PATH_ENV_VARS = new Set([
+  'CIPHER_BRAIN_FILE_DIR', // config.mjs: "file backend object store"
+  'CIPHER_BRAIN_PG_BIN',   // config.mjs: "dir holding pg_dump/pg_restore"
+  'CIPHER_BRAIN_AR_WALLET', // config.mjs: "path to a JWK key file"
+  'CIPHER_BRAIN_TON_CLIENT', // ton.mjs: "storage-daemon-cli key paths" (-k)
+  'CIPHER_BRAIN_TON_SERVER', // ton.mjs: "storage-daemon-cli key paths" (-p)
+]);
+
+// Snapshot + resolve, at install time, every ENV_CAPTURE_VARS value that is actually set —
+// so the runner bakes in absolute paths, not values relative to whatever cwd the operator
+// happened to run `schedule install` from.
+async function captureEnv() {
+  const captured = {};
+  for (const v of ENV_CAPTURE_VARS) {
+    const raw = process.env[v];
+    if (!raw) continue;
+    if (v === 'CIPHER_BRAIN_PIN_RECIPIENTS') {
+      // File-first, exactly like keys.mjs's resolvePinnedRecipients: if the value names
+      // an existing file, it's a path — resolve it. Otherwise it's an inline age1... list
+      // (or a not-yet-existing path — either way, resolve() would only mangle it), leave
+      // it untouched.
+      captured[v] = (await exists(raw)) ? resolve(raw) : raw;
+    } else if (PATH_ENV_VARS.has(v)) {
+      captured[v] = resolve(raw);
+    } else {
+      captured[v] = raw;
+    }
+  }
+  return captured;
+}
+
 // POSIX single-quote an arbitrary string for embedding in the generated script.
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
@@ -64,6 +114,10 @@ function runnerBody(cfg) {
   // bake the values that were in effect at install time so the unattended run
   // resolves the same keys/stores the operator tested with.
   const envLines = [`export CIPHER_BRAIN_HOME=${shq(cfg.home)}`];
+  // Users with large brains are expected to set TMPDIR so snapshot() (mkdtempSync) stages
+  // plaintext on a disk with enough room — bake it in too, or a scheduled run silently
+  // falls back to the system temp dir even though install was run with TMPDIR set.
+  if (cfg.tmpdir) envLines.push(`export TMPDIR=${shq(cfg.tmpdir)}`);
   // Every CIPHER_BRAIN_* var src/lib/config.mjs reads that a snapshot+push run could need,
   // EXCEPT: CIPHER_BRAIN_HOME (baked above unconditionally), CIPHER_BRAIN_YES/MAX_SPEND
   // (baked separately below, only for paid backends), CIPHER_BRAIN_AGE/AGE_KEYGEN
@@ -73,13 +127,11 @@ function runnerBody(cfg) {
   // here that was set at install time and is silently dropped makes a scheduled run of a
   // non-default backend (ton/turbo/a custom arweave gateway) fail or fall back to the
   // WRONG default compared to the interactive setup the operator actually tested.
-  for (const v of [
-    'CIPHER_BRAIN_FILE_DIR', 'CIPHER_BRAIN_PG_BIN', 'CIPHER_BRAIN_PIN_RECIPIENTS',
-    'CIPHER_BRAIN_TON_CLI', 'CIPHER_BRAIN_TON_API', 'CIPHER_BRAIN_TON_CLIENT', 'CIPHER_BRAIN_TON_SERVER', 'CIPHER_BRAIN_TON_TIMEOUT',
-    'CIPHER_BRAIN_AR_HOST', 'CIPHER_BRAIN_AR_PORT', 'CIPHER_BRAIN_AR_PROTOCOL', 'CIPHER_BRAIN_AR_WALLET', 'CIPHER_BRAIN_AR_PAID_BY',
-    'CIPHER_BRAIN_AR_HTTP_TIMEOUT', 'CIPHER_BRAIN_AR_L1_MAX', 'CIPHER_BRAIN_PIPE_TIMEOUT',
-  ]) {
-    if (process.env[v]) envLines.push(`export ${v}=${shq(process.env[v])}`);
+  // cfg.env was already resolved to absolute paths (where applicable) at install time by
+  // captureEnv() — do NOT re-read process.env here (launchd/cron's bare env has none of
+  // this anyway; the whole point is to bake in what install time saw).
+  for (const [v, val] of Object.entries(cfg.env)) {
+    envLines.push(`export ${v}=${shq(val)}`);
   }
   const spendLines = [];
   if (PAID.has(cfg.backend)) {
@@ -297,6 +349,12 @@ async function install(o) {
     trigger: process.platform === 'darwin'
       ? { type: 'launchd', path: PLIST }
       : { type: 'cron', entry_file: CRON_ENTRY_FILE },
+    // Same reasoning as --vault/--zip/--dir/--recipient above, applied to the ambient
+    // CIPHER_BRAIN_* env vars and TMPDIR: snapshot this process's env NOW (resolving any
+    // relative path-valued vars to absolute) so the runner still resolves the same
+    // files/dirs when launchd/cron invoke it later from a different cwd and bare env.
+    env: await captureEnv(),
+    tmpdir: process.env.TMPDIR ? resolve(process.env.TMPDIR) : null,
   };
 
   await mkdir(LOGS_DIR, { recursive: true });

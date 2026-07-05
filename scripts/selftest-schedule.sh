@@ -92,6 +92,31 @@ if grep -qF -- "--zip 'exportdata.zip'" "$RUNNER"; then echo "[FAIL] runner stil
 if grep -qF -- "--recipient 'recipients.txt'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --recipient FILE string"; exit 1; fi
 echo "[PASS] relative --vault/--zip/--recipient(file) resolved to absolute in the runner; inline age1... --recipient left unchanged"
 
+echo "== (a3b) relative CIPHER_BRAIN_AR_WALLET / CIPHER_BRAIN_PIN_RECIPIENTS set before install (from a subdirectory) resolve to ABSOLUTE in the runner (same launchd/cron-different-cwd hazard as --vault/--zip/--recipient — Codex review round 4, #69 P2) =="
+mkdir -p "$TMP/subdir2"
+touch "$TMP/subdir2/wallet.json"
+printf '# a pin-recipients file\nage1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqcexskr\n' > "$TMP/subdir2/pins.txt"
+REALSUB2="$(cd "$TMP/subdir2" && pwd -P)"
+(cd "$TMP/subdir2" && CIPHER_BRAIN_AR_WALLET="wallet.json" CIPHER_BRAIN_PIN_RECIPIENTS="pins.txt" cb schedule install --backend file --dir "$SRC" --no-load) \
+  > "$TMP/install-a3b.log" 2>&1 || { echo "[FAIL] install (relative AR_WALLET/PIN_RECIPIENTS, invoked from a different cwd) exited non-zero"; cat "$TMP/install-a3b.log"; exit 1; }
+grep -qF "export CIPHER_BRAIN_AR_WALLET='$REALSUB2/wallet.json'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved CIPHER_BRAIN_AR_WALLET"; cat "$RUNNER"; exit 1; }
+grep -qF "export CIPHER_BRAIN_PIN_RECIPIENTS='$REALSUB2/pins.txt'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved CIPHER_BRAIN_PIN_RECIPIENTS"; cat "$RUNNER"; exit 1; }
+if grep -qF "CIPHER_BRAIN_AR_WALLET='wallet.json'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE CIPHER_BRAIN_AR_WALLET string"; exit 1; fi
+if grep -qF "CIPHER_BRAIN_PIN_RECIPIENTS='pins.txt'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE CIPHER_BRAIN_PIN_RECIPIENTS string"; exit 1; fi
+echo "[PASS] relative CIPHER_BRAIN_AR_WALLET/CIPHER_BRAIN_PIN_RECIPIENTS resolved to absolute in the runner"
+
+echo "== (a3c) TMPDIR set at install time (relative, from a subdirectory) is baked into the runner as an ABSOLUTE export (snapshot()'s mkdtempSync stages plaintext there; launchd/cron start with a bare env and would silently fall back to the system temp dir otherwise) =="
+mkdir -p "$TMP/bigdisk"
+# Canonical form of $TMP/bigdisk — matches what node:path's resolve()/process.cwd() bakes
+# in (macOS mktemp dirs live under a symlinked /var/folders -> /private/var/folders, so a
+# naive string comparison against the raw $TMP/bigdisk would false-fail here — see a3's
+# REALSUB for the same reasoning).
+REALBIGDISK="$(cd "$TMP/bigdisk" && pwd -P)"
+(cd "$TMP/subdir2" && TMPDIR=../bigdisk cb schedule install --backend file --dir "$SRC" --no-load) \
+  > "$TMP/install-a3c.log" 2>&1 || { echo "[FAIL] install (relative TMPDIR, invoked from a different cwd) exited non-zero"; cat "$TMP/install-a3c.log"; exit 1; }
+grep -qF "export TMPDIR='$REALBIGDISK'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved TMPDIR"; cat "$RUNNER"; exit 1; }
+echo "[PASS] TMPDIR baked into the runner as an absolute export"
+
 echo "== (a4) --pg without CIPHER_BRAIN_PG_BIN resolves pg_dump on PATH at install time and bakes its DIRECTORY as CIPHER_BRAIN_PG_BIN (config.mjs's PG_BIN is a dir joined with the tool name via pgTool(), not the pg_dump binary path itself — baking the binary path verbatim would break both pg_dump AND pg_restore); install fails clearly when pg_dump cannot be resolved =="
 FAKE_PGBIN="$TMP/fake-pgbin"; mkdir -p "$FAKE_PGBIN"
 cat > "$FAKE_PGBIN/pg_dump" <<'SHIM'
@@ -113,11 +138,21 @@ grep -qF "resolved pg_dump -> $REAL_FAKE_PGBIN/pg_dump" "$TMP/install-pg.log" ||
 echo "[PASS] --pg without CIPHER_BRAIN_PG_BIN resolves pg_dump on PATH and bakes its containing directory into the runner"
 
 NODE_BIN="$(command -v node)"
-if PATH="/usr/bin:/bin" "$NODE_BIN" "$BIN" schedule install --backend file --pg "postgres://x/y" --no-load > "$TMP/install-pg-missing.log" 2>&1; then
-  echo "[FAIL] install (--pg, minimal PATH with no pg_dump) was accepted"; exit 1
+# Do NOT strip PATH down to /usr/bin:/bin and assume pg_dump is absent there — hosts
+# (including plausible CI images) that ship the PostgreSQL client tools system-wide under
+# /usr/bin make that assertion host-dependent and wrongly FAIL a working feature (Codex
+# review round 4, #69 P2). Build an ISOLATED PATH dir containing ONLY the one binary
+# schedule install's --pg auto-detect itself shells out to — a POSIX shell, to run
+# `command -v pg_dump` (see resolvePgDumpDir() in src/lib/schedule.mjs) — so pg_dump is
+# guaranteed unresolvable no matter what the real host has installed. node is invoked
+# directly via its absolute path ($NODE_BIN), so it needs no entry on PATH itself.
+ISOLATED_PATH_DIR="$TMP/isolated-path"; mkdir -p "$ISOLATED_PATH_DIR"
+ln -s "$(command -v sh)" "$ISOLATED_PATH_DIR/sh"
+if PATH="$ISOLATED_PATH_DIR" "$NODE_BIN" "$BIN" schedule install --backend file --pg "postgres://x/y" --no-load > "$TMP/install-pg-missing.log" 2>&1; then
+  echo "[FAIL] install (--pg, isolated PATH with no pg_dump) was accepted"; exit 1
 fi
 grep -qi 'pg_dump' "$TMP/install-pg-missing.log" || { echo "[FAIL] install failure does not name the missing pg_dump binary"; cat "$TMP/install-pg-missing.log"; exit 1; }
-echo "[PASS] install refuses clearly (naming pg_dump) when it cannot be resolved on PATH"
+echo "[PASS] install refuses clearly (naming pg_dump) when it cannot be resolved, regardless of the real host's PATH contents"
 
 EXPLICIT_PGBIN="$TMP/explicit-pgbin"; mkdir -p "$EXPLICIT_PGBIN"
 CIPHER_BRAIN_PG_BIN="$EXPLICIT_PGBIN" cb schedule install --backend file --pg "postgres://x/y" --no-load > "$TMP/install-pg-explicit.log" 2>&1 \

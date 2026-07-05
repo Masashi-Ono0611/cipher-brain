@@ -207,6 +207,19 @@ else
   echo "[SKIP] plist XML-escape check (macOS only — this platform registers a crontab entry, not a plist)"
 fi
 
+echo "== (c4) --index-file under a NOT-YET-EXISTING nested directory: the runner creates it before appending (a successful, possibly-paid push must never turn into a FAILED run just because the index dir does not exist yet — a naive retry after a false FAILED could re-upload and pay again) =="
+IDX_NESTED_DIR="$TMP/idx-parent/does-not-exist-yet/deeper"
+[ ! -d "$IDX_NESTED_DIR" ] || { echo "[FAIL] test setup invalid: $IDX_NESTED_DIR already exists"; exit 1; }
+cb schedule install --backend file --dir "$SRC" --index-file "$IDX_NESTED_DIR/index.tsv" --no-load > "$TMP/install-idxnest.log" 2>&1 \
+  || { echo "[FAIL] install (--index-file under a nested nonexistent dir) exited non-zero"; cat "$TMP/install-idxnest.log"; exit 1; }
+[ ! -d "$IDX_NESTED_DIR" ] || { echo "[FAIL] install must not itself create the index-file directory (only the runner does, at run time)"; exit 1; }
+bash "$RUNNER" || { echo "[FAIL] runner with a not-yet-existing --index-file directory exited non-zero"; tail -n 20 "$LOG" 2>/dev/null; exit 1; }
+[ -f "$IDX_NESTED_DIR/index.tsv" ] || { echo "[FAIL] index file was not created under the nested directory"; exit 1; }
+[ "$(wc -l < "$IDX_NESTED_DIR/index.tsv" | tr -d ' ')" = "1" ] || { echo "[FAIL] index file does not have exactly 1 appended line"; cat "$IDX_NESTED_DIR/index.tsv"; exit 1; }
+[ "$(awk -F'\t' '{print NF; exit}' "$IDX_NESTED_DIR/index.tsv")" = "3" ] || { echo "[FAIL] index line is not timestamp/locator/sha256"; exit 1; }
+tail -n 1 "$LOG" | grep -q '^OK rc=0$' || { echo "[FAIL] log does not end with OK rc=0 after the nested-index-dir run"; tail -n 3 "$LOG"; exit 1; }
+echo "[PASS] runner mkdir -p's the --index-file's parent directory before appending, on a not-yet-existing nested path"
+
 echo "== (e) uninstall removes trigger + runner; second uninstall is a clean no-op =="
 cb schedule uninstall --no-load > "$TMP/uninstall1.log" 2>&1 || { echo "[FAIL] uninstall exited non-zero"; cat "$TMP/uninstall1.log"; exit 1; }
 [ ! -f "$RUNNER" ] || { echo "[FAIL] runner still present after uninstall"; exit 1; }

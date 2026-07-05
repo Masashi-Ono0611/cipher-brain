@@ -142,6 +142,11 @@ while [ -e "$OUT" ]; do
 done
 ${cb} snapshot ${snapshotArgs.join(' ')} --out "$OUT"
 LOC=$(${cb} push --in "$OUT" --backend ${shq(cfg.backend)} --save-locator ${shq(cfg.save_locator)})
+# The (possibly paid) push above already succeeded — create the index file's parent dir
+# NOW, before appending, so a --index-file under a not-yet-existing directory can't turn
+# a successful push into a FAILED run (which would invite a naive retry to re-upload and
+# pay again for the same snapshot).
+mkdir -p ${shq(dirname(cfg.index_file))}
 printf '%s\\t%s\\t%s\\n' "$(date -u +%FT%TZ)" "$LOC" "$(sha256_of "$OUT")" >> ${shq(cfg.index_file)}
 echo "pushed -> ${cfg.backend}:$LOC"
 `;

@@ -128,7 +128,13 @@ the explanation of the moving parts:
 ```sh
 # nightly.sh (shape of the generated runner)
 set -euo pipefail
-OUT="$HOME/brain-snapshots/brain-$(date +%F).age"
+# Keyed on date+time (not just the day) and disambiguated on collision, so a manual
+# test/retry on install day — or any same-day re-run — never refuses to overwrite
+# the prior run's snapshot.
+STAMP="$(date +%Y%m%dT%H%M%S)"
+OUT="$HOME/brain-snapshots/brain-$STAMP.age"
+n=1
+while [ -e "$OUT" ]; do n=$((n + 1)); OUT="$HOME/brain-snapshots/brain-$STAMP-$n.age"; done
 cipher-brain snapshot --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.gbrain" \
   --recipient ~/.cipher-brain/recipient.txt --recipient ~/.cipher-brain-backup/recipient.txt \
   --out "$OUT"

@@ -112,7 +112,20 @@ ${spendLines.length ? spendLines.join('\n') + '\n' : ''}
 sha256_of() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d ' ' -f 1; else sha256sum "$1" | cut -d ' ' -f 1; fi; }
 
 echo "== cipher-brain nightly run start: $(date -u +%FT%TZ) =="
-OUT="$SNAP_DIR/brain-$(date +%F).age"
+# Retry-safe naming: snapshot.mjs refuses to overwrite an existing --out (by design —
+# see src/lib/snapshot.mjs), so a name keyed on the date ALONE collides the moment this
+# runner is invoked twice on the same day (a manual test on install day, or a legitimate
+# retry after a transient failure). Key on date+time-of-day instead, and disambiguate
+# with a numeric suffix in the rare case two invocations land in the same second — this
+# loop guarantees every invocation gets its own --out, so a same-day re-run never wedges
+# the next (cron/launchd-triggered) run.
+STAMP="$(date +%Y%m%dT%H%M%S)"
+OUT="$SNAP_DIR/brain-$STAMP.age"
+n=1
+while [ -e "$OUT" ]; do
+  n=$((n + 1))
+  OUT="$SNAP_DIR/brain-$STAMP-$n.age"
+done
 ${cb} snapshot ${snapshotArgs.join(' ')} --out "$OUT"
 LOC=$(${cb} push --in "$OUT" --backend ${shq(cfg.backend)} --save-locator ${shq(cfg.save_locator)})
 printf '%s\\t%s\\t%s\\n' "$(date -u +%FT%TZ)" "$LOC" "$(sha256_of "$OUT")" >> ${shq(cfg.index_file)}

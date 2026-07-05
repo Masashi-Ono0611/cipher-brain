@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Selftest for `cipher-brain schedule` (issue #69): the generated nightly runner +
-# platform trigger, the paid-backend spend-cap refusal, one REAL end-to-end run of
-# the generated runner against the file backend, status reporting, and idempotent
-# uninstall. Never touches the real LaunchAgents/crontab: CIPHER_BRAIN_SCHEDULE_DIR
-# + CIPHER_BRAIN_LAUNCHD_DIR point into a temp dir and every install/uninstall
-# passes --no-load (artifacts only, no launchctl/crontab registration).
+# platform trigger, the paid-backend spend-cap refusal, two REAL back-to-back
+# end-to-end runs of the generated runner against the file backend (retry-safety:
+# a same-day re-run must not collide with the prior run's snapshot name), status
+# reporting, and idempotent uninstall. Never touches the real LaunchAgents/crontab:
+# CIPHER_BRAIN_SCHEDULE_DIR + CIPHER_BRAIN_LAUNCHD_DIR point into a temp dir and
+# every install/uninstall passes --no-load (artifacts only, no launchctl/crontab
+# registration).
 set -euo pipefail
 
 BIN="$(cd "$(dirname "$0")/.." && pwd)/bin/cipher-brain.mjs"
@@ -33,7 +35,8 @@ cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-a.log"
 grep -q '^set -euo pipefail$' "$RUNNER" || { echo "[FAIL] runner lacks set -euo pipefail"; exit 1; }
 grep -q -- "snapshot --dir '$SRC' --out" "$RUNNER" || { echo "[FAIL] runner lacks the composed snapshot flags"; exit 1; }
 grep -q -- "push --in \"\$OUT\" --backend 'file' --save-locator" "$RUNNER" || { echo "[FAIL] runner lacks the composed push flags (--backend/--save-locator)"; exit 1; }
-grep -q 'brain-$(date +%F)\.age' "$RUNNER" || { echo "[FAIL] runner lacks the dated output name"; exit 1; }
+grep -q 'STAMP="\$(date +%Y%m%dT%H%M%S)"' "$RUNNER" || { echo "[FAIL] runner lacks the dated+timed output stamp"; exit 1; }
+grep -q 'while \[ -e "\$OUT" \]' "$RUNNER" || { echo "[FAIL] runner lacks the retry-safe disambiguation loop"; exit 1; }
 grep -q -- "index.tsv" "$RUNNER" || { echo "[FAIL] runner lacks the index.tsv append"; exit 1; }
 grep -q 'FAILED rc=' "$RUNNER" || { echo "[FAIL] runner lacks the trailing FAILED rc trap"; exit 1; }
 if grep -q 'CIPHER_BRAIN_YES' "$RUNNER"; then echo "[FAIL] free backend runner must NOT set CIPHER_BRAIN_YES"; exit 1; fi
@@ -64,27 +67,35 @@ grep -q '^export CIPHER_BRAIN_MAX_SPEND=500000$' "$RUNNER" || { echo "[FAIL] pai
 grep -q 'CIPHER_BRAIN_MAX_SPEND=500000' "$TMP/install-turbo.log" || { echo "[FAIL] install did not tell the user to review the cap"; exit 1; }
 echo "[PASS] paid backend: uncapped install refused; capped install writes both env lines"
 
-echo "== (c) the generated runner RUNS end-to-end (file backend, temp env) =="
+echo "== (c) the generated runner RUNS end-to-end, TWICE in immediate succession (retry-safe, file backend, temp env) =="
 cb schedule install --backend file --dir "$SRC" --no-load > /dev/null 2>&1 \
   || { echo "[FAIL] reinstall (file) exited non-zero"; exit 1; }
 TODAY="$(date +%F)"
-bash "$RUNNER" || { echo "[FAIL] runner exited non-zero"; cat "$CIPHER_BRAIN_SCHEDULE_DIR/logs/nightly-$TODAY.log" 2>/dev/null; exit 1; }
-SNAP="$CIPHER_BRAIN_SCHEDULE_DIR/snapshots/brain-$TODAY.age"
+TODAY_COMPACT="$(date +%Y%m%d)" # matches the STAMP="$(date +%Y%m%dT%H%M%S)" the runner names snapshots with
 LOG="$CIPHER_BRAIN_SCHEDULE_DIR/logs/nightly-$TODAY.log"
 LOCFILE="$CIPHER_BRAIN_HOME/latest-locator.tsv"
 IDX="$CIPHER_BRAIN_SCHEDULE_DIR/index.tsv"
-[ -f "$SNAP" ] || { echo "[FAIL] dated snapshot not produced: $SNAP"; exit 1; }
+SNAP_DIR="$CIPHER_BRAIN_SCHEDULE_DIR/snapshots"
+
+bash "$RUNNER" || { echo "[FAIL] first runner invocation exited non-zero"; cat "$LOG" 2>/dev/null; exit 1; }
+# Same-day immediate re-run (manual test-on-install-day / retry-after-failure): must
+# NOT collide with run 1's snapshot name (this is the exact issue #69 regression).
+bash "$RUNNER" || { echo "[FAIL] second runner invocation (same day, immediate retry) exited non-zero — retry-unsafe"; cat "$LOG" 2>/dev/null; exit 1; }
+
 [ -f "$LOG" ] || { echo "[FAIL] dated log not produced: $LOG"; exit 1; }
-tail -n 1 "$LOG" | grep -q '^OK rc=0$' || { echo "[FAIL] log does not end with OK rc=0"; tail -n 3 "$LOG"; exit 1; }
+tail -n 1 "$LOG" | grep -q '^OK rc=0$' || { echo "[FAIL] log does not end with OK rc=0 after the second run"; tail -n 3 "$LOG"; exit 1; }
+SNAP_COUNT="$(find "$SNAP_DIR" -maxdepth 1 -name "brain-$TODAY_COMPACT*.age" | wc -l | tr -d ' ')"
+[ "$SNAP_COUNT" = "2" ] || { echo "[FAIL] expected 2 distinct dated snapshots after 2 same-day runs, got $SNAP_COUNT"; find "$SNAP_DIR" -maxdepth 1 -name "brain-$TODAY_COMPACT*.age"; exit 1; }
 [ -f "$LOCFILE" ] || { echo "[FAIL] --save-locator file not written: $LOCFILE"; exit 1; }
 [ "$(awk -F'\t' '{print NF; exit}' "$LOCFILE")" = "3" ] || { echo "[FAIL] locator file is not 3 tab-separated fields"; exit 1; }
 [ "$(awk -F'\t' '{print $2; exit}' "$LOCFILE")" = "file" ] || { echo "[FAIL] locator file backend != file"; exit 1; }
-[ "$(wc -l < "$IDX" | tr -d ' ')" = "1" ] || { echo "[FAIL] index.tsv does not have exactly 1 appended line"; exit 1; }
+[ "$(wc -l < "$IDX" | tr -d ' ')" = "2" ] || { echo "[FAIL] index.tsv does not have exactly 2 appended lines after 2 runs"; exit 1; }
 [ "$(awk -F'\t' '{print NF; exit}' "$IDX")" = "3" ] || { echo "[FAIL] index.tsv line is not timestamp/locator/sha256"; exit 1; }
+SNAP="$(find "$SNAP_DIR" -maxdepth 1 -name "brain-$TODAY_COMPACT*.age" | sort | tail -n 1)"
 cb pull --from-locator-file "$LOCFILE" --out "$TMP/got.age" > /dev/null 2>&1 || { echo "[FAIL] pull via the saved locator failed"; exit 1; }
 cb verify --in "$TMP/got.age" > "$TMP/verify.log" 2>&1 || { echo "[FAIL] verify on the pulled snapshot failed"; cat "$TMP/verify.log"; exit 1; }
 grep -q 'VERDICT: PASS' "$TMP/verify.log" || { echo "[FAIL] verify verdict is not PASS"; exit 1; }
-echo "[PASS] runner end-to-end: snapshot + push + save-locator + index append + pull-back verify PASS"
+echo "[PASS] runner end-to-end, twice same day: 2 distinct dated snapshots + index.tsv +2 lines + trailing OK rc=0 + pull-back verify PASS"
 
 echo "== (d) status reports time, backend, last log rc, next run =="
 cb schedule status > "$TMP/status.log" 2>&1 || { echo "[FAIL] status exited non-zero"; cat "$TMP/status.log"; exit 1; }

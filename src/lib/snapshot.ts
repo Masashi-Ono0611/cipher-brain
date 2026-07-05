@@ -62,7 +62,7 @@ async function fileTupleLine(rel: string, full: string): Promise<string> {
 //   - top-level symlink → the link's OWN identity (what it points to), never its
 //            target's content. tar archives an explicit symlink argument as the
 //            link itself (bsdtar/GNU tar both default to not dereferencing — the
-//            same class of bug profiles.mjs's realpath-dereference comment fixes
+//            same class of bug profiles.ts's realpath-dereference comment fixes
 //            for --vault/--zip/claude-code paths), so a target swapped for a
 //            different path — even one with byte-identical content — changes
 //            what actually gets archived and must change the digest too.
@@ -123,7 +123,7 @@ interface ManifestComponent {
 export async function snapshot(o: CliOptions): Promise<void> {
   if (!o.out) throw new Error('--out <file.age> required');
   // --profile is a thin veneer over --dir: it resolves to concrete source paths
-  // (see profiles.mjs) staged exactly like explicit --dir flags. Profile paths
+  // (see profiles.ts) staged exactly like explicit --dir flags. Profile paths
   // come first; any extra --dir flags the user passed are appended after them.
   if (o.profile) o.dirs = [...(await resolveProfilePaths(o)), ...o.dirs];
   if (!o.pg && o.dirs.length === 0) throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
@@ -191,7 +191,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // (only the resulting SET matters, same dedupe as effectiveKeys above). This is a
   // SEPARATE signal from content_digest (which stays pure-plaintext, unaffected by
   // recipients) that `push --skip-unchanged` additionally folds in (src/lib/
-  // pushpull.mjs): without it, re-snapshotting unchanged plaintext under a CHANGED
+  // pushpull.ts): without it, re-snapshotting unchanged plaintext under a CHANGED
   // recipient set (a newly added offline recovery key, or a removed/revoked key)
   // would still skip and return the OLD locator — the new key could never decrypt
   // it, and/or a revoked key still could, even though the operator believes the
@@ -322,7 +322,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
     }
     // Recipients fingerprint sidecar — the SEPARATE signal (#70 review round 2) that
     // push --skip-unchanged additionally requires to match before it will skip (see
-    // src/lib/pushpull.mjs). A leaked age1… pubkey is not a secret (it's the whole
+    // src/lib/pushpull.ts). A leaked age1… pubkey is not a secret (it's the whole
     // point of a "recipient" — safe to copy), so this sidecar carries no secrets
     // either. Best-effort, same as the content digest sidecar above.
     try {

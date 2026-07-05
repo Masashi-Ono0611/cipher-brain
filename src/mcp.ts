@@ -1,6 +1,6 @@
 // cipher-brain-mcp — MCP server so an AI agent can snapshot/verify its own brain.
 //
-// Second entry point next to src/cli.mjs (same shape as ton-mesh-harness's CLI +
+// Second entry point next to src/cli.ts (same shape as ton-mesh-harness's CLI +
 // MCP two-face design). Every tool is a thin wrapper over the SAME src/lib
 // functions the CLI dispatches to — no re-implemented logic, no shelling out.
 //
@@ -400,7 +400,7 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
       tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-mcp-'));
       target = join(tdir, 'pulled.age');
       // pull() natively understands from_locator_file — the SAME parsing + pin
-      // application as the CLI recovery path (src/lib/pushpull.mjs) — and fills
+      // application as the CLI recovery path (src/lib/pushpull.ts) — and fills
       // the resolved locator/backend/sha256 back into this options object. A
       // sha256 mismatch deletes the artifact and throws: fail closed, no verdict.
       const pullOpts: CliOptions = {

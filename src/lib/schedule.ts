@@ -54,7 +54,7 @@ const ENV_CAPTURE_VARS = [
   'CIPHER_BRAIN_AR_HTTP_TIMEOUT', 'CIPHER_BRAIN_AR_L1_MAX', 'CIPHER_BRAIN_PIPE_TIMEOUT',
 ];
 
-// Of ENV_CAPTURE_VARS, the ones config.mjs documents as naming a filesystem path (a
+// Of ENV_CAPTURE_VARS, the ones config.ts documents as naming a filesystem path (a
 // directory or a specific key/JWK file) rather than a bare value (a backend name, a
 // timeout, a spend cap, a hostname/URL/address) or — like CIPHER_BRAIN_TON_CLI, default
 // 'storage-daemon-cli' — a command name meant to be resolved via PATH at RUN time (which
@@ -64,11 +64,11 @@ const ENV_CAPTURE_VARS = [
 // unrelated cwd — so bake the ABSOLUTE path in, same treatment already given to
 // --vault/--zip/--recipient(file) below.
 const PATH_ENV_VARS = new Set([
-  'CIPHER_BRAIN_FILE_DIR', // config.mjs: "file backend object store"
-  'CIPHER_BRAIN_PG_BIN',   // config.mjs: "dir holding pg_dump/pg_restore"
-  'CIPHER_BRAIN_AR_WALLET', // config.mjs: "path to a JWK key file"
-  'CIPHER_BRAIN_TON_CLIENT', // ton.mjs: "storage-daemon-cli key paths" (-k)
-  'CIPHER_BRAIN_TON_SERVER', // ton.mjs: "storage-daemon-cli key paths" (-p)
+  'CIPHER_BRAIN_FILE_DIR', // config.ts: "file backend object store"
+  'CIPHER_BRAIN_PG_BIN',   // config.ts: "dir holding pg_dump/pg_restore"
+  'CIPHER_BRAIN_AR_WALLET', // config.ts: "path to a JWK key file"
+  'CIPHER_BRAIN_TON_CLIENT', // ton.ts: "storage-daemon-cli key paths" (-k)
+  'CIPHER_BRAIN_TON_SERVER', // ton.ts: "storage-daemon-cli key paths" (-p)
 ]);
 
 // Snapshot + resolve, at install time, every ENV_CAPTURE_VARS value that is actually set —
@@ -80,7 +80,7 @@ async function captureEnv(): Promise<Record<string, string>> {
     const raw = process.env[v];
     if (!raw) continue;
     if (v === 'CIPHER_BRAIN_PIN_RECIPIENTS') {
-      // File-first, exactly like keys.mjs's resolvePinnedRecipients: if the value names
+      // File-first, exactly like keys.ts's resolvePinnedRecipients: if the value names
       // an existing file, it's a path — resolve it. Otherwise it's an inline age1... list
       // (or a not-yet-existing path — either way, resolve() would only mangle it), leave
       // it untouched.
@@ -150,7 +150,7 @@ function runnerBody(cfg: ScheduleConfig): string {
   // plaintext on a disk with enough room — bake it in too, or a scheduled run silently
   // falls back to the system temp dir even though install was run with TMPDIR set.
   if (cfg.tmpdir) envLines.push(`export TMPDIR=${shq(cfg.tmpdir)}`);
-  // Every CIPHER_BRAIN_* var src/lib/config.mjs reads that a snapshot+push run could need,
+  // Every CIPHER_BRAIN_* var src/lib/config.ts reads that a snapshot+push run could need,
   // EXCEPT: CIPHER_BRAIN_HOME (baked above unconditionally), CIPHER_BRAIN_YES/MAX_SPEND
   // (baked separately below, only for paid backends), CIPHER_BRAIN_AGE/AGE_KEYGEN
   // (deprecated — age is bundled in-process now), and CIPHER_BRAIN_PASSPHRASE (only read
@@ -210,8 +210,8 @@ ${spendLines.length ? spendLines.join('\n') + '\n' : ''}
 sha256_of() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d ' ' -f 1; else sha256sum "$1" | cut -d ' ' -f 1; fi; }
 
 echo "== cipher-brain nightly run start: $(date -u +%FT%TZ) =="
-# Retry-safe naming: snapshot.mjs refuses to overwrite an existing --out (by design —
-# see src/lib/snapshot.mjs), so a name keyed on the date ALONE collides the moment this
+# Retry-safe naming: snapshot.ts refuses to overwrite an existing --out (by design —
+# see src/lib/snapshot.ts), so a name keyed on the date ALONE collides the moment this
 # runner is invoked twice on the same day (a manual test on install day, or a legitimate
 # retry after a transient failure). Key on date+time-of-day instead, and disambiguate
 # with a numeric suffix in the rare case two invocations land in the same second — this
@@ -297,8 +297,8 @@ function loadCron(entry: string): void {
   if (r.error || r.status !== 0) throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
 }
 
-// Resolve pg_dump's directory the SAME way config.mjs's PG_BIN is consumed (a directory
-// holding pg_dump/pg_restore, joined with the tool name — see config.mjs pgTool()), NOT
+// Resolve pg_dump's directory the SAME way config.ts's PG_BIN is consumed (a directory
+// holding pg_dump/pg_restore, joined with the tool name — see config.ts pgTool()), NOT
 // the pg_dump binary path itself. `command -v` is a POSIX shell builtin (portable across
 // macOS/Linux, unlike the `which` binary which isn't guaranteed present), run via `sh -c`
 // so it resolves against THIS process's current PATH — the same env `schedule install`

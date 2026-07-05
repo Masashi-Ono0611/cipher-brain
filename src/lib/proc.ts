@@ -42,5 +42,5 @@ export function run(cmd: string, args: string[], { input, timeoutMs }: RunOpts =
 }
 
 // The tar|age (snapshot) and age|tar (restore) streaming pipelines live in
-// crypt.mjs (encryptToFile / decryptToChild) — the encryption half runs
+// crypt.ts (encryptToFile / decryptToChild) — the encryption half runs
 // in-process (typage), so only ONE child (tar) is spawned per pipeline.

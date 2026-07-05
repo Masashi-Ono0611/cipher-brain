@@ -241,7 +241,7 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       // inform before signing — the --yes guard in push() already confirmed intent;
       // this surfaces the size so the operator knows what they're committing to.
       process.stderr.write(`arweave: L1 upload — ${data.length} bytes, wallet ${AR_WALLET}\n`);
-      // Cost estimate + cap BEFORE signing (mirrors turbo.mjs): `ar.transactions.getPrice()`
+      // Cost estimate + cap BEFORE signing (mirrors turbo.ts): `ar.transactions.getPrice()`
       // is the SAME call ar.createTransaction() makes internally when `reward` is omitted
       // (see arweave-js common.js createTransaction), so pre-flighting it here is not an
       // EXTRA round-trip — we just make it early enough to enforce CIPHER_BRAIN_MAX_SPEND,

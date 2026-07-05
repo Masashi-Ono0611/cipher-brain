@@ -1,13 +1,13 @@
 // snapshot — stage components (pg_dump / dirs / manifest.json), then stream tar|age.
-import { mkdir, writeFile, rm, stat, rename, link } from 'node:fs/promises';
+import { mkdir, writeFile, rm, stat, rename, link, readdir, readlink } from 'node:fs/promises';
 import { mkdtempSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
-import { join, basename, dirname, resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { join, basename, dirname, resolve, relative, sep } from 'node:path';
+import { randomBytes, createHash } from 'node:crypto';
 import { RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, pgTool } from './config.mjs';
 import { run } from './proc.mjs';
 import { newEncrypter, encryptToFile } from './crypt.mjs';
-import { exists, fmtBytes } from './util.mjs';
+import { exists, fmtBytes, sha256 } from './util.mjs';
 import { recipientEntries, resolvePinnedRecipients } from './keys.mjs';
 import { resolveProfilePaths } from './profiles.mjs';
 import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.mjs';
@@ -32,6 +32,34 @@ async function promoteSnapshot(part, out) {
     throw e;
   }
   await rm(part, { force: true }); // drop the redundant link; out is the durable copy
+}
+
+const hexOf = (s) => createHash('sha256').update(s).digest('hex');
+
+// Deterministic PLAINTEXT content digest of one source path — the signal behind
+// `push --skip-unchanged`. It has to come from the plaintext side: age generates an
+// ephemeral file key per run, so identical content encrypts to DIFFERENT ciphertext
+// bytes every time — the ciphertext sha256 can never say "unchanged". Explicitly
+// independent of mtimes and of the tar byte stream (tar records mtimes/order):
+//   - file → the file's sha256
+//   - dir  → sha256 over the "\n"-joined, path-sorted lines
+//            "<relpath>\t<kind>\t<per-file sha256>\t<size>" for everything under it.
+//            Symlinks hash their target string; other specials (FIFOs, sockets) hash
+//            as a bare kind marker — reading them could hang, and their presence
+//            still perturbs the digest.
+async function contentDigestOfPath(abs) {
+  if (!(await stat(abs)).isDirectory()) return sha256(abs);
+  const lines = [];
+  for (const d of await readdir(abs, { recursive: true, withFileTypes: true })) {
+    const full = join(d.parentPath, d.name);
+    const rel = relative(abs, full).split(sep).join('/'); // POSIX-normalized so the digest is platform-stable
+    if (d.isFile()) lines.push(`${rel}\tf\t${await sha256(full)}\t${(await stat(full)).size}`);
+    else if (d.isSymbolicLink()) lines.push(`${rel}\tl\t${hexOf(await readlink(full))}\t0`);
+    else if (d.isDirectory()) lines.push(`${rel}\td\t-\t0`);
+    else lines.push(`${rel}\ts\t-\t0`);
+  }
+  lines.sort();
+  return hexOf(lines.join('\n') + '\n');
 }
 
 export async function snapshot(o) {
@@ -119,7 +147,11 @@ export async function snapshot(o) {
       await run(pgTool('pg_dump'), ['-Fc', '--no-owner', '--no-privileges', ...tableArgs, '-f', dumpPath, o.pg]);
       // captured_at right AFTER pg_dump (pg_dump -Fc is internally point-in-time consistent
       // via one REPEATABLE READ txn; only the DB↔file boundary needs aligning — #44).
-      components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all', captured_at: new Date().toISOString() });
+      // content_digest = sha256 of the dump bytes. Honest note: pg_dump output may not
+      // be byte-stable across runs even for identical data (internal ordering, embedded
+      // metadata), so DB sources will rarely trigger --skip-unchanged — that is
+      // conservative (an unnecessary push, never a wrongly skipped one) and fine.
+      components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all', content_digest: await sha256(dumpPath), captured_at: new Date().toISOString() });
     }
     const usedNames = new Set();
     for (const d of o.dirs) {
@@ -131,15 +163,22 @@ export async function snapshot(o) {
       // a path can be a directory OR a single file (profiles pass e.g. CLAUDE.md,
       // a ChatGPT export zip) — tar archives both; record which in the manifest.
       const kind = (await stat(abs)).isDirectory() ? 'dir' : 'file';
+      // content_digest BEFORE the tar (of the SOURCE, not the archive): tar bytes embed
+      // mtimes, so hashing them would defeat the mtime-independence --skip-unchanged needs.
+      const contentDigest = await contentDigestOfPath(abs);
       await run('tar', ['-czf', join(stage, name), '-C', dirname(abs), basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar
-      components.push({ name, kind, source: abs, captured_at: new Date().toISOString() }); // skew vs the DB is now detectable on restore
+      components.push({ name, kind, source: abs, content_digest: contentDigest, captured_at: new Date().toISOString() }); // skew vs the DB is now detectable on restore
     }
+    // Combined content digest = sha256 of the per-component digests joined in
+    // component order. Same content in the same component order → same digest,
+    // regardless of mtimes or the (ephemeral-file-key) ciphertext bytes.
+    const contentDigest = hexOf(components.map((c) => c.content_digest).join('\n') + '\n');
     // manifest carries NO secrets — just what's inside (+ capture timestamps so a
     // DB↔files skew is detectable after the fact, + which --profile produced it,
     // if any), so restore is self-describing.
     await writeFile(
       join(stage, 'manifest.json'),
-      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, ...(o.profile ? { profile: o.profile } : {}), components }, null, 2) + '\n',
+      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, content_digest: contentDigest, ...(o.profile ? { profile: o.profile } : {}), components }, null, 2) + '\n',
     );
     // tar the staged components into one stream, encrypt to all recipients (in-process
     // typage, streaming — bounded RSS at any snapshot size). Write to a PER-RUN-UNIQUE
@@ -159,9 +198,20 @@ export async function snapshot(o) {
       setActiveOutPart(null);
       throw e;
     }
+    // Plaintext digest sidecar next to the output — what lets `push --skip-unchanged`
+    // detect "content unchanged" WITHOUT decrypting anything (the manifest copy sits
+    // inside the ciphertext). A content digest leaks no content. Best-effort: the
+    // snapshot itself is already durable at o.out, so a sidecar write failure only
+    // costs the skip optimization, never the backup.
+    try {
+      await writeFile(`${o.out}.digest`, contentDigest + '\n');
+    } catch (e) {
+      console.error(`warning: could not write digest sidecar ${o.out}.digest (${e.message}) — push --skip-unchanged will not have a digest for this snapshot`);
+    }
     const sz = (await stat(o.out)).size;
     console.log(`wrote ${o.out} (${fmtBytes(sz)}, encrypted to ${recs.length} recipient(s): ${recs.join(', ')})`);
     console.log(`components: ${components.map((c) => c.name).join(', ')}`);
+    console.log(`content digest: ${contentDigest} (sidecar: ${o.out}.digest)`);
   } finally {
     await rm(stage, { recursive: true, force: true });
     setActiveStage(null);

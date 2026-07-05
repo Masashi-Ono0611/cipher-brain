@@ -6,21 +6,22 @@
 // active stage dir and erase it synchronously from a signal handler (async rm can't
 // finish before the process dies), then re-raise so the exit code is correct.
 import { rmSync } from 'node:fs';
-import { ACTIVE_CHILDREN } from './proc.mjs';
+import { ACTIVE_CHILDREN } from './proc.js';
 
-let ACTIVE_STAGE = null;
-let ACTIVE_OUT_PART = null; // the partial ${out}.part being written; erased on signal so no stray ciphertext lingers
+let ACTIVE_STAGE: string | null = null;
+let ACTIVE_OUT_PART: string | null = null; // the partial ${out}.part being written; erased on signal so no stray ciphertext lingers
 let SIGNAL_GUARD_INSTALLED = false;
 
 // ESM live bindings are read-only from the importing side, so the module that owns a
 // stage / .part (snapshot) registers them through these setters.
-export const setActiveStage = (v) => { ACTIVE_STAGE = v; };
-export const setActiveOutPart = (v) => { ACTIVE_OUT_PART = v; };
+export const setActiveStage = (v: string | null): void => { ACTIVE_STAGE = v; };
+export const setActiveOutPart = (v: string | null): void => { ACTIVE_OUT_PART = v; };
 
-export function installStageSignalGuard() {
+export function installStageSignalGuard(): void {
   if (SIGNAL_GUARD_INSTALLED) return;
   SIGNAL_GUARD_INSTALLED = true;
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  for (const sig of signals) {
     const handler = () => {
       // Kill the pipeline children FIRST so a still-writing age/tar can't re-create the
       // stage or .part after we remove them (the signal may have hit node alone).

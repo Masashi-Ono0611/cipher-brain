@@ -60,9 +60,16 @@ defenses, ideally both:
 ### 3. Retain the latest locator off-box (built in)
 
 The identity decrypts, but you still need to know *where the latest ciphertext lives*.
-`push --save-locator <path>` writes `<locator>\t<backend>\t<sha256>` to a small file,
-rewritten atomically on every push so it always holds the **most recent** snapshot's
-locator plus an integrity pin:
+`push --save-locator <path>` writes
+`<locator>\t<backend>\t<sha256>[\t<content_digest>[\t<recipients_fingerprint>]]`
+to a small file, rewritten atomically on every push so it always holds the **most
+recent** snapshot's locator plus an integrity pin. The optional 4th field is the
+plaintext content digest (from the `<out>.digest` sidecar `snapshot` writes); the
+optional 5th is the recipients fingerprint (from the `<out>.recipients-fingerprint`
+sidecar) — `push --skip-unchanged` compares BOTH against the current snapshot and only
+skips when neither changed, so re-snapshotting unchanged content under a **different**
+`--recipient` set (added/removed a key) never returns a stale locator. Older 3- and
+4-field files keep working everywhere:
 
 ```sh
 cipher-brain push --in brain-$(date +%F).age --backend turbo --yes \
@@ -148,9 +155,23 @@ export CIPHER_BRAIN_MAX_SPEND=500000000
 export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer for turbo
 # --save-locator keeps a one-line file with the LATEST locator; back it up off-box
 # next to the backup identity so disk-death is recoverable (see Key recovery #3).
-LOC=$(cipher-brain push --in "$OUT" --backend turbo \
+# --skip-unchanged reads the plaintext content digest snapshot wrote to "$OUT.digest"
+# AND the recipients fingerprint it wrote to "$OUT.recipients-fingerprint"; only when
+# BOTH match what's recorded in the save-locator file does it exit 0 with the previous
+# locator instead of paying to re-upload (a changed --recipient set always re-uploads;
+# --force overrides either way).
+LOC=$(cipher-brain push --in "$OUT" --backend turbo --skip-unchanged \
   --save-locator "$HOME/.cipher-brain/latest-locator.tsv")   # or: file | arweave | ton
-printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$(shasum -a 256 "$OUT" | cut -d" " -f1)" \
+# Read the SHA256 back from the save-locator file's 3rd field rather than re-hashing
+# "$OUT": on a --skip-unchanged SKIP, $LOC is the PREVIOUS run's locator while $OUT is
+# THIS run's freshly re-encrypted (age's ephemeral file key differs every run) and
+# never-uploaded ciphertext — shasum-ing $OUT would pair $LOC with a hash it will never
+# actually produce, breaking any later `pull --locator ... --sha256 ...` check against
+# this index row. The save-locator file's 3rd field already holds the correct hash for
+# whatever $LOC points to (cipher-brain push writes it there on every real push, and
+# leaves it untouched — still correct — on a skip).
+SHA=$(cut -f3 "$HOME/.cipher-brain/latest-locator.tsv")
+printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$SHA" \
   >> "$HOME/brain-snapshots/index.tsv"
 ```
 

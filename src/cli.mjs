@@ -32,7 +32,7 @@ import { restore, verify } from './lib/restore.mjs';
 import { push, pull } from './lib/pushpull.mjs';
 import { schedule } from './lib/schedule.mjs';
 
-const BOOL_FLAGS = new Set(['force', 'passphrase', 'yes', 'force_vault', 'no_load']); // flags that take no value
+const BOOL_FLAGS = new Set(['force', 'passphrase', 'yes', 'force_vault', 'skip_unchanged', 'no_load']); // flags that take no value
 
 function parseArgs(argv) {
   const o = { dirs: [], tables: [], recipients: [] };
@@ -58,6 +58,13 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
 
   cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
+      Also records a deterministic PLAINTEXT content digest (mtime-independent) in the
+      manifest and in a "<out>.digest" sidecar, PLUS a recipients fingerprint (the
+      effective age1… recipient set actually encrypted to) in a
+      "<out>.recipients-fingerprint" sidecar — push --skip-unchanged reads BOTH
+      sidecars and only skips when neither the content nor the recipient set changed,
+      so it never re-pushes unchanged content to a paid store, and never skips past a
+      changed --recipient set.
       Pass --recipient more than once (a primary + an offline backup key) for key
       recovery: any one of those identities can restore. The snapshotting machine
       never needs a private key.
@@ -79,16 +86,32 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       bundle. --sha256 also pins the artifact to an expected hash. VERDICT: PASS (exit 0)
       / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not proven, e.g. public-key-only box).
 
-  cipher-brain push --in <file.age> --backend <file|ton|arweave|turbo> [--yes] [--save-locator <path>]
+  cipher-brain push --in <file.age> --backend <file|ton|arweave|turbo> [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
       Upload ciphertext to storage. Prints ONLY the locator to stdout
       (file: store path; ton: hex BagID; arweave: tx id; turbo: ANS-104 data item id).
       Storage sees ciphertext only.
-      arweave/turbo are paid permanent stores — require --yes or CIPHER_BRAIN_YES=1.
-      --save-locator writes "<locator>\\t<backend>\\t<sha256>" to a file (rewritten
-      atomically each push, so it always holds the LATEST + an integrity pin). Back this
-      file up off-box next to your identity: it is the durable pointer a fresh machine
-      needs to find the most recent snapshot. (For the file backend the locator is a
-      LOCAL store path — only ton/arweave/turbo locators are portable to another machine.)
+      arweave/turbo are paid permanent stores — require --yes or CIPHER_BRAIN_YES=1;
+      turbo prints a winc/AR cost estimate plus an approximate USD line before uploading.
+      --save-locator writes "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t
+      <recipients_fingerprint>]]" to a file (rewritten atomically each push, so it
+      always holds the LATEST + an integrity pin; legacy 3/4-field files are still
+      accepted everywhere). Back this file up off-box next to your identity: it is the
+      durable pointer a fresh machine needs to find the most recent snapshot. (For the
+      file backend the locator is a LOCAL store path — only ton/arweave/turbo locators
+      are portable to another machine.)
+      --skip-unchanged (requires --save-locator): skips ONLY when BOTH (a) the
+      snapshot's PLAINTEXT content digest — read from the "<in>.digest" sidecar
+      snapshot writes, or given as --digest <hex> — equals the content_digest recorded
+      in the save-locator file for the same backend, AND (b) the recipients
+      fingerprint — read from the "<in>.recipients-fingerprint" sidecar — equals the
+      recipients_fingerprint recorded there too. Requiring both means a re-snapshot of
+      unchanged plaintext under a CHANGED --recipient set (a newly added recovery key,
+      a removed/revoked key) is never skipped. When both match: print SKIPPED + the
+      previous locator and exit 0 WITHOUT contacting storage or spending. Any missing
+      piece on EITHER side (no sidecar, a legacy 3/4-field file, a different backend)
+      just pushes normally: skip is an optimization, never a gate. --force uploads even
+      when unchanged. (The digest is plaintext-side by necessity: age's ephemeral file
+      key makes identical content encrypt to different ciphertext bytes every run.)
 
   cipher-brain pull (--locator <id> --backend <…> | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>]
       Fetch ciphertext by locator into --out. --from-locator-file reads the locator, its

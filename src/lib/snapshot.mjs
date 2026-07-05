@@ -1,13 +1,13 @@
 // snapshot — stage components (pg_dump / dirs / manifest.json), then stream tar|age.
-import { mkdir, writeFile, rm, stat, rename, link } from 'node:fs/promises';
+import { mkdir, writeFile, rm, stat, lstat, rename, link, readdir, readlink } from 'node:fs/promises';
 import { mkdtempSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
-import { join, basename, dirname, resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { join, basename, dirname, resolve, relative, sep } from 'node:path';
+import { randomBytes, createHash } from 'node:crypto';
 import { RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, pgTool } from './config.mjs';
 import { run } from './proc.mjs';
 import { newEncrypter, encryptToFile } from './crypt.mjs';
-import { exists, fmtBytes } from './util.mjs';
+import { exists, fmtBytes, sha256 } from './util.mjs';
 import { recipientEntries, resolvePinnedRecipients } from './keys.mjs';
 import { resolveProfilePaths } from './profiles.mjs';
 import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.mjs';
@@ -32,6 +32,79 @@ async function promoteSnapshot(part, out) {
     throw e;
   }
   await rm(part, { force: true }); // drop the redundant link; out is the durable copy
+}
+
+const hexOf = (s) => createHash('sha256').update(s).digest('hex');
+
+// Mode string shared by every tuple line below: octal rwx bits, what tar actually
+// archives alongside an entry's bytes.
+const modeOf = (st) => (st.mode & 0o777).toString(8).padStart(3, '0');
+
+// One file's tuple line — the SAME format whether the file is the sole top-level
+// source (a --dir-equivalent arg that is actually a single file: profile files/zips
+// are explicitly supported this way) or one entry inside a directory walk. Sharing
+// this helper (rather than a second, ad-hoc "just hash the file" path for the
+// top-level-file case) is what makes a chmod-only change to a single-file source
+// perturb the digest exactly like a chmod-only change to a file nested in a --dir
+// source does (#70 review round 3).
+async function fileTupleLine(rel, full) {
+  const st = await stat(full);
+  return `${rel}\tf\t${await sha256(full)}\t${st.size}\t${modeOf(st)}`;
+}
+
+// Deterministic PLAINTEXT content digest of one source path — the signal behind
+// `push --skip-unchanged`. It has to come from the plaintext side: age generates an
+// ephemeral file key per run, so identical content encrypts to DIFFERENT ciphertext
+// bytes every time — the ciphertext sha256 can never say "unchanged". Explicitly
+// independent of mtimes and of the tar byte stream (tar records mtimes/order):
+//   - top-level symlink → the link's OWN identity (what it points to), never its
+//            target's content. tar archives an explicit symlink argument as the
+//            link itself (bsdtar/GNU tar both default to not dereferencing — the
+//            same class of bug profiles.mjs's realpath-dereference comment fixes
+//            for --vault/--zip/claude-code paths), so a target swapped for a
+//            different path — even one with byte-identical content — changes
+//            what actually gets archived and must change the digest too.
+//   - top-level file → hexOf of ITS OWN tuple line (fileTupleLine, same format a
+//            nested file gets inside a directory walk) — so a chmod-only change to
+//            a single-file source (e.g. a --profile file) changes the digest just
+//            like it would for the same file nested in a --dir (#70 review round 3).
+//   - top-level special (FIFO/socket/device: not a symlink, not a directory, not a
+//            regular file) → the SAME bare kind marker the nested-walk's `else`
+//            branch below hashes for a special file found inside a --dir, NEVER a
+//            fileTupleLine read: a FIFO only yields bytes once something writes to
+//            the other end, so sha256()-ing it (as a plain "unconditionally a
+//            regular file" read would) can hang forever — outside PIPE_TIMEOUT_MS,
+//            which only bounds the tar step, not this digest read (#70 review round 4).
+//   - dir  → sha256 over the "\n"-joined, path-sorted lines
+//            "<relpath>\t<kind>\t<per-file sha256>\t<size>\t<mode>" for everything
+//            under it, PLUS one synthetic "." line carrying the top-level directory's
+//            OWN mode (a chmod on the --dir arg itself, touching no file inside it,
+//            still changes what tar archives and must still change the digest — #70
+//            review round 3). The trailing <mode> (files and directories, octal rwx
+//            bits) is what tar actually archives alongside the entry — `chmod +x
+//            script.sh` or tightening a secret file/dir to 0600/0700 changes the tar
+//            entry's permission bits without touching content, so a restore from a
+//            digest that ignored mode could silently carry stale/wrong permissions
+//            past --skip-unchanged (#70 review round 2 & 3). Nested symlinks hash
+//            their target string; other specials (FIFOs, sockets) hash as a bare kind
+//            marker — reading them could hang, and their presence still perturbs the
+//            digest.
+async function contentDigestOfPath(abs) {
+  const top = await lstat(abs);
+  if (top.isSymbolicLink()) return hexOf(`l\t${await readlink(abs)}`);
+  if (!top.isDirectory() && !top.isFile()) return hexOf('s\t-\t0'); // FIFO/socket/device — never read, could hang
+  if (!top.isDirectory()) return hexOf((await fileTupleLine(basename(abs), abs)) + '\n');
+  const lines = [`.\td\t-\t0\t${modeOf(top)}`]; // the --dir arg's own mode, never covered by readdir below
+  for (const d of await readdir(abs, { recursive: true, withFileTypes: true })) {
+    const full = join(d.parentPath, d.name);
+    const rel = relative(abs, full).split(sep).join('/'); // POSIX-normalized so the digest is platform-stable
+    if (d.isFile()) lines.push(await fileTupleLine(rel, full));
+    else if (d.isSymbolicLink()) lines.push(`${rel}\tl\t${hexOf(await readlink(full))}\t0`);
+    else if (d.isDirectory()) lines.push(`${rel}\td\t-\t0\t${modeOf(await stat(full))}`);
+    else lines.push(`${rel}\ts\t-\t0`);
+  }
+  lines.sort();
+  return hexOf(lines.join('\n') + '\n');
 }
 
 export async function snapshot(o) {
@@ -99,6 +172,19 @@ export async function snapshot(o) {
     console.error('⚠  snapshot encrypted to a SINGLE recipient key — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.');
   }
 
+  // Recipients fingerprint: sha256 over the SORTED, de-duplicated set of effective
+  // age1… recipient keys used to encrypt THIS run — sorted + newline-joined so it is
+  // independent of --recipient arg order and of which arg/file each key came from
+  // (only the resulting SET matters, same dedupe as effectiveKeys above). This is a
+  // SEPARATE signal from content_digest (which stays pure-plaintext, unaffected by
+  // recipients) that `push --skip-unchanged` additionally folds in (src/lib/
+  // pushpull.mjs): without it, re-snapshotting unchanged plaintext under a CHANGED
+  // recipient set (a newly added offline recovery key, or a removed/revoked key)
+  // would still skip and return the OLD locator — the new key could never decrypt
+  // it, and/or a revoked key still could, even though the operator believes the
+  // "current" backup no longer trusts it (#70 review round 2, real regression).
+  const recipientsFingerprint = hexOf([...effectiveKeys].sort().join('\n') + '\n');
+
   // Build the encrypter up front: an invalid recipient line (typage takes native age
   // recipients only) must fail HERE, before any plaintext is staged or a .part opened.
   const encrypter = newEncrypter(recipientList);
@@ -119,7 +205,11 @@ export async function snapshot(o) {
       await run(pgTool('pg_dump'), ['-Fc', '--no-owner', '--no-privileges', ...tableArgs, '-f', dumpPath, o.pg]);
       // captured_at right AFTER pg_dump (pg_dump -Fc is internally point-in-time consistent
       // via one REPEATABLE READ txn; only the DB↔file boundary needs aligning — #44).
-      components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all', captured_at: new Date().toISOString() });
+      // content_digest = sha256 of the dump bytes. Honest note: pg_dump output may not
+      // be byte-stable across runs even for identical data (internal ordering, embedded
+      // metadata), so DB sources will rarely trigger --skip-unchanged — that is
+      // conservative (an unnecessary push, never a wrongly skipped one) and fine.
+      components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all', content_digest: await sha256(dumpPath), captured_at: new Date().toISOString() });
     }
     const usedNames = new Set();
     for (const d of o.dirs) {
@@ -131,15 +221,59 @@ export async function snapshot(o) {
       // a path can be a directory OR a single file (profiles pass e.g. CLAUDE.md,
       // a ChatGPT export zip) — tar archives both; record which in the manifest.
       const kind = (await stat(abs)).isDirectory() ? 'dir' : 'file';
-      await run('tar', ['-czf', join(stage, name), '-C', dirname(abs), basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar
-      components.push({ name, kind, source: abs, captured_at: new Date().toISOString() }); // skew vs the DB is now detectable on restore
+      const archivePath = join(stage, name);
+      await run('tar', ['-czf', archivePath, '-C', dirname(abs), basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar
+      // content_digest AFTER the tar, computed from the ARCHIVE'S OWN bytes (extract to a
+      // throwaway dir and hash THAT with the unchanged contentDigestOfPath) rather than a
+      // second, independent read of the live source. Two independent reads (a digest walk,
+      // then tar's own read) leave a race: a source mutated in the narrow window between
+      // them would archive NEW bytes while the digest still describes the OLD ones — a
+      // stale-looking "unchanged" digest sitting next to genuinely different archived
+      // content (#70 review). Hashing what tar itself just wrote closes that gap: the
+      // digest can never describe content other than what got archived. Still independent
+      // of mtimes/order and of the tar byte stream itself — contentDigestOfPath only reads
+      // content bytes / symlink targets from the extraction, never tar's own headers.
+      // -p (--preserve-permissions, supported by both GNU tar and macOS bsdtar — this
+      // repo's CI matrix runs both) makes the re-read apply the ARCHIVE's stored mode
+      // bits exactly, instead of masking them through this process's umask. A plain
+      // `tar -xzf` (no -p) applies umask on extraction, so under a restrictive umask a
+      // mode-only source change (e.g. 0644 -> 0600) can extract to the SAME mode both
+      // times even though the tar header bytes differ — silently hiding the change
+      // from the digest this verification re-read is supposed to prove (#70 review
+      // round 3).
+      const extractDir = join(stage, `.extract-${name}`);
+      await mkdir(extractDir);
+      let contentDigest;
+      try {
+        await run('tar', ['-xzf', archivePath, '-C', extractDir, '-p'], { timeoutMs: PIPE_TIMEOUT_MS });
+        contentDigest = await contentDigestOfPath(join(extractDir, basename(abs)));
+      } finally {
+        // must not leak into the snapshot: the final encryptToFile below tars stage/. whole
+        await rm(extractDir, { recursive: true, force: true });
+      }
+      components.push({ name, kind, source: abs, content_digest: contentDigest, captured_at: new Date().toISOString() }); // skew vs the DB is now detectable on restore
     }
+    // Combined content digest = sha256 over each component's (declared identity, kind,
+    // content_digest) joined in component order. Identity, not just bytes: hashing bare
+    // content digests would leave `--dir old-path` and `--dir new-path` (or a renamed
+    // --vault-like source) indistinguishable whenever the underlying bytes happen to be
+    // byte-identical, so --skip-unchanged could return the OLD locator — whose restored
+    // manifest/archive still labels things under the old name/path — for what was actually
+    // asked to be a differently-named/sourced snapshot (#70 review). Identity is
+    // deliberately the DECLARED source path (or name, for pg_dump which has no source
+    // path) — never anything volatile like mtime. Same content, same identity, same
+    // component order → same digest, regardless of mtimes or the (ephemeral-file-key)
+    // ciphertext bytes.
+    const contentDigest = hexOf(components.map((c) => `${c.source ?? c.name}\t${c.kind}\t${c.content_digest}`).join('\n') + '\n');
     // manifest carries NO secrets — just what's inside (+ capture timestamps so a
     // DB↔files skew is detectable after the fact, + which --profile produced it,
-    // if any), so restore is self-describing.
+    // if any), so restore is self-describing. recipients_fingerprint sits alongside
+    // content_digest as a SEPARATE field — content_digest stays pure-plaintext
+    // (unaffected by who can decrypt); recipients_fingerprint is the additional
+    // signal push --skip-unchanged folds in (see its definition above).
     await writeFile(
       join(stage, 'manifest.json'),
-      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, ...(o.profile ? { profile: o.profile } : {}), components }, null, 2) + '\n',
+      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, content_digest: contentDigest, recipients_fingerprint: recipientsFingerprint, ...(o.profile ? { profile: o.profile } : {}), components }, null, 2) + '\n',
     );
     // tar the staged components into one stream, encrypt to all recipients (in-process
     // typage, streaming — bounded RSS at any snapshot size). Write to a PER-RUN-UNIQUE
@@ -159,9 +293,35 @@ export async function snapshot(o) {
       setActiveOutPart(null);
       throw e;
     }
+    // Plaintext digest sidecar next to the output — what lets `push --skip-unchanged`
+    // detect "content unchanged" WITHOUT decrypting anything (the manifest copy sits
+    // inside the ciphertext). A content digest leaks no content. Best-effort: the
+    // snapshot itself is already durable at o.out, so a sidecar write failure only
+    // costs the skip optimization, never the backup. Kept as its OWN single-line file
+    // (never a second line appended here) — existing readers (push's contentDigestFor,
+    // the selftest's `cat *.digest` comparisons) assume this file IS the content digest
+    // verbatim; the recipients fingerprint is a genuinely separate signal and gets its
+    // own sidecar right below, never folded into this one.
+    try {
+      await writeFile(`${o.out}.digest`, contentDigest + '\n');
+    } catch (e) {
+      console.error(`warning: could not write digest sidecar ${o.out}.digest (${e.message}) — push --skip-unchanged will not have a digest for this snapshot`);
+    }
+    // Recipients fingerprint sidecar — the SEPARATE signal (#70 review round 2) that
+    // push --skip-unchanged additionally requires to match before it will skip (see
+    // src/lib/pushpull.mjs). A leaked age1… pubkey is not a secret (it's the whole
+    // point of a "recipient" — safe to copy), so this sidecar carries no secrets
+    // either. Best-effort, same as the content digest sidecar above.
+    try {
+      await writeFile(`${o.out}.recipients-fingerprint`, recipientsFingerprint + '\n');
+    } catch (e) {
+      console.error(`warning: could not write recipients-fingerprint sidecar ${o.out}.recipients-fingerprint (${e.message}) — push --skip-unchanged will not have a recipients fingerprint for this snapshot`);
+    }
     const sz = (await stat(o.out)).size;
     console.log(`wrote ${o.out} (${fmtBytes(sz)}, encrypted to ${recs.length} recipient(s): ${recs.join(', ')})`);
     console.log(`components: ${components.map((c) => c.name).join(', ')}`);
+    console.log(`content digest: ${contentDigest} (sidecar: ${o.out}.digest)`);
+    console.log(`recipients fingerprint: ${recipientsFingerprint} (sidecar: ${o.out}.recipients-fingerprint)`);
   } finally {
     await rm(stage, { recursive: true, force: true });
     setActiveStage(null);

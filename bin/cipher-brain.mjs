@@ -17,12 +17,18 @@
 //
 // A bare `node bin/cipher-brain.mjs` (what README.md documents) has neither, so this
 // shim tries the plain import first and, ONLY if that fails with the tell-tale
-// resolution error, self-re-execs as a child `node` process with the NODE_OPTIONS
-// above — forwarding argv/stdio/exit code — so the documented zero-setup command
-// keeps working with no manual env-var dance. This costs one extra process spawn on
-// that fallback path only; it never fires for the compiled/shipped `dist/cli.mjs`,
-// nor for callers that already export the right NODE_OPTIONS (the import just
-// succeeds on the first try).
+// resolution error, self-re-execs as a child `node` process with the flags above —
+// forwarding argv/stdio/exit code (and, on an interrupted long-running command such as
+// `snapshot`, the terminating signal too) — so the documented zero-setup command keeps
+// working with no manual env-var dance. This costs one extra process spawn on that
+// fallback path only; it never fires for the compiled/shipped `dist/cli.mjs`, nor for
+// callers that already export the right NODE_OPTIONS (the import just succeeds on the
+// first try).
+//
+// The re-exec itself (argv-safe flag passing, signal forwarding so a Ctrl-C/kill on
+// this wrapper's PID doesn't orphan the child mid-command) lives in
+// scripts/dev-shim-reexec.mjs — shared with bin/cipher-brain-mcp.mjs so the fix only
+// needs to exist in one place.
 try {
   await import('../src/cli.js');
 } catch (err) {
@@ -30,20 +36,6 @@ try {
   if (alreadyReexeced || !(err && err.code === 'ERR_MODULE_NOT_FOUND')) {
     throw err;
   }
-  const { spawnSync } = await import('node:child_process');
-  const { fileURLToPath } = await import('node:url');
-  const path = await import('node:path');
-
-  const thisFile = fileURLToPath(import.meta.url);
-  const loader = path.join(path.dirname(thisFile), '..', 'scripts', 'dev-cli-loader.mjs');
-  const devNodeOptions = ['--experimental-strip-types', `--import ${loader}`, process.env.NODE_OPTIONS]
-    .filter(Boolean)
-    .join(' ');
-
-  const result = spawnSync(process.execPath, [thisFile, ...process.argv.slice(2)], {
-    stdio: 'inherit',
-    env: { ...process.env, NODE_OPTIONS: devNodeOptions, CIPHER_BRAIN_DEV_SHIM_REEXEC: '1' },
-  });
-  if (result.error) throw result.error;
-  process.exit(result.status === null ? 1 : result.status);
+  const { reexecUnderDevLoader } = await import('../scripts/dev-shim-reexec.mjs');
+  await reexecUnderDevLoader(import.meta.url, process.argv.slice(2));
 }

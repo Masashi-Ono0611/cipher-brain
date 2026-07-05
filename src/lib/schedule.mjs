@@ -24,7 +24,7 @@
 import { mkdir, writeFile, readFile, rm, readdir, chmod } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
-import { join, resolve, basename } from 'node:path';
+import { join, resolve, basename, dirname } from 'node:path';
 import { HOME } from './config.mjs';
 import { exists } from './util.mjs';
 
@@ -208,6 +208,18 @@ function loadCron(entry) {
   if (r.error || r.status !== 0) throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
 }
 
+// Resolve pg_dump's directory the SAME way config.mjs's PG_BIN is consumed (a directory
+// holding pg_dump/pg_restore, joined with the tool name — see config.mjs pgTool()), NOT
+// the pg_dump binary path itself. `command -v` is a POSIX shell builtin (portable across
+// macOS/Linux, unlike the `which` binary which isn't guaranteed present), run via `sh -c`
+// so it resolves against THIS process's current PATH — the same env `schedule install`
+// is running in.
+function resolvePgDumpDir() {
+  const r = sh('sh', ['-c', 'command -v pg_dump']);
+  const found = r.status === 0 ? r.stdout.trim() : '';
+  return found ? dirname(resolve(found)) : null;
+}
+
 // ---------- subcommands ----------
 
 async function install(o) {
@@ -215,6 +227,21 @@ async function install(o) {
   if (!BACKENDS.has(o.backend)) throw new Error(`unknown backend: ${o.backend} (expected file|ton|arweave|turbo)`);
   if (!o.pg && o.dirs.length === 0 && !o.profile) {
     throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
+  }
+  // launchd/cron start with a BARE env — they do NOT inherit the interactive shell's PATH,
+  // so a --pg snapshot that resolves pg_dump via PATH interactively (the common Homebrew /
+  // Postgres.app setup) would find pg_dump right now but fail every scheduled run. Resolve
+  // a default HERE, in the same env this install command is running in, and bake it in
+  // (same mechanism as every other CIPHER_BRAIN_* var above) instead of requiring the user
+  // to already know to set CIPHER_BRAIN_PG_BIN. An explicit CIPHER_BRAIN_PG_BIN is left
+  // untouched (respected as-is by the envLines loop in runnerBody).
+  if (o.pg && !process.env.CIPHER_BRAIN_PG_BIN) {
+    const dir = resolvePgDumpDir();
+    if (!dir) {
+      throw new Error(`--pg requires pg_dump for the unattended run — could not resolve it (command -v pg_dump found nothing on PATH); install the postgresql client tools or pass CIPHER_BRAIN_PG_BIN=<dir containing pg_dump/pg_restore>`);
+    }
+    process.env.CIPHER_BRAIN_PG_BIN = dir;
+    console.error(`resolved pg_dump -> ${join(dir, 'pg_dump')} (baked into the runner as CIPHER_BRAIN_PG_BIN — launchd/cron do not inherit PATH)`);
   }
   const at = o.at || '03:30';
   const { hour, minute } = parseAt(at);

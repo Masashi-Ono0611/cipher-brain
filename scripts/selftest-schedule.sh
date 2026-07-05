@@ -92,6 +92,39 @@ if grep -qF -- "--zip 'exportdata.zip'" "$RUNNER"; then echo "[FAIL] runner stil
 if grep -qF -- "--recipient 'recipients.txt'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --recipient FILE string"; exit 1; fi
 echo "[PASS] relative --vault/--zip/--recipient(file) resolved to absolute in the runner; inline age1... --recipient left unchanged"
 
+echo "== (a4) --pg without CIPHER_BRAIN_PG_BIN resolves pg_dump on PATH at install time and bakes its DIRECTORY as CIPHER_BRAIN_PG_BIN (config.mjs's PG_BIN is a dir joined with the tool name via pgTool(), not the pg_dump binary path itself — baking the binary path verbatim would break both pg_dump AND pg_restore); install fails clearly when pg_dump cannot be resolved =="
+FAKE_PGBIN="$TMP/fake-pgbin"; mkdir -p "$FAKE_PGBIN"
+cat > "$FAKE_PGBIN/pg_dump" <<'SHIM'
+#!/usr/bin/env bash
+echo "fake pg_dump shim: $*" >&2
+exit 0
+SHIM
+chmod +x "$FAKE_PGBIN/pg_dump"
+# NOTE: unlike --vault/--zip/--recipient (resolved via node:path's resolve() against
+# process.cwd(), which macOS reports already symlink-resolved), pg_dump's path here comes
+# straight from `command -v` reading PATH — resolve() only normalizes it (it does NOT
+# follow symlinks), so the baked value is the literal $FAKE_PGBIN, not its realpath.
+REAL_FAKE_PGBIN="$FAKE_PGBIN"
+PATH="$FAKE_PGBIN:$PATH" cb schedule install --backend file --pg "postgres://x/y" --no-load > "$TMP/install-pg.log" 2>&1 \
+  || { echo "[FAIL] install (--pg, shimmed pg_dump prepended to PATH) exited non-zero"; cat "$TMP/install-pg.log"; exit 1; }
+grep -qF "export CIPHER_BRAIN_PG_BIN='$REAL_FAKE_PGBIN'" "$RUNNER" || { echo "[FAIL] runner did not bake the resolved pg_dump DIRECTORY as CIPHER_BRAIN_PG_BIN"; cat "$RUNNER"; exit 1; }
+if grep -qF "CIPHER_BRAIN_PG_BIN='$REAL_FAKE_PGBIN/pg_dump'" "$RUNNER"; then echo "[FAIL] runner baked the pg_dump BINARY path, not its directory — pgTool('pg_dump')/pgTool('pg_restore') would break"; exit 1; fi
+grep -qF "resolved pg_dump -> $REAL_FAKE_PGBIN/pg_dump" "$TMP/install-pg.log" || { echo "[FAIL] install did not report the resolved pg_dump path"; cat "$TMP/install-pg.log"; exit 1; }
+echo "[PASS] --pg without CIPHER_BRAIN_PG_BIN resolves pg_dump on PATH and bakes its containing directory into the runner"
+
+NODE_BIN="$(command -v node)"
+if PATH="/usr/bin:/bin" "$NODE_BIN" "$BIN" schedule install --backend file --pg "postgres://x/y" --no-load > "$TMP/install-pg-missing.log" 2>&1; then
+  echo "[FAIL] install (--pg, minimal PATH with no pg_dump) was accepted"; exit 1
+fi
+grep -qi 'pg_dump' "$TMP/install-pg-missing.log" || { echo "[FAIL] install failure does not name the missing pg_dump binary"; cat "$TMP/install-pg-missing.log"; exit 1; }
+echo "[PASS] install refuses clearly (naming pg_dump) when it cannot be resolved on PATH"
+
+EXPLICIT_PGBIN="$TMP/explicit-pgbin"; mkdir -p "$EXPLICIT_PGBIN"
+CIPHER_BRAIN_PG_BIN="$EXPLICIT_PGBIN" cb schedule install --backend file --pg "postgres://x/y" --no-load > "$TMP/install-pg-explicit.log" 2>&1 \
+  || { echo "[FAIL] install (--pg, explicit CIPHER_BRAIN_PG_BIN set) exited non-zero"; cat "$TMP/install-pg-explicit.log"; exit 1; }
+grep -qF "export CIPHER_BRAIN_PG_BIN='$EXPLICIT_PGBIN'" "$RUNNER" || { echo "[FAIL] runner did not preserve an explicit CIPHER_BRAIN_PG_BIN unchanged"; cat "$RUNNER"; exit 1; }
+echo "[PASS] an explicit CIPHER_BRAIN_PG_BIN is respected as-is, no auto-resolution overrides it"
+
 echo "== (b) paid backend: refused without --max-spend, spend lines written with it =="
 if cb schedule install --backend turbo --dir "$SRC" --no-load > "$TMP/turbo-refuse.log" 2>&1; then
   echo "[FAIL] install --backend turbo WITHOUT --max-spend was accepted"; exit 1

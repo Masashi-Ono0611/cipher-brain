@@ -30,8 +30,9 @@ import { keygen } from './lib/keys.mjs';
 import { snapshot } from './lib/snapshot.mjs';
 import { restore, verify } from './lib/restore.mjs';
 import { push, pull } from './lib/pushpull.mjs';
+import { schedule } from './lib/schedule.mjs';
 
-const BOOL_FLAGS = new Set(['force', 'passphrase', 'yes', 'force_vault', 'skip_unchanged']); // flags that take no value
+const BOOL_FLAGS = new Set(['force', 'passphrase', 'yes', 'force_vault', 'skip_unchanged', 'no_load']); // flags that take no value
 
 function parseArgs(argv) {
   const o = { dirs: [], tables: [], recipients: [] };
@@ -121,7 +122,32 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       --sha256 fail-closes the fetch: the bytes must match the expected hash (sourced
       out-of-band from a trusted index) or --out is deleted and pull errors.
 
+  cipher-brain schedule install --backend <file|ton|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
+                                [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
+                                [--vault <path>] [--zip <path>] [--save-locator <path>] [--index-file <path>]
+      Make the nightly snapshot+push unattended. Writes a runner script
+      ($CIPHER_BRAIN_HOME/schedule/nightly.sh) composing the snapshot/push pipeline from
+      the SAME flags those commands take — dated outputs, --save-locator, an index.tsv
+      append — plus the platform trigger (macOS: a launchd plist in ~/Library/LaunchAgents;
+      Linux: a crontab entry), and registers it. Default --at 03:30: run well after the
+      source re-synthesizes overnight so the DB and files are captured from the same
+      settled state (MANAGEMENT.md, "Avoid the write window"). Paid backends
+      (arweave/turbo) REQUIRE --max-spend <n>: the runner gets CIPHER_BRAIN_YES=1 for the
+      unattended consent, so it must also get a CIPHER_BRAIN_MAX_SPEND cap — an uncapped
+      unattended spender is refused. --no-load writes the artifacts without registering.
+      Each run logs to $CIPHER_BRAIN_HOME/schedule/logs/nightly-YYYY-MM-DD.log, ending
+      "OK rc=0" or "FAILED rc=N".
+
+  cipher-brain schedule status
+      Report the configured time + backend, the trigger load state, the last run log and
+      its final rc line, and the next scheduled run.
+
+  cipher-brain schedule uninstall
+      Unregister the trigger and remove the generated runner/plist/cron entry (idempotent;
+      logs, snapshots and index.tsv are kept — they are your data).
+
 Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
+     CIPHER_BRAIN_SCHEDULE_DIR (schedule artifacts/logs dir; default $CIPHER_BRAIN_HOME/schedule).
      CIPHER_BRAIN_PASSPHRASE (non-interactive passphrase for a wrapped identity — automation/CI; otherwise prompted on the TTY).
      CIPHER_BRAIN_PIN_RECIPIENTS (snapshot: allowlist of age1… pubkeys, inline or a file — refuse to encrypt to any other recipient).
 Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);
@@ -139,6 +165,7 @@ async function main() {
     case 'verify': return verify(o);
     case 'push': return push(o);
     case 'pull': return pull(o);
+    case 'schedule': return schedule(o);
     case 'help': case '--help': case '-h': case undefined: console.log(HELP); return;
     default: console.error(`unknown command: ${cmd}\n`); console.log(HELP); process.exitCode = 2;
   }

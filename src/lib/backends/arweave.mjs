@@ -202,13 +202,29 @@ export async function arweaveBackend() {
       const data = await readFile(file); // small ciphertext fits one tx (guarded above); large blobs go via --backend turbo
       // inform before signing — the --yes guard in push() already confirmed intent;
       // this surfaces the size so the operator knows what they're committing to.
-      // (ar.createTransaction fetches the network price internally when no reward is
-      // preset, so we avoid a redundant pre-flight /price call here.)
       process.stderr.write(`arweave: L1 upload — ${data.length} bytes, wallet ${AR_WALLET}\n`);
-      if (AR_MAX_SPEND > 0n) {
-        process.stderr.write(`arweave: CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} set — cannot pre-flight L1 cost without an extra network round-trip; the actual reward is set by createTransaction\n`);
+      // Cost estimate + cap BEFORE signing (mirrors turbo.mjs): `ar.transactions.getPrice()`
+      // is the SAME call ar.createTransaction() makes internally when `reward` is omitted
+      // (see arweave-js common.js createTransaction), so pre-flighting it here is not an
+      // EXTRA round-trip — we just make it early enough to enforce CIPHER_BRAIN_MAX_SPEND,
+      // then hand the already-fetched reward back to createTransaction so it doesn't fetch
+      // it again. A schedule-installed runner bakes CIPHER_BRAIN_YES=1 for unattended paid
+      // pushes, so this cap is the ONLY thing standing between an install-time --max-spend
+      // and an uncapped nightly L1 spend — it must actually gate the upload, not just log.
+      let reward;
+      try {
+        reward = BigInt(await ar.transactions.getPrice(data.length));
+        process.stderr.write(`arweave: L1 cost estimate: ${reward} winston\n`);
+      } catch (e) {
+        if (AR_MAX_SPEND > 0n) {
+          throw new Error(`arweave: could not verify CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} (price estimate failed: ${e.message}) — aborting to protect your wallet`);
+        }
+        process.stderr.write(`arweave: could not estimate L1 cost (${e.message}); proceeding\n`);
       }
-      const tx = await ar.createTransaction({ data }, jwk);
+      if (reward !== undefined && AR_MAX_SPEND > 0n && reward > AR_MAX_SPEND) {
+        throw new Error(`arweave: L1 upload cost ${reward} winston exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
+      }
+      const tx = await ar.createTransaction(reward !== undefined ? { data, reward: String(reward) } : { data }, jwk);
       tx.addTag('App-Name', 'cipher-brain');
       tx.addTag('Content-Type', 'application/octet-stream');
       await ar.transactions.sign(tx, jwk);

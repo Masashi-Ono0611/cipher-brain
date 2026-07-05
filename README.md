@@ -126,6 +126,12 @@ cipher-brain restore \
   --in got.age \
   --out-dir ./restored \
   --pg "postgres://user@localhost:5432/gbrain_restore"
+
+# make it nightly + unattended: generates the runner and the launchd/cron trigger
+# (paid backends require --max-spend so an unattended run can never spend uncapped)
+cipher-brain schedule install --backend turbo --pg "postgres://user@localhost:5432/gbrain" \
+  --dir ~/.gbrain --max-spend 500000000
+cipher-brain schedule status   # last run + rc, next scheduled run
 ```
 
 Not running gbrain? `--profile` is a one-flag entry point for the common
@@ -239,7 +245,8 @@ post-assigned-id (`arweave`/`turbo`) locators alike.
 
 ## Managing snapshots over time
 
-[`MANAGEMENT.md`](MANAGEMENT.md) covers cadence (a nightly snapshot+push recipe),
+[`MANAGEMENT.md`](MANAGEMENT.md) covers cadence (`cipher-brain schedule install`
+generates the nightly snapshot+push runner and its launchd/cron trigger),
 versioning (each push → an immutable locator + an append-only
 index — content-addressed for `file`/`ton`, a tx id for `arweave`/`turbo`), the
 restore runbook, and **key recovery** — the primary-plus-offline-backup

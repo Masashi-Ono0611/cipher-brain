@@ -152,25 +152,37 @@ function plistBody(cfg) {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>${LABEL}</string>
+  <key>Label</key><string>${xmlEscape(LABEL)}</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>${cfg.runner}</string>
+    <string>${xmlEscape(cfg.runner)}</string>
   </array>
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key><integer>${cfg.hour}</integer>
     <key>Minute</key><integer>${cfg.minute}</integer>
   </dict>
-  <key>StandardOutPath</key><string>${cfg.logs_dir}/launchd.out.log</string>
-  <key>StandardErrorPath</key><string>${cfg.logs_dir}/launchd.err.log</string>
+  <key>StandardOutPath</key><string>${xmlEscape(cfg.logs_dir)}/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>${xmlEscape(cfg.logs_dir)}/launchd.err.log</string>
 </dict>
 </plist>
 `;
 }
 
 const cronLine = (cfg) => `${cfg.minute} ${cfg.hour} * * * /bin/bash "${cfg.runner}" ${CRON_MARKER}`;
+
+// Escape a string for embedding as PLIST XML text content (e.g. inside <string>…</string>).
+// & must go first, or the entities the other replacements introduce would themselves be
+// re-escaped. Without this, a path containing any of these characters (plausible in a
+// $HOME or username, e.g. "O'Brien & Co") produces invalid XML that `launchctl bootstrap`
+// rejects even though the runner itself was generated fine.
+const xmlEscape = (s) => String(s)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&apos;');
 
 // ---------- trigger registration ----------
 

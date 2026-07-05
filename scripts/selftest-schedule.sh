@@ -150,6 +150,30 @@ tail -n 1 "$TMP/sched-fail/logs/nightly-$TODAY.log" | grep -q '^FAILED rc=[0-9][
   || { echo "[FAIL] failing run did not end the log with FAILED rc=N"; tail -n 3 "$TMP/sched-fail/logs/nightly-$TODAY.log"; exit 1; }
 echo "[PASS] failing run: non-zero exit + trailing FAILED rc=N in the dated log"
 
+echo "== (c3) a CIPHER_BRAIN_HOME containing an XML metacharacter ('&') still produces a VALID, well-formed launchd plist (macOS only) =="
+if [ "$OS" = "Darwin" ]; then
+  AMP_HOME="$TMP/home & co" # plausible in a real $HOME/username; must not corrupt the plist
+  mkdir -p "$AMP_HOME"
+  AMP_LAUNCHD_DIR="$TMP/launchagents-amp"
+  AMP_PLIST="$AMP_LAUNCHD_DIR/dev.cipher-brain.nightly.plist"
+  # CIPHER_BRAIN_SCHEDULE_DIR is exported globally at top of this script (pointing at
+  # $TMP/sched, no '&'), so it must be overridden here too — otherwise it would win over
+  # CIPHER_BRAIN_HOME and the runner path baked into the plist would never see the '&'.
+  CIPHER_BRAIN_HOME="$AMP_HOME" CIPHER_BRAIN_SCHEDULE_DIR="$AMP_HOME/sched" CIPHER_BRAIN_LAUNCHD_DIR="$AMP_LAUNCHD_DIR" \
+    cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-amp.log" 2>&1 \
+    || { echo "[FAIL] install with an '&' in CIPHER_BRAIN_HOME exited non-zero"; cat "$TMP/install-amp.log"; exit 1; }
+  [ -f "$AMP_PLIST" ] || { echo "[FAIL] plist not written for the '&'-containing home: $AMP_PLIST"; exit 1; }
+  plutil -lint "$AMP_PLIST" > "$TMP/plutil.log" 2>&1 || { echo "[FAIL] plutil -lint rejects the generated plist (invalid XML)"; cat "$TMP/plutil.log"; cat "$AMP_PLIST"; exit 1; }
+  grep -q '&amp;' "$AMP_PLIST" || { echo "[FAIL] plist does not contain the escaped '&amp;' for the runner path"; cat "$AMP_PLIST"; exit 1; }
+  if grep -qF ' & co' "$AMP_PLIST"; then echo "[FAIL] plist contains a raw un-escaped '&' — invalid XML"; exit 1; fi
+  # Round-trip: plutil -p decodes entities back to plain text — the '&'-containing home
+  # dir must reappear verbatim, proving the escape is reversible (not just well-formed).
+  plutil -p "$AMP_PLIST" | grep -qF "$AMP_HOME" || { echo "[FAIL] plutil -p does not decode the plist back to the original '&'-containing path"; plutil -p "$AMP_PLIST"; exit 1; }
+  echo "[PASS] plist with an '&' in CIPHER_BRAIN_HOME is valid, well-formed XML (plutil -lint) and round-trips to the original path (plutil -p)"
+else
+  echo "[SKIP] plist XML-escape check (macOS only — this platform registers a crontab entry, not a plist)"
+fi
+
 echo "== (e) uninstall removes trigger + runner; second uninstall is a clean no-op =="
 cb schedule uninstall --no-load > "$TMP/uninstall1.log" 2>&1 || { echo "[FAIL] uninstall exited non-zero"; cat "$TMP/uninstall1.log"; exit 1; }
 [ ! -f "$RUNNER" ] || { echo "[FAIL] runner still present after uninstall"; exit 1; }

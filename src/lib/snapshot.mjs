@@ -50,10 +50,15 @@ const hexOf = (s) => createHash('sha256').update(s).digest('hex');
 //            what actually gets archived and must change the digest too.
 //   - file → the file's sha256
 //   - dir  → sha256 over the "\n"-joined, path-sorted lines
-//            "<relpath>\t<kind>\t<per-file sha256>\t<size>" for everything under it.
-//            Nested symlinks hash their target string; other specials (FIFOs,
-//            sockets) hash as a bare kind marker — reading them could hang, and
-//            their presence still perturbs the digest.
+//            "<relpath>\t<kind>\t<per-file sha256>\t<size>\t<mode>" for everything
+//            under it. The trailing <mode> (files only, octal rwx bits) is what tar
+//            actually archives alongside the bytes — `chmod +x script.sh` or
+//            tightening a secret file to 0600 changes the tar entry's permission bits
+//            without touching content, so a restore from a digest that ignored mode
+//            could silently carry stale/wrong permissions past --skip-unchanged
+//            (#70 review round 2). Nested symlinks hash their target string; other
+//            specials (FIFOs, sockets) hash as a bare kind marker — reading them
+//            could hang, and their presence still perturbs the digest.
 async function contentDigestOfPath(abs) {
   const top = await lstat(abs);
   if (top.isSymbolicLink()) return hexOf(`l\t${await readlink(abs)}`);
@@ -62,7 +67,11 @@ async function contentDigestOfPath(abs) {
   for (const d of await readdir(abs, { recursive: true, withFileTypes: true })) {
     const full = join(d.parentPath, d.name);
     const rel = relative(abs, full).split(sep).join('/'); // POSIX-normalized so the digest is platform-stable
-    if (d.isFile()) lines.push(`${rel}\tf\t${await sha256(full)}\t${(await stat(full)).size}`);
+    if (d.isFile()) {
+      const st = await stat(full);
+      const mode = (st.mode & 0o777).toString(8).padStart(3, '0');
+      lines.push(`${rel}\tf\t${await sha256(full)}\t${st.size}\t${mode}`);
+    }
     else if (d.isSymbolicLink()) lines.push(`${rel}\tl\t${hexOf(await readlink(full))}\t0`);
     else if (d.isDirectory()) lines.push(`${rel}\td\t-\t0`);
     else lines.push(`${rel}\ts\t-\t0`);
@@ -135,6 +144,19 @@ export async function snapshot(o) {
   if (effectiveKeys.size === 1) {
     console.error('⚠  snapshot encrypted to a SINGLE recipient key — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.');
   }
+
+  // Recipients fingerprint: sha256 over the SORTED, de-duplicated set of effective
+  // age1… recipient keys used to encrypt THIS run — sorted + newline-joined so it is
+  // independent of --recipient arg order and of which arg/file each key came from
+  // (only the resulting SET matters, same dedupe as effectiveKeys above). This is a
+  // SEPARATE signal from content_digest (which stays pure-plaintext, unaffected by
+  // recipients) that `push --skip-unchanged` additionally folds in (src/lib/
+  // pushpull.mjs): without it, re-snapshotting unchanged plaintext under a CHANGED
+  // recipient set (a newly added offline recovery key, or a removed/revoked key)
+  // would still skip and return the OLD locator — the new key could never decrypt
+  // it, and/or a revoked key still could, even though the operator believes the
+  // "current" backup no longer trusts it (#70 review round 2, real regression).
+  const recipientsFingerprint = hexOf([...effectiveKeys].sort().join('\n') + '\n');
 
   // Build the encrypter up front: an invalid recipient line (typage takes native age
   // recipients only) must fail HERE, before any plaintext is staged or a .part opened.
@@ -210,10 +232,13 @@ export async function snapshot(o) {
     const contentDigest = hexOf(components.map((c) => `${c.source ?? c.name}\t${c.kind}\t${c.content_digest}`).join('\n') + '\n');
     // manifest carries NO secrets — just what's inside (+ capture timestamps so a
     // DB↔files skew is detectable after the fact, + which --profile produced it,
-    // if any), so restore is self-describing.
+    // if any), so restore is self-describing. recipients_fingerprint sits alongside
+    // content_digest as a SEPARATE field — content_digest stays pure-plaintext
+    // (unaffected by who can decrypt); recipients_fingerprint is the additional
+    // signal push --skip-unchanged folds in (see its definition above).
     await writeFile(
       join(stage, 'manifest.json'),
-      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, content_digest: contentDigest, ...(o.profile ? { profile: o.profile } : {}), components }, null, 2) + '\n',
+      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, content_digest: contentDigest, recipients_fingerprint: recipientsFingerprint, ...(o.profile ? { profile: o.profile } : {}), components }, null, 2) + '\n',
     );
     // tar the staged components into one stream, encrypt to all recipients (in-process
     // typage, streaming — bounded RSS at any snapshot size). Write to a PER-RUN-UNIQUE
@@ -237,16 +262,31 @@ export async function snapshot(o) {
     // detect "content unchanged" WITHOUT decrypting anything (the manifest copy sits
     // inside the ciphertext). A content digest leaks no content. Best-effort: the
     // snapshot itself is already durable at o.out, so a sidecar write failure only
-    // costs the skip optimization, never the backup.
+    // costs the skip optimization, never the backup. Kept as its OWN single-line file
+    // (never a second line appended here) — existing readers (push's contentDigestFor,
+    // the selftest's `cat *.digest` comparisons) assume this file IS the content digest
+    // verbatim; the recipients fingerprint is a genuinely separate signal and gets its
+    // own sidecar right below, never folded into this one.
     try {
       await writeFile(`${o.out}.digest`, contentDigest + '\n');
     } catch (e) {
       console.error(`warning: could not write digest sidecar ${o.out}.digest (${e.message}) — push --skip-unchanged will not have a digest for this snapshot`);
     }
+    // Recipients fingerprint sidecar — the SEPARATE signal (#70 review round 2) that
+    // push --skip-unchanged additionally requires to match before it will skip (see
+    // src/lib/pushpull.mjs). A leaked age1… pubkey is not a secret (it's the whole
+    // point of a "recipient" — safe to copy), so this sidecar carries no secrets
+    // either. Best-effort, same as the content digest sidecar above.
+    try {
+      await writeFile(`${o.out}.recipients-fingerprint`, recipientsFingerprint + '\n');
+    } catch (e) {
+      console.error(`warning: could not write recipients-fingerprint sidecar ${o.out}.recipients-fingerprint (${e.message}) — push --skip-unchanged will not have a recipients fingerprint for this snapshot`);
+    }
     const sz = (await stat(o.out)).size;
     console.log(`wrote ${o.out} (${fmtBytes(sz)}, encrypted to ${recs.length} recipient(s): ${recs.join(', ')})`);
     console.log(`components: ${components.map((c) => c.name).join(', ')}`);
     console.log(`content digest: ${contentDigest} (sidecar: ${o.out}.digest)`);
+    console.log(`recipients fingerprint: ${recipientsFingerprint} (sidecar: ${o.out}.recipients-fingerprint)`);
   } finally {
     await rm(stage, { recursive: true, force: true });
     setActiveStage(null);

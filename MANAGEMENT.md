@@ -60,11 +60,16 @@ defenses, ideally both:
 ### 3. Retain the latest locator off-box (built in)
 
 The identity decrypts, but you still need to know *where the latest ciphertext lives*.
-`push --save-locator <path>` writes `<locator>\t<backend>\t<sha256>[\t<content_digest>]`
+`push --save-locator <path>` writes
+`<locator>\t<backend>\t<sha256>[\t<content_digest>[\t<recipients_fingerprint>]]`
 to a small file, rewritten atomically on every push so it always holds the **most
 recent** snapshot's locator plus an integrity pin. The optional 4th field is the
-plaintext content digest (from the `<out>.digest` sidecar `snapshot` writes) that
-`push --skip-unchanged` compares against; older 3-field files keep working everywhere:
+plaintext content digest (from the `<out>.digest` sidecar `snapshot` writes); the
+optional 5th is the recipients fingerprint (from the `<out>.recipients-fingerprint`
+sidecar) — `push --skip-unchanged` compares BOTH against the current snapshot and only
+skips when neither changed, so re-snapshotting unchanged content under a **different**
+`--recipient` set (added/removed a key) never returns a stale locator. Older 3- and
+4-field files keep working everywhere:
 
 ```sh
 cipher-brain push --in brain-$(date +%F).age --backend turbo --yes \
@@ -111,8 +116,10 @@ export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer f
 # --save-locator keeps a one-line file with the LATEST locator; back it up off-box
 # next to the backup identity so disk-death is recoverable (see Key recovery #3).
 # --skip-unchanged reads the plaintext content digest snapshot wrote to "$OUT.digest"
-# and, when it matches the digest recorded in the save-locator file, exits 0 with the
-# previous locator instead of paying to re-upload identical content (--force overrides).
+# AND the recipients fingerprint it wrote to "$OUT.recipients-fingerprint"; only when
+# BOTH match what's recorded in the save-locator file does it exit 0 with the previous
+# locator instead of paying to re-upload (a changed --recipient set always re-uploads;
+# --force overrides either way).
 LOC=$(cipher-brain push --in "$OUT" --backend turbo --skip-unchanged \
   --save-locator "$HOME/.cipher-brain/latest-locator.tsv")   # or: file | arweave | ton
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$(shasum -a 256 "$OUT" | cut -d" " -f1)" \

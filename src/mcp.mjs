@@ -149,7 +149,7 @@ const SNAPSHOT_NOW_TOOL = {
       recipients: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'age recipients (age1… pubkey or a recipients file path). Pass 2+ (primary + offline backup) for key recovery.' },
       out: { type: 'string', description: 'Output path for the .age ciphertext (must not already exist — no-clobber).' },
       backend: { type: 'string', enum: BACKENDS, description: 'When given, push the snapshot: file|ton (free) or arweave|turbo (PAID — needs confirm_paid).' },
-      locator_file: { type: 'string', description: 'Path for push --save-locator: writes "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>]" (the durable recovery pointer; back it up off-box).' },
+      locator_file: { type: 'string', description: 'Path for push --save-locator: writes "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]" (the durable recovery pointer; back it up off-box).' },
       confirm_paid: { type: 'boolean', description: 'REQUIRED true to push to arweave/turbo. Confirms you accept an irreversible, real-money upload.' },
     },
     required: ['recipients', 'out'],
@@ -162,8 +162,8 @@ const LAST_SNAPSHOT_STATUS_TOOL = {
   description:
     'Read-only, spends nothing. Report the most recent snapshot push: locator, backend, sha256, ' +
     'timestamp and age, read from the save-locator file (written by snapshot_now/push ' +
-    'locator_file — "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>]", legacy 3-field lines ' +
-    'accepted, timestamped by file mtime) and/or an ' +
+    'locator_file — "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]", ' +
+    'legacy 3/4-field lines accepted, timestamped by file mtime) and/or an ' +
     'append-only index.tsv ("<timestamp>\\t<locator>\\t<sha256>" per line, newest last). With no ' +
     'arguments it tries the default save-locator path $CIPHER_BRAIN_HOME/latest-locator.tsv.',
   inputSchema: {
@@ -196,7 +196,7 @@ const VERIFY_RESTORE_TOOL = {
     properties: {
       locator: { type: 'string', description: 'Storage locator to pull first (requires backend). Exactly one of locator/file/locator_file.' },
       file: { type: 'string', description: 'Local .age file to verify directly. Exactly one of locator/file/locator_file.' },
-      locator_file: { type: 'string', description: 'Path to a push --save-locator file ("<locator>\\t<backend>\\t<sha256>[\\t<content_digest>]"; legacy 3-field lines accepted): pull using its recorded locator + backend, with its saved sha256 applied as the integrity pin (the CLI --from-locator-file recovery path). Exactly one of locator/file/locator_file; do not also pass backend.' },
+      locator_file: { type: 'string', description: 'Path to a push --save-locator file ("<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]"; legacy 3/4-field lines accepted): pull using its recorded locator + backend, with its saved sha256 applied as the integrity pin (the CLI --from-locator-file recovery path). Exactly one of locator/file/locator_file; do not also pass backend.' },
       backend: { type: 'string', enum: BACKENDS, description: 'Backend to pull the locator from (required with locator; not allowed with locator_file — the file records it).' },
       sha256: { type: 'string', description: 'Optional integrity pin: 64-hex sha256 of the expected ciphertext, sourced from a TRUSTED off-box record (index.tsv / a backed-up save-locator file). A pulled artifact that does not match is deleted and the call fails closed (no verdict); with file the mismatch is a hard FAIL verdict. Overrides the pin recorded in locator_file.' },
       identity: { type: 'string', description: 'Private identity file for the decrypt proof. Default: <CIPHER_BRAIN_HOME>/identity.age' },
@@ -277,16 +277,17 @@ async function handleSnapshotNow(args) {
   return structuredOk(result);
 }
 
-// Parse one save-locator file ("<locator>\t<backend>\t<sha256>[\t<content_digest>]",
-// latest only; timestamp = file mtime since push does not record one in it). Legacy
-// 3-field lines (pre-#70, no content_digest) parse identically — never break the
-// recovery of an existing file.
+// Parse one save-locator file ("<locator>\t<backend>\t<sha256>[\t<content_digest>[\t
+// <recipients_fingerprint>]]", latest only; timestamp = file mtime since push does not
+// record one in it). Legacy 3-field lines (pre-#70, no content_digest) and 4-field
+// lines (no recipients_fingerprint) parse identically — never break the recovery of
+// an existing file.
 async function readLocatorFile(path) {
   const text = await readFile(path, 'utf8');
   const line = text.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
   if (!line) throw new ToolError('ERR_INVALID_INPUT', `locator file ${path} has no locator line`);
   const [locator, backend, digest, contentDigest] = line.split('\t');
-  if (!locator || !backend) throw new ToolError('ERR_INVALID_INPUT', `locator file ${path} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>]]" — got: ${JSON.stringify(line)}`);
+  if (!locator || !backend) throw new ToolError('ERR_INVALID_INPUT', `locator file ${path} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]]" — got: ${JSON.stringify(line)}`);
   const { mtime } = await stat(path);
   return { source: 'locator_file', path, locator, backend, sha256: digest || null, content_digest: contentDigest || null, timestamp: mtime.toISOString() };
 }

@@ -64,7 +64,21 @@ function runnerBody(cfg) {
   // bake the values that were in effect at install time so the unattended run
   // resolves the same keys/stores the operator tested with.
   const envLines = [`export CIPHER_BRAIN_HOME=${shq(cfg.home)}`];
-  for (const v of ['CIPHER_BRAIN_FILE_DIR', 'CIPHER_BRAIN_PG_BIN', 'CIPHER_BRAIN_AR_WALLET', 'CIPHER_BRAIN_PIN_RECIPIENTS']) {
+  // Every CIPHER_BRAIN_* var src/lib/config.mjs reads that a snapshot+push run could need,
+  // EXCEPT: CIPHER_BRAIN_HOME (baked above unconditionally), CIPHER_BRAIN_YES/MAX_SPEND
+  // (baked separately below, only for paid backends), CIPHER_BRAIN_AGE/AGE_KEYGEN
+  // (deprecated — age is bundled in-process now), and CIPHER_BRAIN_PASSPHRASE (only read
+  // by the decrypt path — restore/verify/pull's decrypt-proof — which the nightly runner
+  // never exercises; it only encrypts). launchd/cron start with a BARE env, so anything
+  // here that was set at install time and is silently dropped makes a scheduled run of a
+  // non-default backend (ton/turbo/a custom arweave gateway) fail or fall back to the
+  // WRONG default compared to the interactive setup the operator actually tested.
+  for (const v of [
+    'CIPHER_BRAIN_FILE_DIR', 'CIPHER_BRAIN_PG_BIN', 'CIPHER_BRAIN_PIN_RECIPIENTS',
+    'CIPHER_BRAIN_TON_CLI', 'CIPHER_BRAIN_TON_API', 'CIPHER_BRAIN_TON_CLIENT', 'CIPHER_BRAIN_TON_SERVER', 'CIPHER_BRAIN_TON_TIMEOUT',
+    'CIPHER_BRAIN_AR_HOST', 'CIPHER_BRAIN_AR_PORT', 'CIPHER_BRAIN_AR_PROTOCOL', 'CIPHER_BRAIN_AR_WALLET', 'CIPHER_BRAIN_AR_PAID_BY',
+    'CIPHER_BRAIN_AR_HTTP_TIMEOUT', 'CIPHER_BRAIN_AR_L1_MAX', 'CIPHER_BRAIN_PIPE_TIMEOUT',
+  ]) {
     if (process.env[v]) envLines.push(`export ${v}=${shq(process.env[v])}`);
   }
   const spendLines = [];

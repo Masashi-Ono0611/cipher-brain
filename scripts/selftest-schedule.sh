@@ -55,6 +55,19 @@ else
 fi
 echo "[PASS] install (file): runner + trigger artifact with the expected pipeline, 03:30 default, no spend lines"
 
+echo "== (a2) non-default backend env vars (not just the FILE_DIR/PG_BIN/AR_WALLET/PIN_RECIPIENTS 4) are baked into the runner =="
+# launchd/cron start with a BARE env — anything read from process.env by config.mjs that
+# was set at install time and silently dropped makes a scheduled run of a non-default
+# backend (ton/turbo/a custom arweave gateway) fail or fall back to the wrong default
+# vs. what the operator actually tested interactively (Codex review, #69 P2).
+CIPHER_BRAIN_TON_CLIENT="$TMP/ton-client.key" CIPHER_BRAIN_TON_SERVER="$TMP/ton-server.pub" CIPHER_BRAIN_AR_PAID_BY="1234567890abcdef1234567890ABCDEF12345678" \
+  cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-a2.log" 2>&1 \
+  || { echo "[FAIL] install (env-capture) exited non-zero"; cat "$TMP/install-a2.log"; exit 1; }
+grep -q "export CIPHER_BRAIN_TON_CLIENT='$TMP/ton-client.key'" "$RUNNER" || { echo "[FAIL] runner did not bake CIPHER_BRAIN_TON_CLIENT"; cat "$RUNNER"; exit 1; }
+grep -q "export CIPHER_BRAIN_TON_SERVER='$TMP/ton-server.pub'" "$RUNNER" || { echo "[FAIL] runner did not bake CIPHER_BRAIN_TON_SERVER"; cat "$RUNNER"; exit 1; }
+grep -q "export CIPHER_BRAIN_AR_PAID_BY='1234567890abcdef1234567890ABCDEF12345678'" "$RUNNER" || { echo "[FAIL] runner did not bake CIPHER_BRAIN_AR_PAID_BY"; cat "$RUNNER"; exit 1; }
+echo "[PASS] env-capture: non-default TON/turbo env vars set at install time are baked into the runner"
+
 echo "== (b) paid backend: refused without --max-spend, spend lines written with it =="
 if cb schedule install --backend turbo --dir "$SRC" --no-load > "$TMP/turbo-refuse.log" 2>&1; then
   echo "[FAIL] install --backend turbo WITHOUT --max-spend was accepted"; exit 1

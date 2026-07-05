@@ -103,7 +103,11 @@ head -c 8000000 /dev/urandom > "$SRC4/big.bin"   # mutate mid-flight
 wait "$SNAP_PID"
 [ -f "$TMP/race.age.digest" ] || { echo "[FAIL] no digest sidecar for the race snapshot"; exit 1; }
 cb restore --in "$TMP/race.age" --out-dir "$TMP/race-restored" >/dev/null
-tar -xzf "$TMP/race-restored/race-src.tar.gz" -C "$TMP/race-restored"
+# -p (preserve-permissions): the SAME flag the production re-read (src/lib/snapshot.mjs)
+# now uses (round 3, fix 2) -- without it this manual re-extraction's directory/file
+# modes would be masked by this script's own umask instead of reflecting the archive's
+# stored bits, and this recomputation would stop matching production's digest.
+tar -xzf "$TMP/race-restored/race-src.tar.gz" -C "$TMP/race-restored" -p
 # the per-COMPONENT content_digest (manifest.json, what fix 1 computes) must match a
 # recomputation from what was ACTUALLY archived (the restored/extracted bytes) --
 # exactly, regardless of which content won the race.
@@ -112,7 +116,9 @@ BIG_SHA=$(sha "$TMP/race-restored/race-src/big.bin")
 BIG_SIZE=$(wc -c < "$TMP/race-restored/race-src/big.bin" | tr -d ' ')
 # per-file tuple now carries a trailing octal mode field (round 2, permission-bit fix)
 BIG_MODE=$(node -e "console.log((require('node:fs').statSync('$TMP/race-restored/race-src/big.bin').mode & 0o777).toString(8).padStart(3,'0'))")
-EXPECTED=$(printf 'big.bin\tf\t%s\t%s\t%s\n' "$BIG_SHA" "$BIG_SIZE" "$BIG_MODE" | shasum -a 256 | cut -d' ' -f1)
+# the top-level dir also contributes its OWN "." tuple line now (round 3, fix 3)
+DIR_MODE=$(node -e "console.log((require('node:fs').statSync('$TMP/race-restored/race-src').mode & 0o777).toString(8).padStart(3,'0'))")
+EXPECTED=$(printf '.\td\t-\t0\t%s\nbig.bin\tf\t%s\t%s\t%s\n' "$DIR_MODE" "$BIG_SHA" "$BIG_SIZE" "$BIG_MODE" | LC_ALL=C sort | shasum -a 256 | cut -d' ' -f1)
 [ "$COMPONENT_DIGEST" = "$EXPECTED" ] || { echo "[FAIL] component digest does not match a recomputation from the archived bytes: $COMPONENT_DIGEST vs $EXPECTED"; exit 1; }
 echo "[PASS] component digest matches the archived bytes exactly, even with a source mutation racing the tar read"
 
@@ -206,6 +212,62 @@ OUT_M2=$(cb push --in "$TMP/m2.age" --backend file --save-locator "$MLOC" --skip
 if grep -q "SKIPPED" "$TMP/m2.err"; then echo "[FAIL] --skip-unchanged skipped a snapshot whose only change was a file's permission bits"; exit 1; fi
 [ "$OUT_M2" != "$LOC_M1" ] || { echo "[FAIL] chmod-only-change push returned the OLD locator"; exit 1; }
 echo "[PASS] chmod +x on a --dir source file -> --skip-unchanged does NOT skip"
+
+echo "== #70 review round 3, fix 1: a single-file (non-dir) source's chmod-only change must NOT be masked by --skip-unchanged =="
+SINGLEFILE="$TMP/single.txt"
+printf 'single file content\n' > "$SINGLEFILE"
+chmod 644 "$SINGLEFILE"
+cb snapshot --dir "$SINGLEFILE" --out "$TMP/sf1.age"
+D_SF1=$(cat "$TMP/sf1.age.digest")
+SFLOC="$TMP/singlefile-locator.tsv"
+LOC_SF1=$(cb push --in "$TMP/sf1.age" --backend file --save-locator "$SFLOC")
+chmod 600 "$SINGLEFILE"   # permission-only change, byte content unchanged
+cb snapshot --dir "$SINGLEFILE" --out "$TMP/sf2.age"
+D_SF2=$(cat "$TMP/sf2.age.digest")
+[ "$D_SF1" != "$D_SF2" ] || { echo "[FAIL] digest unchanged after chmod on a single-file (non-dir) source"; exit 1; }
+echo "[PASS] chmod on a single-file source changes the content digest"
+OUT_SF2=$(cb push --in "$TMP/sf2.age" --backend file --save-locator "$SFLOC" --skip-unchanged 2>"$TMP/sf2.err")
+if grep -q "SKIPPED" "$TMP/sf2.err"; then echo "[FAIL] --skip-unchanged skipped a single-file source whose only change was permission bits"; exit 1; fi
+[ "$OUT_SF2" != "$LOC_SF1" ] || { echo "[FAIL] chmod-only single-file push returned the OLD locator"; exit 1; }
+echo "[PASS] chmod on a single-file source -> --skip-unchanged does NOT skip"
+
+echo "== #70 review round 3, fix 2: a restrictive umask during the tar-extraction digest re-read must NOT mask a source mode change =="
+# Plain 'tar -xzf' (no -p) applies the calling process's umask on extraction, so under
+# a restrictive umask a mode-only source change (e.g. 0644 -> 0600) could extract to
+# the SAME mode both times even though the archive's own header bytes differ -- the
+# fix re-reads with -p (preserve-permissions) so the umask in effect during snapshot
+# never gets a vote. Wrap the run in umask 077 (tighter than the file's own mode) so a
+# masking bug, if reintroduced, would reproduce here.
+SRC8="$TMP/umask-src"; mkdir -p "$SRC8"
+printf 'content unaffected by mode\n' > "$SRC8/f.txt"
+chmod 644 "$SRC8/f.txt"
+(umask 077 && cb snapshot --dir "$SRC8" --out "$TMP/u1.age")
+D_U1=$(cat "$TMP/u1.age.digest")
+chmod 600 "$SRC8/f.txt"   # mode-only change; under umask 077 a masked re-read would extract 0600 either way
+(umask 077 && cb snapshot --dir "$SRC8" --out "$TMP/u2.age")
+D_U2=$(cat "$TMP/u2.age.digest")
+[ "$D_U1" != "$D_U2" ] || { echo "[FAIL] digest unchanged after a 0644->0600 source mode change under a restrictive umask (extraction re-read masked the permission bits)"; exit 1; }
+echo "[PASS] a source mode change still changes the digest even when snapshotting under a restrictive umask"
+
+echo "== #70 review round 3, fix 3: directory-only permission changes (subdirectory AND the top-level --dir itself) change the digest =="
+SRC9="$TMP/dirmode-src"; mkdir -p "$SRC9/sub"
+printf 'unrelated content\n' > "$SRC9/sub/f.txt"
+chmod 755 "$SRC9"
+chmod 755 "$SRC9/sub"
+cb snapshot --dir "$SRC9" --out "$TMP/dm1.age"
+D_DM1=$(cat "$TMP/dm1.age.digest")
+chmod 700 "$SRC9/sub"   # SUBDIRECTORY's own permissions change -- no file content or file mode touched
+cb snapshot --dir "$SRC9" --out "$TMP/dm2.age"
+D_DM2=$(cat "$TMP/dm2.age.digest")
+[ "$D_DM1" != "$D_DM2" ] || { echo "[FAIL] digest unchanged after a subdirectory-only permission change"; exit 1; }
+echo "[PASS] a subdirectory-only permission change changes the digest"
+chmod 755 "$SRC9/sub"   # restore, isolate the next assertion to the TOP-LEVEL dir's own mode
+chmod 700 "$SRC9"       # the --dir arg's OWN permissions change -- no file/subdirectory touched
+cb snapshot --dir "$SRC9" --out "$TMP/dm3.age"
+D_DM3=$(cat "$TMP/dm3.age.digest")
+[ "$D_DM1" != "$D_DM3" ] || { echo "[FAIL] digest unchanged after the top-level --dir's own permission change"; exit 1; }
+echo "[PASS] the top-level --dir's own permission change changes the digest"
+chmod 755 "$SRC9"   # leave a predictable mode behind
 
 echo "== push --save-locator writes the 5-field line (locator/backend/sha256/content_digest/recipients_fingerprint) =="
 [ -f "$TMP/s1.age.recipients-fingerprint" ] || { echo "[FAIL] no recipients-fingerprint sidecar next to s1.age"; exit 1; }

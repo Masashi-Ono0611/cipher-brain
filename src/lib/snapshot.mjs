@@ -36,6 +36,22 @@ async function promoteSnapshot(part, out) {
 
 const hexOf = (s) => createHash('sha256').update(s).digest('hex');
 
+// Mode string shared by every tuple line below: octal rwx bits, what tar actually
+// archives alongside an entry's bytes.
+const modeOf = (st) => (st.mode & 0o777).toString(8).padStart(3, '0');
+
+// One file's tuple line — the SAME format whether the file is the sole top-level
+// source (a --dir-equivalent arg that is actually a single file: profile files/zips
+// are explicitly supported this way) or one entry inside a directory walk. Sharing
+// this helper (rather than a second, ad-hoc "just hash the file" path for the
+// top-level-file case) is what makes a chmod-only change to a single-file source
+// perturb the digest exactly like a chmod-only change to a file nested in a --dir
+// source does (#70 review round 3).
+async function fileTupleLine(rel, full) {
+  const st = await stat(full);
+  return `${rel}\tf\t${await sha256(full)}\t${st.size}\t${modeOf(st)}`;
+}
+
 // Deterministic PLAINTEXT content digest of one source path — the signal behind
 // `push --skip-unchanged`. It has to come from the plaintext side: age generates an
 // ephemeral file key per run, so identical content encrypts to DIFFERENT ciphertext
@@ -48,32 +64,35 @@ const hexOf = (s) => createHash('sha256').update(s).digest('hex');
 //            for --vault/--zip/claude-code paths), so a target swapped for a
 //            different path — even one with byte-identical content — changes
 //            what actually gets archived and must change the digest too.
-//   - file → the file's sha256
+//   - top-level file → hexOf of ITS OWN tuple line (fileTupleLine, same format a
+//            nested file gets inside a directory walk) — so a chmod-only change to
+//            a single-file source (e.g. a --profile file) changes the digest just
+//            like it would for the same file nested in a --dir (#70 review round 3).
 //   - dir  → sha256 over the "\n"-joined, path-sorted lines
 //            "<relpath>\t<kind>\t<per-file sha256>\t<size>\t<mode>" for everything
-//            under it. The trailing <mode> (files only, octal rwx bits) is what tar
-//            actually archives alongside the bytes — `chmod +x script.sh` or
-//            tightening a secret file to 0600 changes the tar entry's permission bits
-//            without touching content, so a restore from a digest that ignored mode
-//            could silently carry stale/wrong permissions past --skip-unchanged
-//            (#70 review round 2). Nested symlinks hash their target string; other
-//            specials (FIFOs, sockets) hash as a bare kind marker — reading them
-//            could hang, and their presence still perturbs the digest.
+//            under it, PLUS one synthetic "." line carrying the top-level directory's
+//            OWN mode (a chmod on the --dir arg itself, touching no file inside it,
+//            still changes what tar archives and must still change the digest — #70
+//            review round 3). The trailing <mode> (files and directories, octal rwx
+//            bits) is what tar actually archives alongside the entry — `chmod +x
+//            script.sh` or tightening a secret file/dir to 0600/0700 changes the tar
+//            entry's permission bits without touching content, so a restore from a
+//            digest that ignored mode could silently carry stale/wrong permissions
+//            past --skip-unchanged (#70 review round 2 & 3). Nested symlinks hash
+//            their target string; other specials (FIFOs, sockets) hash as a bare kind
+//            marker — reading them could hang, and their presence still perturbs the
+//            digest.
 async function contentDigestOfPath(abs) {
   const top = await lstat(abs);
   if (top.isSymbolicLink()) return hexOf(`l\t${await readlink(abs)}`);
-  if (!top.isDirectory()) return sha256(abs);
-  const lines = [];
+  if (!top.isDirectory()) return hexOf((await fileTupleLine(basename(abs), abs)) + '\n');
+  const lines = [`.\td\t-\t0\t${modeOf(top)}`]; // the --dir arg's own mode, never covered by readdir below
   for (const d of await readdir(abs, { recursive: true, withFileTypes: true })) {
     const full = join(d.parentPath, d.name);
     const rel = relative(abs, full).split(sep).join('/'); // POSIX-normalized so the digest is platform-stable
-    if (d.isFile()) {
-      const st = await stat(full);
-      const mode = (st.mode & 0o777).toString(8).padStart(3, '0');
-      lines.push(`${rel}\tf\t${await sha256(full)}\t${st.size}\t${mode}`);
-    }
+    if (d.isFile()) lines.push(await fileTupleLine(rel, full));
     else if (d.isSymbolicLink()) lines.push(`${rel}\tl\t${hexOf(await readlink(full))}\t0`);
-    else if (d.isDirectory()) lines.push(`${rel}\td\t-\t0`);
+    else if (d.isDirectory()) lines.push(`${rel}\td\t-\t0\t${modeOf(await stat(full))}`);
     else lines.push(`${rel}\ts\t-\t0`);
   }
   lines.sort();
@@ -206,11 +225,19 @@ export async function snapshot(o) {
       // digest can never describe content other than what got archived. Still independent
       // of mtimes/order and of the tar byte stream itself — contentDigestOfPath only reads
       // content bytes / symlink targets from the extraction, never tar's own headers.
+      // -p (--preserve-permissions, supported by both GNU tar and macOS bsdtar — this
+      // repo's CI matrix runs both) makes the re-read apply the ARCHIVE's stored mode
+      // bits exactly, instead of masking them through this process's umask. A plain
+      // `tar -xzf` (no -p) applies umask on extraction, so under a restrictive umask a
+      // mode-only source change (e.g. 0644 -> 0600) can extract to the SAME mode both
+      // times even though the tar header bytes differ — silently hiding the change
+      // from the digest this verification re-read is supposed to prove (#70 review
+      // round 3).
       const extractDir = join(stage, `.extract-${name}`);
       await mkdir(extractDir);
       let contentDigest;
       try {
-        await run('tar', ['-xzf', archivePath, '-C', extractDir], { timeoutMs: PIPE_TIMEOUT_MS });
+        await run('tar', ['-xzf', archivePath, '-C', extractDir, '-p'], { timeoutMs: PIPE_TIMEOUT_MS });
         contentDigest = await contentDigestOfPath(join(extractDir, basename(abs)));
       } finally {
         // must not leak into the snapshot: the final encryptToFile below tars stage/. whole

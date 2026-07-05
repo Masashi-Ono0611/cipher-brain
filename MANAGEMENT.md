@@ -90,22 +90,56 @@ durable pointer.)*
 ## Cadence
 
 gbrain re-synthesizes nightly, so a **nightly** snapshot is the natural cadence.
-On macOS, a `launchd` agent (or `cron`) that runs the snapshot+push once a day:
+`cipher-brain schedule install` is the primary path: it composes the snapshot+push
+pipeline from the same flags those commands take, writes it as a runner script
+(`$CIPHER_BRAIN_HOME/schedule/nightly.sh`), and registers the platform trigger —
+a `launchd` agent on macOS, a `crontab` entry on Linux:
 
 ```sh
-# nightly.sh — runs on the machine that holds gbrain (it has the public key only)
+# runs on the machine that holds gbrain (it has the public key only)
+cipher-brain schedule install --backend turbo \
+  --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.gbrain" \
+  --recipient ~/.cipher-brain/recipient.txt \
+  --recipient ~/.cipher-brain-backup/recipient.txt \
+  --max-spend 500000000            # REQUIRED for arweave/turbo (native units) — see below
+
+cipher-brain schedule status       # configured time · trigger state · last run + rc · next run
+cipher-brain schedule uninstall    # unregister the trigger, remove the generated artifacts
+```
+
+The default run time is **03:30** (change with `--at HH:MM`): well after gbrain's
+overnight re-synthesis settles, so the DB and files are captured from the same settled
+state ("Avoid the write window", below). Each run appends to
+`$CIPHER_BRAIN_HOME/schedule/logs/nightly-YYYY-MM-DD.log` and always ends with a
+machine-readable `OK rc=0` / `FAILED rc=N` line, so `schedule status` (or any monitor)
+can tail the newest log for the outcome.
+
+**Paid backends must be capped.** For `turbo`/`arweave` the generated runner sets
+`CIPHER_BRAIN_YES=1` — the unattended equivalent of `--yes` — which is exactly why
+`schedule install` *refuses* those backends without `--max-spend <n>`: an unattended
+nightly upload must never run uncapped. Review the `CIPHER_BRAIN_MAX_SPEND` line it
+writes (native units: winc for turbo, winston for arweave L1); if
+`CIPHER_BRAIN_AR_WALLET` is set when you run install it is baked into the runner,
+otherwise edit the commented wallet line the runner carries.
+
+What the generated runner does is the hand-rolled recipe it replaces — kept here as
+the explanation of the moving parts:
+
+```sh
+# nightly.sh (shape of the generated runner)
 set -euo pipefail
 OUT="$HOME/brain-snapshots/brain-$(date +%F).age"
 cipher-brain snapshot --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.gbrain" \
   --recipient ~/.cipher-brain/recipient.txt --recipient ~/.cipher-brain-backup/recipient.txt \
   --out "$OUT"
 # turbo (the recommended backend) is a paid, permanent store — CIPHER_BRAIN_YES=1
-# suppresses the interactive --yes guard when running unattended. Omit it (and the
-# wallet) for the free backends (file, or the experimental ton).
+# suppresses the interactive --yes guard when running unattended, and
+# CIPHER_BRAIN_MAX_SPEND=<n> (native units: winc for turbo, winston for arweave L1)
+# aborts when the cost estimate exceeds your budget. Omit both (and the wallet) for
+# the free backends (file, or the experimental ton).
 export CIPHER_BRAIN_YES=1
+export CIPHER_BRAIN_MAX_SPEND=500000000
 export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer for turbo
-# Optionally set CIPHER_BRAIN_MAX_SPEND=<n> (native units: winc for turbo, winston
-# for arweave L1) to abort when the cost estimate exceeds your budget.
 # --save-locator keeps a one-line file with the LATEST locator; back it up off-box
 # next to the backup identity so disk-death is recoverable (see Key recovery #3).
 LOC=$(cipher-brain push --in "$OUT" --backend turbo \
@@ -142,7 +176,7 @@ Each snapshot is immutable: `push` returns a **locator** whose form depends on t
 backend — a store path (`file`), a hex BagID that is a content fingerprint (`ton`),
 or a tx id assigned *after* upload (`arweave`/`turbo`; not a content hash). Keep an
 append-only
-`index.tsv` of `timestamp · locator · sha256` (the cadence script above does this).
+`index.tsv` of `timestamp · locator · sha256` (the scheduled nightly runner does this).
 That index *is* your version history — every line is an independently restorable
 point in time. To find the *most recent* backup, a fresh machine reads the latest
 line of `index.tsv`, or the one-line `--save-locator` file (Key recovery #3) if it
@@ -182,4 +216,5 @@ under `./restored` yourself.
 | `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |
 | `ton` cross-node fetch (experimental backend) | **PARTIAL** — blocked on seeder reachability; the TON leg is iceboxed (see issues) |
 | Identity at rest (passphrase-wrap via `keygen --passphrase`; FDE on the identity host) | **available / recommended** — `--passphrase` ships; FDE is operator config, not enforced by code |
-| Cadence script, identity off-box backup, Shamir M-of-N | **recommended practice / future** — not enforced by code |
+| Nightly cadence (`schedule install / status / uninstall`: generated runner + launchd/cron trigger, paid backends refused without a spend cap, end-to-end run of the generated runner) | **proven** — `selftest:schedule` (CI) |
+| Identity off-box backup, Shamir M-of-N | **recommended practice / future** — not enforced by code |

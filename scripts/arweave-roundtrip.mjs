@@ -83,6 +83,25 @@ try {
     ? pass('size guard: oversized L1 push is refused with a turbo redirect')
     : fail(`size guard did not fire as expected: status=${sg.status} stderr=${(sg.stderr || '').slice(0, 160)}`);
 
+  // spend cap (Codex review, #69 P1): the arweave backend must actually ENFORCE
+  // CIPHER_BRAIN_MAX_SPEND before signing — not merely log that it "cannot pre-flight
+  // the cost" and upload anyway. A `schedule install --backend arweave --max-spend n`
+  // bakes CIPHER_BRAIN_YES=1 into the unattended runner, so this cap is the only thing
+  // standing between an operator's requested budget and an uncapped nightly L1 spend.
+  log('spend cap: a tiny CIPHER_BRAIN_MAX_SPEND aborts the L1 push before signing');
+  const capFail = spawnSync('node', [BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'],
+    { env: { ...env, CIPHER_BRAIN_MAX_SPEND: '1' }, encoding: 'utf8' });
+  (capFail.status !== 0 && /L1 cost estimate/.test(capFail.stderr) && /exceeds CIPHER_BRAIN_MAX_SPEND/.test(capFail.stderr))
+    ? pass('spend cap: a 1-winston cap aborts the upload with a real (not skipped) cost estimate')
+    : fail(`spend cap did not abort as expected: status=${capFail.status} stderr=${(capFail.stderr || '').slice(0, 200)}`);
+
+  log('spend cap: a generous CIPHER_BRAIN_MAX_SPEND still lets the push through');
+  const capOk = spawnSync('node', [BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'],
+    { env: { ...env, CIPHER_BRAIN_MAX_SPEND: '100000000000000' }, encoding: 'utf8' });
+  (capOk.status === 0 && TX_RE.test(capOk.stdout.trim()))
+    ? pass('spend cap: an under-cap CIPHER_BRAIN_MAX_SPEND still lets the push through')
+    : fail(`under-cap push unexpectedly failed: status=${capOk.status} stderr=${(capOk.stderr || '').slice(0, 200)}`);
+
   // push -> the locator is the Arweave tx id (assigned at upload, not the content hash)
   log('push --backend arweave'); const loc = cb('push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave');
   log(`pushed, tx=${loc}`);

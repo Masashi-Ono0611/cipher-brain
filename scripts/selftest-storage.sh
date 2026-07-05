@@ -269,6 +269,34 @@ D_DM3=$(cat "$TMP/dm3.age.digest")
 echo "[PASS] the top-level --dir's own permission change changes the digest"
 chmod 755 "$SRC9"   # leave a predictable mode behind
 
+echo "== #70 review round 4: a top-level FIFO (--dir arg itself a special file) must not hang, and hashes identity not content =="
+# A FIFO only yields bytes once something writes to the other end -- with no writer,
+# sha256()-ing it would block forever. The fix (src/lib/snapshot.mjs contentDigestOfPath)
+# must detect this at the TOP level the same way the nested-file-walk already does for a
+# special file found inside a --dir, and hash a bare kind marker instead of reading it.
+# with_timeout bounds the snapshot call itself: a regression here must FAIL LOUDLY, not
+# hang the whole suite (rules/shell-ops.md -- poll/gate loops need their own deadline,
+# not just an outer one).
+with_timeout() {
+  local s=$1; shift
+  "$@" & local c=$!
+  ( sleep "$s"; kill -9 "$c" 2>/dev/null ) >/dev/null 2>&1 & local w=$!
+  wait "$c" 2>/dev/null; local rc=$?
+  kill -9 "$w" 2>/dev/null; wait "$w" 2>/dev/null
+  return $rc
+}
+FIFO="$TMP/special.fifo"
+mkfifo "$FIFO"
+with_timeout 15 cb snapshot --dir "$FIFO" --out "$TMP/fifo1.age" || { echo "[FAIL] snapshot on a top-level FIFO timed out or errored (may be blocked reading FIFO content)"; exit 1; }
+[ -f "$TMP/fifo1.age.digest" ] || { echo "[FAIL] no digest sidecar for the top-level FIFO snapshot"; exit 1; }
+D_FIFO1=$(cat "$TMP/fifo1.age.digest")
+echo "[PASS] snapshot on a top-level FIFO completed promptly (did not hang trying to read FIFO content)"
+with_timeout 15 cb snapshot --dir "$FIFO" --out "$TMP/fifo2.age" || { echo "[FAIL] second snapshot on the same top-level FIFO timed out or errored"; exit 1; }
+D_FIFO2=$(cat "$TMP/fifo2.age.digest")
+[ "$D_FIFO1" = "$D_FIFO2" ] || { echo "[FAIL] FIFO digest not stable across repeated snapshots of the same path: $D_FIFO1 vs $D_FIFO2"; exit 1; }
+echo "[PASS] repeated snapshots of the same top-level FIFO produce an identical (stable) digest -- the FIFO's special-file identity, not its (unreadable) content"
+cb verify --in "$TMP/fifo1.age" | grep -q "VERDICT: PASS" && echo "[PASS] verify VERDICT PASS on a snapshot whose sole --dir source is a FIFO" || { echo "[FAIL] verify failed on the FIFO snapshot"; exit 1; }
+
 echo "== push --save-locator writes the 5-field line (locator/backend/sha256/content_digest/recipients_fingerprint) =="
 [ -f "$TMP/s1.age.recipients-fingerprint" ] || { echo "[FAIL] no recipients-fingerprint sidecar next to s1.age"; exit 1; }
 RF1=$(cat "$TMP/s1.age.recipients-fingerprint")

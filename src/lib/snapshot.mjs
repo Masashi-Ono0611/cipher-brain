@@ -68,6 +68,13 @@ async function fileTupleLine(rel, full) {
 //            nested file gets inside a directory walk) — so a chmod-only change to
 //            a single-file source (e.g. a --profile file) changes the digest just
 //            like it would for the same file nested in a --dir (#70 review round 3).
+//   - top-level special (FIFO/socket/device: not a symlink, not a directory, not a
+//            regular file) → the SAME bare kind marker the nested-walk's `else`
+//            branch below hashes for a special file found inside a --dir, NEVER a
+//            fileTupleLine read: a FIFO only yields bytes once something writes to
+//            the other end, so sha256()-ing it (as a plain "unconditionally a
+//            regular file" read would) can hang forever — outside PIPE_TIMEOUT_MS,
+//            which only bounds the tar step, not this digest read (#70 review round 4).
 //   - dir  → sha256 over the "\n"-joined, path-sorted lines
 //            "<relpath>\t<kind>\t<per-file sha256>\t<size>\t<mode>" for everything
 //            under it, PLUS one synthetic "." line carrying the top-level directory's
@@ -85,6 +92,7 @@ async function fileTupleLine(rel, full) {
 async function contentDigestOfPath(abs) {
   const top = await lstat(abs);
   if (top.isSymbolicLink()) return hexOf(`l\t${await readlink(abs)}`);
+  if (!top.isDirectory() && !top.isFile()) return hexOf('s\t-\t0'); // FIFO/socket/device — never read, could hang
   if (!top.isDirectory()) return hexOf((await fileTupleLine(basename(abs), abs)) + '\n');
   const lines = [`.\td\t-\t0\t${modeOf(top)}`]; // the --dir arg's own mode, never covered by readdir below
   for (const d of await readdir(abs, { recursive: true, withFileTypes: true })) {

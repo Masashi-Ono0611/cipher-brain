@@ -7,9 +7,36 @@
 import { stat, readFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { resolve } from 'node:path';
-import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND } from '../config.mjs';
-import { warnIfLooseKeyPerms } from '../util.mjs';
+import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND, AR_HTTP_TIMEOUT_MS } from '../config.mjs';
+import { warnIfLooseKeyPerms, fmtBytes } from '../util.mjs';
 import { arweaveBackend } from './arweave.mjs';
+
+// Current USD price of 1 AR via the Turbo pricing endpoint the SDK exposes (winc is
+// pegged 1:1 to winston; 1 AR = 1e12 of either, so one rate converts both). Returns a
+// positive number or null on ANY failure — SDK not installed, offline, odd response —
+// and is raced against AR_HTTP_TIMEOUT_MS: the USD line is a courtesy estimate that
+// must never block, fail, or stall a push (or an MCP estimate).
+export async function arUsdRate() {
+  try {
+    const { TurboFactory } = await import('@ardrive/turbo-sdk');
+    const timeout = new Promise((resolve) => {
+      const t = setTimeout(() => resolve(null), AR_HTTP_TIMEOUT_MS);
+      if (typeof t.unref === 'function') t.unref(); // don't keep the process alive for a lost race
+    });
+    const res = await Promise.race([TurboFactory.unauthenticated().getFiatToAR({ currency: 'usd' }), timeout]);
+    const rate = Number(res?.rate);
+    return Number.isFinite(rate) && rate > 0 ? rate : null;
+  } catch {
+    return null;
+  }
+}
+
+// "~$X USD" for a native amount (winc or winston) at the given USD/AR rate.
+// More decimals for sub-cent estimates so a tiny nightly push isn't shown as $0.00.
+export const usdApprox = (nativeAmount, rate) => {
+  const usd = (Number(nativeAmount) / 1e12) * rate;
+  return `~$${usd.toFixed(usd >= 0.01 ? 2 : 6)} USD`;
+};
 
 export function turboBackend() {
   return {
@@ -36,6 +63,13 @@ export function turboBackend() {
         const [{ winc: uploadWincStr }] = await turbo.getUploadCosts({ bytes: [size] });
         const uploadWinc = BigInt(uploadWincStr);
         process.stderr.write(`turbo: upload cost estimate: ${uploadWinc} winc (~${(Number(uploadWinc) / 1e12).toFixed(8)} AR, ${size} bytes)\n`);
+        // Human-readable USD approximation next to the native estimate (#70). arUsdRate
+        // never throws (null on any failure), so a dead pricing endpoint can neither
+        // block the push nor skip the CIPHER_BRAIN_MAX_SPEND cap check below.
+        const rate = await arUsdRate();
+        if (rate !== null) {
+          process.stderr.write(`turbo: approx cost: ${fmtBytes(size)} -> ${usdApprox(uploadWinc, rate)} (at ~$${rate.toFixed(2)}/AR; rate-dependent estimate, not a quote)\n`);
+        }
         try {
           const { winc: balWincStr } = await turbo.getBalance();
           const balWinc = BigInt(balWincStr);

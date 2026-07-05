@@ -50,7 +50,7 @@
     "selftest:arweave-nodeps": "node scripts/selftest-arweave-nodeps.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.6.0"
   },
   "license": "MIT",
   "peerDependencies": {

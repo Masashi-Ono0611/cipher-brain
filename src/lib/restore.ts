@@ -1,12 +1,13 @@
 // restore + verify — the decrypt half and its falsifiable proof.
 import { mkdir, rm, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { AGE_MAGIC, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.mjs';
-import { run } from './proc.mjs';
-import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.mjs';
-import { exists, sha256, readHead, fmtBytes } from './util.mjs';
+import { AGE_MAGIC, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.js';
+import { run } from './proc.js';
+import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
+import { exists, sha256, readHead, fmtBytes } from './util.js';
+import type { CliOptions } from './types.js';
 
-export async function restore(o) {
+export async function restore(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.out_dir) throw new Error('--out-dir <dir> required');
   const identity = o.identity || IDENTITY;
@@ -52,7 +53,7 @@ export async function restore(o) {
 // so verify there attests only the header + that a stranger's key cannot read it —
 // and reports VERDICT: PARTIAL (exit 2), never PASS, so it is not read as proof the
 // snapshot is restorable by you.
-export async function verify(o) {
+export async function verify(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   const sz = (await stat(o.in)).size;
   const head = await readHead(o.in, 64);

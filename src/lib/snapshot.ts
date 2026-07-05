@@ -4,13 +4,14 @@ import { mkdtempSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join, basename, dirname, resolve, relative, sep } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
-import { RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, pgTool } from './config.mjs';
-import { run } from './proc.mjs';
-import { newEncrypter, encryptToFile } from './crypt.mjs';
-import { exists, fmtBytes, sha256 } from './util.mjs';
-import { recipientEntries, resolvePinnedRecipients } from './keys.mjs';
-import { resolveProfilePaths } from './profiles.mjs';
-import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.mjs';
+import { RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, pgTool } from './config.js';
+import { run } from './proc.js';
+import { newEncrypter, encryptToFile } from './crypt.js';
+import { exists, fmtBytes, sha256, errMsg } from './util.js';
+import { recipientEntries, resolvePinnedRecipients } from './keys.js';
+import { resolveProfilePaths } from './profiles.js';
+import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.js';
+import type { CliOptions } from './types.js';
 
 // Promote a finished .part to its final --out, no-clobber. Prefer link(): it is atomic
 // and fails with EEXIST if out appeared meanwhile, giving a true exclusive no-clobber
@@ -18,13 +19,14 @@ import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './sig
 // network/cloud mounts (common backup media), where link throws EPERM/ENOTSUP — there,
 // fall back to a re-checked rename (best-effort no-clobber with a tiny TOCTOU window,
 // the same the original `age -o` write had). Atomicity-on-success holds either way.
-async function promoteSnapshot(part, out) {
+async function promoteSnapshot(part: string, out: string): Promise<void> {
   const clobberErr = () => new Error(`${out} already exists — refusing to overwrite a prior snapshot (move it aside or choose a new --out)`);
   try {
     await link(part, out);
   } catch (e) {
-    if (e && e.code === 'EEXIST') throw clobberErr();
-    if (e && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(e.code)) {
+    const err = e as NodeJS.ErrnoException;
+    if (err && err.code === 'EEXIST') throw clobberErr();
+    if (err && err.code && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(err.code)) {
       if (await exists(out)) throw clobberErr();
       await rename(part, out);
       return;
@@ -34,11 +36,11 @@ async function promoteSnapshot(part, out) {
   await rm(part, { force: true }); // drop the redundant link; out is the durable copy
 }
 
-const hexOf = (s) => createHash('sha256').update(s).digest('hex');
+const hexOf = (s: string): string => createHash('sha256').update(s).digest('hex');
 
 // Mode string shared by every tuple line below: octal rwx bits, what tar actually
 // archives alongside an entry's bytes.
-const modeOf = (st) => (st.mode & 0o777).toString(8).padStart(3, '0');
+const modeOf = (st: { mode: number }): string => (st.mode & 0o777).toString(8).padStart(3, '0');
 
 // One file's tuple line — the SAME format whether the file is the sole top-level
 // source (a --dir-equivalent arg that is actually a single file: profile files/zips
@@ -47,7 +49,7 @@ const modeOf = (st) => (st.mode & 0o777).toString(8).padStart(3, '0');
 // top-level-file case) is what makes a chmod-only change to a single-file source
 // perturb the digest exactly like a chmod-only change to a file nested in a --dir
 // source does (#70 review round 3).
-async function fileTupleLine(rel, full) {
+async function fileTupleLine(rel: string, full: string): Promise<string> {
   const st = await stat(full);
   return `${rel}\tf\t${await sha256(full)}\t${st.size}\t${modeOf(st)}`;
 }
@@ -89,7 +91,7 @@ async function fileTupleLine(rel, full) {
 //            their target string; other specials (FIFOs, sockets) hash as a bare kind
 //            marker — reading them could hang, and their presence still perturbs the
 //            digest.
-async function contentDigestOfPath(abs) {
+async function contentDigestOfPath(abs: string): Promise<string> {
   const top = await lstat(abs);
   if (top.isSymbolicLink()) return hexOf(`l\t${await readlink(abs)}`);
   if (!top.isDirectory() && !top.isFile()) return hexOf('s\t-\t0'); // FIFO/socket/device — never read, could hang
@@ -107,7 +109,18 @@ async function contentDigestOfPath(abs) {
   return hexOf(lines.join('\n') + '\n');
 }
 
-export async function snapshot(o) {
+// One entry in the manifest's `components` array — either the pg_dump (kind
+// 'pg_dump:custom', no `source`) or one staged --dir/--profile path (kind 'dir'/'file').
+interface ManifestComponent {
+  name: string;
+  kind: string;
+  source?: string;
+  tables?: string[] | 'all';
+  content_digest: string;
+  captured_at: string;
+}
+
+export async function snapshot(o: CliOptions): Promise<void> {
   if (!o.out) throw new Error('--out <file.age> required');
   // --profile is a thin veneer over --dir: it resolves to concrete source paths
   // (see profiles.mjs) staged exactly like explicit --dir flags. Profile paths
@@ -124,7 +137,7 @@ export async function snapshot(o) {
   // is key recovery: encrypt to a primary AND an offline backup key so that losing
   // the primary identity does NOT lose the brain (any one identity restores).
   const recs = o.recipients.length ? o.recipients : [RECIPIENT];
-  const entriesByRec = new Map(); // recipient arg -> its effective age1… entries
+  const entriesByRec = new Map<string, string[]>(); // recipient arg -> its effective age1… entries
   for (const r of recs) {
     if (!r.startsWith('age1') && !(await exists(r))) {
       throw new Error(`no recipient at ${r} — run "cipher-brain keygen" first, or pass an age1... pubkey`);
@@ -149,7 +162,7 @@ export async function snapshot(o) {
     const allowed = await resolvePinnedRecipients(PIN_RECIPIENTS);
     if (allowed.size === 0) throw new Error('CIPHER_BRAIN_PIN_RECIPIENTS is set but lists no age1… pubkeys — refusing to snapshot');
     for (const r of recs) {
-      const entries = entriesByRec.get(r);
+      const entries = entriesByRec.get(r) ?? [];
       if (entries.length === 0) throw new Error(`recipient "${r}" has no recipients to check against CIPHER_BRAIN_PIN_RECIPIENTS (refusing to snapshot)`);
       for (const e of entries) {
         // Fail-closed: every entry must be an allowlisted age1… key. A non-age1
@@ -166,7 +179,7 @@ export async function snapshot(o) {
   // a copy-the-README run can forget the backup. Count DISTINCT effective recipient keys
   // (not --recipient args): a file may hold several keys, and two args may name the same
   // one — so dedupe across all entries. Warn loudly (stderr → unattended logs) on exactly one.
-  const effectiveKeys = new Set();
+  const effectiveKeys = new Set<string>();
   for (const entries of entriesByRec.values()) for (const e of entries) effectiveKeys.add(e);
   if (effectiveKeys.size === 1) {
     console.error('⚠  snapshot encrypted to a SINGLE recipient key — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.');
@@ -198,7 +211,7 @@ export async function snapshot(o) {
   setActiveStage(stage); // a signal now erases this staged plaintext (see installStageSignalGuard)
   const createdAt = new Date().toISOString(); // when this snapshot run began (top-level)
   try {
-    const components = [];
+    const components: ManifestComponent[] = [];
     if (o.pg) {
       const dumpPath = join(stage, 'db.dump');
       const tableArgs = o.tables.flatMap((t) => ['-t', t]);
@@ -211,7 +224,7 @@ export async function snapshot(o) {
       // conservative (an unnecessary push, never a wrongly skipped one) and fine.
       components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all', content_digest: await sha256(dumpPath), captured_at: new Date().toISOString() });
     }
-    const usedNames = new Set();
+    const usedNames = new Set<string>();
     for (const d of o.dirs) {
       const abs = resolve(d);
       let name = basename(abs) + '.tar.gz';
@@ -243,7 +256,7 @@ export async function snapshot(o) {
       // round 3).
       const extractDir = join(stage, `.extract-${name}`);
       await mkdir(extractDir);
-      let contentDigest;
+      let contentDigest: string;
       try {
         await run('tar', ['-xzf', archivePath, '-C', extractDir, '-p'], { timeoutMs: PIPE_TIMEOUT_MS });
         contentDigest = await contentDigestOfPath(join(extractDir, basename(abs)));
@@ -305,7 +318,7 @@ export async function snapshot(o) {
     try {
       await writeFile(`${o.out}.digest`, contentDigest + '\n');
     } catch (e) {
-      console.error(`warning: could not write digest sidecar ${o.out}.digest (${e.message}) — push --skip-unchanged will not have a digest for this snapshot`);
+      console.error(`warning: could not write digest sidecar ${o.out}.digest (${errMsg(e)}) — push --skip-unchanged will not have a digest for this snapshot`);
     }
     // Recipients fingerprint sidecar — the SEPARATE signal (#70 review round 2) that
     // push --skip-unchanged additionally requires to match before it will skip (see
@@ -315,7 +328,7 @@ export async function snapshot(o) {
     try {
       await writeFile(`${o.out}.recipients-fingerprint`, recipientsFingerprint + '\n');
     } catch (e) {
-      console.error(`warning: could not write recipients-fingerprint sidecar ${o.out}.recipients-fingerprint (${e.message}) — push --skip-unchanged will not have a recipients fingerprint for this snapshot`);
+      console.error(`warning: could not write recipients-fingerprint sidecar ${o.out}.recipients-fingerprint (${errMsg(e)}) — push --skip-unchanged will not have a recipients fingerprint for this snapshot`);
     }
     const sz = (await stat(o.out)).size;
     console.log(`wrote ${o.out} (${fmtBytes(sz)}, encrypted to ${recs.length} recipient(s): ${recs.join(', ')})`);

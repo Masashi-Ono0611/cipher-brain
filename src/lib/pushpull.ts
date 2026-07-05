@@ -4,16 +4,17 @@
 import { mkdir, writeFile, rm, readFile, rename } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { AGE_MAGIC, CIPHER_YES } from './config.mjs';
-import { exists, sleep, sha256, readHead } from './util.mjs';
-import { backendFor } from './backends/index.mjs';
+import { AGE_MAGIC, CIPHER_YES } from './config.js';
+import { exists, sleep, sha256, readHead, RetryableError } from './util.js';
+import { backendFor } from './backends/index.js';
+import type { CliOptions } from './types.js';
 
 // The plaintext content digest for the artifact being pushed: an explicit --digest
 // wins, else the "<in>.digest" sidecar snapshot writes next to its output. Returns
 // lowercased hex or null — never throws: the digest only powers the --skip-unchanged
 // optimization and the 4th save-locator field, so a missing/unreadable piece must
 // degrade to "no digest" (proceed normally), never to an error.
-async function contentDigestFor(o) {
+async function contentDigestFor(o: CliOptions): Promise<string | null> {
   if (o.digest) return String(o.digest).trim().toLowerCase();
   try {
     const line = (await readFile(`${o.in}.digest`, 'utf8')).split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
@@ -30,19 +31,27 @@ async function contentDigestFor(o) {
 // newly added offline recovery key, or a removed/revoked key) would still return the
 // OLD locator — the new key could never decrypt it, and/or a revoked key still could
 // (#70 review round 2, a real security regression, not just a correctness nit).
-async function recipientsFingerprintFor(o) {
+async function recipientsFingerprintFor(o: CliOptions): Promise<string | null> {
   try {
     const line = (await readFile(`${o.in}.recipients-fingerprint`, 'utf8')).split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
     return line ? line.toLowerCase() : null;
   } catch { return null; }
 }
 
+interface SavedLocator {
+  locator: string;
+  backend: string;
+  sha: string | undefined;
+  contentDigest: string | undefined;
+  recipientsFingerprint: string | undefined;
+}
+
 // Parse the FIRST locator line of a save-locator file into its (up to 5) fields.
 // Returns null when the file is missing/empty — callers treat that as "no previous
 // push recorded". The 3-field legacy format, the 4-field one (+content_digest) and
 // the 5-field one (+recipients_fingerprint) all parse here identically.
-async function readSavedLocatorLine(path) {
-  let text;
+async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> {
+  let text: string;
   try { text = await readFile(path, 'utf8'); } catch { return null; }
   const line = text.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
   if (!line) return null;
@@ -50,7 +59,7 @@ async function readSavedLocatorLine(path) {
   return { locator, backend, sha, contentDigest, recipientsFingerprint };
 }
 
-export async function push(o) {
+export async function push(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.backend) throw new Error('--backend <file|ton|arweave|turbo> required'); // no silent default
   if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
@@ -86,9 +95,9 @@ export async function push(o) {
       const cur = await contentDigestFor(o);
       const curRecipients = await recipientsFingerprintFor(o);
       const prev = await readSavedLocatorLine(o.save_locator);
-      const contentUnchanged = cur && prev && prev.locator && prev.backend === o.backend && prev.contentDigest && prev.contentDigest.toLowerCase() === cur;
-      const recipientsUnchanged = curRecipients && prev && prev.recipientsFingerprint && prev.recipientsFingerprint.toLowerCase() === curRecipients;
-      if (contentUnchanged && recipientsUnchanged) {
+      const contentUnchanged = !!(cur && prev && prev.locator && prev.backend === o.backend && prev.contentDigest && prev.contentDigest.toLowerCase() === cur);
+      const recipientsUnchanged = !!(curRecipients && prev && prev.recipientsFingerprint && prev.recipientsFingerprint.toLowerCase() === curRecipients);
+      if (contentUnchanged && recipientsUnchanged && prev) {
         console.error(`SKIPPED: content and recipients unchanged (digest ${cur}) — already pushed to ${o.backend} as ${prev.locator} (--force to push anyway)`);
         console.log(prev.locator); // stdout contract unchanged: a script still captures a valid locator
         return;
@@ -149,7 +158,7 @@ export async function push(o) {
   console.log(locator); // stdout = locator ONLY, so a script can capture it
 }
 
-export async function pull(o) {
+export async function pull(o: CliOptions): Promise<void> {
   // --from-locator-file <path>: read the locator (and its backend) from a file written
   // by `push --save-locator`. This is the recovery path — a fresh machine that holds
   // only the identity + this one small file (both backed up off-box) can restore the
@@ -192,7 +201,7 @@ export async function pull(o) {
       break;
     } catch (e) {
       const remaining = deadline - Date.now();
-      if (!e.retryable || remaining <= 0) throw e;    // fatal (bad locator etc.) or out of budget → fail now
+      if (!(e instanceof RetryableError) || remaining <= 0) throw e; // fatal (bad locator etc.) or out of budget → fail now
       const naptime = Math.min(retryMs, remaining);   // honor a budget shorter than the retry interval
       console.error(`pull attempt ${attempt} not ready (${e.message}); retrying in ${Math.round(naptime / 1000)}s…`);
       await sleep(naptime);

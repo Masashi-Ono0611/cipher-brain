@@ -60,9 +60,11 @@ defenses, ideally both:
 ### 3. Retain the latest locator off-box (built in)
 
 The identity decrypts, but you still need to know *where the latest ciphertext lives*.
-`push --save-locator <path>` writes `<locator>\t<backend>\t<sha256>` to a small file,
-rewritten atomically on every push so it always holds the **most recent** snapshot's
-locator plus an integrity pin:
+`push --save-locator <path>` writes `<locator>\t<backend>\t<sha256>[\t<content_digest>]`
+to a small file, rewritten atomically on every push so it always holds the **most
+recent** snapshot's locator plus an integrity pin. The optional 4th field is the
+plaintext content digest (from the `<out>.digest` sidecar `snapshot` writes) that
+`push --skip-unchanged` compares against; older 3-field files keep working everywhere:
 
 ```sh
 cipher-brain push --in brain-$(date +%F).age --backend turbo --yes \
@@ -108,7 +110,10 @@ export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer f
 # for arweave L1) to abort when the cost estimate exceeds your budget.
 # --save-locator keeps a one-line file with the LATEST locator; back it up off-box
 # next to the backup identity so disk-death is recoverable (see Key recovery #3).
-LOC=$(cipher-brain push --in "$OUT" --backend turbo \
+# --skip-unchanged reads the plaintext content digest snapshot wrote to "$OUT.digest"
+# and, when it matches the digest recorded in the save-locator file, exits 0 with the
+# previous locator instead of paying to re-upload identical content (--force overrides).
+LOC=$(cipher-brain push --in "$OUT" --backend turbo --skip-unchanged \
   --save-locator "$HOME/.cipher-brain/latest-locator.tsv")   # or: file | arweave | ton
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$(shasum -a 256 "$OUT" | cut -d" " -f1)" \
   >> "$HOME/brain-snapshots/index.tsv"

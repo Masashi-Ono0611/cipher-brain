@@ -161,7 +161,10 @@ control address, key paths, and download timeout for the ton backend).
 ## Backends
 
 `push`/`pull` are storage primitives over a pluggable backend (`--backend` is
-required — there is no default). Four ship, but they are not peers:
+required — there is no default). Paid pushes print a winc/AR estimate plus an
+approximate USD line, and `push --skip-unchanged` skips a paid re-upload when the
+snapshot's plaintext content digest (the `<out>.digest` sidecar `snapshot` writes)
+matches the previous push. Four backends ship, but they are not peers:
 
 - **`turbo` — the recommended mainline.** Uploads the ciphertext to the Arweave
   network as an ANS-104 bundled data item via a bundler (ArDrive Turbo), payable
@@ -284,7 +287,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP) |
 | `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
-| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file/ton (free) |
+| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file/ton (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable |
 
 Claude Code config (`.mcp.json`):
 

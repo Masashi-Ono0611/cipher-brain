@@ -213,6 +213,69 @@ grep -q 'cipher-brain keygen' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does
 grep -q 'still valid, useful' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not note the save-locator/pin-recipients sections remain valid regardless"; exit 1; }
 echo "[PASS] no-backup kit is honest: no BACKUP IDENTITY block or dependent instructions, explains primary-identity-only recovery + the keygen path to real kit-only recovery later"
 
+echo "== (h) rollback + clean retry: a failure AFTER identity creation must not brick a retry (P2 fix) =="
+# The primary identity is created in step 1/6, well before later prompts that can
+# fail/abort (an unknown backend name, an empty directory answer, ...). Before the
+# fix, any such later failure left the identity behind — and `init` refuses
+# unconditionally whenever an identity already exists — so a typo'd retry was
+# permanently stuck needing the scarier `keygen --force`. Drive a run that succeeds
+# through backup-key generation (so BOTH primary and backup identities exist) and
+# THEN fails at the very last prompt (an unrecognized backend name), then prove (1)
+# the rollback actually deleted every file this run wrote, and (2) a second, genuine
+# `cipher-brain init` run against the SAME CIPHER_BRAIN_HOME starts clean and
+# completes — the retry story working end-to-end, not just files disappearing.
+RB_HOME="$TMP/rollback-home"; mkdir -p "$RB_HOME"
+RB_CB_HOME="$TMP/rollback-cb-home"
+RB_STORE="$TMP/rollback-store"
+RB_SRC="$TMP/rollback-src"; mkdir -p "$RB_SRC"
+printf 'rollback-marker\n' > "$RB_SRC/note.txt"
+RB_BACKUP_HOME="${RB_CB_HOME}-backup" # the default sibling path the wizard suggests for the backup key
+
+cat > "$TMP/qa-rollback-fail.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "y"],
+  ["Path for the backup keypair", ""],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$RB_SRC"],
+  ["Backend [file/", "not-a-real-backend"]
+]
+JSON
+
+if CIPHER_BRAIN_HOME="$RB_CB_HOME" CIPHER_BRAIN_FILE_DIR="$RB_STORE" HOME="$RB_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-rollback-fail.json" --out "$TMP/rollback-fail.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
+  echo "[FAIL] init did not fail on an unknown backend name"; cat "$TMP/rollback-fail.log"; exit 1
+fi
+grep -qi "unknown backend" "$TMP/rollback-fail.log" || { echo "[FAIL] failure was not the expected unknown-backend error"; cat "$TMP/rollback-fail.log"; exit 1; }
+[ ! -f "$RB_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity survived a post-creation failure — rollback did not run"; exit 1; }
+[ ! -f "$RB_CB_HOME/recipient.txt" ] || { echo "[FAIL] primary recipient survived a post-creation failure"; exit 1; }
+[ ! -f "$RB_BACKUP_HOME/identity.age" ] || { echo "[FAIL] backup identity survived a post-creation failure"; exit 1; }
+[ ! -f "$RB_BACKUP_HOME/recipient.txt" ] || { echo "[FAIL] backup recipient survived a post-creation failure"; exit 1; }
+echo "[PASS] a failure AFTER identity creation rolls back the primary + backup identity/recipient files this run wrote"
+
+RB_KIT_PATH="$RB_HOME/recovery-kit.txt"
+cat > "$TMP/qa-rollback-retry.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$RB_SRC"],
+  ["Backend [file/", ""],
+  ["Path to write the recovery kit", "$RB_KIT_PATH"]
+]
+JSON
+
+CIPHER_BRAIN_HOME="$RB_CB_HOME" CIPHER_BRAIN_FILE_DIR="$RB_STORE" HOME="$RB_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-rollback-retry.json" --out "$TMP/rollback-retry.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] retry after rollback did not complete (pre-existing-identity refusal or another regression)"; cat "$TMP/rollback-retry.log"; exit 1; }
+grep -q 'cipher-brain init: complete' "$TMP/rollback-retry.log" || { echo "[FAIL] retry after rollback lacks its own completion marker"; cat "$TMP/rollback-retry.log"; exit 1; }
+[ -f "$RB_CB_HOME/identity.age" ] || { echo "[FAIL] retry did not write a fresh primary identity"; exit 1; }
+echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME starts clean and completes after rollback (the retry story actually works, not just file deletion)"
+
 echo "== THE DRILL (issue #68 acceptance criterion 2): kit-ONLY restore on a simulated fresh, fully isolated machine =="
 # Isolation: a BRAND NEW temp dir with NO shared CIPHER_BRAIN_HOME, no leftover
 # identity/config from the run above — the same "simulate a fresh machine"

@@ -18,7 +18,7 @@
 // non-interactive-safety posture promptHidden already has — rather than hanging or
 // behaving unpredictably under a CI/pipe invocation.
 import { createInterface } from 'node:readline/promises';
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { HOME, IDENTITY, RECIPIENT } from './config.js';
@@ -208,172 +208,198 @@ export async function init(_o: CliOptions): Promise<void> {
     console.log('== 1/6: generating your primary identity ==');
     await keygen({ dirs: [], tables: [], recipients: [] });
 
-    // ---------- 2. backup key guidance (MANAGEMENT.md Key recovery #1) ----------
-    console.log('\n== 2/6: offline backup key (recommended) ==');
-    console.log(
-      'cipher-brain gives you two independent defenses against losing the primary identity; the first is a\n' +
-      'second, OFFLINE backup keypair. If you encrypt every snapshot to BOTH the primary and the backup\n' +
-      'public key, either identity alone can restore — see MANAGEMENT.md "Key recovery #1".',
-    );
+    // From here on, THIS invocation just created the primary identity — the exists()
+    // refusal above already guarantees it did not exist before this run started, so any
+    // failure in the rest of the flow (an invalid answer, a declined paid-backend
+    // consent, a missing optional dependency, a recovery-kit write error, ...) must not
+    // leave that identity behind. `init` refuses unconditionally whenever IDENTITY
+    // already exists, so a half-finished run would otherwise permanently block a clean
+    // retry — the user's only escape would be the scarier, undocumented-to-them
+    // `keygen --force`. Roll back exactly what THIS run created (never anything from a
+    // prior, already-completed setup — that case never reaches here, it was refused
+    // above before this try started), then re-throw so the original error still
+    // surfaces unchanged.
     let backup: BackupKey | null = null;
-    if (await askYesNo(rl, 'Generate an offline backup keypair now?', true)) {
-      const defaultBackupHome = `${HOME}-backup`;
-      const backupHome = await askLine(rl, `Path for the backup keypair [${defaultBackupHome}]: `, defaultBackupHome);
-      const identityPath = join(backupHome, 'identity.age');
-      const recipientPath = join(backupHome, 'recipient.txt');
-      const { recipient } = await keygenAt({ home: backupHome, identityPath, recipientPath });
-      const identityText = await readFile(identityPath, 'utf8');
-      backup = { identityPath, recipientPath, recipient, identityText };
-      console.log(`backup identity written to: ${identityPath}`);
-      console.log('⚠  This is still ON this machine. Move it OFF-BOX (encrypted USB, a second location, a trusted');
-      console.log('   person) once you are done — the recovery kit at the end of this wizard restates this.');
-    } else {
-      console.log('Skipping the backup key. You can add one later at any time: CIPHER_BRAIN_HOME=<path> cipher-brain keygen');
-    }
-
-    // ---------- 3. passphrase wrap the primary identity (MANAGEMENT.md Key recovery #2) ----------
-    console.log('\n== 3/6: protect the primary identity at rest ==');
-    console.log(
-      'The identity file just written is a bare secret guarded only by file permissions (0600) — anyone who\n' +
-      'copies it off this machine can decrypt every snapshot. A passphrase wrap (scrypt, the same "keygen\n' +
-      '--passphrase" flag uses) makes an exfiltrated identity file useless without it. See MANAGEMENT.md\n' +
-      '"Key recovery #2".',
-    );
-    if (await askYesNo(rl, 'Protect the primary identity with a passphrase now?', false)) {
-      // Reuses the EXACT same pieces keygen --passphrase uses (askNewPassphrase / wrapIdentity from
-      // crypt.ts) — the identity was just written unwrapped above, so this wraps it in place rather
-      // than re-generating (keygenAt's own wrap-at-creation path is for a keypair that does not exist
-      // yet; here we already have the one we want to protect).
-      //
-      // askNewPassphrase() -> promptHidden (crypt.ts) puts stdin into raw mode and manages its OWN
-      // 'data' listener directly, bypassing readline entirely. Doing that while this wizard's OWN
-      // readline Interface is still attached to the SAME stdin is a real bug under a genuine TTY: two
-      // competing consumers of one stdin leave it unable to deliver input to a LATER rl.question() —
-      // confirmed empirically with a real pty harness (python's stdlib pty module driving this exact
-      // path): the wizard silently exited after this step, never reaching step 4's prompt. Fully close
-      // this interface before the hidden-prompt path, then open a fresh one for the remaining prompts.
-      rl.close();
-      const text = await readFile(IDENTITY, 'utf8');
-      const payload = await wrapIdentity(text, await askNewPassphrase());
-      await writeFile(IDENTITY, payload, { mode: 0o600 });
-      console.log(`identity re-written, passphrase-wrapped: ${IDENTITY}`);
-      rl = createInterface({ input: process.stdin, output: process.stdout });
-    } else {
-      console.log('Skipping the passphrase wrap. You can wrap it later by re-running keygen --passphrase --force,');
-      console.log('or by full-disk-encrypting the machine that holds the identity (MANAGEMENT.md recommends both).');
-    }
-
-    // ---------- 4. recipient pin suggestion (CIPHER_BRAIN_PIN_RECIPIENTS) ----------
-    console.log('\n== 4/6: recipient pin (optional, recommended) ==');
-    console.log(
-      'CIPHER_BRAIN_PIN_RECIPIENTS is an env var snapshot reads at run time: when set, it refuses to encrypt\n' +
-      'to any recipient NOT on the list — so a tampered recipient.txt, or an injected extra --recipient, can\n' +
-      'never silently re-key your snapshots to an attacker. It is not something init can "turn on" for you\n' +
-      'persistently (it is read from the environment at snapshot time, not a file init controls) — the most\n' +
-      'this wizard can do is suggest the exact line to add to your shell rc file yourself.',
-    );
-    let pinRecipientsLine: string | null = null;
-    if (await askYesNo(rl, 'Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line for your shell rc file?', true)) {
-      const primaryPub = (await readFile(RECIPIENT, 'utf8')).trim();
-      const defaultLine = `export CIPHER_BRAIN_PIN_RECIPIENTS="${[primaryPub, backup?.recipient].filter(Boolean).join(' ')}"`;
-      pinRecipientsLine = await askLine(rl, `Suggested line (edit or press Enter to accept):\n${defaultLine}\n> `, defaultLine);
-      console.log(`\nAdd this to your shell rc (~/.zshrc / ~/.bashrc), then open a new shell:\n${pinRecipientsLine}`);
-    } else {
-      console.log('Skipping the recipient pin suggestion.');
-    }
-
-    // ---------- 5. profile selection ----------
-    console.log('\n== 5/6: what to back up ==');
-    console.log(`Available profiles (one-flag source presets): ${PROFILE_NAMES.join(', ')}. Or "none" to point at`);
-    console.log('directories yourself (the same as passing --dir manually to snapshot later).');
-    const profileChoice = await askLine(rl, `Profile [none/${PROFILE_NAMES.join('/')}] (default none): `, 'none');
-    const snapshotOpts: CliOptions = { dirs: [], tables: [], recipients: [] };
-    if (profileChoice === 'none') {
-      const dirsInput = await askLine(rl, 'Directory path(s) to back up, comma-separated (at least one, required): ');
-      const dirs = dirsInput.split(',').map((d) => d.trim()).filter(Boolean);
-      if (dirs.length === 0) throw new Error('no directory given — "cipher-brain init" cannot produce an empty snapshot; re-run and pass at least one path, or pick a profile');
-      snapshotOpts.dirs = dirs;
-    } else if (PROFILE_NAMES.includes(profileChoice)) {
-      snapshotOpts.profile = profileChoice;
-      if (profileChoice === 'obsidian') snapshotOpts.vault = await askLine(rl, 'Path to your Obsidian vault (must contain .obsidian/): ');
-      if (profileChoice === 'chatgpt-export') snapshotOpts.zip = await askLine(rl, 'Path to the official ChatGPT export .zip: ');
-    } else {
-      throw new Error(`unknown profile "${profileChoice}" — valid choices: none, ${PROFILE_NAMES.join(', ')}`);
-    }
-
-    // ---------- 6. initial snapshot + push ----------
-    console.log('\n== 6/6: first snapshot + push ==');
-    console.log(`Storage backends: ${BACKEND_NAMES.join(', ')}. arweave/turbo are PAID, permanent stores.`);
-    const backend = await askLine(rl, `Backend [${BACKEND_NAMES.join('/')}] (default file): `, 'file');
-    if (!(BACKEND_NAMES as readonly string[]).includes(backend)) {
-      throw new Error(`unknown backend "${backend}" — valid choices: ${BACKEND_NAMES.join(', ')}`);
-    }
-    const paid = backend === 'arweave' || backend === 'turbo';
-    if (paid) {
-      const consent = await askYesNo(
-        rl,
-        `${backend} is a PAID, PERMANENT store — uploading spends real funds and cannot be undone. Proceed?`,
-        false,
+    try {
+      // ---------- 2. backup key guidance (MANAGEMENT.md Key recovery #1) ----------
+      console.log('\n== 2/6: offline backup key (recommended) ==');
+      console.log(
+        'cipher-brain gives you two independent defenses against losing the primary identity; the first is a\n' +
+        'second, OFFLINE backup keypair. If you encrypt every snapshot to BOTH the primary and the backup\n' +
+        'public key, either identity alone can restore — see MANAGEMENT.md "Key recovery #1".',
       );
-      if (!consent) {
-        throw new Error(`aborted before spending — re-run "cipher-brain init" and choose "file" (free) instead, or run keygen/snapshot/push by hand once you are ready to pay; see MANAGEMENT.md.`);
+      if (await askYesNo(rl, 'Generate an offline backup keypair now?', true)) {
+        const defaultBackupHome = `${HOME}-backup`;
+        const backupHome = await askLine(rl, `Path for the backup keypair [${defaultBackupHome}]: `, defaultBackupHome);
+        const identityPath = join(backupHome, 'identity.age');
+        const recipientPath = join(backupHome, 'recipient.txt');
+        const { recipient } = await keygenAt({ home: backupHome, identityPath, recipientPath });
+        const identityText = await readFile(identityPath, 'utf8');
+        backup = { identityPath, recipientPath, recipient, identityText };
+        console.log(`backup identity written to: ${identityPath}`);
+        console.log('⚠  This is still ON this machine. Move it OFF-BOX (encrypted USB, a second location, a trusted');
+        console.log('   person) once you are done — the recovery kit at the end of this wizard restates this.');
+      } else {
+        console.log('Skipping the backup key. You can add one later at any time: CIPHER_BRAIN_HOME=<path> cipher-brain keygen');
       }
+
+      // ---------- 3. passphrase wrap the primary identity (MANAGEMENT.md Key recovery #2) ----------
+      console.log('\n== 3/6: protect the primary identity at rest ==');
+      console.log(
+        'The identity file just written is a bare secret guarded only by file permissions (0600) — anyone who\n' +
+        'copies it off this machine can decrypt every snapshot. A passphrase wrap (scrypt, the same "keygen\n' +
+        '--passphrase" flag uses) makes an exfiltrated identity file useless without it. See MANAGEMENT.md\n' +
+        '"Key recovery #2".',
+      );
+      if (await askYesNo(rl, 'Protect the primary identity with a passphrase now?', false)) {
+        // Reuses the EXACT same pieces keygen --passphrase uses (askNewPassphrase / wrapIdentity from
+        // crypt.ts) — the identity was just written unwrapped above, so this wraps it in place rather
+        // than re-generating (keygenAt's own wrap-at-creation path is for a keypair that does not exist
+        // yet; here we already have the one we want to protect).
+        //
+        // askNewPassphrase() -> promptHidden (crypt.ts) puts stdin into raw mode and manages its OWN
+        // 'data' listener directly, bypassing readline entirely. Doing that while this wizard's OWN
+        // readline Interface is still attached to the SAME stdin is a real bug under a genuine TTY: two
+        // competing consumers of one stdin leave it unable to deliver input to a LATER rl.question() —
+        // confirmed empirically with a real pty harness (python's stdlib pty module driving this exact
+        // path): the wizard silently exited after this step, never reaching step 4's prompt. Fully close
+        // this interface before the hidden-prompt path, then open a fresh one for the remaining prompts.
+        rl.close();
+        const text = await readFile(IDENTITY, 'utf8');
+        const payload = await wrapIdentity(text, await askNewPassphrase());
+        await writeFile(IDENTITY, payload, { mode: 0o600 });
+        console.log(`identity re-written, passphrase-wrapped: ${IDENTITY}`);
+        rl = createInterface({ input: process.stdin, output: process.stdout });
+      } else {
+        console.log('Skipping the passphrase wrap. You can wrap it later by re-running keygen --passphrase --force,');
+        console.log('or by full-disk-encrypting the machine that holds the identity (MANAGEMENT.md recommends both).');
+      }
+
+      // ---------- 4. recipient pin suggestion (CIPHER_BRAIN_PIN_RECIPIENTS) ----------
+      console.log('\n== 4/6: recipient pin (optional, recommended) ==');
+      console.log(
+        'CIPHER_BRAIN_PIN_RECIPIENTS is an env var snapshot reads at run time: when set, it refuses to encrypt\n' +
+        'to any recipient NOT on the list — so a tampered recipient.txt, or an injected extra --recipient, can\n' +
+        'never silently re-key your snapshots to an attacker. It is not something init can "turn on" for you\n' +
+        'persistently (it is read from the environment at snapshot time, not a file init controls) — the most\n' +
+        'this wizard can do is suggest the exact line to add to your shell rc file yourself.',
+      );
+      let pinRecipientsLine: string | null = null;
+      if (await askYesNo(rl, 'Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line for your shell rc file?', true)) {
+        const primaryPub = (await readFile(RECIPIENT, 'utf8')).trim();
+        const defaultLine = `export CIPHER_BRAIN_PIN_RECIPIENTS="${[primaryPub, backup?.recipient].filter(Boolean).join(' ')}"`;
+        pinRecipientsLine = await askLine(rl, `Suggested line (edit or press Enter to accept):\n${defaultLine}\n> `, defaultLine);
+        console.log(`\nAdd this to your shell rc (~/.zshrc / ~/.bashrc), then open a new shell:\n${pinRecipientsLine}`);
+      } else {
+        console.log('Skipping the recipient pin suggestion.');
+      }
+
+      // ---------- 5. profile selection ----------
+      console.log('\n== 5/6: what to back up ==');
+      console.log(`Available profiles (one-flag source presets): ${PROFILE_NAMES.join(', ')}. Or "none" to point at`);
+      console.log('directories yourself (the same as passing --dir manually to snapshot later).');
+      const profileChoice = await askLine(rl, `Profile [none/${PROFILE_NAMES.join('/')}] (default none): `, 'none');
+      const snapshotOpts: CliOptions = { dirs: [], tables: [], recipients: [] };
+      if (profileChoice === 'none') {
+        const dirsInput = await askLine(rl, 'Directory path(s) to back up, comma-separated (at least one, required): ');
+        const dirs = dirsInput.split(',').map((d) => d.trim()).filter(Boolean);
+        if (dirs.length === 0) throw new Error('no directory given — "cipher-brain init" cannot produce an empty snapshot; re-run and pass at least one path, or pick a profile');
+        snapshotOpts.dirs = dirs;
+      } else if (PROFILE_NAMES.includes(profileChoice)) {
+        snapshotOpts.profile = profileChoice;
+        if (profileChoice === 'obsidian') snapshotOpts.vault = await askLine(rl, 'Path to your Obsidian vault (must contain .obsidian/): ');
+        if (profileChoice === 'chatgpt-export') snapshotOpts.zip = await askLine(rl, 'Path to the official ChatGPT export .zip: ');
+      } else {
+        throw new Error(`unknown profile "${profileChoice}" — valid choices: none, ${PROFILE_NAMES.join(', ')}`);
+      }
+
+      // ---------- 6. initial snapshot + push ----------
+      console.log('\n== 6/6: first snapshot + push ==');
+      console.log(`Storage backends: ${BACKEND_NAMES.join(', ')}. arweave/turbo are PAID, permanent stores.`);
+      const backend = await askLine(rl, `Backend [${BACKEND_NAMES.join('/')}] (default file): `, 'file');
+      if (!(BACKEND_NAMES as readonly string[]).includes(backend)) {
+        throw new Error(`unknown backend "${backend}" — valid choices: ${BACKEND_NAMES.join(', ')}`);
+      }
+      const paid = backend === 'arweave' || backend === 'turbo';
+      if (paid) {
+        const consent = await askYesNo(
+          rl,
+          `${backend} is a PAID, PERMANENT store — uploading spends real funds and cannot be undone. Proceed?`,
+          false,
+        );
+        if (!consent) {
+          throw new Error(`aborted before spending — re-run "cipher-brain init" and choose "file" (free) instead, or run keygen/snapshot/push by hand once you are ready to pay; see MANAGEMENT.md.`);
+        }
+      }
+
+      snapshotOpts.recipients = [RECIPIENT, ...(backup ? [backup.recipientPath] : [])];
+      const dateStamp = new Date().toISOString().slice(0, 10);
+      const outPath = join(HOME, `brain-${dateStamp}.age`);
+      snapshotOpts.out = outPath;
+      await snapshot(snapshotOpts);
+
+      const locatorPath = join(HOME, 'latest-locator.tsv');
+      const pushOpts: CliOptions = { dirs: [], tables: [], recipients: [] };
+      pushOpts.in = outPath;
+      pushOpts.backend = backend;
+      pushOpts.save_locator = locatorPath;
+      // The wizard's own explicit, just-asked confirmation above IS the human consent
+      // push()'s paid-backend gate requires — set the same --yes equivalent a human
+      // would pass on the command line. The gate itself is UNCHANGED and still fires
+      // for anyone who does not go through this confirmation (push.ts is untouched).
+      if (paid) pushOpts.yes = true;
+      await push(pushOpts);
+      const savedLocatorLine = (await readFile(locatorPath, 'utf8')).split('\n').find((l) => l.trim()) ?? '';
+
+      // ---------- recovery kit ----------
+      const primaryRecipient = (await readFile(RECIPIENT, 'utf8')).trim();
+      const defaultKitPath = join(homedir(), 'recovery-kit.txt');
+      const kitPath = await askLine(rl, `\nPath to write the recovery kit [${defaultKitPath}]: `, defaultKitPath);
+      const kitText = buildRecoveryKit({
+        primaryIdentityPath: IDENTITY,
+        primaryRecipient,
+        backup,
+        pinRecipientsLine,
+        savedLocatorLine,
+        profile: profileChoice,
+        backend,
+        generatedAt: new Date().toISOString(),
+      });
+      await mkdir(dirname(kitPath), { recursive: true });
+      await writeFile(kitPath, kitText, { mode: 0o600 });
+      // `mode` above only applies when writeFile CREATES the file — if kitPath already
+      // existed (e.g. a stray file, a re-run at the same path) with a looser mode, the
+      // write only replaces its content and the old permissive mode carries over. This
+      // file inlines a secret (the backup identity), so the final mode must be
+      // guaranteed regardless of what existed before — same "chmod too, in case it
+      // pre-existed with a looser mode" discipline keygenAt() already applies to the
+      // identity home dir (keys.ts).
+      await chmod(kitPath, 0o600);
+
+      console.log('\n=== cipher-brain init: complete ===');
+      console.log(`primary identity:  ${IDENTITY}`);
+      if (backup) console.log(`backup identity:   ${backup.identityPath}  (move this OFF this machine)`);
+      console.log(`snapshot:          ${outPath}`);
+      console.log(`pushed to:         ${backend} (locator saved: ${locatorPath})`);
+      console.log(`recovery kit:      ${kitPath}`);
+      console.log('\nNext: print the recovery kit and store it securely, physically away from this machine.');
+      if (backup) console.log('Also move the backup identity directory off this machine (encrypted USB, a second');
+      if (backup) console.log(`location, a trusted person): ${backup.identityPath.replace(/identity\.age$/, '')}`);
+      console.log('Once the kit is secured, you may delete it from disk yourself — cipher-brain does not do this for you.');
+    } catch (err) {
+      // Roll back exactly what THIS run wrote — the primary identity/recipient this
+      // invocation just generated in step 1, plus the backup identity/recipient if step
+      // 2 generated one — so a subsequent `cipher-brain init` retry finds nothing at
+      // IDENTITY and starts genuinely clean instead of hitting the pre-existing-identity
+      // refusal at the top of this function.
+      await rm(IDENTITY, { force: true });
+      await rm(RECIPIENT, { force: true });
+      if (backup) {
+        await rm(backup.identityPath, { force: true });
+        await rm(backup.recipientPath, { force: true });
+      }
+      throw err;
     }
-
-    snapshotOpts.recipients = [RECIPIENT, ...(backup ? [backup.recipientPath] : [])];
-    const dateStamp = new Date().toISOString().slice(0, 10);
-    const outPath = join(HOME, `brain-${dateStamp}.age`);
-    snapshotOpts.out = outPath;
-    await snapshot(snapshotOpts);
-
-    const locatorPath = join(HOME, 'latest-locator.tsv');
-    const pushOpts: CliOptions = { dirs: [], tables: [], recipients: [] };
-    pushOpts.in = outPath;
-    pushOpts.backend = backend;
-    pushOpts.save_locator = locatorPath;
-    // The wizard's own explicit, just-asked confirmation above IS the human consent
-    // push()'s paid-backend gate requires — set the same --yes equivalent a human
-    // would pass on the command line. The gate itself is UNCHANGED and still fires
-    // for anyone who does not go through this confirmation (push.ts is untouched).
-    if (paid) pushOpts.yes = true;
-    await push(pushOpts);
-    const savedLocatorLine = (await readFile(locatorPath, 'utf8')).split('\n').find((l) => l.trim()) ?? '';
-
-    // ---------- recovery kit ----------
-    const primaryRecipient = (await readFile(RECIPIENT, 'utf8')).trim();
-    const defaultKitPath = join(homedir(), 'recovery-kit.txt');
-    const kitPath = await askLine(rl, `\nPath to write the recovery kit [${defaultKitPath}]: `, defaultKitPath);
-    const kitText = buildRecoveryKit({
-      primaryIdentityPath: IDENTITY,
-      primaryRecipient,
-      backup,
-      pinRecipientsLine,
-      savedLocatorLine,
-      profile: profileChoice,
-      backend,
-      generatedAt: new Date().toISOString(),
-    });
-    await mkdir(dirname(kitPath), { recursive: true });
-    await writeFile(kitPath, kitText, { mode: 0o600 });
-    // `mode` above only applies when writeFile CREATES the file — if kitPath already
-    // existed (e.g. a stray file, a re-run at the same path) with a looser mode, the
-    // write only replaces its content and the old permissive mode carries over. This
-    // file inlines a secret (the backup identity), so the final mode must be
-    // guaranteed regardless of what existed before — same "chmod too, in case it
-    // pre-existed with a looser mode" discipline keygenAt() already applies to the
-    // identity home dir (keys.ts).
-    await chmod(kitPath, 0o600);
-
-    console.log('\n=== cipher-brain init: complete ===');
-    console.log(`primary identity:  ${IDENTITY}`);
-    if (backup) console.log(`backup identity:   ${backup.identityPath}  (move this OFF this machine)`);
-    console.log(`snapshot:          ${outPath}`);
-    console.log(`pushed to:         ${backend} (locator saved: ${locatorPath})`);
-    console.log(`recovery kit:      ${kitPath}`);
-    console.log('\nNext: print the recovery kit and store it securely, physically away from this machine.');
-    if (backup) console.log('Also move the backup identity directory off this machine (encrypted USB, a second');
-    if (backup) console.log(`location, a trusted person): ${backup.identityPath.replace(/identity\.age$/, '')}`);
-    console.log('Once the kit is secured, you may delete it from disk yourself — cipher-brain does not do this for you.');
   } finally {
     rl.close();
   }

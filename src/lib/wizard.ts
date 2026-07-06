@@ -18,7 +18,7 @@
 // non-interactive-safety posture promptHidden already has — rather than hanging or
 // behaving unpredictably under a CI/pipe invocation.
 import { createInterface } from 'node:readline/promises';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { HOME, IDENTITY, RECIPIENT } from './config.js';
@@ -320,6 +320,14 @@ export async function init(_o: CliOptions): Promise<void> {
     });
     await mkdir(dirname(kitPath), { recursive: true });
     await writeFile(kitPath, kitText, { mode: 0o600 });
+    // `mode` above only applies when writeFile CREATES the file — if kitPath already
+    // existed (e.g. a stray file, a re-run at the same path) with a looser mode, the
+    // write only replaces its content and the old permissive mode carries over. This
+    // file inlines a secret (the backup identity), so the final mode must be
+    // guaranteed regardless of what existed before — same "chmod too, in case it
+    // pre-existed with a looser mode" discipline keygenAt() already applies to the
+    // identity home dir (keys.ts).
+    await chmod(kitPath, 0o600);
 
     console.log('\n=== cipher-brain init: complete ===');
     console.log(`primary identity:  ${IDENTITY}`);

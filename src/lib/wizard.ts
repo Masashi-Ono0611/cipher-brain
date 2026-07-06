@@ -144,16 +144,42 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('    manually copy the file-backend store alongside this kit. See MANAGEMENT.md "Key recovery #3".');
     lines.push('');
   }
-  lines.push('An operator with ZERO prior knowledge of this repo can follow these verbatim. The two marker');
-  lines.push('blocks above (each a single BEGIN/END pair, unique in this file) are the two things you copy:');
-  lines.push('  1) npm install -g cipher-brain          (or: npx cipher-brain@latest <command>)');
-  lines.push('  2) Copy the BACKUP IDENTITY block above (the lines between its BEGIN and END markers,');
-  lines.push('     not including the marker lines themselves) into its own file, e.g.: ~/restore-identity.age');
-  lines.push('  3) Copy the SAVE-LOCATOR line above (between its BEGIN and END markers) into its own');
-  lines.push('     file, e.g.: ~/restore-locator.tsv');
-  lines.push('  4) cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
-  lines.push('  5) cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ~/restore-identity.age');
-  lines.push('     (if the identity above is passphrase-wrapped, this step prompts for that passphrase)');
+  if (k.backup) {
+    lines.push('An operator with ZERO prior knowledge of this repo can follow these verbatim. The two marker');
+    lines.push('blocks above (each a single BEGIN/END pair, unique in this file) are the two things you copy:');
+    lines.push('  1) npm install -g cipher-brain          (or: npx cipher-brain@latest <command>)');
+    lines.push('  2) Copy the BACKUP IDENTITY block above (the lines between its BEGIN and END markers,');
+    lines.push('     not including the marker lines themselves) into its own file, e.g.: ~/restore-identity.age');
+    lines.push('  3) Copy the SAVE-LOCATOR line above (between its BEGIN and END markers) into its own');
+    lines.push('     file, e.g.: ~/restore-locator.tsv');
+    lines.push('  4) cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
+    lines.push('  5) cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ~/restore-identity.age');
+    lines.push('     (if the identity above is passphrase-wrapped, this step prompts for that passphrase)');
+  } else {
+    lines.push('!!! NO BACKUP IDENTITY IS IN THIS KIT: true kit-only recovery — restoring on a fresh machine');
+    lines.push('    with ZERO other prior knowledge — is NOT possible right now. The only thing that can');
+    lines.push('    decrypt any snapshot encrypted so far is the PRIMARY identity above, and it was');
+    lines.push('    deliberately NOT copied into this kit (it already lives durably on THIS machine — printing');
+    lines.push('    a backup identity into the kit is how a SECOND key leaves the machine; there is no second');
+    lines.push('    key here). See MANAGEMENT.md "Key recovery #1".');
+    lines.push('');
+    lines.push('Your actual options:');
+    lines.push('  * Restore using the PRIMARY identity itself, wherever it currently lives (this machine, or');
+    lines.push(`    a copy of it you separately made outside of this kit): ${k.primaryIdentityPath}`);
+    lines.push('    (possibly passphrase-protected, per step 3 of the wizard — restore then prompts for it).');
+    lines.push('    Copy the SAVE-LOCATOR line above into its own file, e.g. ~/restore-locator.tsv, then:');
+    lines.push('      cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
+    lines.push(`      cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ${k.primaryIdentityPath}`);
+    lines.push('  * For real kit-based portable recovery (any machine, zero prior knowledge), a backup');
+    lines.push('    identity has to exist and be inlined in the kit. To get there: generate one —');
+    lines.push('    "CIPHER_BRAIN_HOME=<path> cipher-brain keygen" — then re-snapshot encrypting to BOTH the');
+    lines.push('    primary recipient.txt (next to the primary identity above) and the new backup');
+    lines.push('    recipient.txt (see MANAGEMENT.md "Key recovery #1"), then generate a fresh kit so it');
+    lines.push('    inlines the new backup identity.');
+    lines.push('  * The SAVE-LOCATOR and CIPHER_BRAIN_PIN_RECIPIENTS sections above are still valid, useful');
+    lines.push('    information regardless of the above — only "restore using just this kit alone" carries');
+    lines.push('    this caveat.');
+  }
   lines.push('');
   lines.push('--- WHAT TO DO WITH THIS FILE ---');
   lines.push('Print this page and store it securely, physically away from this machine. Once it');

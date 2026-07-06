@@ -197,6 +197,22 @@ POST_KIT_MODE="$(stat -f '%Lp' "$F_KIT_PATH" 2>/dev/null || stat -c '%a' "$F_KIT
 [ "$POST_KIT_MODE" = "600" ] || { echo "[FAIL] kit path pre-existed at mode 644 but ended up mode $POST_KIT_MODE (want 600) — a secret-bearing kit must not inherit a looser pre-existing mode"; exit 1; }
 echo "[PASS] a kit path that pre-existed at mode 644 ends up mode 600 after the wizard writes it (chmod-after-write fix)"
 
+echo "== (g) recovery kit honesty when the backup key was skipped (test f's own run: backup=NO) =="
+# Test (f) above already drove backup=NO through to a completed kit (F_KIT_PATH) —
+# reuse it rather than scripting a whole new duplicate wizard run just for this.
+# Without a backup identity, the ONLY thing that can decrypt is the PRIMARY
+# identity, which deliberately never leaves the machine via the kit (MANAGEMENT.md
+# "Key recovery #1") — so the kit must NOT tell the reader to copy/use a BACKUP
+# IDENTITY block that was never generated, and MUST explain the honest alternative.
+grep -q -- '--- BACKUP IDENTITY ---' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit missing the plain (no-key) BACKUP IDENTITY section"; exit 1; }
+if grep -q 'BEGIN BACKUP IDENTITY FILE' "$F_KIT_PATH"; then echo "[FAIL] no-backup kit unexpectedly inlines a BACKUP IDENTITY FILE block"; exit 1; fi
+if grep -q 'Copy the BACKUP IDENTITY block above' "$F_KIT_PATH"; then echo "[FAIL] no-backup kit still tells the reader to copy a BACKUP IDENTITY block that was never generated"; exit 1; fi
+grep -q 'NO BACKUP IDENTITY IS IN THIS KIT' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not warn that kit-only recovery on a fresh machine is not possible"; exit 1; }
+grep -qF "$F_CB_HOME/identity.age" "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not point at the primary identity as the only thing that can restore"; exit 1; }
+grep -q 'cipher-brain keygen' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not explain generating a backup key for real kit-only recovery later"; exit 1; }
+grep -q 'still valid, useful' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not note the save-locator/pin-recipients sections remain valid regardless"; exit 1; }
+echo "[PASS] no-backup kit is honest: no BACKUP IDENTITY block or dependent instructions, explains primary-identity-only recovery + the keygen path to real kit-only recovery later"
+
 echo "== THE DRILL (issue #68 acceptance criterion 2): kit-ONLY restore on a simulated fresh, fully isolated machine =="
 # Isolation: a BRAND NEW temp dir with NO shared CIPHER_BRAIN_HOME, no leftover
 # identity/config from the run above — the same "simulate a fresh machine"

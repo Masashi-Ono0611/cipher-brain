@@ -276,6 +276,42 @@ grep -q 'cipher-brain init: complete' "$TMP/rollback-retry.log" || { echo "[FAIL
 [ -f "$RB_CB_HOME/identity.age" ] || { echo "[FAIL] retry did not write a fresh primary identity"; exit 1; }
 echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME starts clean and completes after rollback (the retry story actually works, not just file deletion)"
 
+echo "== (i) '~' in interactive path answers expands to HOME, the same way a shell would (P3 fix) =="
+# Path-like answers are read as plain strings (no shell involved), so a leading '~'
+# would otherwise resolve to a literal '~'-named entry relative to cwd instead of the
+# real home directory. Answer BOTH the directory-to-back-up prompt and the
+# recovery-kit path prompt with a '~/...' path inside a controlled HOME fixture: if
+# expansion did not happen, snapshot's tar step would try to read a nonexistent
+# literal './~/...' path and the whole run would fail before completing.
+TILDE_HOME="$TMP/tilde-home"; mkdir -p "$TILDE_HOME"
+TILDE_SRC_REL="tilde-src" # answered as "~/$TILDE_SRC_REL"
+mkdir -p "$TILDE_HOME/$TILDE_SRC_REL"
+TILDE_MARKER="tilde-thought-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
+printf '%s\n' "$TILDE_MARKER" > "$TILDE_HOME/$TILDE_SRC_REL/note.txt"
+TILDE_CB_HOME="$TMP/tilde-cb-home"
+TILDE_STORE="$TMP/tilde-store"
+
+cat > "$TMP/qa-tilde.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "~/$TILDE_SRC_REL"],
+  ["Backend [file/", ""],
+  ["Path to write the recovery kit", "~/tilde-recovery-kit.txt"]
+]
+JSON
+
+CIPHER_BRAIN_HOME="$TILDE_CB_HOME" CIPHER_BRAIN_FILE_DIR="$TILDE_STORE" HOME="$TILDE_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-tilde.json" --out "$TMP/tilde.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] the '~'-path scripted run did not complete (path expansion likely did not happen)"; cat "$TMP/tilde.log"; exit 1; }
+grep -q 'cipher-brain init: complete' "$TMP/tilde.log" || { echo "[FAIL] '~'-path run lacks its own completion marker"; cat "$TMP/tilde.log"; exit 1; }
+[ -f "$TILDE_HOME/tilde-recovery-kit.txt" ] || { echo "[FAIL] recovery kit was not written under the expanded HOME (~/tilde-recovery-kit.txt did not expand)"; exit 1; }
+[ ! -e "$ROOT/~" ] || { echo "[FAIL] a literal '~' file/dir was created relative to cwd — '~' was not expanded"; exit 1; }
+echo "[PASS] '~/...' directory-to-back-up and recovery-kit path answers both expanded to the real HOME, matching shell behavior"
+
 echo "== THE DRILL (issue #68 acceptance criterion 2): kit-ONLY restore on a simulated fresh, fully isolated machine =="
 # Isolation: a BRAND NEW temp dir with NO shared CIPHER_BRAIN_HOME, no leftover
 # identity/config from the run above — the same "simulate a fresh machine"

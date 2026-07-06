@@ -60,6 +60,20 @@ async function askLine(rl: Rl, question: string, def = ''): Promise<string> {
   return answer || def;
 }
 
+// A wizard prompt reads its answer as a plain string — no shell is ever involved, so a
+// leading `~` in a path-like answer (a very natural thing to type, e.g. `~/vault`) is
+// NOT expanded the way it would be if the same string were a shell argument to the
+// equivalent manual CLI flag. Left alone this silently produces a wrong path (a literal
+// `~`-named entry relative to cwd, or a nonexistent path) instead of the user's actual
+// home directory. Mirrors just the common shell cases — bare `~` and `~/...` — not full
+// `~username` expansion (out of scope here). Applied at every prompt below that collects
+// a filesystem path.
+function expandHome(path: string): string {
+  if (path === '~') return homedir();
+  if (path.startsWith('~/')) return join(homedir(), path.slice(2));
+  return path;
+}
+
 async function askYesNo(rl: Rl, question: string, def: boolean): Promise<boolean> {
   const answer = (await askLine(rl, `${question} [${def ? 'Y/n' : 'y/N'}] `)).toLowerCase();
   if (!answer) return def;
@@ -230,7 +244,7 @@ export async function init(_o: CliOptions): Promise<void> {
       );
       if (await askYesNo(rl, 'Generate an offline backup keypair now?', true)) {
         const defaultBackupHome = `${HOME}-backup`;
-        const backupHome = await askLine(rl, `Path for the backup keypair [${defaultBackupHome}]: `, defaultBackupHome);
+        const backupHome = expandHome(await askLine(rl, `Path for the backup keypair [${defaultBackupHome}]: `, defaultBackupHome));
         const identityPath = join(backupHome, 'identity.age');
         const recipientPath = join(backupHome, 'recipient.txt');
         const { recipient } = await keygenAt({ home: backupHome, identityPath, recipientPath });
@@ -302,13 +316,13 @@ export async function init(_o: CliOptions): Promise<void> {
       const snapshotOpts: CliOptions = { dirs: [], tables: [], recipients: [] };
       if (profileChoice === 'none') {
         const dirsInput = await askLine(rl, 'Directory path(s) to back up, comma-separated (at least one, required): ');
-        const dirs = dirsInput.split(',').map((d) => d.trim()).filter(Boolean);
+        const dirs = dirsInput.split(',').map((d) => expandHome(d.trim())).filter(Boolean);
         if (dirs.length === 0) throw new Error('no directory given — "cipher-brain init" cannot produce an empty snapshot; re-run and pass at least one path, or pick a profile');
         snapshotOpts.dirs = dirs;
       } else if (PROFILE_NAMES.includes(profileChoice)) {
         snapshotOpts.profile = profileChoice;
-        if (profileChoice === 'obsidian') snapshotOpts.vault = await askLine(rl, 'Path to your Obsidian vault (must contain .obsidian/): ');
-        if (profileChoice === 'chatgpt-export') snapshotOpts.zip = await askLine(rl, 'Path to the official ChatGPT export .zip: ');
+        if (profileChoice === 'obsidian') snapshotOpts.vault = expandHome(await askLine(rl, 'Path to your Obsidian vault (must contain .obsidian/): '));
+        if (profileChoice === 'chatgpt-export') snapshotOpts.zip = expandHome(await askLine(rl, 'Path to the official ChatGPT export .zip: '));
       } else {
         throw new Error(`unknown profile "${profileChoice}" — valid choices: none, ${PROFILE_NAMES.join(', ')}`);
       }
@@ -354,7 +368,7 @@ export async function init(_o: CliOptions): Promise<void> {
       // ---------- recovery kit ----------
       const primaryRecipient = (await readFile(RECIPIENT, 'utf8')).trim();
       const defaultKitPath = join(homedir(), 'recovery-kit.txt');
-      const kitPath = await askLine(rl, `\nPath to write the recovery kit [${defaultKitPath}]: `, defaultKitPath);
+      const kitPath = expandHome(await askLine(rl, `\nPath to write the recovery kit [${defaultKitPath}]: `, defaultKitPath));
       const kitText = buildRecoveryKit({
         primaryIdentityPath: IDENTITY,
         primaryRecipient,

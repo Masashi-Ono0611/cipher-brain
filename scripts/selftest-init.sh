@@ -147,7 +147,55 @@ grep -q 'skipped during init' "$KIT_PATH" || { echo "[FAIL] kit does not note th
 grep -q 'cipher-brain pull --from-locator-file' "$KIT_PATH" || { echo "[FAIL] kit missing the recovery pull command"; exit 1; }
 grep -q 'cipher-brain restore --in' "$KIT_PATH" || { echo "[FAIL] kit missing the recovery restore command"; exit 1; }
 grep -q 'WHAT TO DO WITH THIS FILE' "$KIT_PATH" || { echo "[FAIL] kit missing the disposal-instructions section"; exit 1; }
-echo "[PASS] kit: mode 600, warning banner, primary location, backup identity inlined, exact locator line, pin-skip note, recovery commands, disposal note"
+grep -q 'LOCATOR IS LOCAL-ONLY' "$KIT_PATH" || { echo "[FAIL] kit used the file backend but does not warn that its save-locator is local-only"; exit 1; }
+echo "[PASS] kit: mode 600, warning banner, primary location, backup identity inlined, exact locator line, pin-skip note, recovery commands, disposal note, file-backend local-only warning"
+
+echo "== (f) passphrase=yes path completes end-to-end (readline/promptHidden interaction fix) =="
+# CIPHER_BRAIN_PASSPHRASE (crypt.ts's own automation escape hatch) makes
+# askNewPassphrase() return immediately without touching stdin's raw mode, so this
+# run does NOT reproduce the raw-TTY nuance itself (that was proven separately with
+# a real pty harness, not part of this repo's test suite) — what it DOES prove is
+# that the wizard's own readline Interface survives being closed and re-created
+# around the passphrase step: every prompt AFTER "Protect the primary identity..."
+# (recipient-pin, profile, directory, backend, kit path) must still be answered by
+# this scripted driver, which only works if the wizard's later rl.question() calls
+# are actually receiving input again.
+F_HOME="$TMP/pass-home"; mkdir -p "$F_HOME"
+F_CB_HOME="$TMP/pass-cb-home"
+F_STORE="$TMP/pass-store"
+F_SRC="$TMP/pass-src"; mkdir -p "$F_SRC"
+printf 'pass-marker\n' > "$F_SRC/note.txt"
+F_KIT_PATH="$F_HOME/recovery-kit.txt"
+mkdir -p "$(dirname "$F_KIT_PATH")"
+: > "$F_KIT_PATH"; chmod 644 "$F_KIT_PATH" # pre-existing, permissive-mode file — proves the chmod-after-write fix below too
+PRE_KIT_MODE="$(stat -f '%Lp' "$F_KIT_PATH" 2>/dev/null || stat -c '%a' "$F_KIT_PATH")"
+[ "$PRE_KIT_MODE" = "644" ] || { echo "[FAIL] test setup: could not pre-create the kit path at mode 644"; exit 1; }
+
+cat > "$TMP/qa-pass.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "y"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$F_SRC"],
+  ["Backend [file/", ""],
+  ["Path to write the recovery kit", "$F_KIT_PATH"]
+]
+JSON
+
+CIPHER_BRAIN_HOME="$F_CB_HOME" CIPHER_BRAIN_FILE_DIR="$F_STORE" HOME="$F_HOME" \
+  CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CIPHER_BRAIN_PASSPHRASE="test-selftest-passphrase" \
+  with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-pass.json" --out "$TMP/wizard-pass.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] the passphrase=yes scripted run did not complete"; cat "$TMP/wizard-pass.log"; exit 1; }
+grep -q 'cipher-brain init: complete' "$TMP/wizard-pass.log" || { echo "[FAIL] passphrase=yes run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pass.log"; exit 1; }
+grep -qa '^-> scrypt ' "$F_CB_HOME/identity.age" || { echo "[FAIL] passphrase=yes run: identity is not scrypt-wrapped (passphrase step did not actually run)"; exit 1; }
+echo "[PASS] passphrase=yes path reaches every later prompt and completes (snapshot -> push -> kit) after the readline interface is closed/re-created"
+
+POST_KIT_MODE="$(stat -f '%Lp' "$F_KIT_PATH" 2>/dev/null || stat -c '%a' "$F_KIT_PATH")"
+[ -f "$F_KIT_PATH" ] || { echo "[FAIL] recovery kit was not written at the pre-existing path"; exit 1; }
+[ "$POST_KIT_MODE" = "600" ] || { echo "[FAIL] kit path pre-existed at mode 644 but ended up mode $POST_KIT_MODE (want 600) — a secret-bearing kit must not inherit a looser pre-existing mode"; exit 1; }
+echo "[PASS] a kit path that pre-existed at mode 644 ends up mode 600 after the wizard writes it (chmod-after-write fix)"
 
 echo "== THE DRILL (issue #68 acceptance criterion 2): kit-ONLY restore on a simulated fresh, fully isolated machine =="
 # Isolation: a BRAND NEW temp dir with NO shared CIPHER_BRAIN_HOME, no leftover

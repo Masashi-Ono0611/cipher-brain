@@ -312,6 +312,77 @@ grep -q 'cipher-brain init: complete' "$TMP/tilde.log" || { echo "[FAIL] '~'-pat
 [ ! -e "$ROOT/~" ] || { echo "[FAIL] a literal '~' file/dir was created relative to cwd — '~' was not expanded"; exit 1; }
 echo "[PASS] '~/...' directory-to-back-up and recovery-kit path answers both expanded to the real HOME, matching shell behavior"
 
+echo "== (j) rollback also removes the snapshot artifact + sidecars when a step AFTER snapshot() fails (5th-round P2 fix) =="
+# The fb293ff rollback (test h above) deletes the identity/recipient files on any
+# post-creation failure, but did NOT delete the dated snapshot output (--out) or its
+# .digest / .recipients-fingerprint sidecars if the failure happened AFTER snapshot()
+# itself succeeded (e.g. push, or the recovery-kit write, fails afterward).
+# snapshot()'s own promote step (promoteSnapshot in snapshot.ts) refuses to overwrite
+# an existing --out, and the wizard's --out is dated per-day — so leaving that file
+# behind means a same-day retry regenerates the identity fine, then fails AGAIN at
+# the snapshot step with a "file already exists" error. Fail deterministically AFTER
+# both snapshot() and push() succeed by making the very last step — the recovery
+# kit's own mkdir/write — fail: pre-create the kit path's PARENT as a plain FILE (not
+# a directory), so mkdir(dirname(kitPath), { recursive: true }) throws ENOTDIR.
+SNAP_HOME="$TMP/snap-rollback-home"; mkdir -p "$SNAP_HOME"
+SNAP_CB_HOME="$TMP/snap-rollback-cb-home"
+SNAP_STORE="$TMP/snap-rollback-store"
+SNAP_SRC="$TMP/snap-rollback-src"; mkdir -p "$SNAP_SRC"
+printf 'snap-rollback-marker\n' > "$SNAP_SRC/note.txt"
+BLOCKED_PARENT="$SNAP_HOME/blocked-kit-parent"
+: > "$BLOCKED_PARENT" # plain FILE — the kit path nests a dir UNDER this, so mkdir -p
+                      # must traverse it as a parent component (ENOTDIR), not just
+                      # target it directly (which would be EEXIST instead)
+BLOCKED_KIT_PATH="$BLOCKED_PARENT/subdir/recovery-kit.txt"
+
+cat > "$TMP/qa-snap-rollback-fail.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$SNAP_SRC"],
+  ["Backend [file/", ""],
+  ["Path to write the recovery kit", "$BLOCKED_KIT_PATH"]
+]
+JSON
+
+if CIPHER_BRAIN_HOME="$SNAP_CB_HOME" CIPHER_BRAIN_FILE_DIR="$SNAP_STORE" HOME="$SNAP_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-snap-rollback-fail.json" --out "$TMP/snap-rollback-fail.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
+  echo "[FAIL] init did not fail when the recovery-kit path's parent is a plain file"; cat "$TMP/snap-rollback-fail.log"; exit 1
+fi
+grep -qi "ENOTDIR\|not a directory" "$TMP/snap-rollback-fail.log" || { echo "[FAIL] failure was not the expected kit-write ENOTDIR error"; cat "$TMP/snap-rollback-fail.log"; exit 1; }
+[ ! -f "$SNAP_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity survived a post-snapshot failure"; exit 1; }
+[ ! -f "$SNAP_CB_HOME/recipient.txt" ] || { echo "[FAIL] primary recipient survived a post-snapshot failure"; exit 1; }
+SNAP_LEFTOVER="$(find "$SNAP_CB_HOME" -maxdepth 1 -name 'brain-*.age*' 2>/dev/null | head -n1)"
+[ -z "$SNAP_LEFTOVER" ] || { echo "[FAIL] a snapshot artifact/sidecar survived a post-snapshot failure: $SNAP_LEFTOVER"; exit 1; }
+echo "[PASS] a failure AFTER snapshot() succeeds (kit write) rolls back the identity AND the dated snapshot artifact + its .digest/.recipients-fingerprint sidecars"
+
+echo "== (j2) retry after the snapshot-artifact rollback completes cleanly (same day, same --out path) =="
+rm -f "$BLOCKED_PARENT" # unblock: this run gets a real directory for the kit path this time
+SNAP_KIT_PATH="$SNAP_HOME/recovery-kit.txt"
+cat > "$TMP/qa-snap-rollback-retry.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$SNAP_SRC"],
+  ["Backend [file/", ""],
+  ["Path to write the recovery kit", "$SNAP_KIT_PATH"]
+]
+JSON
+
+CIPHER_BRAIN_HOME="$SNAP_CB_HOME" CIPHER_BRAIN_FILE_DIR="$SNAP_STORE" HOME="$SNAP_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-snap-rollback-retry.json" --out "$TMP/snap-rollback-retry.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] retry after the snapshot-artifact rollback did not complete (a leftover --out likely still blocked the same-day snapshot path)"; cat "$TMP/snap-rollback-retry.log"; exit 1; }
+grep -q 'cipher-brain init: complete' "$TMP/snap-rollback-retry.log" || { echo "[FAIL] retry after snapshot-artifact rollback lacks its own completion marker"; cat "$TMP/snap-rollback-retry.log"; exit 1; }
+[ -f "$SNAP_CB_HOME/identity.age" ] || { echo "[FAIL] retry did not write a fresh primary identity"; exit 1; }
+[ -n "$(find "$SNAP_CB_HOME" -maxdepth 1 -name 'brain-*.age' 2>/dev/null | head -n1)" ] || { echo "[FAIL] retry did not produce a snapshot file"; exit 1; }
+echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME (same day, same dated --out) starts clean and completes after the snapshot-artifact rollback"
+
 echo "== THE DRILL (issue #68 acceptance criterion 2): kit-ONLY restore on a simulated fresh, fully isolated machine =="
 # Isolation: a BRAND NEW temp dir with NO shared CIPHER_BRAIN_HOME, no leftover
 # identity/config from the run above — the same "simulate a fresh machine"

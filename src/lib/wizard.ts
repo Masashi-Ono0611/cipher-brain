@@ -234,6 +234,16 @@ export async function init(_o: CliOptions): Promise<void> {
     // above before this try started), then re-throw so the original error still
     // surfaces unchanged.
     let backup: BackupKey | null = null;
+    // Set the moment snapshot() below actually succeeds — never before. snapshot()'s own
+    // promote step (promoteSnapshot in snapshot.ts) only renames/links its .part onto
+    // o.out on success, so if snapshot() itself throws, o.out (and its sidecars) were
+    // never created and there is nothing here to roll back. If a LATER step fails (push,
+    // the recovery-kit write, ...), the dated snapshot file it did produce — plus its
+    // `.digest` / `.recipients-fingerprint` sidecars — must still be deleted: snapshot()
+    // refuses to overwrite an existing --out (no-clobber), and the wizard's --out is
+    // dated per-day, so leaving them behind would make a same-day retry fail again at
+    // this exact step even though the rollback below already cleared the identity.
+    let snapshotOutPath: string | null = null;
     try {
       // ---------- 2. backup key guidance (MANAGEMENT.md Key recovery #1) ----------
       console.log('\n== 2/6: offline backup key (recommended) ==');
@@ -351,6 +361,7 @@ export async function init(_o: CliOptions): Promise<void> {
       const outPath = join(HOME, `brain-${dateStamp}.age`);
       snapshotOpts.out = outPath;
       await snapshot(snapshotOpts);
+      snapshotOutPath = outPath; // recorded only now — snapshot() has durably written it
 
       const locatorPath = join(HOME, 'latest-locator.tsv');
       const pushOpts: CliOptions = { dirs: [], tables: [], recipients: [] };
@@ -403,14 +414,22 @@ export async function init(_o: CliOptions): Promise<void> {
     } catch (err) {
       // Roll back exactly what THIS run wrote — the primary identity/recipient this
       // invocation just generated in step 1, plus the backup identity/recipient if step
-      // 2 generated one — so a subsequent `cipher-brain init` retry finds nothing at
-      // IDENTITY and starts genuinely clean instead of hitting the pre-existing-identity
-      // refusal at the top of this function.
+      // 2 generated one, plus the snapshot output + its sidecars if step 6's snapshot()
+      // call itself succeeded before a LATER step (push, the recovery-kit write) failed
+      // — so a subsequent `cipher-brain init` retry finds nothing at IDENTITY (starts
+      // genuinely clean instead of hitting the pre-existing-identity refusal above) AND
+      // finds no leftover --out at the same dated path (starts genuinely clean instead
+      // of hitting snapshot()'s own no-clobber refusal at this step).
       await rm(IDENTITY, { force: true });
       await rm(RECIPIENT, { force: true });
       if (backup) {
         await rm(backup.identityPath, { force: true });
         await rm(backup.recipientPath, { force: true });
+      }
+      if (snapshotOutPath) {
+        await rm(snapshotOutPath, { force: true });
+        await rm(`${snapshotOutPath}.digest`, { force: true });
+        await rm(`${snapshotOutPath}.recipients-fingerprint`, { force: true });
       }
       throw err;
     }

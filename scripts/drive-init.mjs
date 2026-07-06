@@ -55,6 +55,12 @@ const exitCode = await new Promise((resolve) => {
 
 writeFileSync(outPath, transcript);
 if (qaIndex < qa.length) {
-  console.error(`drive-init.mjs: only ${qaIndex}/${qa.length} scripted prompts were seen before the child exited (rc=${exitCode}) — see ${outPath}`);
+  const unused = qa.slice(qaIndex).map(([waitFor]) => waitFor);
+  console.error(
+    `drive-init.mjs: FAIL — only ${qaIndex}/${qa.length} scripted prompts were seen before the child exited (rc=${exitCode}); ` +
+    `${unused.length} scripted answer(s) were never consumed — see ${outPath}\n` +
+    `unused prompts (waitFor):\n${unused.map((s) => `  - ${JSON.stringify(s)}`).join('\n')}`
+  );
+  process.exit(1);
 }
 process.exit(exitCode);

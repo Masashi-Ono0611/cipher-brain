@@ -450,6 +450,131 @@ grep -qi "already exists" "$TMP/snap-preserve-retry.log" || { echo "[FAIL] retry
 [ -n "$(find "$SNAP_CB_HOME" -maxdepth 1 -name 'brain-*.age' 2>/dev/null | head -n1)" ] || { echo "[FAIL] the preserved snapshot artifact vanished between the two runs"; exit 1; }
 echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME correctly refuses (identity + snapshot from the successful push are still there, exactly as promised) instead of silently starting over"
 
+echo "== (k) push() succeeding but --save-locator's own write failing preserves everything + surfaces the locator (7th-round P1 fix, finding 1) =="
+# backend.put() (the actual, possibly PAID/PERMANENT upload) is the point of no
+# return; --save-locator's own bookkeeping write happens strictly AFTER it. Force
+# JUST that local write to fail (not the upload) by pre-creating the locator's
+# target path as a DIRECTORY: push()'s tmp-write succeeds (a distinctly-named
+# sibling filename), but its rename(tmp, save_locator) then fails EISDIR — same
+# "blocking file/dir at the exact target path" technique (j)/(j2) already use for
+# the kit path. Before the P1 fix, push() rejecting here (regardless of WHY) made
+# the wizard treat the whole run as if nothing had happened yet and delete the
+# primary identity — even though the upload above it already durably succeeded.
+K_HOME="$TMP/locator-preserve-home"; mkdir -p "$K_HOME"
+K_CB_HOME="$TMP/locator-preserve-cb-home"
+K_STORE="$TMP/locator-preserve-store"
+K_SRC="$TMP/locator-preserve-src"; mkdir -p "$K_SRC"
+printf 'locator-preserve-marker\n' > "$K_SRC/note.txt"
+K_LOCATOR_PATH="$K_CB_HOME/latest-locator.tsv"
+mkdir -p "$K_LOCATOR_PATH"  # pre-create AS A DIRECTORY at the wizard's fixed --save-locator path
+
+cat > "$TMP/qa-locator-preserve-fail.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$K_SRC"],
+  ["Backend [file/", ""]
+]
+JSON
+# (Same reasoning as (j0)'s QA script: push() throws right after the backend prompt,
+# before the recovery-kit path is ever asked — scripting that prompt would leave it
+# unconsumed and fail drive-init.mjs itself rather than testing what we want here.)
+
+if CIPHER_BRAIN_HOME="$K_CB_HOME" CIPHER_BRAIN_FILE_DIR="$K_STORE" HOME="$K_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-locator-preserve-fail.json" --out "$TMP/locator-preserve-fail.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
+  echo "[FAIL] init did not fail when --save-locator's target path is a directory"; cat "$TMP/locator-preserve-fail.log"; exit 1
+fi
+grep -qi "EISDIR\|is a directory" "$TMP/locator-preserve-fail.log" || { echo "[FAIL] failure was not the expected locator-write EISDIR error"; cat "$TMP/locator-preserve-fail.log"; exit 1; }
+grep -qi "ACTION REQUIRED" "$TMP/locator-preserve-fail.log" || { echo "[FAIL] failure message does not carry the ACTION REQUIRED hand-record instruction"; cat "$TMP/locator-preserve-fail.log"; exit 1; }
+grep -qi "already happened and cannot be undone" "$TMP/locator-preserve-fail.log" || { echo "[FAIL] failure message does not state the upload already happened"; cat "$TMP/locator-preserve-fail.log"; exit 1; }
+grep -q "NOT SAVED" "$TMP/locator-preserve-fail.log" || { echo "[FAIL] the outer message still prints a stale/null locator path instead of NOT SAVED"; cat "$TMP/locator-preserve-fail.log"; exit 1; }
+grep -qF "$K_STORE" "$TMP/locator-preserve-fail.log" || { echo "[FAIL] failure message does not surface the backend's locator value for hand-recording"; cat "$TMP/locator-preserve-fail.log"; exit 1; }
+[ -n "$(find "$K_STORE" -maxdepth 1 -name '*.age' 2>/dev/null | head -n1)" ] || { echo "[FAIL] no object landed in the file-backend store — the upload itself did not actually happen, this test proves nothing"; exit 1; }
+[ -f "$K_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity was DELETED after a successful push (locator-write failure wrongly treated as pre-push) — the finding-1 regression"; exit 1; }
+[ -f "$K_CB_HOME/recipient.txt" ] || { echo "[FAIL] primary recipient was DELETED after a successful push"; exit 1; }
+K_SNAP="$(find "$K_CB_HOME" -maxdepth 1 -name 'brain-*.age' 2>/dev/null | head -n1)"
+[ -n "$K_SNAP" ] || { echo "[FAIL] the dated snapshot artifact was DELETED after a successful push"; exit 1; }
+K_TMP_LEFTOVER="$(find "$K_CB_HOME" -maxdepth 1 -name 'latest-locator.tsv.*.tmp' 2>/dev/null | head -n1)"
+[ -z "$K_TMP_LEFTOVER" ] || { echo "[FAIL] a .tmp sibling of the locator file survived: $K_TMP_LEFTOVER"; exit 1; }
+echo "[PASS] a locator-write failure AFTER a successful push preserves the identity, recipient, AND the dated snapshot artifact — the error surfaces the ACTION-REQUIRED locator value instead of losing it"
+
+echo "== (k2) retry after the finding-1 locator-write failure correctly REFUSES (identity + snapshot preserved, exactly as (j2)) =="
+if CIPHER_BRAIN_HOME="$K_CB_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 10 node "${BIN_DEV_ARGS[@]}" "$BIN" init < /dev/null > "$TMP/locator-preserve-retry.log" 2>&1; then
+  echo "[FAIL] a retry after a finding-1 locator-write failure did not refuse — it should, since the identity/snapshot are preserved"; cat "$TMP/locator-preserve-retry.log"; exit 1
+fi
+grep -qi "already exists" "$TMP/locator-preserve-retry.log" || { echo "[FAIL] retry's refusal was not the expected pre-existing-identity error"; cat "$TMP/locator-preserve-retry.log"; exit 1; }
+echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME correctly refuses instead of silently starting over on top of the preserved, already-uploaded snapshot"
+
+echo "== (l) partial backup keygen (identity.age written, recipient.txt write denied) doesn't orphan a backup identity (7th-round P2 fix, finding 2b) =="
+# keygenAt() (keys.ts) writes identity.age (wx, exclusive-create) THEN recipient.txt.
+# Pre-create the backup keypair's recipient.txt as a WRITE-DENIED (0444) regular file
+# so identity.age's write still succeeds but recipient.txt's write throws EACCES —
+# reproducing "identity.age written, recipient.txt write then throws" deterministically,
+# without needing root/quota tricks. Before the fix, the wizard's OWN `backup` variable
+# is only assigned AFTER this call returns, so the outer catch's `if (backup) { rm... }`
+# rollback never runs for it — the freshly-written backup identity.age is orphaned even
+# though the (unrelated) primary identity gets cleaned up by the pre-existing generic
+# rollback (pushSucceeded is still false here).
+L_HOME="$TMP/backup-partial-home"; mkdir -p "$L_HOME"
+L_CB_HOME="$TMP/backup-partial-cb-home"
+L_STORE="$TMP/backup-partial-store"
+L_SRC="$TMP/backup-partial-src"; mkdir -p "$L_SRC"
+printf 'backup-partial-marker\n' > "$L_SRC/note.txt"
+L_BACKUP_HOME="${L_CB_HOME}-backup" # the default sibling path the wizard suggests for the backup key
+mkdir -p "$L_BACKUP_HOME"
+L_BLOCKED_RECIPIENT="$L_BACKUP_HOME/recipient.txt"
+printf 'stale\n' > "$L_BLOCKED_RECIPIENT"
+chmod 444 "$L_BLOCKED_RECIPIENT"
+
+cat > "$TMP/qa-backup-partial-fail.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "y"],
+  ["Path for the backup keypair", ""]
+]
+JSON
+# (Push never happens on this run — it fails in step 2/6, long before step 6 — so the
+# QA script stops right after the one prompt this failure is reached through.)
+
+if CIPHER_BRAIN_HOME="$L_CB_HOME" CIPHER_BRAIN_FILE_DIR="$L_STORE" HOME="$L_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-backup-partial-fail.json" --out "$TMP/backup-partial-fail.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
+  echo "[FAIL] init did not fail when the backup keypair's recipient.txt path is write-denied"; cat "$TMP/backup-partial-fail.log"; exit 1
+fi
+grep -qi "EACCES\|permission denied" "$TMP/backup-partial-fail.log" || { echo "[FAIL] failure was not the expected recipient.txt permission error"; cat "$TMP/backup-partial-fail.log"; exit 1; }
+[ ! -f "$L_BACKUP_HOME/identity.age" ] || { echo "[FAIL] the orphaned backup identity.age survived a partial backup keygen — the finding-2b regression"; exit 1; }
+[ ! -f "$L_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity survived (the pre-existing generic rollback should still have cleared it)"; exit 1; }
+echo "[PASS] a partial backup keygen (identity.age written, recipient.txt write denied) leaves NO orphaned backup identity behind"
+
+echo "== (l2) retry after the finding-2b cleanup succeeds (same default backup path, backup=yes again) =="
+# Before the fix this retry would be BLOCKED exactly like (h)'s original bug: the
+# orphaned backup identity.age would make THIS SAME keygenAt() call refuse with its own
+# "identity already exists" error (keys.ts), a second, independent brick beyond the
+# primary-identity refusal (h) already covers. After the fix there is nothing left at
+# that path, so a genuine retry (same answers) completes end-to-end.
+cat > "$TMP/qa-backup-partial-retry.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "y"],
+  ["Path for the backup keypair", ""],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$L_SRC"],
+  ["Backend [file/", ""],
+  ["Path to write the recovery kit", "$L_HOME/recovery-kit.txt"]
+]
+JSON
+CIPHER_BRAIN_HOME="$L_CB_HOME" CIPHER_BRAIN_FILE_DIR="$L_STORE" HOME="$L_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-backup-partial-retry.json" --out "$TMP/backup-partial-retry.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] retry after the finding-2b cleanup did not complete (orphan still blocking, or another regression)"; cat "$TMP/backup-partial-retry.log"; exit 1; }
+grep -q 'cipher-brain init: complete' "$TMP/backup-partial-retry.log" || { echo "[FAIL] retry after finding-2b cleanup lacks its own completion marker"; cat "$TMP/backup-partial-retry.log"; exit 1; }
+[ -f "$L_BACKUP_HOME/identity.age" ] || { echo "[FAIL] retry did not write a fresh backup identity at the same default path"; exit 1; }
+echo "[PASS] a retry against the same CIPHER_BRAIN_HOME (same default backup path, backup=yes again) succeeds after the finding-2b cleanup — no leftover orphan blocks it"
+
 echo "== THE DRILL (issue #68 acceptance criterion 2): kit-ONLY restore on a simulated fresh, fully isolated machine =="
 # Isolation: a BRAND NEW temp dir with NO shared CIPHER_BRAIN_HOME, no leftover
 # identity/config from the run above — the same "simulate a fresh machine"

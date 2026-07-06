@@ -221,7 +221,22 @@ export async function init(_o: CliOptions): Promise<void> {
   try {
     // ---------- 1. primary keygen (reuses keygen() verbatim — no reimplementation) ----------
     console.log('== 1/6: generating your primary identity ==');
-    await keygen({ dirs: [], tables: [], recipients: [] });
+    // keygen() -> keygenAt() (keys.ts) writes identity.age THEN recipient.txt — if the
+    // recipient.txt write throws (a pre-existing dir at that path, ENOSPC, a permission
+    // error, a concurrent process, ...) identity.age is already on disk but keygen()
+    // still rejects. This call is BEFORE the rollback-tracking try below even starts
+    // (deliberately — everything inside that try is retry-safe via the catch further
+    // down), so without this its own try/catch a partial keygen here would leave an
+    // orphaned identity.age that nothing ever cleans up: every future `init` on this
+    // CIPHER_BRAIN_HOME hits the "identity already exists" refusal forever, with no
+    // rollback path to escape it (unlike every failure inside the try below).
+    try {
+      await keygen({ dirs: [], tables: [], recipients: [] });
+    } catch (e) {
+      await rm(IDENTITY, { force: true });
+      await rm(RECIPIENT, { force: true });
+      throw e;
+    }
 
     // From here on, THIS invocation just created the primary identity — the exists()
     // refusal above already guarantees it did not exist before this run started, so any
@@ -271,7 +286,21 @@ export async function init(_o: CliOptions): Promise<void> {
         const backupHome = expandHome(await askLine(rl, `Path for the backup keypair [${defaultBackupHome}]: `, defaultBackupHome));
         const identityPath = join(backupHome, 'identity.age');
         const recipientPath = join(backupHome, 'recipient.txt');
-        const { recipient } = await keygenAt({ home: backupHome, identityPath, recipientPath });
+        // Same partial-write hazard as the primary keygen above (identity.age written,
+        // then recipient.txt's write throws) — but here it CANNOT rely on the outer
+        // catch's `if (backup) { rm(...) }` rollback, because `backup` itself is only
+        // assigned a few lines below, AFTER this call returns successfully. If
+        // keygenAt() throws here, `backup` is still null when that catch runs, so its
+        // rollback branch never fires and the orphaned backup identity.age survives.
+        // Clean up right here, independent of the `backup` variable's later assignment.
+        let recipient: string;
+        try {
+          ({ recipient } = await keygenAt({ home: backupHome, identityPath, recipientPath }));
+        } catch (e) {
+          await rm(identityPath, { force: true });
+          await rm(recipientPath, { force: true });
+          throw e;
+        }
         const identityText = await readFile(identityPath, 'utf8');
         backup = { identityPath, recipientPath, recipient, identityText };
         console.log(`backup identity written to: ${identityPath}`);

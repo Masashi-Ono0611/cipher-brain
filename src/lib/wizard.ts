@@ -167,7 +167,7 @@ export async function init(_o: CliOptions): Promise<void> {
 
   console.log('cipher-brain init — interactive setup: keygen, key recovery, first snapshot + push, recovery kit.\n');
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     // ---------- 1. primary keygen (reuses keygen() verbatim — no reimplementation) ----------
     console.log('== 1/6: generating your primary identity ==');
@@ -209,10 +209,20 @@ export async function init(_o: CliOptions): Promise<void> {
       // crypt.ts) — the identity was just written unwrapped above, so this wraps it in place rather
       // than re-generating (keygenAt's own wrap-at-creation path is for a keypair that does not exist
       // yet; here we already have the one we want to protect).
+      //
+      // askNewPassphrase() -> promptHidden (crypt.ts) puts stdin into raw mode and manages its OWN
+      // 'data' listener directly, bypassing readline entirely. Doing that while this wizard's OWN
+      // readline Interface is still attached to the SAME stdin is a real bug under a genuine TTY: two
+      // competing consumers of one stdin leave it unable to deliver input to a LATER rl.question() —
+      // confirmed empirically with a real pty harness (python's stdlib pty module driving this exact
+      // path): the wizard silently exited after this step, never reaching step 4's prompt. Fully close
+      // this interface before the hidden-prompt path, then open a fresh one for the remaining prompts.
+      rl.close();
       const text = await readFile(IDENTITY, 'utf8');
       const payload = await wrapIdentity(text, await askNewPassphrase());
       await writeFile(IDENTITY, payload, { mode: 0o600 });
       console.log(`identity re-written, passphrase-wrapped: ${IDENTITY}`);
+      rl = createInterface({ input: process.stdin, output: process.stdout });
     } else {
       console.log('Skipping the passphrase wrap. You can wrap it later by re-running keygen --passphrase --force,');
       console.log('or by full-disk-encrypting the machine that holds the identity (MANAGEMENT.md recommends both).');

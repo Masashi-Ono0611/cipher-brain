@@ -135,7 +135,8 @@ can tail the newest log for the outcome.
 nightly upload must never run uncapped. Review the `CIPHER_BRAIN_MAX_SPEND` line it
 writes (native units: winc for turbo, winston for arweave L1); if
 `CIPHER_BRAIN_AR_WALLET` is set when you run install it is baked into the runner,
-otherwise edit the commented wallet line the runner carries.
+otherwise edit the commented wallet line the runner carries. Wallet funding and
+credit-share setup: [`docs/arweave-upload-runbook.md`](docs/arweave-upload-runbook.md).
 
 What the generated runner does is the hand-rolled recipe it replaces — kept here as
 the explanation of the moving parts:

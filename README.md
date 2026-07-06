@@ -185,7 +185,8 @@ matches the previous push. Four backends ship, but they are not peers:
   network as an ANS-104 bundled data item via a bundler (ArDrive Turbo), payable
   with **ETH/USDC** (`<100 KB` free); pushing needs `@ardrive/turbo-sdk` and a
   JWK wallet. The `locator` is the data-item id assigned after upload. Pulling
-  needs neither — it is a plain HTTP read from any Arweave gateway.
+  needs neither — it is a plain HTTP read from any Arweave gateway. Funding/credit-share
+  details: [`docs/arweave-upload-runbook.md`](docs/arweave-upload-runbook.md).
 - **`arweave`** — the raw single-L1-transaction path to the same network, for
   small artifacts only (a ~10 MiB guard redirects anything larger to `turbo`).
 - **`file`** — a local content-addressed store (no daemon, no network); used by

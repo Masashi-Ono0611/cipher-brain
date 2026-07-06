@@ -208,7 +208,26 @@ echo "[PASS] passphrase=yes path reaches every later prompt and completes (snaps
 POST_KIT_MODE="$(file_mode "$F_KIT_PATH")"
 [ -f "$F_KIT_PATH" ] || { echo "[FAIL] recovery kit was not written at the pre-existing path"; exit 1; }
 [ "$POST_KIT_MODE" = "600" ] || { echo "[FAIL] kit path pre-existed at mode 644 but ended up mode $POST_KIT_MODE (want 600) — a secret-bearing kit must not inherit a looser pre-existing mode"; exit 1; }
-echo "[PASS] a kit path that pre-existed at mode 644 ends up mode 600 after the wizard writes it (chmod-after-write fix)"
+echo "[PASS] a kit path that pre-existed at mode 644 ends up mode 600 after the wizard writes it"
+
+# 6th-round P2 fix: write-then-chmod (the OLD approach) had a real exposure window —
+# a pre-existing looser-mode file gets its CONTENT replaced first and only chmod'd
+# to 0600 afterward, so the secret briefly sits at the pre-existing mode. The fix
+# writes a distinctly-named `.tmp` sibling at mode 0600 from the instant of creation
+# (`wx` — exclusive create, never reuses the loose-mode inode), then atomically
+# rename()s it over kitPath — which makes the insecure window impossible BY
+# CONSTRUCTION rather than by a race that is merely unlikely to lose. This can't be
+# proven by racing a background poll (a construction-level guarantee has no window
+# to catch even in principle); what CAN be proven here: (1) the tmp sibling never
+# survives a successful run (it was renamed away, not left behind or leaked), and
+# (2) the final file actually contains the real secret content (a scrypt-wrapped
+# passphrase run's kit — not the empty placeholder it started as), at 0600 (already
+# checked above).
+TMP_KIT_LEFTOVER="$(find "$(dirname "$F_KIT_PATH")" -maxdepth 1 -name "$(basename "$F_KIT_PATH").*.tmp" 2>/dev/null | head -n1)"
+[ -z "$TMP_KIT_LEFTOVER" ] || { echo "[FAIL] a .tmp sibling of the recovery kit survived a successful write: $TMP_KIT_LEFTOVER"; exit 1; }
+[ -s "$F_KIT_PATH" ] || { echo "[FAIL] recovery kit is empty — still the pre-existing placeholder, not the wizard's real content"; exit 1; }
+grep -q 'KEEP THIS OFFLINE / PHYSICALLY SECURE' "$F_KIT_PATH" || { echo "[FAIL] recovery kit does not contain the wizard's real content — write-then-rename did not actually replace the placeholder"; exit 1; }
+echo "[PASS] the pre-existing-644 kit path ends up with NO leftover .tmp sibling and real secret content at mode 600 (write-at-0600-then-rename fix — no write-then-chmod exposure window)"
 
 echo "== (g) recovery kit honesty when the backup key was skipped (test f's own run: backup=NO) =="
 # Test (f) above already drove backup=NO through to a completed kit (F_KIT_PATH) —
@@ -325,30 +344,71 @@ grep -q 'cipher-brain init: complete' "$TMP/tilde.log" || { echo "[FAIL] '~'-pat
 [ ! -e "$ROOT/~" ] || { echo "[FAIL] a literal '~' file/dir was created relative to cwd — '~' was not expanded"; exit 1; }
 echo "[PASS] '~/...' directory-to-back-up and recovery-kit path answers both expanded to the real HOME, matching shell behavior"
 
-echo "== (j) rollback also removes the snapshot artifact + sidecars when a step AFTER snapshot() fails (5th-round P2 fix) =="
-# The fb293ff rollback (test h above) deletes the identity/recipient files on any
-# post-creation failure, but did NOT delete the dated snapshot output (--out) or its
-# .digest / .recipients-fingerprint sidecars if the failure happened AFTER snapshot()
-# itself succeeded (e.g. push, or the recovery-kit write, fails afterward).
-# snapshot()'s own promote step (promoteSnapshot in snapshot.ts) refuses to overwrite
-# an existing --out, and the wizard's --out is dated per-day — so leaving that file
-# behind means a same-day retry regenerates the identity fine, then fails AGAIN at
-# the snapshot step with a "file already exists" error. Fail deterministically AFTER
-# both snapshot() and push() succeed by making the very last step — the recovery
-# kit's own mkdir/write — fail: pre-create the kit path's PARENT as a plain FILE (not
-# a directory), so mkdir(dirname(kitPath), { recursive: true }) throws ENOTDIR.
-SNAP_HOME="$TMP/snap-rollback-home"; mkdir -p "$SNAP_HOME"
-SNAP_CB_HOME="$TMP/snap-rollback-cb-home"
-SNAP_STORE="$TMP/snap-rollback-store"
-SNAP_SRC="$TMP/snap-rollback-src"; mkdir -p "$SNAP_SRC"
-printf 'snap-rollback-marker\n' > "$SNAP_SRC/note.txt"
+echo "== (j0) a failure BEFORE push() succeeds still rolls back the identity AND the snapshot artifact =="
+# Establishes the OTHER side of the 6th-round P2 rollback-boundary fix: everything
+# BEFORE push() succeeds must still roll back exactly as before (only failures AFTER
+# a successful push change behavior — see (j)/(j2) below). Fail deterministically
+# inside push()'s file-backend put() by pointing CIPHER_BRAIN_FILE_DIR at a path
+# whose PARENT is a plain FILE, so fileBackend().put()'s own
+# `mkdir(FILE_DIR, { recursive: true })` throws ENOTDIR before push() ever returns —
+# i.e. before pushSucceeded flips true in wizard.ts. The QA script intentionally
+# stops at the backend prompt: push() throws before the recovery-kit path is ever
+# asked, so scripting that prompt would leave it unconsumed and fail drive-init.mjs
+# itself (ed1f2d6) rather than testing what we want here.
+J0_HOME="$TMP/prepush-rollback-home"; mkdir -p "$J0_HOME"
+J0_CB_HOME="$TMP/prepush-rollback-cb-home"
+J0_STORE_BLOCKED_PARENT="$TMP/prepush-rollback-store-blocked-parent"
+: > "$J0_STORE_BLOCKED_PARENT" # plain FILE — FILE_DIR nests a dir UNDER this
+J0_STORE="$J0_STORE_BLOCKED_PARENT/subdir-store"
+J0_SRC="$TMP/prepush-rollback-src"; mkdir -p "$J0_SRC"
+printf 'prepush-rollback-marker\n' > "$J0_SRC/note.txt"
+
+cat > "$TMP/qa-prepush-rollback-fail.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$J0_SRC"],
+  ["Backend [file/", ""]
+]
+JSON
+
+if CIPHER_BRAIN_HOME="$J0_CB_HOME" CIPHER_BRAIN_FILE_DIR="$J0_STORE" HOME="$J0_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-prepush-rollback-fail.json" --out "$TMP/prepush-rollback-fail.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
+  echo "[FAIL] init did not fail when the file backend's store dir has a blocked parent"; cat "$TMP/prepush-rollback-fail.log"; exit 1
+fi
+grep -qi "ENOTDIR\|not a directory" "$TMP/prepush-rollback-fail.log" || { echo "[FAIL] failure was not the expected pre-push ENOTDIR error"; cat "$TMP/prepush-rollback-fail.log"; exit 1; }
+[ ! -f "$J0_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity survived a PRE-push failure — rollback should still fire here"; exit 1; }
+[ ! -f "$J0_CB_HOME/recipient.txt" ] || { echo "[FAIL] primary recipient survived a PRE-push failure"; exit 1; }
+J0_LEFTOVER="$(find "$J0_CB_HOME" -maxdepth 1 -name 'brain-*.age*' 2>/dev/null | head -n1)"
+[ -z "$J0_LEFTOVER" ] || { echo "[FAIL] a snapshot artifact/sidecar survived a PRE-push failure: $J0_LEFTOVER"; exit 1; }
+echo "[PASS] a failure BEFORE push() succeeds (push() itself throwing) still rolls back the identity AND the snapshot artifact + sidecars, exactly as before the P2 fix"
+
+echo "== (j) a failure AFTER push() succeeds preserves the identity + snapshot instead of rolling them back (6th-round P2 fix) =="
+# The OLD behavior (5th round, fb293ff/0565194) rolled back the identity + snapshot
+# artifact for ANY post-creation failure, including one AFTER push() had already
+# durably written the ciphertext to the backend's store. For a paid backend
+# (arweave/turbo) that upload is PERMANENT and IRREVERSIBLE — deleting the only keys
+# that can ever decrypt it would turn a mere "kit step needs a retry" into
+# unrecoverable data + money loss. Reuses the exact repro that used to prove the OLD
+# (now-wrong) behavior: make the very last step — the recovery kit's own
+# mkdir/write — fail by pre-creating the kit path's PARENT as a plain FILE, so
+# mkdir(dirname(kitPath), { recursive: true }) throws ENOTDIR AFTER snapshot() and
+# push() have both already succeeded.
+SNAP_HOME="$TMP/snap-preserve-home"; mkdir -p "$SNAP_HOME"
+SNAP_CB_HOME="$TMP/snap-preserve-cb-home"
+SNAP_STORE="$TMP/snap-preserve-store"
+SNAP_SRC="$TMP/snap-preserve-src"; mkdir -p "$SNAP_SRC"
+printf 'snap-preserve-marker\n' > "$SNAP_SRC/note.txt"
 BLOCKED_PARENT="$SNAP_HOME/blocked-kit-parent"
 : > "$BLOCKED_PARENT" # plain FILE — the kit path nests a dir UNDER this, so mkdir -p
                       # must traverse it as a parent component (ENOTDIR), not just
                       # target it directly (which would be EEXIST instead)
 BLOCKED_KIT_PATH="$BLOCKED_PARENT/subdir/recovery-kit.txt"
 
-cat > "$TMP/qa-snap-rollback-fail.json" <<JSON
+cat > "$TMP/qa-snap-preserve-fail.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
@@ -361,40 +421,34 @@ cat > "$TMP/qa-snap-rollback-fail.json" <<JSON
 JSON
 
 if CIPHER_BRAIN_HOME="$SNAP_CB_HOME" CIPHER_BRAIN_FILE_DIR="$SNAP_STORE" HOME="$SNAP_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
-  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-snap-rollback-fail.json" --out "$TMP/snap-rollback-fail.log" \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-snap-preserve-fail.json" --out "$TMP/snap-preserve-fail.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
-  echo "[FAIL] init did not fail when the recovery-kit path's parent is a plain file"; cat "$TMP/snap-rollback-fail.log"; exit 1
+  echo "[FAIL] init did not fail when the recovery-kit path's parent is a plain file"; cat "$TMP/snap-preserve-fail.log"; exit 1
 fi
-grep -qi "ENOTDIR\|not a directory" "$TMP/snap-rollback-fail.log" || { echo "[FAIL] failure was not the expected kit-write ENOTDIR error"; cat "$TMP/snap-rollback-fail.log"; exit 1; }
-[ ! -f "$SNAP_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity survived a post-snapshot failure"; exit 1; }
-[ ! -f "$SNAP_CB_HOME/recipient.txt" ] || { echo "[FAIL] primary recipient survived a post-snapshot failure"; exit 1; }
-SNAP_LEFTOVER="$(find "$SNAP_CB_HOME" -maxdepth 1 -name 'brain-*.age*' 2>/dev/null | head -n1)"
-[ -z "$SNAP_LEFTOVER" ] || { echo "[FAIL] a snapshot artifact/sidecar survived a post-snapshot failure: $SNAP_LEFTOVER"; exit 1; }
-echo "[PASS] a failure AFTER snapshot() succeeds (kit write) rolls back the identity AND the dated snapshot artifact + its .digest/.recipients-fingerprint sidecars"
+grep -qi "ENOTDIR\|not a directory" "$TMP/snap-preserve-fail.log" || { echo "[FAIL] failure was not the expected kit-write ENOTDIR error"; cat "$TMP/snap-preserve-fail.log"; exit 1; }
+[ -f "$SNAP_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity was DELETED after a successful push — this is the data-loss regression the P2 fix prevents"; exit 1; }
+[ -f "$SNAP_CB_HOME/recipient.txt" ] || { echo "[FAIL] primary recipient was DELETED after a successful push"; exit 1; }
+SNAP_SURVIVOR="$(find "$SNAP_CB_HOME" -maxdepth 1 -name 'brain-*.age' 2>/dev/null | head -n1)"
+[ -n "$SNAP_SURVIVOR" ] || { echo "[FAIL] the dated snapshot artifact was DELETED after a successful push"; exit 1; }
+grep -qi "already created and pushed" "$TMP/snap-preserve-fail.log" || { echo "[FAIL] failure message does not clearly state the snapshot was already pushed"; cat "$TMP/snap-preserve-fail.log"; exit 1; }
+grep -qi "PRESERVED" "$TMP/snap-preserve-fail.log" || { echo "[FAIL] failure message does not clearly say the identity/snapshot files are preserved"; cat "$TMP/snap-preserve-fail.log"; exit 1; }
+grep -qF "$SNAP_CB_HOME/identity.age" "$TMP/snap-preserve-fail.log" || { echo "[FAIL] failure message does not name the preserved primary identity path"; cat "$TMP/snap-preserve-fail.log"; exit 1; }
+echo "[PASS] a failure AFTER push() succeeds (kit write) preserves the identity, recipient, AND the dated snapshot artifact — nothing is rolled back — and the error clearly states what already succeeded and what is preserved"
 
-echo "== (j2) retry after the snapshot-artifact rollback completes cleanly (same day, same --out path) =="
-rm -f "$BLOCKED_PARENT" # unblock: this run gets a real directory for the kit path this time
-SNAP_KIT_PATH="$SNAP_HOME/recovery-kit.txt"
-cat > "$TMP/qa-snap-rollback-retry.json" <<JSON
-[
-  ["Generate an offline backup keypair now?", "n"],
-  ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
-  ["Profile [none/", ""],
-  ["Directory path(s) to back up", "$SNAP_SRC"],
-  ["Backend [file/", ""],
-  ["Path to write the recovery kit", "$SNAP_KIT_PATH"]
-]
-JSON
-
-CIPHER_BRAIN_HOME="$SNAP_CB_HOME" CIPHER_BRAIN_FILE_DIR="$SNAP_STORE" HOME="$SNAP_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
-  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-snap-rollback-retry.json" --out "$TMP/snap-rollback-retry.log" \
-  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
-  || { echo "[FAIL] retry after the snapshot-artifact rollback did not complete (a leftover --out likely still blocked the same-day snapshot path)"; cat "$TMP/snap-rollback-retry.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/snap-rollback-retry.log" || { echo "[FAIL] retry after snapshot-artifact rollback lacks its own completion marker"; cat "$TMP/snap-rollback-retry.log"; exit 1; }
-[ -f "$SNAP_CB_HOME/identity.age" ] || { echo "[FAIL] retry did not write a fresh primary identity"; exit 1; }
-[ -n "$(find "$SNAP_CB_HOME" -maxdepth 1 -name 'brain-*.age' 2>/dev/null | head -n1)" ] || { echo "[FAIL] retry did not produce a snapshot file"; exit 1; }
-echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME (same day, same dated --out) starts clean and completes after the snapshot-artifact rollback"
+echo "== (j2) retry after a post-push failure correctly REFUSES — identity + snapshot are still there, not silently regenerated =="
+# Because (j) above no longer deletes anything, a same-day retry against the SAME
+# CIPHER_BRAIN_HOME must hit the ordinary pre-existing-identity refusal (test (a)) —
+# starting "clean" here would be wrong: it would silently abandon the real,
+# already-pushed snapshot (and, on a paid backend, already-spent money) in favor of
+# a brand new identity that cannot decrypt it.
+if CIPHER_BRAIN_HOME="$SNAP_CB_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 10 node "${BIN_DEV_ARGS[@]}" "$BIN" init < /dev/null > "$TMP/snap-preserve-retry.log" 2>&1; then
+  echo "[FAIL] a retry after a post-push failure did not refuse — it should, since the identity/snapshot are preserved"; cat "$TMP/snap-preserve-retry.log"; exit 1
+fi
+grep -qi "already exists" "$TMP/snap-preserve-retry.log" || { echo "[FAIL] retry's refusal was not the expected pre-existing-identity error"; cat "$TMP/snap-preserve-retry.log"; exit 1; }
+[ -f "$SNAP_CB_HOME/identity.age" ] || { echo "[FAIL] the preserved primary identity vanished between the two runs"; exit 1; }
+[ -n "$(find "$SNAP_CB_HOME" -maxdepth 1 -name 'brain-*.age' 2>/dev/null | head -n1)" ] || { echo "[FAIL] the preserved snapshot artifact vanished between the two runs"; exit 1; }
+echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME correctly refuses (identity + snapshot from the successful push are still there, exactly as promised) instead of silently starting over"
 
 echo "== THE DRILL (issue #68 acceptance criterion 2): kit-ONLY restore on a simulated fresh, fully isolated machine =="
 # Isolation: a BRAND NEW temp dir with NO shared CIPHER_BRAIN_HOME, no leftover

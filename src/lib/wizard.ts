@@ -18,9 +18,10 @@
 // non-interactive-safety posture promptHidden already has — rather than hanging or
 // behaving unpredictably under a CI/pipe invocation.
 import { createInterface } from 'node:readline/promises';
-import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rm, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import { HOME, IDENTITY, RECIPIENT } from './config.js';
 import { keygen, keygenAt } from './keys.js';
 import { askNewPassphrase, wrapIdentity } from './crypt.js';
@@ -28,7 +29,7 @@ import { PROFILE_NAMES } from './profiles.js';
 import { snapshot } from './snapshot.js';
 import { push } from './pushpull.js';
 import { BACKEND_NAMES } from './backends/index.js';
-import { exists } from './util.js';
+import { exists, errMsg } from './util.js';
 import type { CliOptions } from './types.js';
 
 type Rl = ReturnType<typeof createInterface>;
@@ -244,6 +245,19 @@ export async function init(_o: CliOptions): Promise<void> {
     // dated per-day, so leaving them behind would make a same-day retry fail again at
     // this exact step even though the rollback below already cleared the identity.
     let snapshotOutPath: string | null = null;
+    // True once push() below actually returns successfully. From that point on the
+    // ciphertext already exists, durably, in the chosen backend's store — for
+    // arweave/turbo that store is PAID and PERMANENT (irreversible; real funds were
+    // just spent), and even the free "file" backend now has an object keyed to these
+    // identities. The primary/backup identities are the ONLY thing that can ever
+    // decrypt that artifact from here on, so once this flips true the catch block
+    // below must NEVER delete them, no matter what fails afterward (kit write,
+    // chmod, ...) — doing so would turn "the kit step needs a retry" into "a
+    // permanent, already-paid-for snapshot with no key left able to decrypt it,
+    // ever." Only failures BEFORE this flips true still get the full rollback below.
+    let pushSucceeded = false;
+    let pushedBackend: string | null = null;
+    let pushedLocatorPath: string | null = null;
     try {
       // ---------- 2. backup key guidance (MANAGEMENT.md Key recovery #1) ----------
       console.log('\n== 2/6: offline backup key (recommended) ==');
@@ -374,6 +388,11 @@ export async function init(_o: CliOptions): Promise<void> {
       // for anyone who does not go through this confirmation (push.ts is untouched).
       if (paid) pushOpts.yes = true;
       await push(pushOpts);
+      // Push has now durably happened — see the pushSucceeded declaration above for
+      // why the catch block's rollback boundary hinges on exactly this line.
+      pushSucceeded = true;
+      pushedBackend = backend;
+      pushedLocatorPath = locatorPath;
       const savedLocatorLine = (await readFile(locatorPath, 'utf8')).split('\n').find((l) => l.trim()) ?? '';
 
       // ---------- recovery kit ----------
@@ -390,16 +409,28 @@ export async function init(_o: CliOptions): Promise<void> {
         backend,
         generatedAt: new Date().toISOString(),
       });
+      // Write-then-chmod (the prior approach) has a real exposure window: if kitPath
+      // already exists at a looser mode (e.g. a stray 0644 file, a re-run at the same
+      // path), writeFile() replaces its CONTENT first — the secret (the inlined backup
+      // identity) briefly sits in a world/group-readable file — and only chmod()
+      // AFTERWARD narrows it to 0600. Eliminate the window entirely instead: create a
+      // distinctly-named temp sibling with `wx` (exclusive create — refuses to reuse an
+      // existing, possibly-loose-mode inode) and `mode: 0o600` from the instant of
+      // creation, so the secret is never observable at a loose mode even momentarily,
+      // then atomically rename() it over kitPath — same temp-then-rename convention
+      // pushpull.ts's save-locator write and snapshot.ts's promote-on-success step
+      // already use for this codebase's other durable/secret-bearing writes. rename()
+      // replacing an existing kitPath is fine here: only the NEW content must never be
+      // exposed insecurely, the old kit content (if any) does not need preserving.
       await mkdir(dirname(kitPath), { recursive: true });
-      await writeFile(kitPath, kitText, { mode: 0o600 });
-      // `mode` above only applies when writeFile CREATES the file — if kitPath already
-      // existed (e.g. a stray file, a re-run at the same path) with a looser mode, the
-      // write only replaces its content and the old permissive mode carries over. This
-      // file inlines a secret (the backup identity), so the final mode must be
-      // guaranteed regardless of what existed before — same "chmod too, in case it
-      // pre-existed with a looser mode" discipline keygenAt() already applies to the
-      // identity home dir (keys.ts).
-      await chmod(kitPath, 0o600);
+      const kitTmpPath = `${kitPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+      try {
+        await writeFile(kitTmpPath, kitText, { flag: 'wx', mode: 0o600 });
+        await rename(kitTmpPath, kitPath);
+      } catch (e) {
+        await rm(kitTmpPath, { force: true });
+        throw e;
+      }
 
       console.log('\n=== cipher-brain init: complete ===');
       console.log(`primary identity:  ${IDENTITY}`);
@@ -412,6 +443,35 @@ export async function init(_o: CliOptions): Promise<void> {
       if (backup) console.log(`location, a trusted person): ${backup.identityPath.replace(/identity\.age$/, '')}`);
       console.log('Once the kit is secured, you may delete it from disk yourself — cipher-brain does not do this for you.');
     } catch (err) {
+      if (pushSucceeded) {
+        // Push already happened — see the pushSucceeded declaration above. The
+        // ciphertext is now durably stored (permanently and irreversibly if the
+        // backend was arweave/turbo, real funds already spent) and these identities
+        // are the ONLY way anyone will ever decrypt it. Deleting them here to "unblock
+        // a retry" would be strictly worse than the retry annoyance this rollback
+        // exists to fix: it would make an already-paid-for, already-permanent snapshot
+        // unrecoverable forever. Preserve everything and tell the user exactly what
+        // already succeeded and what remains on disk untouched.
+        const permanentNote = pushedBackend === 'arweave' || pushedBackend === 'turbo'
+          ? ' That backend is PAID and PERMANENT — the upload already happened and cannot be undone or refunded.'
+          : '';
+        const preserved = [
+          `primary identity: ${IDENTITY}`,
+          `primary recipient: ${RECIPIENT}`,
+          ...(backup ? [`backup identity: ${backup.identityPath}`, `backup recipient: ${backup.recipientPath}`] : []),
+          ...(snapshotOutPath ? [`snapshot: ${snapshotOutPath}`] : []),
+        ].join('; ');
+        throw new Error(
+          `cipher-brain init: the snapshot was already created and pushed to "${pushedBackend}" successfully ` +
+          `(locator saved: ${pushedLocatorPath}).${permanentNote} A LATER step (the recovery kit) then failed: ` +
+          `${errMsg(err)}\nNothing was rolled back — these files are PRESERVED and must NOT be deleted: ${preserved}. ` +
+          `Fix the cause above, then either construct the recovery kit by hand from those paths (see ` +
+          `MANAGEMENT.md), or re-run "cipher-brain init" once you have moved/backed up the above yourself — it ` +
+          `will refuse immediately because an identity already exists at ${IDENTITY}; that refusal is expected ` +
+          `and correct here, since your snapshot+push already succeeded and these keys must stay exactly where ` +
+          `they are.`,
+        );
+      }
       // Roll back exactly what THIS run wrote — the primary identity/recipient this
       // invocation just generated in step 1, plus the backup identity/recipient if step
       // 2 generated one, plus the snapshot output + its sidecars if step 6's snapshot()
@@ -419,7 +479,9 @@ export async function init(_o: CliOptions): Promise<void> {
       // — so a subsequent `cipher-brain init` retry finds nothing at IDENTITY (starts
       // genuinely clean instead of hitting the pre-existing-identity refusal above) AND
       // finds no leftover --out at the same dated path (starts genuinely clean instead
-      // of hitting snapshot()'s own no-clobber refusal at this step).
+      // of hitting snapshot()'s own no-clobber refusal at this step). This branch only
+      // runs for failures BEFORE push() succeeded (see pushSucceeded above) — once push
+      // has succeeded, the branch above takes over and preserves everything instead.
       await rm(IDENTITY, { force: true });
       await rm(RECIPIENT, { force: true });
       if (backup) {

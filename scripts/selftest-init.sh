@@ -42,6 +42,19 @@ with_timeout() {
   return $rc
 }
 
+# file_mode: portable octal permission-bits lookup. GNU coreutils `stat` (Linux,
+# this repo's ubuntu-latest CI matrix cells) and BSD `stat` (macOS) both accept a
+# `-f`/`-c` flag, but the SAME flag letter means something different on each: BSD
+# `-f FORMAT` takes a custom format string, while GNU `-f` means "display
+# filesystem status" (a totally different report) — GNU's format flag is `-c`
+# instead. Trying BSD syntax (`stat -f '%Lp' path`) FIRST on Linux does not error;
+# it silently prints filesystem info instead of the file's mode, corrupting
+# whatever captures it. Try GNU syntax first — it is a no-op on macOS (BSD stat has
+# no `-c` option, so it fails cleanly and falls through) — then fall back to BSD.
+file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
 echo "== (a) init refuses when an identity already exists (init is for a FRESH setup only) =="
 EXISTS_HOME="$TMP/exists-home"
 CIPHER_BRAIN_HOME="$EXISTS_HOME" cb keygen > /dev/null
@@ -135,7 +148,7 @@ echo "[PASS] the wizard's own snapshot verifies (real ciphertext, wrong key reje
 
 echo "== (e) recovery kit content structure =="
 [ -f "$KIT_PATH" ] || { echo "[FAIL] recovery kit was not written at the requested path"; exit 1; }
-KITMODE="$(stat -f '%Lp' "$KIT_PATH" 2>/dev/null || stat -c '%a' "$KIT_PATH")"
+KITMODE="$(file_mode "$KIT_PATH")"
 [ "$KITMODE" = "600" ] || { echo "[FAIL] recovery kit is not mode 600 (got $KITMODE) — it contains a secret identity"; exit 1; }
 grep -q 'KEEP THIS OFFLINE / PHYSICALLY SECURE' "$KIT_PATH" || { echo "[FAIL] kit missing the warning banner"; exit 1; }
 grep -q -- '--- PRIMARY IDENTITY' "$KIT_PATH" || { echo "[FAIL] kit missing the PRIMARY IDENTITY section"; exit 1; }
@@ -168,7 +181,7 @@ printf 'pass-marker\n' > "$F_SRC/note.txt"
 F_KIT_PATH="$F_HOME/recovery-kit.txt"
 mkdir -p "$(dirname "$F_KIT_PATH")"
 : > "$F_KIT_PATH"; chmod 644 "$F_KIT_PATH" # pre-existing, permissive-mode file — proves the chmod-after-write fix below too
-PRE_KIT_MODE="$(stat -f '%Lp' "$F_KIT_PATH" 2>/dev/null || stat -c '%a' "$F_KIT_PATH")"
+PRE_KIT_MODE="$(file_mode "$F_KIT_PATH")"
 [ "$PRE_KIT_MODE" = "644" ] || { echo "[FAIL] test setup: could not pre-create the kit path at mode 644"; exit 1; }
 
 cat > "$TMP/qa-pass.json" <<JSON
@@ -192,7 +205,7 @@ grep -q 'cipher-brain init: complete' "$TMP/wizard-pass.log" || { echo "[FAIL] p
 grep -qa '^-> scrypt ' "$F_CB_HOME/identity.age" || { echo "[FAIL] passphrase=yes run: identity is not scrypt-wrapped (passphrase step did not actually run)"; exit 1; }
 echo "[PASS] passphrase=yes path reaches every later prompt and completes (snapshot -> push -> kit) after the readline interface is closed/re-created"
 
-POST_KIT_MODE="$(stat -f '%Lp' "$F_KIT_PATH" 2>/dev/null || stat -c '%a' "$F_KIT_PATH")"
+POST_KIT_MODE="$(file_mode "$F_KIT_PATH")"
 [ -f "$F_KIT_PATH" ] || { echo "[FAIL] recovery kit was not written at the pre-existing path"; exit 1; }
 [ "$POST_KIT_MODE" = "600" ] || { echo "[FAIL] kit path pre-existed at mode 644 but ended up mode $POST_KIT_MODE (want 600) — a secret-bearing kit must not inherit a looser pre-existing mode"; exit 1; }
 echo "[PASS] a kit path that pre-existed at mode 644 ends up mode 600 after the wizard writes it (chmod-after-write fix)"

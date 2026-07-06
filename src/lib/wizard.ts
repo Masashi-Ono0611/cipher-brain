@@ -135,6 +135,15 @@ function buildRecoveryKit(k: KitInputs): string {
   lines.push(k.pinRecipientsLine ?? '(skipped during init — see MANAGEMENT.md / "cipher-brain help" for what this does)');
   lines.push('');
   lines.push('--- RECOVERY STEPS (run these on ANY machine with Node >=22.6 and this npm package installed) ---');
+  if (k.backend === 'file') {
+    lines.push('!!! LOCATOR IS LOCAL-ONLY: this backup used the "file" backend, so the save-locator line above');
+    lines.push('    points at a path inside a local object store (CIPHER_BRAIN_FILE_DIR) on THIS machine — it');
+    lines.push('    is NOT reachable from a different machine unless that whole store directory is also copied');
+    lines.push('    there. Step 4 below (pull --from-locator-file) will fail on another machine as written. For');
+    lines.push('    genuine cross-machine recovery, re-run push with a network backend (arweave/turbo/ton), or');
+    lines.push('    manually copy the file-backend store alongside this kit. See MANAGEMENT.md "Key recovery #3".');
+    lines.push('');
+  }
   lines.push('An operator with ZERO prior knowledge of this repo can follow these verbatim. The two marker');
   lines.push('blocks above (each a single BEGIN/END pair, unique in this file) are the two things you copy:');
   lines.push('  1) npm install -g cipher-brain          (or: npx cipher-brain@latest <command>)');

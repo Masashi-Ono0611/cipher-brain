@@ -31,6 +31,7 @@ import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
 import { push, pull } from './lib/pushpull.js';
 import { schedule } from './lib/schedule.js';
+import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
 import type { CliOptions } from './lib/types.js';
 
@@ -53,6 +54,16 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
+
+  cipher-brain init
+      Recommended for a FRESH setup: an interactive wizard that walks keygen -> an
+      offline backup keypair (optional) -> passphrase-wrap (optional) -> a
+      CIPHER_BRAIN_PIN_RECIPIENTS suggestion -> --profile selection -> the first
+      snapshot + push, ending in a printable plain-text recovery kit (the backup
+      identity + latest locator + exact recovery commands). Refuses if an identity
+      already exists (init is for a fresh setup, not overwriting one — use keygen
+      --force, or drive the commands below by hand, to redo it) and requires a TTY
+      on stdin (it is interactive, not automatable).
 
   cipher-brain keygen [--passphrase] [--force]
       Create your age keypair: identity (PRIVATE) + recipient (PUBLIC).
@@ -153,6 +164,7 @@ Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_PG_BIN (dir of pg
      CIPHER_BRAIN_SCHEDULE_DIR (schedule artifacts/logs dir; default $CIPHER_BRAIN_HOME/schedule).
      CIPHER_BRAIN_PASSPHRASE (non-interactive passphrase for a wrapped identity — automation/CI; otherwise prompted on the TTY).
      CIPHER_BRAIN_PIN_RECIPIENTS (snapshot: allowlist of age1… pubkeys, inline or a file — refuse to encrypt to any other recipient).
+     CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 (init: bypass its TTY requirement — automation/CI only, e.g. this repo's own selftest; a human just runs init directly in a terminal).
 Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);
          CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none);
          turbo: CIPHER_BRAIN_AR_WALLET (JWK signer) + optional CIPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
@@ -162,6 +174,7 @@ async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   const o = parseArgs(rest);
   switch (cmd) {
+    case 'init': return init(o);
     case 'keygen': return keygen(o);
     case 'snapshot': return snapshot(o);
     case 'restore': return restore(o);

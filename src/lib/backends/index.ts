@@ -9,6 +9,12 @@ import { arweaveBackend } from './arweave.js';
 import { turboBackend } from './turbo.js';
 import type { StorageBackend } from '../types.js';
 
+// The accepted --backend names, exported (mirrors profiles.ts's PROFILE_NAMES) so a
+// caller that needs to VALIDATE/OFFER the list (e.g. the `init` wizard's backend
+// prompt) reads it from here instead of hand-rolling a second copy that could drift
+// from backendFor's own if-chain below.
+export const BACKEND_NAMES = ['file', 'ton', 'arweave', 'turbo'] as const;
+
 export async function backendFor(name: string | undefined): Promise<StorageBackend> {
   if (name === 'file') return fileBackend();
   if (name === 'ton') return tonBackend();

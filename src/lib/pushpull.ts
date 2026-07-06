@@ -38,6 +38,25 @@ async function recipientsFingerprintFor(o: CliOptions): Promise<string | null> {
   } catch { return null; }
 }
 
+// Thrown when backend.put() (the actual, possibly PAID/PERMANENT upload) already
+// succeeded but the LOCAL --save-locator bookkeeping afterward (mkdir, digest, the
+// temp-write+rename) then threw. This is the ONE failure shape a caller must treat
+// completely differently from every other push() error: the remote artifact already
+// exists (and, on arweave/turbo, money was already spent) — a caller that reacts to
+// ANY push() rejection by assuming "nothing happened yet" (e.g. deleting the only
+// identity that can decrypt what was just uploaded) would turn a mere bookkeeping
+// hiccup into permanent, unrecoverable loss. `locator` is carried on the error
+// itself because this is the only place that value still exists once push() has
+// otherwise failed to persist it anywhere.
+export class PushLocatorWriteError extends Error {
+  readonly locator: string;
+  constructor(locator: string, cause: unknown) {
+    super(`upload succeeded (locator: ${locator}) but writing --save-locator failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'PushLocatorWriteError';
+    this.locator = locator;
+  }
+}
+
 interface SavedLocator {
   locator: string;
   backend: string;
@@ -120,40 +139,52 @@ export async function push(o: CliOptions): Promise<void> {
   // --save-locator <path>: persist the returned locator so operators can back it up
   // alongside their identity (the two things a fresh machine needs to restore).
   // The file is rewritten on each push — it always holds the most recent locator.
+  // Everything from here on is LOCAL bookkeeping AFTER the upload above already
+  // succeeded — the point of no return already passed. Wrap the whole block so any
+  // failure here (ENOSPC, a permission error, a directory sitting where the locator
+  // file should be, ...) surfaces as PushLocatorWriteError instead of an ordinary
+  // Error: a caller must be able to tell "the upload itself never happened" apart
+  // from "the upload happened, only recording where it went then failed" — the two
+  // demand opposite recovery behavior (see wizard.ts's push() catch for the caller
+  // that actually depends on this distinction).
   if (o.save_locator) {
-    await mkdir(dirname(resolve(o.save_locator)), { recursive: true });
-    // Record "<locator>\t<backend>\t<sha256>[\t<content_digest>[\t<recipients_fingerprint>]]".
-    // The sha256 — computed here off the bytes we just pushed — binds the locator to
-    // its ciphertext, so a recovery via --from-locator-file is fail-closed: for
-    // arweave/turbo (locator != content hash) a gateway/storage attacker can't later
-    // serve a substituted, still-age-decryptable artifact. The hash is trustworthy
-    // because this file is backed up OFF-BOX (the same trusted-source rule the
-    // existing --sha256 pin relies on). The 4th field is the PLAINTEXT content digest
-    // (from the "<in>.digest" sidecar / --digest); the 5th is the recipients
-    // fingerprint (from the "<in>.recipients-fingerprint" sidecar) — both are the
-    // comparison targets for the next push --skip-unchanged. The 5th field is only
-    // ever written alongside a present 4th (never in its place — a positional format
-    // can't safely encode "5th but not 4th"); omitted when no signal is available
-    // (parsers accept all three widths).
-    const digest = await sha256(o.in);
-    const contentDigest = await contentDigestFor(o);
-    const recipientsFingerprint = await recipientsFingerprintFor(o);
-    const fields = [locator, o.backend, digest];
-    if (contentDigest) {
-      fields.push(contentDigest);
-      if (recipientsFingerprint) fields.push(recipientsFingerprint);
-    }
-    // Atomic write: a crash / ENOSPC mid-rewrite must not leave the recovery pointer
-    // empty AND destroy the previous good locator. Write a temp sibling, then rename.
-    const tmp = `${o.save_locator}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     try {
-      await writeFile(tmp, `${fields.join('\t')}\n`, { flag: 'w' });
-      await rename(tmp, o.save_locator);
+      await mkdir(dirname(resolve(o.save_locator)), { recursive: true });
+      // Record "<locator>\t<backend>\t<sha256>[\t<content_digest>[\t<recipients_fingerprint>]]".
+      // The sha256 — computed here off the bytes we just pushed — binds the locator to
+      // its ciphertext, so a recovery via --from-locator-file is fail-closed: for
+      // arweave/turbo (locator != content hash) a gateway/storage attacker can't later
+      // serve a substituted, still-age-decryptable artifact. The hash is trustworthy
+      // because this file is backed up OFF-BOX (the same trusted-source rule the
+      // existing --sha256 pin relies on). The 4th field is the PLAINTEXT content digest
+      // (from the "<in>.digest" sidecar / --digest); the 5th is the recipients
+      // fingerprint (from the "<in>.recipients-fingerprint" sidecar) — both are the
+      // comparison targets for the next push --skip-unchanged. The 5th field is only
+      // ever written alongside a present 4th (never in its place — a positional format
+      // can't safely encode "5th but not 4th"); omitted when no signal is available
+      // (parsers accept all three widths).
+      const digest = await sha256(o.in);
+      const contentDigest = await contentDigestFor(o);
+      const recipientsFingerprint = await recipientsFingerprintFor(o);
+      const fields = [locator, o.backend, digest];
+      if (contentDigest) {
+        fields.push(contentDigest);
+        if (recipientsFingerprint) fields.push(recipientsFingerprint);
+      }
+      // Atomic write: a crash / ENOSPC mid-rewrite must not leave the recovery pointer
+      // empty AND destroy the previous good locator. Write a temp sibling, then rename.
+      const tmp = `${o.save_locator}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+      try {
+        await writeFile(tmp, `${fields.join('\t')}\n`, { flag: 'w' });
+        await rename(tmp, o.save_locator);
+      } catch (e) {
+        await rm(tmp, { force: true });
+        throw e;
+      }
+      console.error(`locator saved -> ${o.save_locator}`);
     } catch (e) {
-      await rm(tmp, { force: true });
-      throw e;
+      throw new PushLocatorWriteError(locator, e);
     }
-    console.error(`locator saved -> ${o.save_locator}`);
   }
   console.log(locator); // stdout = locator ONLY, so a script can capture it
 }

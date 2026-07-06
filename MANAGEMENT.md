@@ -4,6 +4,14 @@ How to run encrypted gbrain backups over time: **cadence**, **versioning**,
 **restore**, and **key recovery**. The recovery and versioning claims here are
 exercised by `npm run selftest:recovery` (gated in CI).
 
+> **New setup?** `cipher-brain init` is the recommended entry point — an interactive
+> wizard that walks keygen, the backup key and passphrase-wrap choices below,
+> `CIPHER_BRAIN_PIN_RECIPIENTS`, a `--profile`, and the first snapshot + push, ending
+> in a printable recovery kit (issue #68; exercised end-to-end by
+> `npm run selftest:init`, including a kit-only restore drill). Everything below still
+> applies — the wizard is a thin, interactive front end over these same commands, not
+> a different mechanism.
+
 ## Key recovery — "losing the identity *or the locator* must not lose the brain"
 
 Recovery needs **two** things, and both can be lost. The private `identity.age` is the

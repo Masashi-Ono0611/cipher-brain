@@ -5,16 +5,37 @@ import { generateKeypair, identityFileText, askNewPassphrase, wrapIdentity } fro
 import { exists } from './util.js';
 import type { CliOptions } from './types.js';
 
-export async function keygen(o: CliOptions): Promise<void> {
-  // 0700: HOME holds the private identity (and often the JWK wallet) — it must not be
-  // world/group-listable. chmod too, in case it pre-existed with a looser mode.
-  await mkdir(HOME, { recursive: true, mode: 0o700 });
-  await chmod(HOME, 0o700).catch(() => {});
-  if (await exists(IDENTITY)) {
-    if (!o.force) {
-      throw new Error(`identity already exists at ${IDENTITY} (refusing to overwrite — losing it = losing the brain). Pass --force only if you are certain.`);
+// Core of keygen(), parameterized over WHERE to write (home dir + identity/recipient
+// paths) instead of the global HOME/IDENTITY/RECIPIENT constants — extracted so a
+// second caller (the `init` wizard, src/lib/wizard.ts) can generate a keypair at a
+// wizard-chosen path (e.g. an offline backup keypair under `<HOME>-backup`) using the
+// EXACT SAME generation logic keygen() uses, instead of a duplicated hand-roll. This
+// refactor changes NO observable behavior of keygen() itself (same checks, same
+// writes, same exclusive-create semantics) — keygen() below is now a thin wrapper
+// that calls this with the module's global paths and prints its existing messages.
+export interface KeygenAtOpts {
+  home: string;
+  identityPath: string;
+  recipientPath: string;
+  passphrase?: boolean;
+  force?: boolean;
+}
+
+export interface KeygenAtResult {
+  recipient: string;
+  wrapped: boolean;
+}
+
+export async function keygenAt(opts: KeygenAtOpts): Promise<KeygenAtResult> {
+  // 0700: the home dir holds the private identity (and often the JWK wallet) — it must
+  // not be world/group-listable. chmod too, in case it pre-existed with a looser mode.
+  await mkdir(opts.home, { recursive: true, mode: 0o700 });
+  await chmod(opts.home, 0o700).catch(() => {});
+  if (await exists(opts.identityPath)) {
+    if (!opts.force) {
+      throw new Error(`identity already exists at ${opts.identityPath} (refusing to overwrite — losing it = losing the brain). Pass --force only if you are certain.`);
     }
-    await rm(IDENTITY, { force: true }); // the exclusive write below refuses to clobber, so the old key must go first
+    await rm(opts.identityPath, { force: true }); // the exclusive write below refuses to clobber, so the old key must go first
   }
   // The key is generated in-process (typage) and — on the passphrase path — wrapped
   // in memory too (#36): unlike the old external `age -p` flow there is no unwrapped
@@ -22,14 +43,21 @@ export async function keygen(o: CliOptions): Promise<void> {
   const { identity, recipient } = await generateKeypair();
   const text = identityFileText(identity, recipient); // the standard age-keygen file layout
   let payload: string | Uint8Array = text;
-  if (o.passphrase) {
+  let wrapped = false;
+  if (opts.passphrase) {
     console.log('Set a passphrase to protect the identity at rest (you will enter it on restore/verify):');
     payload = await wrapIdentity(text, await askNewPassphrase()); // scrypt, same format `age -p` writes
+    wrapped = true;
   }
   // wx: exclusive create — a concurrent keygen that won the race must not be clobbered
-  await writeFile(IDENTITY, payload, { mode: 0o600, flag: 'wx' });
-  await writeFile(RECIPIENT, recipient + '\n', { mode: 0o644 });
-  console.log(`identity (PRIVATE, keep offline): ${IDENTITY}${o.passphrase ? ' (passphrase-wrapped)' : ''}`);
+  await writeFile(opts.identityPath, payload, { mode: 0o600, flag: 'wx' });
+  await writeFile(opts.recipientPath, recipient + '\n', { mode: 0o644 });
+  return { recipient, wrapped };
+}
+
+export async function keygen(o: CliOptions): Promise<void> {
+  const { recipient, wrapped } = await keygenAt({ home: HOME, identityPath: IDENTITY, recipientPath: RECIPIENT, passphrase: o.passphrase, force: o.force });
+  console.log(`identity (PRIVATE, keep offline): ${IDENTITY}${wrapped ? ' (passphrase-wrapped)' : ''}`);
   console.log(`recipient (PUBLIC, safe to copy):  ${RECIPIENT}`);
   console.log(`recipient = ${recipient}`);
   console.log('\n⚠  Back up the identity file now. If you lose it, the snapshots are unrecoverable.');

@@ -230,11 +230,20 @@ export async function init(_o: CliOptions): Promise<void> {
     // orphaned identity.age that nothing ever cleans up: every future `init` on this
     // CIPHER_BRAIN_HOME hits the "identity already exists" refusal forever, with no
     // rollback path to escape it (unlike every failure inside the try below).
+    // IDENTITY itself is provably absent here — the exists() refusal above already
+    // guarantees that, unconditionally, before this try even starts. RECIPIENT is not
+    // covered by that same guarantee: it could already sit on disk as an orphan from
+    // some earlier, unrelated mistake (a stray recipient.txt with no matching
+    // identity.age) even though IDENTITY is absent. Checking THAT before this call —
+    // and only deleting it in the catch if it did not already exist — keeps this
+    // rollback to "only what this invocation itself created", the same principle the
+    // backup-key rollback below applies.
+    const recipientPreExisted = await exists(RECIPIENT);
     try {
       await keygen({ dirs: [], tables: [], recipients: [] });
     } catch (e) {
       await rm(IDENTITY, { force: true });
-      await rm(RECIPIENT, { force: true });
+      if (!recipientPreExisted) await rm(RECIPIENT, { force: true });
       throw e;
     }
 
@@ -293,12 +302,27 @@ export async function init(_o: CliOptions): Promise<void> {
         // keygenAt() throws here, `backup` is still null when that catch runs, so its
         // rollback branch never fires and the orphaned backup identity.age survives.
         // Clean up right here, independent of the `backup` variable's later assignment.
+        //
+        // Unlike the primary keygen above, this path CANNOT assume identityPath/
+        // recipientPath are absent beforehand — backupHome is a user-typed answer, and
+        // nothing stops them from pointing it at a directory that already holds a REAL,
+        // previously-set-up backup identity (e.g. re-running this step against their
+        // existing offline backup location). keygenAt() itself already refuses to
+        // overwrite an existing identityPath (see keys.ts) and throws BEFORE writing
+        // anything in that case — so an unconditional rm here would delete that real,
+        // pre-existing backup identity for no reason other than "keygenAt declined to
+        // clobber it", which is strictly worse than the partial-write hazard this catch
+        // exists to fix (a blocked retry vs. permanent, unrecoverable loss of a real
+        // key). Check existence of each target BEFORE calling keygenAt, and only remove
+        // whichever ones did NOT already exist beforehand.
+        const identityPreExisted = await exists(identityPath);
+        const recipientPreExisted = await exists(recipientPath);
         let recipient: string;
         try {
           ({ recipient } = await keygenAt({ home: backupHome, identityPath, recipientPath }));
         } catch (e) {
-          await rm(identityPath, { force: true });
-          await rm(recipientPath, { force: true });
+          if (!identityPreExisted) await rm(identityPath, { force: true });
+          if (!recipientPreExisted) await rm(recipientPath, { force: true });
           throw e;
         }
         const identityText = await readFile(identityPath, 'utf8');

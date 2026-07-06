@@ -555,6 +555,21 @@ echo "== (l2) retry after the finding-2b cleanup succeeds (same default backup p
 # "identity already exists" error (keys.ts), a second, independent brick beyond the
 # primary-identity refusal (h) already covers. After the fix there is nothing left at
 # that path, so a genuine retry (same answers) completes end-to-end.
+#
+# The round-8 fix (finding 1, backup-key site) changed WHICH files that cleanup is
+# allowed to touch: it now only removes a target it can prove this SAME invocation
+# just created — never something that pre-existed, since a pre-existing file at that
+# path might be a REAL, previously-set-up backup identity (see test (l3) below). This
+# test's own recipient.txt fixture (L_BLOCKED_RECIPIENT, chmod 444) pre-existed before
+# (l)'s run even started, so it is now correctly left in place by the wizard, exactly
+# like it would leave a real one alone — the wizard cannot tell "stale test fixture"
+# apart from "real pre-existing key" any more than it can tell "stale" apart from
+# "genuine" in general, and must not guess. A real user would notice the leftover
+# obstruction from the failed run and clear it by hand before retrying; simulate
+# exactly that one manual step here so this test still proves the REST of the retry
+# story (a clean retry succeeds once nothing is actually left in the way).
+rm -f "$L_BLOCKED_RECIPIENT"
+
 cat > "$TMP/qa-backup-partial-retry.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "y"],
@@ -574,6 +589,55 @@ CIPHER_BRAIN_HOME="$L_CB_HOME" CIPHER_BRAIN_FILE_DIR="$L_STORE" HOME="$L_HOME" C
 grep -q 'cipher-brain init: complete' "$TMP/backup-partial-retry.log" || { echo "[FAIL] retry after finding-2b cleanup lacks its own completion marker"; cat "$TMP/backup-partial-retry.log"; exit 1; }
 [ -f "$L_BACKUP_HOME/identity.age" ] || { echo "[FAIL] retry did not write a fresh backup identity at the same default path"; exit 1; }
 echo "[PASS] a retry against the same CIPHER_BRAIN_HOME (same default backup path, backup=yes again) succeeds after the finding-2b cleanup — no leftover orphan blocks it"
+
+echo "== (l3) pointing the backup-path prompt at an EXISTING real backup identity refuses without destroying it (round-8 regression fix) =="
+# Round 7's own fix (6177702) wrapped the backup keygenAt() call in a try/catch that
+# unconditionally rm'd identityPath/recipientPath on ANY failure, before rethrowing.
+# keygenAt() (keys.ts) has its own precondition check — it throws BEFORE writing
+# anything if identityPath already exists — so pointing the backup-path prompt at a
+# directory that already holds a REAL, previously-set-up backup identity (e.g.
+# re-running this step against an existing offline backup location) made that catch
+# delete the real key for no reason other than "keygenAt declined to overwrite it":
+# strictly worse than the bug it was fixing (permanent, unrecoverable key loss vs. a
+# blocked retry). Prove the fix: a REAL backup identity pre-exists at the answered
+# path (created via a real keygen, not a hand-rolled stand-in), keygenAt still
+# refuses (unchanged behavior), and the pre-existing files survive completely
+# untouched — byte-identical, not just "still present".
+M_HOME="$TMP/backup-preexist-home"; mkdir -p "$M_HOME"
+M_CB_HOME="$TMP/backup-preexist-cb-home"
+M_STORE="$TMP/backup-preexist-store"
+M_SRC="$TMP/backup-preexist-src"; mkdir -p "$M_SRC"
+printf 'backup-preexist-marker\n' > "$M_SRC/note.txt"
+M_BACKUP_HOME="$TMP/backup-preexist-existing-backup" # a REAL, already-set-up backup identity lives here BEFORE the wizard ever runs
+
+CIPHER_BRAIN_HOME="$M_BACKUP_HOME" cb keygen > "$TMP/backup-preexist-setup.log" 2>&1 \
+  || { echo "[FAIL] test setup: could not create a real pre-existing backup identity"; cat "$TMP/backup-preexist-setup.log"; exit 1; }
+[ -f "$M_BACKUP_HOME/identity.age" ] || { echo "[FAIL] test setup: pre-existing backup identity.age was not created"; exit 1; }
+[ -f "$M_BACKUP_HOME/recipient.txt" ] || { echo "[FAIL] test setup: pre-existing backup recipient.txt was not created"; exit 1; }
+cp "$M_BACKUP_HOME/identity.age" "$TMP/backup-preexist-identity.age.orig"
+cp "$M_BACKUP_HOME/recipient.txt" "$TMP/backup-preexist-recipient.txt.orig"
+
+cat > "$TMP/qa-backup-preexist-fail.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "y"],
+  ["Path for the backup keypair", "$M_BACKUP_HOME"]
+]
+JSON
+# (Same as test (l): the failure happens in step 2/6, well before push — the QA
+# script stops right after the one prompt this failure is reached through.)
+
+if CIPHER_BRAIN_HOME="$M_CB_HOME" CIPHER_BRAIN_FILE_DIR="$M_STORE" HOME="$M_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-backup-preexist-fail.json" --out "$TMP/backup-preexist-fail.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
+  echo "[FAIL] init did not refuse when the backup-path prompt points at an existing real backup identity"; cat "$TMP/backup-preexist-fail.log"; exit 1
+fi
+grep -qi "identity already exists" "$TMP/backup-preexist-fail.log" || { echo "[FAIL] failure was not keygenAt's own pre-existing-identity refusal"; cat "$TMP/backup-preexist-fail.log"; exit 1; }
+[ -f "$M_BACKUP_HOME/identity.age" ] || { echo "[FAIL] the PRE-EXISTING real backup identity.age was DELETED — the round-8 regression"; exit 1; }
+[ -f "$M_BACKUP_HOME/recipient.txt" ] || { echo "[FAIL] the PRE-EXISTING real backup recipient.txt was DELETED — the round-8 regression"; exit 1; }
+cmp -s "$M_BACKUP_HOME/identity.age" "$TMP/backup-preexist-identity.age.orig" || { echo "[FAIL] the pre-existing backup identity.age survived but its CONTENT changed — not byte-identical"; exit 1; }
+cmp -s "$M_BACKUP_HOME/recipient.txt" "$TMP/backup-preexist-recipient.txt.orig" || { echo "[FAIL] the pre-existing backup recipient.txt survived but its CONTENT changed — not byte-identical"; exit 1; }
+[ ! -f "$M_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity survived (the pre-existing generic rollback should still have cleared it)"; exit 1; }
+echo "[PASS] pointing the backup-path prompt at a pre-existing real backup identity refuses (keygenAt's own guard, unchanged) and leaves it completely untouched, byte-identical — the round-8 regression is fixed"
 
 echo "== THE DRILL (issue #68 acceptance criterion 2): kit-ONLY restore on a simulated fresh, fully isolated machine =="
 # Isolation: a BRAND NEW temp dir with NO shared CIPHER_BRAIN_HOME, no leftover

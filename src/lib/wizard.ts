@@ -27,7 +27,7 @@ import { keygen, keygenAt } from './keys.js';
 import { askNewPassphrase, wrapIdentity } from './crypt.js';
 import { PROFILE_NAMES } from './profiles.js';
 import { snapshot } from './snapshot.js';
-import { push } from './pushpull.js';
+import { push, PushLocatorWriteError } from './pushpull.js';
 import { BACKEND_NAMES } from './backends/index.js';
 import { exists, errMsg } from './util.js';
 import type { CliOptions } from './types.js';
@@ -387,13 +387,40 @@ export async function init(_o: CliOptions): Promise<void> {
       // would pass on the command line. The gate itself is UNCHANGED and still fires
       // for anyone who does not go through this confirmation (push.ts is untouched).
       if (paid) pushOpts.yes = true;
-      await push(pushOpts);
-      // Push has now durably happened — see the pushSucceeded declaration above for
-      // why the catch block's rollback boundary hinges on exactly this line.
-      pushSucceeded = true;
-      pushedBackend = backend;
-      pushedLocatorPath = locatorPath;
-      const savedLocatorLine = (await readFile(locatorPath, 'utf8')).split('\n').find((l) => l.trim()) ?? '';
+      let savedLocatorLine: string;
+      try {
+        await push(pushOpts);
+        // Push has now durably happened — see the pushSucceeded declaration above for
+        // why the catch block's rollback boundary hinges on exactly this line.
+        pushSucceeded = true;
+        pushedBackend = backend;
+        pushedLocatorPath = locatorPath;
+        savedLocatorLine = (await readFile(locatorPath, 'utf8')).split('\n').find((l) => l.trim()) ?? '';
+      } catch (pushErr) {
+        if (pushErr instanceof PushLocatorWriteError) {
+          // The upload itself (backend.put()) already succeeded — see
+          // PushLocatorWriteError's own doc comment in pushpull.ts. The remote
+          // artifact durably exists (permanently, on arweave/turbo) even though
+          // locatorPath was never written, so this is exactly as unrollbackable as
+          // an ordinary successful push: flip pushSucceeded so the outer catch below
+          // preserves the identities/snapshot instead of deleting them, but leave
+          // pushedLocatorPath null (there genuinely is no locator FILE on disk this
+          // time — only the value inside pushErr.locator, which the thrown error
+          // below surfaces for the operator to record by hand).
+          pushSucceeded = true;
+          pushedBackend = backend;
+          pushedLocatorPath = null;
+          throw new Error(
+            `${pushErr.message}\nACTION REQUIRED: the upload already happened and cannot be undone — hand-record ` +
+            `this locator now, since --save-locator itself failed to: locator="${pushErr.locator}" backend="${backend}". ` +
+            `Without recording it, this snapshot is unrecoverable even though it durably exists in the backend.`,
+          );
+        }
+        // Any other push() failure (declined paid-backend consent, a network error
+        // during backend.put() itself, etc.) means the upload never happened —
+        // pushSucceeded stays false and the pre-push rollback path below still fires.
+        throw pushErr;
+      }
 
       // ---------- recovery kit ----------
       const primaryRecipient = (await readFile(RECIPIENT, 'utf8')).trim();
@@ -461,9 +488,14 @@ export async function init(_o: CliOptions): Promise<void> {
           ...(backup ? [`backup identity: ${backup.identityPath}`, `backup recipient: ${backup.recipientPath}`] : []),
           ...(snapshotOutPath ? [`snapshot: ${snapshotOutPath}`] : []),
         ].join('; ');
+        // pushedLocatorPath is null exactly when PushLocatorWriteError fired above:
+        // the upload succeeded but --save-locator's own file was never written, so
+        // there is no path to print here — printing the literal `null` would read as
+        // a bug rather than the "go read the error below" instruction it actually is.
+        const locatorNote = pushedLocatorPath ? `locator saved: ${pushedLocatorPath}` : 'NOT SAVED — see error below for the value to record by hand';
         throw new Error(
           `cipher-brain init: the snapshot was already created and pushed to "${pushedBackend}" successfully ` +
-          `(locator saved: ${pushedLocatorPath}).${permanentNote} A LATER step (the recovery kit) then failed: ` +
+          `(${locatorNote}).${permanentNote} A LATER step then failed: ` +
           `${errMsg(err)}\nNothing was rolled back — these files are PRESERVED and must NOT be deleted: ${preserved}. ` +
           `Fix the cause above, then either construct the recovery kit by hand from those paths (see ` +
           `MANAGEMENT.md), or re-run "cipher-brain init" once you have moved/backed up the above yourself — it ` +

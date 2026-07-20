@@ -514,8 +514,8 @@ export async function init(_o: CliOptions): Promise<void> {
         throw new Error(`unknown backend "${backend}" — valid choices: ${BACKEND_NAMES.join(', ')}`);
       }
       const paid = backend === 'arweave' || backend === 'turbo';
-      // #161: check for a funded-enough-to-attempt wallet BEFORE the "spends real
-      // funds" consent prompt below, not after. Without this, a user who picks
+      // #161: check a wallet FILE is present BEFORE the "spends real funds" consent
+      // prompt below, not after. Without this, a user who picks
       // arweave/turbo with no CIPHER_BRAIN_AR_WALLET set sails past that consent
       // prompt, then fails deep inside push() ("arweave put needs
       // CIPHER_BRAIN_AR_WALLET ...") — pushSucceeded stays false, and the catch

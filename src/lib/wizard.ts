@@ -394,7 +394,7 @@ export async function init(_o: CliOptions): Promise<void> {
       }
 
       // ---------- 3. passphrase wrap the primary identity (MANAGEMENT.md Key recovery #2) ----------
-      console.log('\n== 3/6: protect the primary identity at rest ==');
+      console.log('\n== 3/6: protect the primary identity at rest (recommended) ==');
       console.log(
         'The identity file just written is a bare secret guarded only by file permissions (0600) — anyone who\n' +
         'copies it off this machine can decrypt every snapshot. A passphrase wrap (scrypt, the same "keygen\n' +

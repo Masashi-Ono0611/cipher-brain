@@ -127,14 +127,17 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       when unchanged. (The digest is plaintext-side by necessity: age's ephemeral file
       key makes identical content encrypt to different ciphertext bytes every run.)
 
-  cipher-brain pull (--locator <id> --backend <…> | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>]
+  cipher-brain pull (--locator <id> --backend <…> | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>] [--force]
       Fetch ciphertext by locator into --out. --from-locator-file reads the locator, its
       backend AND the saved sha256 from a file written by push --save-locator (the recovery
       path: identity + this file are all a fresh machine needs; the saved sha256 is applied
       as the integrity pin automatically). --wait retries while the item is not yet
       retrievable (a fresh Turbo/Arweave upload takes ~5-8 min to propagate); default 0.
       --sha256 fail-closes the fetch: the bytes must match the expected hash (sourced
-      out-of-band from a trusted index) or --out is deleted and pull errors.
+      out-of-band from a trusted index) or pull errors, having written nothing to --out.
+      No-clobber by default: refuses to overwrite an existing --out (the recovery steps
+      above reuse a fixed filename, so a second pull could otherwise destroy the first
+      one's result) — pass --force to overwrite it anyway.
 
   cipher-brain schedule install --backend <file|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
                                 [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...

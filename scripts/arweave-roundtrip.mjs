@@ -166,6 +166,21 @@ try {
     ? pass('--wait retries while not retrievable, then fails for a truly-missing id')
     : fail(`--wait did not retry as expected: status=${w.status} stderr=${(w.stderr || '').slice(0, 160)}`);
 
+  // CIPHER_BRAIN_PULL_RETRY_MS=0 (#108): a bare `Number(env) || 30000` treats the
+  // numeric string "0" as falsy and silently substitutes the 30000ms default — the
+  // regression this asserts against. With retryMs genuinely honored as 0, each retry's
+  // naptime is `Math.min(0, remaining)` = 0, so a --wait budget fills with many attempts
+  // back-to-back; with the bug, naptime is `Math.min(30000, remaining)` = remaining (the
+  // whole budget), so only ONE retry ever fires. Count "pull attempt" lines in stderr —
+  // far more than the ~2 the buggy 30000ms interval could produce in this budget proves
+  // "0" was respected, not silently overridden.
+  const zEnv = { ...env, CIPHER_BRAIN_PULL_RETRY_MS: '0' };
+  const z = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', 'D'.repeat(43), '--backend', 'arweave', '--out', join(tmp, 'z.age'), '--wait', '3'], { env: zEnv, encoding: 'utf8' });
+  const zAttempts = (z.stderr.match(/pull attempt/g) || []).length;
+  (z.status !== 0 && zAttempts >= 5)
+    ? pass(`CIPHER_BRAIN_PULL_RETRY_MS=0 is honored as an immediate retry (${zAttempts} attempts in a 3s --wait budget, not the ~2 a silently-defaulted 30000ms interval would allow)`)
+    : fail(`CIPHER_BRAIN_PULL_RETRY_MS=0 did not behave as an immediate retry: status=${z.status} attempts=${zAttempts} stderr=${(z.stderr || '').slice(0, 200)}`);
+
   // multi-gateway (#21): the first gateway is dead, the second (arlocal) serves — the
   // read loop must move past the dead gateway to produce the bytes. AR_PORT=1 dead-ends
   // the L1 chunk fallback so ONLY gateway-2's HTTP read can satisfy this (otherwise the

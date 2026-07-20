@@ -75,10 +75,19 @@ function expandHome(path: string): string {
   return path;
 }
 
+// An unrecognized answer (a typo, "yeah"/"sure", anything other than a y/n form) must
+// NEVER be silently coerced to false: several callers below default to true for a
+// security-relevant prompt (e.g. the offline backup keypair, #96's motivating case),
+// so a misread "no" there would quietly skip the tool's main defense against identity
+// loss with no indication anything went wrong. Re-prompt instead of guessing.
 async function askYesNo(rl: Rl, question: string, def: boolean): Promise<boolean> {
-  const answer = (await askLine(rl, `${question} [${def ? 'Y/n' : 'y/N'}] `)).toLowerCase();
-  if (!answer) return def;
-  return answer === 'y' || answer === 'yes';
+  for (;;) {
+    const answer = (await askLine(rl, `${question} [${def ? 'Y/n' : 'y/N'}] `)).toLowerCase();
+    if (!answer) return def;
+    if (answer === 'y' || answer === 'yes') return true;
+    if (answer === 'n' || answer === 'no') return false;
+    console.log(`Please answer "y" or "n" (or press Enter for the default).`);
+  }
 }
 
 // The recovery kit is a long-lived, physically-stored document, and a Postgres

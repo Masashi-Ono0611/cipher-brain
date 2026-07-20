@@ -16,15 +16,14 @@ Thanks for sending a PR! Quick checklist below.
 
 ## Architecture impact
 
-<!--
-Tick whichever applies; leave others unchecked:
+<!-- Tick whichever applies; leave others unchecked. -->
+
 - [ ] Touches key handling (identity/recipient generation, storage, permissions)
 - [ ] Touches a storage backend (`file`, `arweave`/`turbo`)
 - [ ] Touches `src/mcp.ts` (MCP server contract / tool surface)
 - [ ] Changes the CLI's public flags/subcommands
 - [ ] Changes signal handling (SIGINT/SIGTERM/SIGHUP) or atomic write paths
 - [ ] Pure docs / templates / CI
--->
 
 ## Multi-model review
 

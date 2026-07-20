@@ -11,9 +11,10 @@ key-management tool.
 ## Supported versions
 
 This is a young, fast-moving, single-maintainer project without long-term
-support branches. Only the **latest published version** (see the `version`
-field in [`package.json`](package.json), or `npx cipher-brain --version`)
-receives security fixes.
+support branches. Only the **latest published version** receives security
+fixes. The CLI has no `--version` flag yet — check the `version` field in
+[`package.json`](package.json), the version pinned in your lockfile, or
+`npm view cipher-brain version` for what's current on the registry.
 
 | Version | Security fixes |
 |---|---|
@@ -32,7 +33,8 @@ advisory. Include:
 1. A description of the issue and its impact.
 2. Reproduction steps (or a PoC). Never include real identity files, recipient
    files, or unencrypted snapshot contents in a report — use synthetic data.
-3. The affected version (`cipher-brain --version`).
+3. The affected version (see the `version` field in `package.json` or your
+   lockfile — the CLI has no `--version` flag yet).
 4. Your suggested fix, if any.
 
 ## Threat model — what's in scope

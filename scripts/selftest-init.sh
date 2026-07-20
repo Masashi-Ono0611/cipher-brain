@@ -810,5 +810,30 @@ CIPHER_BRAIN_HOME="$PG2_CB_HOME" cb restore --in "$PG2_SNAP" --out-dir "$PG2_RES
 if [ -f "$PG2_RESTORE_DIR/db.dump" ]; then echo "[FAIL] declining the Postgres prompt still produced a db.dump component"; exit 1; fi
 echo "[PASS] declining the gbrain-detected Postgres prompt (auto-detect defaults to yes, but a real 'n' is honored) proceeds without --pg — no db.dump, kit says not included"
 
+echo "== (n) askYesNo re-prompts on an unrecognized answer instead of silently defaulting to no (issue #96) =="
+# "Generate an offline backup keypair now?" defaults to YES (the tool's own main
+# defense against identity loss) — an unrecognized answer like "yeah" must NOT be
+# silently read as "no". Prove it re-prompts, and that the corrected 'n' answer is
+# the one actually honored (not the unrecognized "yeah").
+REPROMPT_HOME="$TMP/reprompt-home"
+cat > "$TMP/qa-reprompt.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "yeah"],
+  ["Please answer", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", ""]
+]
+JSON
+if CIPHER_BRAIN_HOME="$REPROMPT_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-reprompt.json" --out "$TMP/reprompt.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
+  echo "[FAIL] init accepted an empty directory list for profile=none (unexpected pass on the re-prompt path)"; cat "$TMP/reprompt.log"; exit 1
+fi
+grep -qi 'Please answer' "$TMP/reprompt.log" || { echo "[FAIL] an unrecognized answer ('yeah') did not trigger a re-prompt"; cat "$TMP/reprompt.log"; exit 1; }
+grep -qi 'Skipping the backup key' "$TMP/reprompt.log" || { echo "[FAIL] the re-prompted 'n' answer was not honored (backup key generation was not skipped)"; cat "$TMP/reprompt.log"; exit 1; }
+echo "[PASS] an unrecognized yes/no answer re-prompts instead of silently defaulting to 'no', and the corrected answer is the one honored"
+
 echo
 echo "INIT SELFTEST PASS"

@@ -21,9 +21,12 @@ npx cipher-brain init   # interactive wizard: keygen -> backup key -> first snap
 - **backend** — pluggable `push`/`pull` storage behind one interface: `file`
   (local, dev/CI), `turbo` (recommended — Arweave via a bundler, ETH/USDC),
   `arweave` (raw L1, small artifacts only).
-- **recovery kit** — the printable artifact `init` produces: a passphrase-wrapped
-  backup identity, the latest locator, and restore steps, usable from a machine
-  that has never seen this repo.
+- **recovery kit** — the printable artifact `init` produces: the backup identity
+  (raw, not passphrase-wrapped — keep the kit itself physically secure), the
+  latest locator, and restore steps. Kit-only recovery on a fresh machine needs
+  both the backup key (`init` defaults to generating one, but it can be
+  declined) and a portable backend (`turbo`/`arweave` — `file` locators are
+  machine-local).
 
 ## Everyday commands
 

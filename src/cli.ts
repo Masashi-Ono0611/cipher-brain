@@ -33,6 +33,7 @@ import { push, pull } from './lib/pushpull.js';
 import { schedule } from './lib/schedule.js';
 import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
+import { printMascot } from './lib/ui.js';
 import type { CliOptions } from './lib/types.js';
 
 const BOOL_FLAGS = new Set(['force', 'passphrase', 'wrap_in_place', 'yes', 'force_vault', 'skip_unchanged', 'no_load']); // flags that take no value
@@ -198,7 +199,10 @@ async function main(): Promise<void> {
     case 'push': return push(o);
     case 'pull': return pull(o);
     case 'schedule': return schedule(o);
-    case 'help': case '--help': case '-h': case undefined: console.log(HELP); return;
+    // mascot on stderr (decoration only, EPIPE-safe — see printMascot in
+    // ui.ts), HELP text stays on stdout so `cipher-brain --help | grep …`
+    // still sees only the HELP text on its stdin.
+    case 'help': case '--help': case '-h': case undefined: printMascot('neutral'); console.log(HELP); return;
     default: console.error(`unknown command: ${cmd}\n`); console.log(HELP); process.exitCode = 2;
   }
 }

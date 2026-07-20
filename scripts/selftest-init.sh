@@ -647,7 +647,7 @@ echo "== THE DRILL (issue #68 acceptance criterion 2): kit-ONLY restore on a sim
 # is extracted and used; the wizard's live CIPHER_BRAIN_HOME/BACKUP_HOME above are
 # never read from here on. The file backend's store dir stands in for "the network"
 # (same precedent selftest-recovery.sh uses for its own disk-death simulation) — a
-# fresh machine in real life would reach arweave/turbo/ton over the network instead.
+# fresh machine in real life would reach arweave/turbo over the network instead.
 DRILL="$TMP/drill-fresh-machine"; mkdir -p "$DRILL"
 
 # Exact-line-anchored (^...$) so the human-readable prose in the kit's "RECOVERY

@@ -34,7 +34,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --ton:#0098EA; --ton-deep:#0077C0; --ton-tint:#E6F6FE;
+    --accent:#0098EA; --accent-deep:#0077C0; --accent-tint:#E6F6FE;
     --ink:#11151A; --muted:#5B6B78; --faint:#95A3AE;
     --line:#E4EAEF; --bg:#FFFFFF; --surface:#F5F9FC;
     --green:#1A7F4B; --green-tint:#EAF6EF; --green-line:#BFE3CE;
@@ -58,22 +58,22 @@
   .hero-mascot{flex:0 0 auto; margin-left:auto;}
   .hero-mascot img{display:block; width:172px; height:172px;}
   @media(max-width:620px){ .hero-mascot{margin:0 auto;} .hero-mascot img{width:128px; height:128px;} }
-  .kicker{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--ton); font-weight:600; margin-bottom:22px;}
+  .kicker{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); font-weight:600; margin-bottom:22px;}
   h1{font-size:70px; font-weight:800; letter-spacing:-.035em; line-height:1.02; margin-bottom:22px;}
-  h1 .accent{color:var(--ton);}
+  h1 .accent{color:var(--accent);}
   .tagline{font-size:27px; font-weight:500; letter-spacing:-.015em; line-height:1.32; max-width:720px;}
-  .tagline strong{color:var(--ton); font-weight:700;}
+  .tagline strong{color:var(--accent); font-weight:700;}
   .sub{font-size:16.5px; color:var(--muted); margin-top:20px; max-width:690px;}
-  .sub code{color:var(--ton-deep);}
+  .sub code{color:var(--accent-deep);}
   .sub b{color:var(--ink); font-weight:600;}
   /* ---------- section scaffold ---------- */
   section{padding:62px 0; border-bottom:1px solid var(--line);}
   .label{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--faint); font-weight:600; margin-bottom:16px;}
-  .label .n{color:var(--ton);}
+  .label .n{color:var(--accent);}
   h2{font-size:35px; font-weight:700; letter-spacing:-.025em; line-height:1.18; margin-bottom:18px;}
   .lead{font-size:17.5px; color:var(--muted); max-width:740px;}
   .lead strong{color:var(--ink); font-weight:600;}
-  .lead code{color:var(--ton-deep); font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:.92em;}
+  .lead code{color:var(--accent-deep); font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:.92em;}
 
   /* ---------- diagram frame ---------- */
   .fig{margin:38px 0 8px; background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:30px 26px;}
@@ -82,7 +82,7 @@
   .svg-l{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; fill:var(--muted);}
   .svg-t{font-family:"Geist",-apple-system,sans-serif; font-size:13px; fill:var(--ink); font-weight:700;}
   .svg-s{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:11px; fill:var(--faint);}
-  .svg-a{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12.5px; fill:var(--ton); font-weight:700;}
+  .svg-a{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12.5px; fill:var(--accent); font-weight:700;}
   .svg-g{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; fill:var(--green); font-weight:700;}
   .svg-r{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; fill:#C0392B; font-weight:700;}
 
@@ -90,7 +90,7 @@
   .pillars{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:36px;}
   .pillar{border:1px solid var(--line); border-radius:12px; padding:22px 20px; background:var(--bg);}
   .pillar .pt{font-size:17px; font-weight:700; margin-bottom:7px; letter-spacing:-.01em;}
-  .pillar .pt span{color:var(--ton);}
+  .pillar .pt span{color:var(--accent);}
   .pillar .pd{font-size:14px; color:var(--muted); line-height:1.5;}
   .pillar .pd b{color:var(--ink); font-weight:600;}
 
@@ -98,25 +98,25 @@
   .steps{display:flex; flex-direction:column; gap:20px; margin-top:36px;}
   .step{border:1px solid var(--line); border-radius:12px; padding:22px 22px 20px; background:var(--bg);}
   .step .st{font-size:17px; font-weight:700; letter-spacing:-.01em; margin-bottom:6px;}
-  .step .st .k{color:var(--ton); font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; font-weight:600; letter-spacing:.06em; margin-right:10px;}
+  .step .st .k{color:var(--accent); font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; font-weight:600; letter-spacing:.06em; margin-right:10px;}
   .badge{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:11px; font-weight:700; border-radius:6px; padding:1px 8px; margin-left:8px; vertical-align:middle;}
   .badge.done{color:var(--green); background:var(--green-tint); border:1px solid var(--green-line);}
   .badge.next{color:var(--amber); background:var(--amber-tint); border:1px solid var(--amber-line);}
   .step .sd{font-size:14.5px; color:var(--muted); line-height:1.55; margin-bottom:15px;}
   .step .sd b{color:var(--ink); font-weight:600;}
-  .step .sd code{color:var(--ton-deep); font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:.9em;}
+  .step .sd code{color:var(--accent-deep); font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:.9em;}
   .cmd{background:var(--ink); border-radius:10px; padding:15px 17px; font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12.5px; line-height:1.7; color:#E8F1F8; overflow-x:auto; white-space:pre;}
   .cmd .c{color:#7E93A3;}                          /* comment */
   .cmd .p{color:#0098EA; user-select:none;}        /* prompt $ */
   .cmd .f{color:#7FD0A8;}                           /* flag / string */
-  .note{font-size:13.5px; color:var(--muted); margin-top:26px; line-height:1.7; padding:16px 18px; background:var(--ton-tint); border:1px solid #B9E4F8; border-radius:10px;}
-  .note b{color:var(--ton-deep);}
+  .note{font-size:13.5px; color:var(--muted); margin-top:26px; line-height:1.7; padding:16px 18px; background:var(--accent-tint); border:1px solid #B9E4F8; border-radius:10px;}
+  .note b{color:var(--accent-deep);}
 
   /* ---------- footer ---------- */
   footer{padding:46px 0 0;}
   .foot-links{display:flex; flex-wrap:wrap; gap:10px 22px; font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:13px;}
   .foot-links a{color:var(--muted); text-decoration:none; border-bottom:1px solid var(--line); padding-bottom:1px;}
-  .foot-links a:hover{color:var(--ton); border-color:var(--ton);}
+  .foot-links a:hover{color:var(--accent); border-color:var(--accent);}
   .foot-note{font-size:12.5px; color:var(--faint); margin-top:24px; font-family:"Geist Mono",ui-monospace,Menlo,monospace; line-height:1.7;}
 
   @media(max-width:720px){
@@ -292,7 +292,7 @@
   <section>
     <div class="label"><span class="n">04</span> &nbsp;Why Arweave</div>
     <h2>Permanence you buy once &mdash; not uptime you have to babysit</h2>
-    <p class="lead">A backup must outlive your attention. Arweave funds <strong>perpetual replication from a one-time upload fee</strong> &mdash; no contracts to renew, no server to keep alive &mdash; and getting the bytes back is a <strong>plain HTTP fetch from any gateway</strong>. TON Storage remains an <strong>experimental</strong> backend for operators already running a seeder: a 2026-06 probe found the TON mainnet storage-provider market empty, so durability there is something you operate, not something you can buy.</p>
+    <p class="lead">A backup must outlive your attention. Arweave funds <strong>perpetual replication from a one-time upload fee</strong> &mdash; no contracts to renew, no server to keep alive &mdash; and getting the bytes back is a <strong>plain HTTP fetch from any gateway</strong>.</p>
     <div class="pillars">
       <div class="pillar"><div class="pt"><span>Pay-once permanence</span></div><div class="pd">One upload fee funds an endowment that pays for replication &mdash; the archive survives your neglect by design.</div></div>
       <div class="pillar"><div class="pt"><span>Recovery = plain HTTP</span></div><div class="pd">No wallet, no SDK &mdash; a fresh machine restores with just the tx id and your key; any public gateway serves the bytes.</div></div>
@@ -328,13 +328,12 @@
 <span class="p">$ </span>cipher-brain push <span class="f">--in</span> brain.age <span class="f">--backend</span> turbo</div>
       </div>
     </div>
-
-    <div class="note"><b>Where the experimental edge is:</b> a <code>ton</code> backend also ships and works against a real <code>storage-daemon</code>, but a 2026-06 re-probe found the TON mainnet storage-provider market <b>empty</b> &mdash; durability there means running your own seeder &mdash; so that path is iceboxed and marked experimental. We say it plainly because <b>a backup you have to babysit is not a backup</b> &mdash; the mainline is Arweave, where permanence is bought once.</div>
   </section>
 
   <!-- ============ FOOTER ============ -->
   <footer>
     <div class="foot-links">
+      <a href="hosting-explained.html">Hosting &amp; censorship resistance, explained</a>
       <a href="https://github.com/Masashi-Ono0611/cipher-brain">cipher-brain on GitHub</a>
       <a href="https://age-encryption.org">age encryption</a>
       <a href="https://arweave.org">Arweave</a>

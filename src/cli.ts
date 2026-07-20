@@ -18,8 +18,8 @@
 // size of the snapshot, so point TMPDIR at a disk with room for large brains.
 //
 // Backend-agnostic: this produces ONE encrypted artifact (`*.age`). Where those
-// bytes get parked (TON Storage / Arweave / anything) is a separate, pluggable
-// concern — storage only ever sees ciphertext.
+// bytes get parked (Arweave / anything) is a separate, pluggable concern —
+// storage only ever sees ciphertext.
 //
 // This entry point holds arg parsing + command dispatch; the implementation lives
 // in src/lib/ (config, proc, util, signal-guard, identity, snapshot, restore,
@@ -100,9 +100,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       bundle. --sha256 also pins the artifact to an expected hash. VERDICT: PASS (exit 0)
       / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not proven, e.g. public-key-only box).
 
-  cipher-brain push --in <file.age> --backend <file|ton|arweave|turbo> [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
+  cipher-brain push --in <file.age> --backend <file|arweave|turbo> [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
       Upload ciphertext to storage. Prints ONLY the locator to stdout
-      (file: store path; ton: hex BagID; arweave: tx id; turbo: ANS-104 data item id).
+      (file: store path; arweave: tx id; turbo: ANS-104 data item id).
       Storage sees ciphertext only.
       arweave/turbo are paid permanent stores — require --yes or CIPHER_BRAIN_YES=1;
       turbo prints a winc/AR cost estimate plus an approximate USD line before uploading.
@@ -111,7 +111,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       always holds the LATEST + an integrity pin; legacy 3/4-field files are still
       accepted everywhere). Back this file up off-box next to your identity: it is the
       durable pointer a fresh machine needs to find the most recent snapshot. (For the
-      file backend the locator is a LOCAL store path — only ton/arweave/turbo locators
+      file backend the locator is a LOCAL store path — only arweave/turbo locators
       are portable to another machine.)
       --skip-unchanged (requires --save-locator): skips ONLY when BOTH (a) the
       snapshot's PLAINTEXT content digest — read from the "<in>.digest" sidecar
@@ -136,7 +136,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       --sha256 fail-closes the fetch: the bytes must match the expected hash (sourced
       out-of-band from a trusted index) or --out is deleted and pull errors.
 
-  cipher-brain schedule install --backend <file|ton|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
+  cipher-brain schedule install --backend <file|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
                                 [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
                                 [--vault <path>] [--zip <path>] [--save-locator <path>] [--index-file <path>]
       Make the nightly snapshot+push unattended. Writes a runner script
@@ -165,7 +165,7 @@ Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_PG_BIN (dir of pg
      CIPHER_BRAIN_PASSPHRASE (non-interactive passphrase for a wrapped identity — automation/CI; otherwise prompted on the TTY).
      CIPHER_BRAIN_PIN_RECIPIENTS (snapshot: allowlist of age1… pubkeys, inline or a file — refuse to encrypt to any other recipient).
      CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 (init: bypass its TTY requirement — automation/CI only, e.g. this repo's own selftest; a human just runs init directly in a terminal).
-Storage: CIPHER_BRAIN_FILE_DIR (file); CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT} (ton);
+Storage: CIPHER_BRAIN_FILE_DIR (file);
          CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none);
          turbo: CIPHER_BRAIN_AR_WALLET (JWK signer) + optional CIPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
 Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the turbo estimate (winc).`;

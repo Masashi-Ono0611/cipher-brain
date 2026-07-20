@@ -1,8 +1,8 @@
 // cipher-brain-mcp — MCP server so an AI agent can snapshot/verify its own brain.
 //
-// Second entry point next to src/cli.ts (same shape as ton-mesh-harness's CLI +
-// MCP two-face design). Every tool is a thin wrapper over the SAME src/lib
-// functions the CLI dispatches to — no re-implemented logic, no shelling out.
+// Second entry point next to src/cli.ts (a CLI + MCP two-face design). Every
+// tool is a thin wrapper over the SAME src/lib functions the CLI dispatches
+// to — no re-implemented logic, no shelling out.
 //
 // Transport: stdio only. Stdout is MCP JSON-RPC framing; the lib functions
 // print progress via console.log/console.error, so tool handlers run inside
@@ -39,7 +39,7 @@ import type { CliOptions } from './lib/types.js';
 const SERVER_NAME = 'cipher-brain-mcp';
 const SERVER_VERSION = '0.0.1'; // keep in sync with package.json "version"
 
-const BACKENDS = ['file', 'ton', 'arweave', 'turbo'];
+const BACKENDS = ['file', 'arweave', 'turbo'];
 const PAID_BACKENDS = new Set(['arweave', 'turbo']);
 // arweave/turbo locators are post-assigned tx/upload ids, NOT content hashes —
 // pulling by bare locator cannot detect a rolled-back/substituted (yet still
@@ -154,7 +154,7 @@ const SNAPSHOT_NOW_TOOL: Tool = {
   description:
     '⚠ CAN SPEND MONEY (only tool in this server that can). Take an encrypted age snapshot of ' +
     'directories and/or a Postgres database, and optionally push the ciphertext to a storage ' +
-    'backend. Backends "file" and "ton" are free; "arweave" and "turbo" are PAID, PERMANENT ' +
+    'backend. Backend "file" is free; "arweave" and "turbo" are PAID, PERMANENT ' +
     'stores — pushing to them REQUIRES confirm_paid=true (the MCP equivalent of the CLI --yes ' +
     'guard; the CIPHER_BRAIN_YES env escape hatch is NOT honored here, so nothing can be spent ' +
     'without an explicit confirm_paid in the call). Snapshotting itself needs only the PUBLIC ' +
@@ -166,7 +166,7 @@ const SNAPSHOT_NOW_TOOL: Tool = {
       pg: { type: 'string', description: 'Postgres connection string to pg_dump into the snapshot.' },
       recipients: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'age recipients (age1… pubkey or a recipients file path). Pass 2+ (primary + offline backup) for key recovery.' },
       out: { type: 'string', description: 'Output path for the .age ciphertext (must not already exist — no-clobber).' },
-      backend: { type: 'string', enum: BACKENDS, description: 'When given, push the snapshot: file|ton (free) or arweave|turbo (PAID — needs confirm_paid).' },
+      backend: { type: 'string', enum: BACKENDS, description: 'When given, push the snapshot: file (free) or arweave|turbo (PAID — needs confirm_paid).' },
       locator_file: { type: 'string', description: 'Path for push --save-locator: writes "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]" (the durable recovery pointer; back it up off-box).' },
       confirm_paid: { type: 'boolean', description: 'REQUIRED true to push to arweave/turbo. Confirms you accept an irreversible, real-money upload.' },
     },
@@ -229,8 +229,8 @@ const ESTIMATE_COST_TOOL: Tool = {
     'Read-only, spends nothing (price queries only). Estimate what pushing a payload of the ' +
     'given size to a backend would cost: turbo → Turbo upload cost in winc via @ardrive/turbo-sdk ' +
     '(<100KB is free; a clear note is returned when that optional dependency is not installed); ' +
-    'arweave → network price in winston from the gateway /price endpoint; file/ton → free ' +
-    '(local disk / self-hosted TON storage), returned with a zero-cost note. For turbo/arweave an ' +
+    'arweave → network price in winston from the gateway /price endpoint; file → free ' +
+    '(local disk), returned with a zero-cost note. For turbo/arweave an ' +
     'approximate usd_estimate field is included when a USD/AR rate is fetchable (omitted on any ' +
     'rate failure — the native estimate never fails because of it).',
   inputSchema: {
@@ -469,14 +469,12 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
     size = Math.ceil(sizeBytes);
   }
 
-  if (backend === 'file' || backend === 'ton') {
+  if (backend === 'file') {
     return structuredOk({
       backend,
       size_bytes: size,
       cost: '0',
-      note: backend === 'file'
-        ? 'file backend is a local content-addressed store — no upload cost (disk space only).'
-        : 'ton backend uploads to a self-hosted TON storage daemon — no per-upload payment (you run the infrastructure).',
+      note: 'file backend is a local content-addressed store — no upload cost (disk space only).',
     });
   }
 

@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0098EA">
+<meta name="color-scheme" content="light">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<title>Where Should Your Data Live? — The Basics of Hosting and Censorship-Resistant Servers</title>
+<meta name="description" content="A visual primer on hosting, censorship resistance, and how Cipher Brain applies it: encrypt first, then park it somewhere it can't be erased.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --accent:#0098EA; --accent-deep:#0077C0; --accent-tint:#E6F6FE;
+    --ink:#11151A; --muted:#5B6B78; --faint:#95A3AE;
+    --line:#E4EAEF; --bg:#FFFFFF; --surface:#F5F9FC;
+    --green:#1A7F4B; --green-tint:#EAF6EF; --green-line:#BFE3CE;
+    --amber:#8A6D1B; --amber-tint:#FBF3DD; --amber-line:#E7D4A0;
+    --bad:#C0392B; --bad-tint:#FBECEA; --bad-line:#F0C9C3;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html{-webkit-font-smoothing:antialiased; scroll-behavior:smooth;}
+  body{
+    background:linear-gradient(180deg,#E8F6FE 0%,#FFFFFF 240px);
+    color:var(--ink);
+    font-family:"Geist","Noto Sans JP","Hiragino Sans",-apple-system,Arial,sans-serif;
+    line-height:1.6; font-size:16px;
+  }
+  .wrap{max-width:940px; margin:0 auto; padding:0 28px 100px;}
+  .mono{font-family:"Geist Mono",ui-monospace,Menlo,monospace;}
+
+  /* ---------- hero ---------- */
+  header{padding:72px 0 52px; border-bottom:1px solid var(--line);}
+  .hero-row{display:flex; align-items:center; gap:44px; flex-wrap:wrap;}
+  .hero-text{flex:1 1 440px; min-width:0;}
+  .hero-mascot{flex:0 0 auto; margin-left:auto;}
+  .hero-mascot img{display:block; width:172px; height:172px;}
+  @media(max-width:620px){ .hero-mascot{margin:0 auto;} .hero-mascot img{width:128px; height:128px;} }
+  .kicker{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); font-weight:600; margin-bottom:20px;}
+  h1{font-size:52px; font-weight:800; letter-spacing:-.03em; line-height:1.08; margin-bottom:22px;}
+  h1 .ac{color:var(--accent);}
+  .tagline{font-size:23px; font-weight:500; letter-spacing:-.015em; line-height:1.36; max-width:720px;}
+  .tagline strong{color:var(--accent); font-weight:700;}
+  .sub{font-size:16px; color:var(--muted); margin-top:18px; max-width:690px;}
+
+  /* ---------- section scaffold ---------- */
+  section{padding:58px 0; border-bottom:1px solid var(--line);}
+  section:last-of-type{border-bottom:none;}
+  .label{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--faint); font-weight:600; margin-bottom:14px;}
+  .label .n{color:var(--accent);}
+  h2{font-size:29px; font-weight:700; letter-spacing:-.02em; line-height:1.22; margin-bottom:14px;}
+  .lead{font-size:16.5px; color:var(--muted); max-width:760px;}
+  .lead strong{color:var(--ink); font-weight:600;}
+  code{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:.85em; background:var(--surface); border:1px solid var(--line); border-radius:5px; padding:1px 5px; color:var(--accent-deep);}
+
+  /* ---------- diagram frame ---------- */
+  .fig{margin:30px 0 6px; background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:28px 24px;}
+  .fig svg{display:block; width:100%; height:auto;}
+  .fig-cap{font-size:12.5px; color:var(--faint); margin-top:14px; text-align:center; font-family:"Geist Mono",ui-monospace,Menlo,monospace;}
+  .svg-t{font-family:"Geist",-apple-system,sans-serif; font-size:13px; fill:var(--ink); font-weight:600;}
+  .svg-s{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:10.5px; fill:var(--faint);}
+  .svg-l{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:11.5px; fill:var(--muted);}
+  .svg-o{font-family:"Geist",-apple-system,sans-serif; font-size:13px; fill:var(--accent); font-weight:700;}
+
+  /* ---------- pillars ---------- */
+  .pillars{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:28px;}
+  .pillar{border:1px solid var(--line); border-radius:12px; padding:18px; background:var(--bg);}
+  .pillar.hi{border-color:var(--accent); background:var(--accent-tint);}
+  .pillar.risk{border-color:var(--bad-line); background:var(--bad-tint);}
+  .pillar .pn{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:11px; color:var(--faint); display:block; margin-bottom:4px; letter-spacing:.08em;}
+  .pillar .pt{font-size:16px; font-weight:700; margin-bottom:6px; letter-spacing:-.01em;}
+  .pillar .pt span{color:var(--accent);}
+  .pillar.risk .pt span{color:var(--bad);}
+  .pillar .pd{font-size:13.5px; color:var(--muted); line-height:1.52;}
+  .pillar .pd b{color:var(--ink);}
+
+  /* ---------- stats ---------- */
+  .stats{display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:14px; overflow:hidden; margin-top:30px;}
+  .stat{background:var(--bg); padding:22px 20px;}
+  .stat .v{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:34px; font-weight:600; letter-spacing:-.03em; line-height:1;}
+  .stat .v .u{font-size:14px; color:var(--faint); font-weight:500; margin-left:3px;}
+  .stat .k{font-size:13px; color:var(--muted); margin-top:9px; line-height:1.45;}
+  .stat.accent .v{color:var(--accent);}
+  .stat.bad .v{color:var(--bad);}
+  .stat.good .v{color:var(--green);}
+
+  /* ---------- caps ---------- */
+  .caps{margin-top:26px; display:grid; grid-template-columns:repeat(2,1fr); gap:12px;}
+  .cap{display:flex; gap:14px; align-items:baseline; border:1px solid var(--line); border-radius:12px; padding:15px 18px;}
+  .cap .cv{font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:13px; font-weight:700; color:var(--accent); white-space:nowrap;}
+  .cap .cb{font-size:14px;} .cap .cb b{font-weight:700;}
+
+  .tag{display:inline-block; font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px; letter-spacing:.04em; vertical-align:middle; white-space:nowrap;}
+  .tag.good{background:var(--green-tint); color:var(--green); border:1px solid var(--green-line);}
+  .tag.warn{background:var(--amber-tint); color:var(--amber); border:1px solid var(--amber-line);}
+  .tag.bad{background:var(--bad-tint); color:var(--bad); border:1px solid var(--bad-line);}
+
+  table{width:100%; border-collapse:collapse; margin:26px 0 6px; font-size:14px; background:#fff; border:1px solid var(--line); border-radius:14px; overflow:hidden;}
+  th,td{padding:11px 13px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top;}
+  th{background:var(--surface); color:var(--ink); font-size:12.5px; font-weight:700;}
+  td:first-child,th:first-child{font-weight:700;}
+  tr:last-child td{border-bottom:0;}
+  .rate{font-weight:700; font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:15px;}
+  .r4{color:var(--green);} .r3{color:var(--accent);} .r2{color:var(--amber);} .r1{color:var(--bad);}
+  .rng{display:block; font-size:10.5px; color:var(--faint); font-weight:500; margin-top:2px; line-height:1.3; font-family:"Geist",-apple-system,sans-serif;}
+  .legend{background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px 18px; font-size:13.5px; margin-top:22px; line-height:1.9;}
+  .legend b{color:var(--accent);}
+
+  .ba{display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:28px;}
+  .ba .col{border-radius:14px; padding:20px; border:1px solid;}
+  .ba .col.before{background:var(--bad-tint); border-color:var(--bad-line);}
+  .ba .col.after{background:var(--green-tint); border-color:var(--green-line);}
+  .ba .col .clabel{font-weight:800; font-size:12px; font-family:"Geist Mono",ui-monospace,Menlo,monospace; letter-spacing:.06em; display:inline-block; padding:3px 10px; border-radius:6px; color:#fff; margin-bottom:10px;}
+  .ba .col.before .clabel{background:var(--bad);} .ba .col.after .clabel{background:var(--green);}
+  .ba .col ul{padding-left:18px;} .ba .col li{font-size:14px; margin:6px 0;}
+
+  /* ---------- footer ---------- */
+  footer{padding:46px 0 0;}
+  .foot-links{display:flex; flex-wrap:wrap; gap:10px 22px; font-family:"Geist Mono",ui-monospace,Menlo,monospace; font-size:13px;}
+  .foot-links a{color:var(--muted); text-decoration:none; border-bottom:1px solid var(--line); padding-bottom:1px;}
+  .foot-links a:hover{color:var(--accent); border-color:var(--accent);}
+  .foot-note{font-size:12.5px; color:var(--faint); margin-top:24px; font-family:"Geist Mono",ui-monospace,Menlo,monospace; line-height:1.7;}
+
+  @media(max-width:720px){
+    h1{font-size:38px;} .tagline{font-size:19px;} h2{font-size:24px;}
+    .pillars,.stats,.caps,.ba{grid-template-columns:1fr;}
+    table{font-size:12.5px;} th,td{padding:9px 8px;}
+  }
+  @media print{ *{ -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ HERO ============ -->
+  <header>
+    <div class="hero-row">
+      <div class="hero-text">
+        <div class="kicker">Cipher Brain · Background</div>
+        <h1>Is your data somewhere <span class="ac">someone else can delete</span>?</h1>
+        <p class="tagline">Ordinary cloud is convenient. But <strong>one company can delete it, read it, shut it down</strong>.<br>A way nobody can delete is now something you can choose.</p>
+        <p class="sub">What's a server? What's hosting? What is &ldquo;censorship resistance&rdquo;? &mdash; from the basics to comparing today's options, laid out in diagrams.</p>
+      </div>
+      <div class="hero-mascot"><img src="mascot.svg" width="172" height="172" alt="Cipher Brain mascot — a cypherpunk hooded dog in sunglasses"></div>
+    </div>
+    <div class="stats">
+      <div class="stat bad"><div class="v">1<span class="u">co.</span></div><div class="k">Ordinary cloud = the number of companies that can delete your data</div></div>
+      <div class="stat accent"><div class="v">Many</div><div class="k">Distributed storage = the number of computers sharing the data</div></div>
+      <div class="stat good"><div class="v">0<span class="u">ppl</span></div><div class="k">The censorship-resistance ideal = admins who alone can delete it</div></div>
+    </div>
+  </header>
+
+  <!-- ============ 01 BASICS ============ -->
+  <section>
+    <div class="label"><span class="n">01</span> &nbsp;First, the basics</div>
+    <h2>A server is &ldquo;a computer that's always on and reachable&rdquo;</h2>
+    <p class="lead">A website or a piece of data is, in the end, a file inside some computer. For anyone but you to see it, that box has to be <strong>(1) always powered on</strong> and <strong>(2) reachable from the internet</strong>. Keeping a box like that running is what <strong>hosting</strong> is.</p>
+
+    <div class="fig">
+      <svg viewBox="0 0 760 168" role="img" aria-label="How data reaches the world">
+        <rect x="20" y="50" width="190" height="68" rx="10" fill="#fff" stroke="#E4EAEF"/>
+        <text x="115" y="80" text-anchor="middle" class="svg-t">Your data</text>
+        <text x="115" y="99" text-anchor="middle" class="svg-s">site · photos · records</text>
+
+        <rect x="285" y="50" width="190" height="68" rx="10" fill="#E6F6FE" stroke="#0098EA" stroke-width="1.6"/>
+        <text x="380" y="76" text-anchor="middle" class="svg-o">Server</text>
+        <text x="380" y="93" text-anchor="middle" class="svg-s">always on</text>
+        <text x="380" y="107" text-anchor="middle" class="svg-s">reachable (public address)</text>
+
+        <rect x="550" y="50" width="190" height="68" rx="10" fill="#fff" stroke="#E4EAEF"/>
+        <text x="645" y="80" text-anchor="middle" class="svg-t">People worldwide</text>
+        <text x="645" y="99" text-anchor="middle" class="svg-s">access anytime</text>
+
+        <path d="M210 84 L283 84 M475 84 L548 84" stroke="#95A3AE" stroke-width="1.5" marker-end="url(#a1)"/>
+        <defs><marker id="a1" markerWidth="9" markerHeight="9" refX="5" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#95A3AE" stroke-width="1.4"/></marker></defs>
+        <text x="380" y="148" text-anchor="middle" class="svg-l">Power it off, or hide it somewhere unreachable (behind your home Wi-Fi), and the world can't see it</text>
+      </svg>
+      <div class="fig-cap">&ldquo;Hosting = someone keeping a box that's always on and reachable, running&rdquo;</div>
+    </div>
+
+    <div class="pillars">
+      <div class="pillar"><span class="pn">Condition 1</span><div class="pt"><span>Always on</span></div><div class="pd">If the box goes down, the data is effectively gone while it's down. <b>Running it 24/7</b> is hosting's job.</div></div>
+      <div class="pillar"><span class="pn">Condition 2</span><div class="pt"><span>Reachable</span></div><div class="pd">Most home computers sit behind the internet's back door, unreachable from outside. A <b>public address</b> is required.</div></div>
+      <div class="pillar"><span class="pn">Point 3</span><div class="pt">Who <span>controls</span> it?</div><div class="pd">Whoever holds that box &mdash; <b>that's the line between &ldquo;can be deleted&rdquo; and &ldquo;can't.&rdquo;</b></div></div>
+    </div>
+  </section>
+
+  <!-- ============ 02 NORMAL CLOUD ============ -->
+  <section>
+    <div class="label"><span class="n">02</span> &nbsp;The usual way</div>
+    <h2>Cloud (Google Cloud, AWS, etc.) = handing everything to one company</h2>
+    <p class="lead">The easiest option is to <strong>rent a big company's data center</strong>. A few clicks, fast, cheap, and pleasant to use &mdash; but that box belongs to <strong>that company</strong>. Your data is, in effect, <strong>deposited</strong> with them.</p>
+
+    <div class="fig">
+      <svg viewBox="0 0 760 176" role="img" aria-label="Cloud: one company holds everything centrally">
+        <rect x="40" y="64" width="150" height="58" rx="10" fill="#fff" stroke="#E4EAEF"/>
+        <text x="115" y="89" text-anchor="middle" class="svg-t">You</text>
+        <text x="115" y="107" text-anchor="middle" class="svg-s">deposit it</text>
+
+        <rect x="270" y="42" width="220" height="102" rx="12" fill="#FBECEA" stroke="#F0C9C3" stroke-width="1.6"/>
+        <text x="380" y="70" text-anchor="middle" class="svg-t" style="fill:#C0392B">One company's data center</text>
+        <rect x="298" y="84" width="164" height="44" rx="8" fill="#fff" stroke="#F0C9C3"/>
+        <text x="380" y="103" text-anchor="middle" class="svg-t">Your data</text>
+        <text x="380" y="119" text-anchor="middle" class="svg-s">the company can read it</text>
+
+        <text x="650" y="60" text-anchor="middle" class="svg-l" style="fill:#C0392B">This one company can&hellip;</text>
+        <text x="650" y="92" text-anchor="middle" class="svg-s" style="fill:#C0392B">✗ delete it</text>
+        <text x="650" y="112" text-anchor="middle" class="svg-s" style="fill:#C0392B">✗ read it</text>
+        <text x="650" y="132" text-anchor="middle" class="svg-s" style="fill:#C0392B">✗ shut it down</text>
+
+        <path d="M190 93 L268 93" stroke="#95A3AE" stroke-width="1.5" marker-end="url(#a2)"/>
+        <path d="M490 93 L560 93" stroke="#C0392B" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#a2r)"/>
+        <defs>
+          <marker id="a2" markerWidth="9" markerHeight="9" refX="5" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#95A3AE" stroke-width="1.4"/></marker>
+          <marker id="a2r" markerWidth="9" markerHeight="9" refX="5" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#C0392B" stroke-width="1.3"/></marker>
+        </defs>
+      </svg>
+      <div class="fig-cap">The price of convenience: &ldquo;the central company&rdquo; can delete or shut things down on a policy change, a report, or a legal order</div>
+    </div>
+
+    <div class="pillars">
+      <div class="pillar hi"><span class="pn">upside</span><div class="pt"><span>Simple, fast</span></div><div class="pd">Public in a few clicks. Speed and reliability at professional quality. <b>Best-in-class UX</b>.</div></div>
+      <div class="pillar hi"><span class="pn">upside</span><div class="pt"><span>Cheap</span>, hands-off</div><div class="pd">Pay for what you use. The company handles operations, so <b>zero hassle</b> for you.</div></div>
+      <div class="pillar risk"><span class="pn">weakness</span><div class="pt"><span>One company holds it</span></div><div class="pd"><b>That company can delete, read, and shut it down.</b> The data that matters most to you is the data you control least.</div></div>
+    </div>
+  </section>
+
+  <!-- ============ 03 WHAT IS CENSORSHIP RESISTANCE ============ -->
+  <section>
+    <div class="label"><span class="n">03</span> &nbsp;Key term</div>
+    <h2>&ldquo;Censorship resistance&rdquo; = removing anyone who can delete it alone</h2>
+    <p class="lead">Censorship resistance means <strong>no single place or person, if seized, can delete, read, or shut down your data</strong>. The trick is to remove the central admin &mdash; <strong>share the load across many participants</strong> instead. It's easiest to see on a centralized &harr; distributed scale.</p>
+
+    <div class="fig">
+      <svg viewBox="0 0 760 150" role="img" aria-label="A scale from centralized to distributed">
+        <defs>
+          <linearGradient id="spec" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="#C0392B"/><stop offset="0.5" stop-color="#8A6D1B"/><stop offset="1" stop-color="#1A7F4B"/>
+          </linearGradient>
+          <marker id="a3" markerWidth="9" markerHeight="9" refX="5" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#95A3AE" stroke-width="1.4"/></marker>
+        </defs>
+        <rect x="60" y="64" width="640" height="10" rx="5" fill="url(#spec)"/>
+        <circle cx="90" cy="69" r="7" fill="#C0392B"/>
+        <circle cx="600" cy="69" r="7" fill="#1A7F4B"/>
+        <circle cx="660" cy="69" r="7" fill="#1A7F4B"/>
+        <text x="70" y="44" class="svg-t" style="fill:#C0392B">Centralized</text>
+        <text x="70" y="100" class="svg-s" style="fill:#C0392B">one company holds it all</text>
+        <text x="90" y="116" class="svg-s">cloud</text>
+        <text x="690" y="44" text-anchor="end" class="svg-t" style="fill:#1A7F4B">Distributed</text>
+        <text x="690" y="100" text-anchor="end" class="svg-s" style="fill:#1A7F4B">shared across many</text>
+        <text x="640" y="116" text-anchor="middle" class="svg-s">distributed storage</text>
+        <text x="380" y="116" text-anchor="middle" class="svg-s">← easier to delete    harder to delete →</text>
+      </svg>
+      <div class="fig-cap">The further right, the fewer people who can delete it alone &mdash; the stronger the censorship resistance</div>
+    </div>
+
+    <p class="lead" style="margin-top:30px">Censorship resistance actually has <strong>three separate properties</strong>. Separating them makes each service's strengths and weaknesses clear.</p>
+    <div class="caps">
+      <div class="cap"><div class="cv">① Deletion resistance</div><div class="cb"><b>Can't be deleted.</b> Kill one host and the data survives</div></div>
+      <div class="cap"><div class="cv">② Privacy</div><div class="cb"><b>Can't be read.</b> i.e. you encrypt it yourself before it ever leaves your hands</div></div>
+      <div class="cap"><div class="cv">③ Naming</div><div class="cb"><b>Can't be seized.</b> A mechanism where the address (name) can't be taken from you</div></div>
+      <div class="cap"><div class="cv">Note</div><div class="cb"><b>Censorship resistance &ne; privacy.</b> &ldquo;Can't be deleted&rdquo; and &ldquo;can't be read&rdquo; are different things. You need encryption for both</div></div>
+    </div>
+  </section>
+
+  <!-- ============ 04 TWO WAYS ============ -->
+  <section>
+    <div class="label"><span class="n">04</span> &nbsp;How it's built</div>
+    <h2>The &ldquo;two shapes&rdquo; of a censorship-resistant server</h2>
+    <p class="lead">There are broadly two ways to remove &ldquo;the central company.&rdquo; Both assume <strong>you encrypt it yourself</strong> (making it unreadable is your job).</p>
+
+    <div class="fig">
+      <svg viewBox="0 0 760 250" role="img" aria-label="Two shapes of censorship resistance">
+        <!-- A distributed storage -->
+        <text x="20" y="34" class="svg-o">A. Distributed storage</text>
+        <text x="20" y="52" class="svg-s">Arweave / Filecoin / IPFS</text>
+        <circle cx="90" cy="92" r="15" fill="#E6F6FE" stroke="#0098EA"/>
+        <circle cx="160" cy="78" r="15" fill="#E6F6FE" stroke="#0098EA"/>
+        <circle cx="230" cy="98" r="15" fill="#E6F6FE" stroke="#0098EA"/>
+        <circle cx="150" cy="128" r="15" fill="#E6F6FE" stroke="#0098EA"/>
+        <circle cx="220" cy="145" r="15" fill="#E6F6FE" stroke="#0098EA"/>
+        <text x="155" y="180" text-anchor="middle" class="svg-l">Spread across many nodes worldwide</text>
+        <text x="155" y="196" text-anchor="middle" class="svg-s">one goes down, the others still have it (Arweave is forever)</text>
+
+        <line x1="380" y1="60" x2="380" y2="210" stroke="#E4EAEF"/>
+        <!-- B self-hosted node -->
+        <text x="410" y="34" class="svg-o">B. Run your own node</text>
+        <text x="410" y="52" class="svg-s">your own / a rented server</text>
+        <rect x="450" y="78" width="160" height="60" rx="10" fill="#E9F5EF" stroke="#C2E5D5"/>
+        <text x="530" y="104" text-anchor="middle" class="svg-t" style="fill:#1A7F4B">Your box</text>
+        <text x="530" y="122" text-anchor="middle" class="svg-s">you serve it</text>
+        <text x="530" y="180" text-anchor="middle" class="svg-l">Maximum sovereignty</text>
+        <text x="530" y="196" text-anchor="middle" class="svg-s">but you run it (goes down, it's gone)</text>
+      </svg>
+      <div class="fig-cap">A = shared among many / B = your own box, serving it yourself (you can combine both)</div>
+    </div>
+
+    <div class="pillars">
+      <div class="pillar"><span class="pn">type A</span><div class="pt"><span>Distributed storage</span></div><div class="pd">Spreads data across nodes worldwide. <b>Arweave is &ldquo;pay once, stored forever.&rdquo;</b> Low effort, strong.</div></div>
+      <div class="pillar"><span class="pn">type B</span><div class="pt"><span>Your own node</span></div><div class="pd">Serve it from your own server (or a censorship-resistant provider's). <b>Maximum sovereignty, but you have to keep it running.</b></div></div>
+    </div>
+  </section>
+
+  <!-- ============ 05 COMPARISON ============ -->
+  <section>
+    <div class="label"><span class="n">05</span> &nbsp;Comparing the options</div>
+    <h2>Today's main options, on six measures</h2>
+    <div class="legend">
+      Rating &mdash; <b class="r4 mono">◎</b> strong / <b class="r3 mono">○</b> ok / <b class="r2 mono">△</b> weak, effortful / <b class="r1 mono">✗</b> can't, none.<br>
+      &bull; <b>Deletion resistance</b>&hellip;how hard it is to delete &nbsp;/&nbsp; &bull; <b>Privacy</b>&hellip;is the content unreadable (all of these assume you encrypt it yourself) &nbsp;/&nbsp; &bull; <b>Payment</b>&hellip;can you pay with crypto &nbsp;/&nbsp; &bull; <b>Simplicity</b>&hellip;how easy to set up &nbsp;/&nbsp; &bull; <b>Ops burden</b>&hellip;the load of keeping it running &nbsp;/&nbsp; &bull; <b>Cost shape</b>&hellip;how the money works
+    </div>
+    <table>
+      <thead><tr>
+        <th>Where</th><th>Deletion resist.</th><th>Privacy</th><th>Payment</th><th>Simplicity</th><th>Ops burden</th><th>Cost shape</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td>Ordinary cloud<span class="rng">Google Cloud / AWS</span></td>
+          <td><span class="rate r1">✗</span><span class="rng">one company can delete it</span></td>
+          <td><span class="rate r2">△</span><span class="rng">the company can read it</span></td>
+          <td><span class="rate r1">✗</span><span class="rng">fiat only</span></td>
+          <td><span class="rate r4">◎</span></td>
+          <td><span class="rate r4">◎</span><span class="rng">hands-off</span></td>
+          <td><span class="rate r3">○</span><span class="rng">monthly / usage-based</span></td>
+        </tr>
+        <tr>
+          <td>Arweave<span class="rng">permanent distributed storage</span></td>
+          <td><span class="rate r4">◎</span><span class="rng">permanent by protocol</span></td>
+          <td><span class="rate r3">○</span><span class="rng">encrypt before upload</span></td>
+          <td><span class="rate r3">○</span><span class="rng">AR, multiple currencies</span></td>
+          <td><span class="rate r3">○</span></td>
+          <td><span class="rate r4">◎</span><span class="rng">pay once, done</span></td>
+          <td><span class="rate r2">△</span><span class="rng">one-time buy-in (cumulative)</span></td>
+        </tr>
+        <tr>
+          <td>Filecoin / IPFS<span class="rng">distributed storage</span></td>
+          <td><span class="rate r3">○</span><span class="rng">depends on contract / replication</span></td>
+          <td><span class="rate r3">○</span><span class="rng">encryption supported</span></td>
+          <td><span class="rate r3">○</span><span class="rng">FIL</span></td>
+          <td><span class="rate r3">○</span></td>
+          <td><span class="rate r3">○</span></td>
+          <td><span class="rate r3">○</span><span class="rng">ongoing billing</span></td>
+        </tr>
+        <tr>
+          <td>Sia / Storj<span class="rng">S3-compatible distributed storage</span></td>
+          <td><span class="rate r3">○</span><span class="rng">Storj leans centralized</span></td>
+          <td><span class="rate r4">◎</span><span class="rng">encrypted by default</span></td>
+          <td><span class="rate r3">○</span><span class="rng">SC, STORJ</span></td>
+          <td><span class="rate r4">◎</span><span class="rng">drop-in S3</span></td>
+          <td><span class="rate r3">○</span></td>
+          <td><span class="rate r3">○</span><span class="rng">usage-based</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="lead" style="margin-top:18px; font-size:14.5px">How to read it: if you want <strong>&ldquo;hands-off and forever,&rdquo; that's Arweave</strong>. Only Arweave gets <span class="tag good">◎</span> on deletion resistance &mdash; &ldquo;it keeps living whether or not you run it.&rdquo; A self-hosted node is strong &ldquo;as long as you keep it running&rdquo; &mdash; a different kind of strength.</p>
+  </section>
+
+  <!-- ============ 06 FOR CIPHER BRAIN ============ -->
+  <section>
+    <div class="label"><span class="n">06</span> &nbsp;Where this lands</div>
+    <h2>Cipher Brain's approach: encrypt first, then park it somewhere it can't be erased</h2>
+    <p class="lead">The key insight: if <strong>you encrypt the content first</strong>, the place you park it can just be a simple <strong>&ldquo;storage that can't be deleted or tampered with.&rdquo;</strong> Making it unreadable is your job; making it undeletable is storage's job &mdash; that division of labor is what keeps this design simple.</p>
+
+    <div class="fig">
+      <svg viewBox="0 0 760 130" role="img" aria-label="Encrypt first, then park it on permanent storage">
+        <rect x="30" y="40" width="150" height="56" rx="10" fill="#fff" stroke="#E4EAEF"/>
+        <text x="105" y="64" text-anchor="middle" class="svg-t">You</text>
+        <text x="105" y="82" text-anchor="middle" class="svg-s">only key holder</text>
+
+        <rect x="245" y="40" width="230" height="56" rx="10" fill="#E6F6FE" stroke="#0098EA" stroke-width="1.6"/>
+        <text x="360" y="64" text-anchor="middle" class="svg-o">Encrypted content</text>
+        <text x="360" y="82" text-anchor="middle" class="svg-s">age (X25519) · only you hold the key</text>
+
+        <rect x="540" y="40" width="190" height="56" rx="10" fill="#E9F5EF" stroke="#C2E5D5"/>
+        <text x="635" y="64" text-anchor="middle" class="svg-t" style="fill:#1A7F4B">Arweave</text>
+        <text x="635" y="82" text-anchor="middle" class="svg-s">pay once, stored forever</text>
+
+        <path d="M180 68 L243 68 M475 68 L538 68" stroke="#95A3AE" stroke-width="1.5" marker-end="url(#a6)"/>
+        <defs><marker id="a6" markerWidth="9" markerHeight="9" refX="5" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#95A3AE" stroke-width="1.4"/></marker></defs>
+        <text x="380" y="118" text-anchor="middle" class="svg-l">Because it's encrypted first, the content stays unreadable even on a public network</text>
+      </svg>
+      <div class="fig-cap">Encrypt first → park it somewhere it can't be erased. Only you hold the key</div>
+    </div>
+
+    <div class="ba">
+      <div class="col before"><span class="clabel">what we're avoiding</span><ul>
+        <li>Parking it on gcloud = <b>Google can delete it</b></li>
+        <li>Terms change, a report, a legal order &mdash; it can stop in one shot</li>
+        <li>The company could read the content</li>
+      </ul></div>
+      <div class="col after"><span class="clabel">what we're aiming for</span><ul>
+        <li>The content is <b>encrypted</b> (only you hold the key = unreadable)</li>
+        <li>The storage is <b>censorship-resistant</b> (can't be deleted)</li>
+      </ul></div>
+    </div>
+
+    <table>
+      <thead><tr><th>Decision</th><th>Current choice</th><th>Reason</th></tr></thead>
+      <tbody>
+        <tr><td>Storing the content</td><td><b>Arweave, first</b></td><td>&ldquo;Pay once, permanent = never deleted&rdquo; matches the brand &mdash; low effort</td></tr>
+        <tr><td>Cloud (gcloud)</td><td><b>Not used</b></td><td>Convenient, but &ldquo;can be deleted&rdquo; &mdash; contradicts the whole premise of this project</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ 07 CURRENT STATUS ============ -->
+  <section>
+    <div class="label"><span class="n">07</span> &nbsp;Where things stand today</div>
+    <h2>The idea has already become working code</h2>
+    <p class="lead">The explanation above &mdash; <strong>encrypt it</strong> (unreadable) and <strong>park it somewhere it can't be erased</strong> &mdash; hasn't stayed a concept. It's already assembled into a working tool (<code>cipher-brain</code>). We've run it end-to-end on a real, growing brain snapshot; here's where things honestly stand.</p>
+
+    <div class="caps">
+      <div class="cap"><div class="cv">✓ Encryption (unreadable)</div><div class="cb">Encrypts and restores the brain with <b>only your key</b>. The always-on machine holds only the <b>public key</b>, so even if it's compromised the content stays unreadable</div></div>
+      <div class="cap"><div class="cv">✓ Push → pull back</div><div class="cb">Uploads the ciphertext, <b>pulls it back from elsewhere, decrypts it</b>. Storage only ever sees <b>ciphertext</b></div></div>
+      <div class="cap"><div class="cv">✓ Key recovery (mechanism)</div><div class="cb">A mechanism for restoring with a <b>backup key</b> exists (in production we chose to keep it simple: no backup key &mdash; instead the single key is <b>passphrase-protected and kept off-machine</b>)</div></div>
+      <div class="cap"><div class="cv">✓ Storage is swappable</div><div class="cb">The storage backend sits behind a <b>common interface</b> &mdash; a future permanent-storage option could be added without touching the encryption logic</div></div>
+    </div>
+
+    <p class="lead" style="margin-top:30px">Being honest about what's done and what's left &mdash;</p>
+    <table>
+      <thead><tr><th>Item</th><th>Current status</th><th>Verdict</th></tr></thead>
+      <tbody>
+        <tr><td>Encrypt and restore</td><td>Verified with real data (a <b>whole brain</b>): encrypt → store → retrieve → decrypt, <b>content matches exactly</b></td><td><span class="tag good">✓ verified</span></td></tr>
+        <tr><td>Push, pull back, decrypt</td><td>Ciphertext pushed, deleted locally, pulled back, decrypted, and matches</td><td><span class="tag good">✓ verified</span></td></tr>
+        <tr><td>Key recovery / operations</td><td>Backup-key restore, versioning, and the restore runbook are documented and covered by automated tests</td><td><span class="tag good">✓ verified</span></td></tr>
+        <tr><td>Even at large sizes</td><td>Verified with a whole brain (<b>~630MB → 268MB encrypted</b>). <b>Streamed</b>, not buffered, in memory</td><td><span class="tag good">✓ verified</span></td></tr>
+        <tr><td>Proving &ldquo;never deleted&rdquo; in production</td><td>Actually <b>paid</b> (<b>$7.68</b>) to upload a whole brain to mainnet Arweave, then retrieved it via a path with no access to the key and confirmed a <b>byte-for-byte match</b></td><td><span class="tag good">✓ verified</span></td></tr>
+        <tr><td>How the production key is protected</td><td>Chose <b>not to use a backup key</b>, since it adds complexity. Instead, the single key is <b>passphrase-protected</b>, and a recovery note (key + location + restore steps) is kept <b>off the machine</b>. Retrieving and decrypting the full brain was measured and confirmed</td><td><span class="tag good">✓ done</span></td></tr>
+      </tbody>
+    </table>
+    <p class="lead" style="margin-top:18px; font-size:14.5px"><strong>The core has already been proven for real</strong> &mdash; encrypted a whole brain, actually paid to upload it to mainnet Arweave, retrieved it without the key, and confirmed a byte-for-byte match. The key is <strong>passphrase-protected and kept off-machine</strong> (we chose not to use a backup key, since it adds complexity). The direction hasn't changed &mdash; <strong>the content lives on Arweave, forever</strong> (never deleted). Encryption is yours alone, from the start.</p>
+  </section>
+
+  <!-- ============ FOOTER ============ -->
+  <footer>
+    <div class="foot-links">
+      <a href="index.html">&larr; Cipher Brain</a>
+      <a href="https://github.com/Masashi-Ono0611/cipher-brain">cipher-brain on GitHub</a>
+    </div>
+    <div class="foot-note">Cipher Brain · Hosting &amp; censorship-resistance background · 2026-07-03<br>Terms: cloud = a big company's rented data center / node = one computer participating in a network</div>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,4 +1,4 @@
-// scripts/build.ts — bundle the CLI with Bun (adapted from ton-mesh-harness).
+// scripts/build.ts — bundle the CLI with Bun.
 //
 //   - entries: src/cli.ts → dist/cli.mjs and src/mcp.ts → dist/mcp.mjs (each a
 //     self-contained file; the shipped artifacts a fresh machine can run with
@@ -15,8 +15,7 @@
 //
 // The externals list is DERIVED from package.json (dependencies +
 // peerDependencies) so it never drifts when a dep is added — minus the INLINE
-// set, which is bundled INTO dist so the shipped artifacts stay self-contained
-// (same pattern ton-mesh-harness uses for @ton/walletkit):
+// set, which is bundled INTO dist so the shipped artifacts stay self-contained:
 //   - `age-encryption` (typage) IS the crypto layer — it must land inside
 //     dist/cli.mjs so the shipped CLI runs with zero runtime deps (#64).
 //   - `@modelcontextprotocol/sdk` is inlined so dist/mcp.mjs runs on a fresh

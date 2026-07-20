@@ -155,7 +155,7 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('    points at a path inside a local object store (CIPHER_BRAIN_FILE_DIR) on THIS machine — it');
     lines.push('    is NOT reachable from a different machine unless that whole store directory is also copied');
     lines.push('    there. Step 4 below (pull --from-locator-file) will fail on another machine as written. For');
-    lines.push('    genuine cross-machine recovery, re-run push with a network backend (arweave/turbo/ton), or');
+    lines.push('    genuine cross-machine recovery, re-run push with a network backend (arweave/turbo), or');
     lines.push('    manually copy the file-backend store alongside this kit. See MANAGEMENT.md "Key recovery #3".');
     lines.push('');
   }

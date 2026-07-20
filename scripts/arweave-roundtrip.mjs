@@ -4,7 +4,7 @@
 //   snapshot -> push --backend arweave -> (mine) -> pull -> verify -> restore.
 // It proves the StorageBackend abstraction holds for a backend whose locator (an
 // Arweave tx id) is assigned AFTER upload and is NOT the ciphertext's content hash —
-// the case file/ton (content-addressed locators) didn't exercise.
+// the case file (a content-addressed locator) didn't exercise.
 import Arweave from 'arweave';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

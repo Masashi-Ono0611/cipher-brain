@@ -265,6 +265,17 @@ set -e
 if [ "$RC" = "0" ]; then echo "FAIL: pin allowed a key that was only in a comment line"; exit 1; fi
 test ! -f "$TMP/pin-comment.age"
 echo "[PASS] snapshot refused a recipient whose key was only commented-out in the allowlist"
+# (f) #101: an explicitly EMPTY CIPHER_BRAIN_PIN_RECIPIENTS="" (e.g. a broken
+# cron/systemd template expansion) must fail CLOSED, not be silently treated the
+# same as an unset var (which would disable the allowlist entirely — fail-open).
+set +e
+CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="" \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-empty.age" >"$TMP/pin-empty.log" 2>&1; RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: snapshot succeeded with CIPHER_BRAIN_PIN_RECIPIENTS=\"\" (fail-open regression)"; cat "$TMP/pin-empty.log"; exit 1; fi
+test ! -f "$TMP/pin-empty.age"
+grep -q "CIPHER_BRAIN_PIN_RECIPIENTS is set but empty" "$TMP/pin-empty.log" || { echo "FAIL: expected the fail-closed empty-pin error message"; cat "$TMP/pin-empty.log"; exit 1; }
+echo "[PASS] snapshot fails closed when CIPHER_BRAIN_PIN_RECIPIENTS is explicitly empty"
 
 echo "== push arweave/turbo --yes guard: requires explicit opt-in before a paid permanent store =="
 # Without --yes or CIPHER_BRAIN_YES, push to arweave/turbo must fail at the gate

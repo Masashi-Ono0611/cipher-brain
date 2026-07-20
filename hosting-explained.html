@@ -66,6 +66,7 @@
 
   /* ---------- pillars ---------- */
   .pillars{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:28px;}
+  .pillars.two-col{grid-template-columns:repeat(2,1fr);}
   .pillar{border:1px solid var(--line); border-radius:12px; padding:18px; background:var(--bg);}
   .pillar.hi{border-color:var(--accent); background:var(--accent-tint);}
   .pillar.risk{border-color:var(--bad-line); background:var(--bad-tint);}
@@ -125,7 +126,7 @@
 
   @media(max-width:720px){
     h1{font-size:38px;} .tagline{font-size:19px;} h2{font-size:24px;}
-    .pillars,.stats,.caps,.ba{grid-template-columns:1fr;}
+    .pillars,.pillars.two-col,.stats,.caps,.ba{grid-template-columns:1fr;}
     table{font-size:12.5px;} th,td{padding:9px 8px;}
   }
   @media print{ *{ -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; } }
@@ -297,7 +298,7 @@
       <div class="fig-cap">A = shared among many / B = your own box, serving it yourself (you can combine both)</div>
     </div>
 
-    <div class="pillars" style="grid-template-columns:repeat(2,1fr)">
+    <div class="pillars two-col">
       <div class="pillar"><span class="pn">type A</span><div class="pt"><span>Distributed storage</span></div><div class="pd">Spreads data across nodes worldwide. Arweave is &ldquo;pay once, stored forever&rdquo; &mdash; low effort, strong.</div></div>
       <div class="pillar"><span class="pn">type B</span><div class="pt"><span>Your own node</span></div><div class="pd">Serve it from your own server (or a censorship-resistant provider's) &mdash; maximum sovereignty, but you have to keep it running.</div></div>
     </div>

@@ -32,6 +32,7 @@ import { HOME, AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS } from './lib/c
 import { snapshot } from './lib/snapshot.js';
 import { verify } from './lib/restore.js';
 import { push, pull } from './lib/pushpull.js';
+import { schedule } from './lib/schedule.js';
 import { arUsdRate } from './lib/backends/turbo.js';
 import { exists, sha256, errMsg } from './lib/util.js';
 import type { CliOptions } from './lib/types.js';
@@ -245,7 +246,24 @@ const ESTIMATE_COST_TOOL: Tool = {
   },
 };
 
-const ALL_TOOLS: Tool[] = [SNAPSHOT_NOW_TOOL, LAST_SNAPSHOT_STATUS_TOOL, VERIFY_RESTORE_TOOL, ESTIMATE_COST_TOOL];
+const SCHEDULE_STATUS_TOOL: Tool = {
+  name: 'schedule_status',
+  description:
+    'Read-only, spends nothing, mutates nothing. Report the state of the nightly schedule set up ' +
+    'by `cipher-brain schedule install`: the configured time + backend, whether the launchd/cron ' +
+    'trigger is actually registered, the last run\'s log filename and its final "OK rc=0"/"FAILED ' +
+    'rc=N" line, and the next scheduled run — the SAME report `cipher-brain schedule status` prints ' +
+    'on the CLI, verbatim (one string per line). No arguments. Fails with ERR_INTERNAL if no ' +
+    'schedule is installed yet (run `cipher-brain schedule install` first — not exposed here, a ' +
+    'human-driven operation by design).',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+    additionalProperties: false,
+  },
+};
+
+const ALL_TOOLS: Tool[] = [SNAPSHOT_NOW_TOOL, LAST_SNAPSHOT_STATUS_TOOL, VERIFY_RESTORE_TOOL, ESTIMATE_COST_TOOL, SCHEDULE_STATUS_TOOL];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
@@ -526,6 +544,17 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
   }
 }
 
+// schedule() (src/lib/schedule.ts, the SAME function the CLI's `schedule status`
+// subcommand dispatches to via `case 'schedule': return schedule(o)`) has no
+// return value — its report is entirely console.log lines. Re-parsing that text
+// into structured fields here would be exactly the re-implemented logic the
+// module comment at the top of this file rules out, so it is captured and
+// returned verbatim instead (one array entry per line, in print order).
+async function handleScheduleStatus(): Promise<CallToolResult> {
+  const res = await captureCall(() => schedule({ _: 'status', dirs: [], tables: [], recipients: [] }));
+  return structuredOk({ report: res.out });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Server bootstrap
 // ─────────────────────────────────────────────────────────────────────────────
@@ -546,6 +575,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       case 'last_snapshot_status': return await handleLastSnapshotStatus(args);
       case 'verify_restore': return await handleVerifyRestore(args);
       case 'estimate_cost': return await handleEstimateCost(args);
+      case 'schedule_status': return await handleScheduleStatus();
       default: return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
     }
   } catch (err) {

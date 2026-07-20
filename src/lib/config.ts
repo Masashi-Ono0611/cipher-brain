@@ -16,12 +16,20 @@ export const RECIPIENT = join(HOME, 'recipient.txt');   // public key — all sn
 export const AGE_MAGIC = 'age-encryption.org/v1';
 export const AGE_ARMOR_HEADER = '-----BEGIN AGE ENCRYPTED FILE-----';
 
-// Optional recipient allowlist. When set, snapshot refuses to encrypt unless EVERY
-// effective recipient is on this list — so a tampered recipient.txt / an injected
-// extra --recipient (which would silently re-key future snapshots to an attacker)
-// is caught at the input, before any ciphertext is produced. Inline (space/comma/
+// Optional recipient allowlist. When set (including to a non-empty inline list or a
+// path to a file of them), snapshot refuses to encrypt unless EVERY effective
+// recipient is on this list — so a tampered recipient.txt / an injected extra
+// --recipient (which would silently re-key future snapshots to an attacker) is
+// caught at the input, before any ciphertext is produced. Inline (space/comma/
 // newline-separated age1… keys) OR a path to a file of them.
-export const PIN_RECIPIENTS = process.env.CIPHER_BRAIN_PIN_RECIPIENTS || '';
+//
+// `undefined` (unset) means "no pin configured" — the check is skipped entirely.
+// `''` (explicitly set to an empty string, e.g. a broken cron/systemd template that
+// renders CIPHER_BRAIN_PIN_RECIPIENTS="") is NOT treated the same as unset: `||` would
+// collapse both to the same falsy '' and silently disable the allowlist (fail-open).
+// Kept as `string | undefined` so the two cases stay distinguishable at the call site,
+// which must fail closed on the explicit-empty-string case.
+export const PIN_RECIPIENTS: string | undefined = process.env.CIPHER_BRAIN_PIN_RECIPIENTS;
 export const AGE_PUBKEY_RE = /age1[0-9a-z]{50,63}/g; // an age X25519 recipient (age1 + bech32); bounded so two unseparated keys can't fuse
 
 // ---------- storage backend config (pluggable: storage only ever sees ciphertext) ----------

@@ -158,7 +158,16 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // Recipient pin (opt-in): fail-fast if any effective recipient is not allowlisted,
   // so a tampered recipient.txt or an injected extra --recipient cannot silently
   // re-key this (and every future) snapshot to an attacker.
-  if (PIN_RECIPIENTS) {
+  //
+  // PIN_RECIPIENTS is `string | undefined`, not just a falsy check: `undefined` means
+  // the var is genuinely unset (no pin configured, check skipped). An explicitly empty
+  // string (CIPHER_BRAIN_PIN_RECIPIENTS="") is a misconfiguration — most likely a
+  // broken template in an unattended cron/systemd unit — and must fail CLOSED, not be
+  // silently treated as "no pin" (which would defeat the whole point of the pin).
+  if (PIN_RECIPIENTS !== undefined) {
+    if (PIN_RECIPIENTS === '') {
+      throw new Error('CIPHER_BRAIN_PIN_RECIPIENTS is set but empty — refusing to snapshot (an explicitly empty pin looks like a misconfiguration; unset the variable entirely to run without an allowlist)');
+    }
     const allowed = await resolvePinnedRecipients(PIN_RECIPIENTS);
     if (allowed.size === 0) throw new Error('CIPHER_BRAIN_PIN_RECIPIENTS is set but lists no age1… pubkeys — refusing to snapshot');
     for (const r of recs) {

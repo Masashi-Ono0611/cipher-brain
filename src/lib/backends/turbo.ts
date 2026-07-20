@@ -61,9 +61,10 @@ export function turboBackend(): StorageBackend {
       const { size } = await stat(abs); // stream the file (don't buffer an ~850MB brain) and give Turbo its size
       // cost estimate + balance before committing to an irreversible spend.
       // Uploads <100KB are free (0 winc); larger ones draw from Turbo Credits.
+      let uploadWinc: bigint | null = null;
       try {
         const [{ winc: uploadWincStr }] = await turbo.getUploadCosts({ bytes: [size] });
-        const uploadWinc = BigInt(uploadWincStr);
+        uploadWinc = BigInt(uploadWincStr);
         process.stderr.write(`turbo: upload cost estimate: ${uploadWinc} winc (~${(Number(uploadWinc) / 1e12).toFixed(8)} AR, ${size} bytes)\n`);
         // Human-readable USD approximation next to the native estimate (#70). arUsdRate
         // never throws (null on any failure), so a dead pricing endpoint can neither
@@ -77,13 +78,24 @@ export function turboBackend(): StorageBackend {
           const balWinc = BigInt(balWincStr);
           process.stderr.write(`turbo: Turbo Credit balance: ${balWinc} winc (~${(Number(balWinc) / 1e12).toFixed(8)} AR)\n`);
         } catch { /* paidBy wallet has no personal balance on this signer — non-fatal */ }
-        if (AR_MAX_SPEND > 0n && uploadWinc > AR_MAX_SPEND) {
-          throw new Error(`turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
-        }
       } catch (e) {
-        const msg = errMsg(e);
-        if (msg.startsWith('turbo: upload cost')) throw e; // re-raise the cap guard
-        process.stderr.write(`turbo: could not estimate upload cost (${msg}); proceeding\n`);
+        // A cost-estimate failure (getUploadCosts reject, empty-array destructure, bad
+        // BigInt conversion, ...) must NOT be treated as "proceed anyway" when a spend cap
+        // is configured — that would fail-open an irreversible paid upload straight past
+        // the cap the user set to protect their wallet (#105). Fail-closed here; only
+        // fail-open (log + continue, pre-existing behavior) when no cap is in effect.
+        if (AR_MAX_SPEND > 0n) {
+          throw new Error(`turbo: could not estimate upload cost (${errMsg(e)}) while CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} is set — aborting (fail-closed) because the spend cap cannot be verified; set CIPHER_BRAIN_MAX_SPEND=0 to disable the cap and upload uncapped`);
+        }
+        process.stderr.write(`turbo: could not estimate upload cost (${errMsg(e)}); proceeding\n`);
+      }
+      // The cap check lives OUTSIDE the estimate try/catch above so a failed estimate can
+      // never suppress it (the original bug: both lived in the same try, so any exception
+      // — not just the cap guard's own — fell into a catch-all "proceeding" log). uploadWinc
+      // is null only when the cap is unset (fail-open path above already ran), so this is a
+      // no-op in that case.
+      if (AR_MAX_SPEND > 0n && uploadWinc !== null && uploadWinc > AR_MAX_SPEND) {
+        throw new Error(`turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
       }
       // paidBy (x-paid-by header): when set, Turbo pays from a Credit Share Approval the
       // named address granted THIS signer, before the signer's own balance. It funds the

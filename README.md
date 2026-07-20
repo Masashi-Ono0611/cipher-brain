@@ -112,6 +112,10 @@ required for the build):
 npm run build && npm link
 ```
 
+Before opening a PR: `npm run lint` (biome, `--error-on-warnings` — also gated
+in CI) and `npm run verify` (build + typecheck + the full selftest suite +
+CLI/MCP smoke) should both pass. `npm run format` applies biome's formatting.
+
 **Prerequisites for `--pg`:** the `pg_dump`/`pg_restore` client tools (e.g.
 `brew install libpq` or your distro's `postgresql-client`) — without them the
 headline `--pg` flow fails with a cryptic `spawn pg_dump ENOENT`. If they are not

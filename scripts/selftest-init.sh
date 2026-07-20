@@ -752,8 +752,14 @@ echo "[PASS] the snapshot genuinely contains a pg_dump component (shimmed pg_dum
 
 [ -f "$PG_KIT_PATH" ] || { echo "[FAIL] recovery kit was not written for the pg run"; exit 1; }
 grep -qF "Postgres dump: included (connection: $TEST_PG_CONN)" "$PG_KIT_PATH" || { echo "[FAIL] kit header does not record the Postgres connection used"; cat "$PG_KIT_PATH"; exit 1; }
-grep -qF -- "--pg \"$TEST_PG_CONN\"" "$PG_KIT_PATH" || { echo "[FAIL] kit restore command does not include --pg with the connection string"; cat "$PG_KIT_PATH"; exit 1; }
-echo "[PASS] the recovery kit records the Postgres connection used and threads --pg into its own restore command"
+grep -q 'THIS BACKUP ALSO INCLUDES A POSTGRES DUMP' "$PG_KIT_PATH" || { echo "[FAIL] kit is missing the pg-restore safety block"; cat "$PG_KIT_PATH"; exit 1; }
+grep -qF "Its SOURCE connection was: $TEST_PG_CONN" "$PG_KIT_PATH" || { echo "[FAIL] pg-restore safety block does not name the source connection"; cat "$PG_KIT_PATH"; exit 1; }
+grep -q 'SCRATCH database' "$PG_KIT_PATH" || { echo "[FAIL] pg-restore safety block does not point at a SCRATCH database"; cat "$PG_KIT_PATH"; exit 1; }
+# Fugu review finding: the printed restore command must NOT auto-embed the SOURCE
+# connection as the restore --pg target — pg_restore --clean would DROP/replace objects
+# in whatever database --pg names, so a verbatim copy-paste could clobber a live DB.
+if grep -qF -- "--pg \"$TEST_PG_CONN\"" "$PG_KIT_PATH"; then echo "[FAIL] kit restore command auto-embeds the SOURCE connection as --pg — copy-paste risks clobbering the live database"; cat "$PG_KIT_PATH"; exit 1; fi
+echo "[PASS] the recovery kit records the Postgres connection used and warns to restore into a SCRATCH database instead of auto-embedding --pg with the source"
 
 echo
 echo "INIT SELFTEST PASS"

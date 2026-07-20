@@ -20,7 +20,7 @@
 import { createInterface } from 'node:readline/promises';
 import { readFile, writeFile, mkdir, rm, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { HOME, IDENTITY, RECIPIENT } from './config.js';
 import { keygen, keygenAt } from './keys.js';
@@ -152,11 +152,13 @@ function buildRecoveryKit(k: KitInputs): string {
   lines.push(k.pinRecipientsLine ?? '(skipped during init — see MANAGEMENT.md / "cipher-brain help" for what this does)');
   lines.push('');
   lines.push('--- RECOVERY STEPS (run these on ANY machine with Node >=22.6 and this npm package installed) ---');
-  // The restore command needs --pg to also pg_restore the dump this backup included —
-  // without it, restore leaves db.dump sitting in --out-dir unrestored (restore.ts only
-  // pg_restores when --pg is passed). Requires pg_dump/pg_restore on the RESTORING
-  // machine too (same "Prerequisites for --pg" as the wizard's own step 5/6 prompt).
-  const pgFlag = k.pg ? ` --pg "${k.pg}"` : '';
+  // Deliberately do NOT auto-append --pg (with the SOURCE connection string) to the
+  // restore commands below: pg_restore --clean --if-exists DROPS/replaces objects in
+  // whatever database --pg names, so blindly reusing the dump's SOURCE as the restore
+  // TARGET on a verbatim copy-paste risks clobbering a live database. MANAGEMENT.md's
+  // own restore runbook is explicit about this ("rebuild into a SCRATCH database, never
+  // straight over a live one") — the Postgres block below points there instead of
+  // encouraging a single dangerous copy-paste command (Fugu review finding).
   if (k.backend === 'file') {
     lines.push('!!! LOCATOR IS LOCAL-ONLY: this backup used the "file" backend, so the save-locator line above');
     lines.push('    points at a path inside a local object store (CIPHER_BRAIN_FILE_DIR) on THIS machine — it');
@@ -175,7 +177,7 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('  3) Copy the SAVE-LOCATOR line above (between its BEGIN and END markers) into its own');
     lines.push('     file, e.g.: ~/restore-locator.tsv');
     lines.push('  4) cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
-    lines.push(`  5) cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ~/restore-identity.age${pgFlag}`);
+    lines.push('  5) cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ~/restore-identity.age');
     lines.push('     (if the identity above is passphrase-wrapped, this step prompts for that passphrase)');
   } else {
     lines.push('!!! NO BACKUP IDENTITY IS IN THIS KIT: true kit-only recovery — restoring on a fresh machine');
@@ -191,7 +193,7 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('    (possibly passphrase-protected, per step 3 of the wizard — restore then prompts for it).');
     lines.push('    Copy the SAVE-LOCATOR line above into its own file, e.g. ~/restore-locator.tsv, then:');
     lines.push('      cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
-    lines.push(`      cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ${k.primaryIdentityPath}${pgFlag}`);
+    lines.push(`      cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ${k.primaryIdentityPath}`);
     lines.push('  * For real kit-based portable recovery (any machine, zero prior knowledge), a backup');
     lines.push('    identity has to exist and be inlined in the kit. To get there: generate one —');
     lines.push('    "CIPHER_BRAIN_HOME=<path> cipher-brain keygen" — then re-snapshot encrypting to BOTH the');
@@ -201,6 +203,16 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('  * The SAVE-LOCATOR and CIPHER_BRAIN_PIN_RECIPIENTS sections above are still valid, useful');
     lines.push('    information regardless of the above — only "restore using just this kit alone" carries');
     lines.push('    this caveat.');
+  }
+  if (k.pg) {
+    lines.push('');
+    lines.push('!!! THIS BACKUP ALSO INCLUDES A POSTGRES DUMP: the restore command(s) above extract db.dump into');
+    lines.push('    --out-dir but deliberately do NOT pg_restore it (no --pg is included above).');
+    lines.push(`    Its SOURCE connection was: ${k.pg}`);
+    lines.push('    Do NOT pg_restore into that same database — "pg_restore --clean --if-exists" DROPS/replaces');
+    lines.push('    objects in whatever database --pg names. Add --pg pointing at a SCRATCH database (never the');
+    lines.push('    source above) to the restore command; see MANAGEMENT.md "Restore runbook" step 4 for the');
+    lines.push('    exact pattern.');
   }
   lines.push('');
   lines.push('--- WHAT TO DO WITH THIS FILE ---');
@@ -425,7 +437,13 @@ export async function init(_o: CliOptions): Promise<void> {
         console.log('timeline, graph) lives in Postgres, not in that directory alone. Requires pg_dump/pg_restore');
         console.log('on PATH — see README "Prerequisites for --pg".');
         if (await askYesNo(rl, 'Include a Postgres database dump (--pg) for gbrain in this backup?', true)) {
-          const defaultPg = 'postgres://you@localhost:5432/gbrain';
+          // Default to the CURRENT machine's OS user — local Postgres setups commonly use
+          // peer auth keyed to it (matches README's own --pg examples), so this is a real
+          // guess rather than a literal "you" placeholder nobody's account is ever named
+          // (Fugu review finding: a bare-Enter accept should not likely fail pg_dump).
+          let osUser = 'you';
+          try { osUser = userInfo().username; } catch { /* keep the 'you' fallback */ }
+          const defaultPg = `postgres://${osUser}@localhost:5432/gbrain`;
           snapshotOpts.pg = await askLine(rl, `Postgres connection string [${defaultPg}]: `, defaultPg);
         }
       }

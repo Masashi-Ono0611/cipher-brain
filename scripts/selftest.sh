@@ -478,5 +478,31 @@ if [ "$RC" = "0" ]; then echo "FAIL: --wrap-in-place should refuse when no ident
 printf '%s' "$OUT" | grep -qi "no identity found" || { echo "FAIL: wrong error for a missing identity"; echo "$OUT"; exit 1; }
 echo "[PASS] keygen --wrap-in-place refuses to re-wrap an already-wrapped identity, and refuses cleanly when no identity exists yet"
 
+echo "== keygen --wrap-in-place also refuses an ASCII-ARMORED already-wrapped identity, without corrupting it (#87-style edge case) =="
+# loadIdentities() (crypt.ts) treats a wrapped identity as EITHER raw age ciphertext OR
+# that same ciphertext ASCII-armored (`age -p -a`, or one re-typed from a printed
+# recovery note — #87's own motivating case) — wrap-in-place's "already wrapped" check
+# must recognize both shapes too, or it would silently double-wrap/corrupt an armored
+# one instead of refusing.
+ARMOR_HOME="$TMP/wrap-armor-home"
+CIPHER_BRAIN_HOME="$ARMOR_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+CIPHER_BRAIN_HOME="$ARMOR_HOME" CIPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place >/dev/null
+node -e "
+const fs = require('fs');
+const { armor } = require('age-encryption');
+const raw = fs.readFileSync(process.argv[1]);
+fs.writeFileSync(process.argv[1], armor.encode(new Uint8Array(raw)));
+" "$ARMOR_HOME/identity.age"
+grep -q -- '-----BEGIN AGE ENCRYPTED FILE-----' "$ARMOR_HOME/identity.age" || { echo "FAIL: test setup: identity.age was not actually armored"; exit 1; }
+ARMORED_SHA="$(shasum -a 256 "$ARMOR_HOME/identity.age" | cut -d' ' -f1)"
+set +e
+OUT=$(CIPHER_BRAIN_HOME="$ARMOR_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place 2>&1); RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: re-wrapping an ASCII-armored already-wrapped identity should refuse, not succeed"; echo "$OUT"; exit 1; fi
+printf '%s' "$OUT" | grep -qi "already passphrase-wrapped" || { echo "FAIL: wrong error for re-wrapping an armored already-wrapped identity"; echo "$OUT"; exit 1; }
+[ "$(shasum -a 256 "$ARMOR_HOME/identity.age" | cut -d' ' -f1)" = "$ARMORED_SHA" ] || { echo "FAIL: the armored identity was modified despite the refusal — double-wrap corruption"; exit 1; }
+echo "[PASS] keygen --wrap-in-place recognizes an ASCII-armored identity as already-wrapped too, refuses, and leaves it byte-identical (no double-wrap corruption)"
+
 echo
 echo "SELFTEST PASS"

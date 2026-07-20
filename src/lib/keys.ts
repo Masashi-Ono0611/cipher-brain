@@ -1,7 +1,7 @@
 // keygen + identity/recipient helpers.
 import { mkdir, writeFile, rm, rename, chmod, readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
-import { HOME, IDENTITY, RECIPIENT, AGE_PUBKEY_RE, AGE_MAGIC } from './config.js';
+import { HOME, IDENTITY, RECIPIENT, AGE_PUBKEY_RE, AGE_MAGIC, AGE_ARMOR_HEADER } from './config.js';
 import { generateKeypair, identityFileText, askNewPassphrase, wrapIdentity } from './crypt.js';
 import { exists } from './util.js';
 import type { CliOptions } from './types.js';
@@ -112,15 +112,25 @@ async function wrapInPlace(identityPath: string): Promise<void> {
     throw new Error(`no identity found at ${identityPath} — nothing to wrap. Run "cipher-brain keygen" first.`);
   }
   const raw = await readFile(identityPath);
-  // Same age-magic check loadIdentities() (crypt.ts) uses to detect a wrapped
-  // identity — wrapping ciphertext bytes as if they were the plaintext identity
-  // would double-encrypt garbage rather than protecting the real key.
-  if (raw.subarray(0, AGE_MAGIC.length).toString('latin1') === AGE_MAGIC) {
+  const rawText = raw.toString('utf8');
+  // Same two "already wrapped" shapes loadIdentities() (crypt.ts) checks for: raw age
+  // ciphertext (the magic bytes), OR that same ciphertext ASCII-armored (`age -p -a`,
+  // or an identity re-typed from a printed recovery note — #87's motivating case).
+  // Either form must be refused here, not treated as plaintext: wrapIdentity() below
+  // would otherwise double-wrap the ciphertext/armor text as if it were the real
+  // secret key, corrupting it rather than protecting it.
+  const alreadyWrapped = raw.subarray(0, AGE_MAGIC.length).toString('latin1') === AGE_MAGIC
+    || rawText.trimStart().startsWith(AGE_ARMOR_HEADER);
+  if (alreadyWrapped) {
     throw new Error(`${identityPath} is already passphrase-wrapped (age ciphertext) — nothing to do.`);
   }
   console.log('Set a passphrase to protect the identity at rest (you will enter it on restore/verify):');
-  const payload = await wrapIdentity(raw.toString('utf8'), await askNewPassphrase());
-  await writeFile(identityPath, payload, { mode: 0o600 });
+  const payload = await wrapIdentity(rawText, await askNewPassphrase());
+  // Atomic temp-then-rename (writeKeyFile's force=true path, same helper keygenAt's
+  // own --force replace uses above) rather than a plain writeFile: the pre-existing
+  // identityPath is only ever replaced once the new payload is fully written, so a
+  // crash/Ctrl-C mid-write can't leave a truncated, unusable identity file behind.
+  await writeKeyFile(identityPath, payload, 0o600, true);
   console.log(`identity re-written, passphrase-wrapped: ${identityPath}`);
 }
 

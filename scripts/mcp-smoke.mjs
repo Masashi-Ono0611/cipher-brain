@@ -19,6 +19,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -356,11 +357,14 @@ async function run(tmp) {
       throw new Error(`estimate_cost(size_bytes) result unexpected: ${JSON.stringify(estBytesSc).slice(0, 300)}`);
     }
 
-    // 2g-iii. estimate_cost(backend: turbo) with @ardrive/turbo-sdk NOT installed in
-    // this environment — offline, deterministic (same optional-dependency-missing
-    // branch scripts/cli-smoke.sh exercises for the CLI `estimate` command; both are
-    // the SAME estimateCost() call, so this doubles as regression coverage for the
-    // #159 CLI/MCP extraction sharing one implementation).
+    // 2g-iii. estimate_cost(backend: turbo) — offline, deterministic either way, but
+    // the expected shape depends on whether the OPTIONAL @ardrive/turbo-sdk actually
+    // resolves in this environment (it is not a devDependency, only an optional
+    // peerDependency — package.json — so a frozen-lockfile install normally leaves it
+    // absent, but a future lockfile change could add it): branch on its real presence
+    // instead of assuming absence (same reasoning as scripts/cli-smoke.sh's estimate
+    // --backend turbo case; both exercise the SAME estimateCost() call, #159).
+    const turboSdkInstalled = existsSync(join(ROOT, 'node_modules', '@ardrive', 'turbo-sdk'));
     send({
       jsonrpc: '2.0',
       id: 13,
@@ -371,7 +375,13 @@ async function run(tmp) {
     const estTurboSc = estTurbo.result?.structuredContent;
     if (estTurbo.result?.isError)
       throw new Error(`estimate_cost(turbo) failed: ${JSON.stringify(estTurboSc).slice(0, 500)}`);
-    if (estTurboSc?.cost !== null || !/not installed/.test(estTurboSc?.note ?? '')) {
+    if (turboSdkInstalled) {
+      if (estTurboSc?.backend !== 'turbo' || estTurboSc?.size_bytes !== 12345) {
+        throw new Error(
+          `estimate_cost(turbo, sdk installed) result unexpected: ${JSON.stringify(estTurboSc).slice(0, 300)}`,
+        );
+      }
+    } else if (estTurboSc?.cost !== null || !/not installed/.test(estTurboSc?.note ?? '')) {
       throw new Error(
         `estimate_cost(turbo, sdk missing) result unexpected: ${JSON.stringify(estTurboSc).slice(0, 300)}`,
       );
@@ -416,7 +426,7 @@ async function run(tmp) {
       `MCP SMOKE: PASS — tools=[${names.join(', ')}], spend gate=ERR_CONFIRM_REQUIRED, ` +
         `file round-trip locator=${snapSc.locator.split('/').pop()}, status.age=${latest.age_seconds}s, verify=${verSc.verdict}, ` +
         `verify(locator_file pin)=${verPinnedSc.verdict}, wrong-pin=fail-closed, estimate(file)=0, ` +
-        `estimate(size_bytes)=0, estimate(turbo, sdk missing)=unavailable, ` +
+        `estimate(size_bytes)=0, estimate(turbo, sdk ${turboSdkInstalled ? 'installed' : 'missing'})=ok, ` +
         `schedule_status.report.length=${schedSc.report.length}\n`,
     );
   } finally {

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # CLI smoke test for the bundled build: dist/cli.mjs must (a) print non-empty
-# --help and exit 0, byte-identical to the unbundled bin shim, and (b) run a real
-# keygen into a temp CIPHER_BRAIN_HOME producing the identity + recipient files.
+# --help and exit 0, byte-identical to the unbundled bin shim, (b) run a real
+# keygen into a temp CIPHER_BRAIN_HOME producing the identity + recipient files,
+# and (c)-(g) exercise the `estimate` command (#159) — the free/paid-backend
+# happy paths and its input validation (missing --in, bad --backend, a
+# directory --in).
 # Follows shell-ops discipline: explicit FAIL + exit 1 (no `cond && echo PASS`).
 set -u
 
@@ -48,20 +51,44 @@ grep -q "^cost: 0$" "$TMP/estimate-file.log" \
   || { echo "[FAIL] estimate --backend file did not report cost: 0"; cat "$TMP/estimate-file.log"; exit 1; }
 echo "[PASS] dist estimate --backend file: cost: 0 for a local file"
 
-# (d) estimate --backend turbo with the optional @ardrive/turbo-sdk NOT installed in
-# this environment — must report a clear "not installed" note (offline, deterministic)
-# rather than crash, exercising src/lib/estimate.ts's estimateCost() turbo branch.
+# (d) estimate --backend turbo — deterministic/offline either way, but the expected
+# note depends on whether the OPTIONAL @ardrive/turbo-sdk happens to be installed in
+# this environment (it is not a devDependency, only an optional peerDependency — see
+# package.json — so `bun install --frozen-lockfile` normally leaves it absent, but a
+# future lockfile change could add it): branch on its actual presence instead of
+# assuming absence, so this test can't silently start failing on a healthy install.
 node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend turbo > "$TMP/estimate-turbo.log" 2>&1 \
   || { echo "[FAIL] dist estimate --backend turbo exited non-zero"; cat "$TMP/estimate-turbo.log"; exit 1; }
-grep -q "^cost: unavailable$" "$TMP/estimate-turbo.log" \
-  || { echo "[FAIL] estimate --backend turbo did not report cost: unavailable"; cat "$TMP/estimate-turbo.log"; exit 1; }
-echo "[PASS] dist estimate --backend turbo: cost: unavailable (optional dependency not installed)"
+if [ -d "$ROOT/node_modules/@ardrive/turbo-sdk" ]; then
+  grep -q "^backend: turbo$" "$TMP/estimate-turbo.log" \
+    || { echo "[FAIL] estimate --backend turbo (sdk installed) did not report backend: turbo"; cat "$TMP/estimate-turbo.log"; exit 1; }
+  echo "[PASS] dist estimate --backend turbo: SDK installed, ran without crashing"
+else
+  grep -q "^cost: unavailable$" "$TMP/estimate-turbo.log" \
+    || { echo "[FAIL] estimate --backend turbo did not report cost: unavailable"; cat "$TMP/estimate-turbo.log"; exit 1; }
+  echo "[PASS] dist estimate --backend turbo: cost: unavailable (optional dependency not installed)"
+fi
 
-# (e) estimate rejects a bad --backend value and a missing --in, same as push does
+# (e) estimate rejects a missing --in
+node "$DIST" estimate --backend file > "$TMP/estimate-noin.log" 2>&1
+if [ $? -eq 0 ]; then echo "[FAIL] estimate with no --in exited 0, expected non-zero"; cat "$TMP/estimate-noin.log"; exit 1; fi
+grep -q -- "--in <file.age> required" "$TMP/estimate-noin.log" \
+  || { echo "[FAIL] estimate with no --in did not report the expected error"; cat "$TMP/estimate-noin.log"; exit 1; }
+echo "[PASS] dist estimate (no --in): rejected with '--in <file.age> required'"
+
+# (f) estimate rejects a bad --backend value, same as it rejects a missing --in above
 node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend bogus > "$TMP/estimate-bad.log" 2>&1
 if [ $? -eq 0 ]; then echo "[FAIL] estimate --backend bogus exited 0, expected non-zero"; cat "$TMP/estimate-bad.log"; exit 1; fi
 grep -q "unknown backend" "$TMP/estimate-bad.log" \
   || { echo "[FAIL] estimate --backend bogus did not report 'unknown backend'"; cat "$TMP/estimate-bad.log"; exit 1; }
 echo "[PASS] dist estimate --backend bogus: rejected with 'unknown backend'"
+
+# (g) estimate rejects a directory --in (stat().size on a dir would otherwise produce
+# a nonsensical-but-silent "estimate" instead of a clear error)
+node "$DIST" estimate --in "$ROOT" --backend file > "$TMP/estimate-dir.log" 2>&1
+if [ $? -eq 0 ]; then echo "[FAIL] estimate --in <dir> exited 0, expected non-zero"; cat "$TMP/estimate-dir.log"; exit 1; fi
+grep -q "not a regular file" "$TMP/estimate-dir.log" \
+  || { echo "[FAIL] estimate --in <dir> did not report 'not a regular file'"; cat "$TMP/estimate-dir.log"; exit 1; }
+echo "[PASS] dist estimate --in <dir>: rejected with 'not a regular file'"
 
 echo "CLI SMOKE: PASS"

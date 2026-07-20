@@ -143,8 +143,10 @@ export async function estimate(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.backend) throw new Error('--backend <file|arweave|turbo> required');
   if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
-  const size = (await stat(o.in)).size;
-  const result = await estimateCost(o.backend, size);
+  const st = await stat(o.in);
+  if (!st.isFile())
+    throw new Error(`${o.in} is not a regular file (cannot size a directory/special file for an estimate)`);
+  const result = await estimateCost(o.backend, st.size);
   console.log(`backend: ${result.backend}`);
   console.log(`size: ${result.size_bytes} bytes (${fmtBytes(result.size_bytes)})`);
   if (result.cost === null) {

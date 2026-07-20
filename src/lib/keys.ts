@@ -1,7 +1,7 @@
 // keygen + identity/recipient helpers.
 import { mkdir, writeFile, rm, rename, chmod, readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
-import { HOME, IDENTITY, RECIPIENT, AGE_PUBKEY_RE } from './config.js';
+import { HOME, IDENTITY, RECIPIENT, AGE_PUBKEY_RE, AGE_MAGIC } from './config.js';
 import { generateKeypair, identityFileText, askNewPassphrase, wrapIdentity } from './crypt.js';
 import { exists } from './util.js';
 import type { CliOptions } from './types.js';
@@ -98,7 +98,34 @@ export async function keygenAt(opts: KeygenAtOpts): Promise<KeygenAtResult> {
   return { recipient, wrapped };
 }
 
+// Passphrase-wrap an ALREADY-EXISTING identity file in place (#110): unlike `keygen
+// --force`, which unconditionally calls generateKeypair() above and so DISCARDS the
+// old keypair for a brand-new one, this keeps the exact same X25519 keypair and only
+// changes its on-disk encoding — every snapshot already encrypted to it stays
+// restorable. Reuses the same wrapIdentity()/askNewPassphrase() pair the `init`
+// wizard's own Step 3 (wizard.ts) already calls for this identical in-place wrap;
+// exposed here as `keygen --wrap-in-place` so someone who skipped that step (or ran a
+// bare `keygen`) can still protect the identity later without re-running the whole
+// wizard (which refuses once an identity exists) or losing it via --force.
+async function wrapInPlace(identityPath: string): Promise<void> {
+  if (!(await exists(identityPath))) {
+    throw new Error(`no identity found at ${identityPath} — nothing to wrap. Run "cipher-brain keygen" first.`);
+  }
+  const raw = await readFile(identityPath);
+  // Same age-magic check loadIdentities() (crypt.ts) uses to detect a wrapped
+  // identity — wrapping ciphertext bytes as if they were the plaintext identity
+  // would double-encrypt garbage rather than protecting the real key.
+  if (raw.subarray(0, AGE_MAGIC.length).toString('latin1') === AGE_MAGIC) {
+    throw new Error(`${identityPath} is already passphrase-wrapped (age ciphertext) — nothing to do.`);
+  }
+  console.log('Set a passphrase to protect the identity at rest (you will enter it on restore/verify):');
+  const payload = await wrapIdentity(raw.toString('utf8'), await askNewPassphrase());
+  await writeFile(identityPath, payload, { mode: 0o600 });
+  console.log(`identity re-written, passphrase-wrapped: ${identityPath}`);
+}
+
 export async function keygen(o: CliOptions): Promise<void> {
+  if (o.wrap_in_place) return wrapInPlace(IDENTITY);
   const { recipient, wrapped } = await keygenAt({ home: HOME, identityPath: IDENTITY, recipientPath: RECIPIENT, passphrase: o.passphrase, force: o.force });
   console.log(`identity (PRIVATE, keep offline): ${IDENTITY}${wrapped ? ' (passphrase-wrapped)' : ''}`);
   console.log(`recipient (PUBLIC, safe to copy):  ${RECIPIENT}`);

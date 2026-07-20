@@ -18,6 +18,7 @@ export interface CliOptions {
   // boolean flags (BOOL_FLAGS in cli.ts) — absent when not passed
   force?: boolean;
   passphrase?: boolean;
+  wrap_in_place?: boolean;
   yes?: boolean;
   force_vault?: boolean;
   skip_unchanged?: boolean;

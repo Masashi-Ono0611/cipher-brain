@@ -61,6 +61,28 @@ if cb pull --locator "$CIPHER_BRAIN_FILE_DIR/deadbeef.age" --backend file --out 
 fi
 echo "[PASS] absent locator errors"
 
+echo "== issue #93: a locator outside FILE_DIR must be rejected (path traversal / arbitrary local file read) =="
+touch "$TMP/outside.age"
+if cb pull --locator "$TMP/outside.age" --backend file --out "$TMP/leak1.age" 2>/dev/null; then
+  echo "[FAIL] locator outside FILE_DIR was read"; exit 1
+fi
+test ! -f "$TMP/leak1.age"
+echo "[PASS] locator outside FILE_DIR is rejected"
+
+if cb pull --locator "$CIPHER_BRAIN_FILE_DIR/../outside.age" --backend file --out "$TMP/leak2.age" 2>/dev/null; then
+  echo "[FAIL] relative traversal out of FILE_DIR was read"; exit 1
+fi
+test ! -f "$TMP/leak2.age"
+echo "[PASS] relative traversal (../) out of FILE_DIR is rejected"
+
+echo "== issue #93: a locator inside FILE_DIR with the wrong shape (not <sha256>.age) must be rejected =="
+cp "$TMP/outside.age" "$CIPHER_BRAIN_FILE_DIR/notasha.age"
+if cb pull --locator "$CIPHER_BRAIN_FILE_DIR/notasha.age" --backend file --out "$TMP/leak3.age" 2>/dev/null; then
+  echo "[FAIL] wrong-shape locator inside FILE_DIR was read"; exit 1
+fi
+test ! -f "$TMP/leak3.age"
+echo "[PASS] wrong-shape locator inside FILE_DIR is rejected"
+
 echo "== backend is required (no silent default) =="
 if cb push --in "$TMP/got.age" 2>/dev/null; then echo "[FAIL] push ran with no --backend"; exit 1; fi
 echo "[PASS] push without --backend is rejected"

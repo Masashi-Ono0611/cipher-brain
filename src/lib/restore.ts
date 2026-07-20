@@ -20,7 +20,6 @@ export async function restore(o: CliOptions): Promise<void> {
   // age streams plaintext chunk-by-chunk, so a truncated/corrupt artifact errors only
   // AFTER tar has already extracted the leading components — leaving a partial tree.
   // Track whether we created out_dir so we can remove it (or warn) on a mid-stream fail.
-  const outDirPreExisted = await exists(o.out_dir);
   // The tar child spawned below lands in the same ACTIVE_CHILDREN set snapshot's tar
   // does (see proc.ts), but until now nothing ever installed a signal guard for
   // restore() — a SIGINT/SIGTERM/SIGHUP mid-extract hit Node's default handler, the
@@ -28,12 +27,18 @@ export async function restore(o: CliOptions): Promise<void> {
   // with no cleanup and no warning (#95). installStageSignalGuard() is idempotent, so
   // calling it here is safe whether or not a snapshot() in the same process already did.
   installStageSignalGuard();
-  // mkdirSync (not async mkdir) so dir-creation and the registration below land in one
-  // tick with no event-loop yield between them — same discipline snapshot() uses for
-  // ACTIVE_STAGE (mkdtempSync + setActiveStage, see signal-guard.ts): otherwise a
-  // signal landing during the await could fire before out_dir is registered and leave
-  // a freshly-created empty dir untracked.
-  mkdirSync(o.out_dir, { recursive: true });
+  // mkdirSync (not async mkdir), and its return value (not a separate exists() check)
+  // decides outDirPreExisted: recursive mkdirSync returns undefined when the path
+  // already fully existed, or the first path segment it created otherwise — a single
+  // atomic syscall sequence with no TOCTOU gap between "check" and "create" (an
+  // async exists() followed by mkdir leaves a window where something else could
+  // create out_dir in between, misclassifying it as "we created this, safe to erase").
+  // It also keeps dir-creation and the registration below in one tick with no
+  // event-loop yield — same discipline snapshot() uses for ACTIVE_STAGE (mkdtempSync +
+  // setActiveStage, see signal-guard.ts): otherwise a signal landing during an await
+  // could fire before out_dir is registered and leave a freshly-created empty dir
+  // untracked.
+  const outDirPreExisted = mkdirSync(o.out_dir, { recursive: true }) === undefined;
   // Register out_dir with the guard so a mid-extract signal is handled the same way
   // snapshot's stage/.part are: erase it if we created it ourselves, or otherwise flag
   // it (see installStageSignalGuard) rather than destroy content we don't own.

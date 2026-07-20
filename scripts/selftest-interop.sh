@@ -81,5 +81,23 @@ tar -xzf "$TMP/pp-out/brain-src.tar.gz" -C "$TMP/pp-out"
 diff "$SRC/note.txt" "$TMP/pp-out/brain-src/note.txt"
 echo "[PASS] the CLI unwrapped a binary-wrapped identity and restored with it"
 
+echo "== scrypt: age -p -a wraps an identity as ASCII-armor -> CLI (typage) unwraps and restores (#87) =="
+age-keygen -o "$TMP/raw-armored.key" >/dev/null 2>&1
+RAWPUB_ARMORED=$(age-keygen -y "$TMP/raw-armored.key")
+printf '%s\n%s\n' "$PASS" "$PASS" | with_pty age -p -a -o "$TMP/wrapped-by-binary-armored.age" "$TMP/raw-armored.key" >/dev/null
+head -c 34 "$TMP/wrapped-by-binary-armored.age" | grep -q -- '-----BEGIN AGE ENCRYPTED FILE-----' || { echo "[FAIL] age -p -a did not produce armored ciphertext"; exit 1; }
+cb snapshot --dir "$SRC" --recipient "$RAWPUB_ARMORED" --out "$TMP/to-raw-armored.age" >/dev/null 2>&1
+CIPHER_BRAIN_PASSPHRASE="$PASS" cb restore --in "$TMP/to-raw-armored.age" --out-dir "$TMP/pp-out-armored" --identity "$TMP/wrapped-by-binary-armored.age" >/dev/null
+tar -xzf "$TMP/pp-out-armored/brain-src.tar.gz" -C "$TMP/pp-out-armored"
+diff "$SRC/note.txt" "$TMP/pp-out-armored/brain-src/note.txt"
+echo "[PASS] the CLI unwrapped an ASCII-armored, binary-wrapped identity and restored with it"
+
+echo "== scrypt: same armored identity, padded with leading blank lines (recovery-note paste simulation) =="
+printf '\n\n' | cat - "$TMP/wrapped-by-binary-armored.age" > "$TMP/wrapped-by-binary-armored-padded.age"
+CIPHER_BRAIN_PASSPHRASE="$PASS" cb restore --in "$TMP/to-raw-armored.age" --out-dir "$TMP/pp-out-armored-padded" --identity "$TMP/wrapped-by-binary-armored-padded.age" >/dev/null
+tar -xzf "$TMP/pp-out-armored-padded/brain-src.tar.gz" -C "$TMP/pp-out-armored-padded"
+diff "$SRC/note.txt" "$TMP/pp-out-armored-padded/brain-src/note.txt"
+echo "[PASS] the CLI unwrapped an armored identity with leading blank lines, not just a byte-0 header match"
+
 echo
 echo "INTEROP SELFTEST PASS (typage <-> age binary, X25519 + scrypt, both directions)"

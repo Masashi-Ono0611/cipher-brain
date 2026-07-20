@@ -7,37 +7,11 @@
 import { stat, readFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { resolve } from 'node:path';
-import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND, AR_HTTP_TIMEOUT_MS } from '../config.js';
+import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND } from '../config.js';
 import { warnIfLooseKeyPerms, fmtBytes, errMsg } from '../util.js';
+import { arUsdRate, usdApprox } from '../estimate.js';
 import { arweaveBackend } from './arweave.js';
 import type { StorageBackend, PutOpts } from '../types.js';
-
-// Current USD price of 1 AR via the Turbo pricing endpoint the SDK exposes (winc is
-// pegged 1:1 to winston; 1 AR = 1e12 of either, so one rate converts both). Returns a
-// positive number or null on ANY failure — SDK not installed, offline, odd response —
-// and is raced against AR_HTTP_TIMEOUT_MS: the USD line is a courtesy estimate that
-// must never block, fail, or stall a push (or an MCP estimate).
-export async function arUsdRate(): Promise<number | null> {
-  try {
-    const { TurboFactory } = await import('@ardrive/turbo-sdk');
-    const timeout = new Promise<null>((resolve) => {
-      const t = setTimeout(() => resolve(null), AR_HTTP_TIMEOUT_MS);
-      if (typeof t.unref === 'function') t.unref(); // don't keep the process alive for a lost race
-    });
-    const res = await Promise.race([TurboFactory.unauthenticated().getFiatToAR({ currency: 'usd' }), timeout]);
-    const rate = Number(res?.rate);
-    return Number.isFinite(rate) && rate > 0 ? rate : null;
-  } catch {
-    return null;
-  }
-}
-
-// "~$X USD" for a native amount (winc or winston) at the given USD/AR rate.
-// More decimals for sub-cent estimates so a tiny nightly push isn't shown as $0.00.
-export const usdApprox = (nativeAmount: bigint | number, rate: number): string => {
-  const usd = (Number(nativeAmount) / 1e12) * rate;
-  return `~$${usd.toFixed(usd >= 0.01 ? 2 : 6)} USD`;
-};
 
 export function turboBackend(): StorageBackend {
   return {

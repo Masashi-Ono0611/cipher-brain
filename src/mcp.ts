@@ -33,12 +33,12 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { HOME, AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS } from './lib/config.js';
+import { HOME } from './lib/config.js';
 import { snapshot } from './lib/snapshot.js';
 import { verify } from './lib/restore.js';
 import { push, pull } from './lib/pushpull.js';
 import { schedule } from './lib/schedule.js';
-import { arUsdRate } from './lib/backends/turbo.js';
+import { estimateCost } from './lib/estimate.js';
 import { exists, sha256, errMsg } from './lib/util.js';
 import type { CliOptions } from './lib/types.js';
 
@@ -632,85 +632,10 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
       throw new ToolError('ERR_INVALID_INPUT', 'size_bytes must be a non-negative number');
     size = Math.ceil(sizeBytes);
   }
-
-  if (backend === 'file') {
-    return structuredOk({
-      backend,
-      size_bytes: size,
-      cost: '0',
-      note: 'file backend is a local content-addressed store — no upload cost (disk space only).',
-    });
-  }
-
-  if (backend === 'turbo') {
-    let TurboFactory: typeof import('@ardrive/turbo-sdk').TurboFactory;
-    try {
-      ({ TurboFactory } = await import('@ardrive/turbo-sdk'));
-    } catch (e) {
-      if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
-        return structuredOk({
-          backend,
-          size_bytes: size,
-          cost: null,
-          note: 'estimate unavailable (optional dependency not installed) — run: npm install @ardrive/turbo-sdk. Uploads <100KB are free; larger ones spend Turbo Credits.',
-        });
-      }
-      throw e;
-    }
-    try {
-      const turbo = TurboFactory.unauthenticated();
-      const [{ winc }] = await turbo.getUploadCosts({ bytes: [size] });
-      // usd_estimate is OPTIONAL: arUsdRate returns null on any rate-fetch failure,
-      // and a missing rate must never fail the (still useful) native estimate.
-      const rate = await arUsdRate();
-      return structuredOk({
-        backend,
-        size_bytes: size,
-        cost: String(winc),
-        unit: 'winc',
-        approx_ar: Number(BigInt(winc)) / 1e12,
-        ...(rate !== null ? { usd_estimate: Number(((Number(BigInt(winc)) / 1e12) * rate).toFixed(6)) } : {}),
-        note: 'Turbo upload cost estimate (uploads <100KB are free). Paid with Turbo Credits (fundable via ETH/USDC/fiat).',
-      });
-    } catch (e) {
-      return structuredOk({
-        backend,
-        size_bytes: size,
-        cost: null,
-        note: `estimate unavailable (Turbo pricing query failed: ${errMsg(e)})`,
-      });
-    }
-  }
-
-  // arweave (raw L1): the gateway /price endpoint returns the network reward in
-  // winston for a payload of this size — the same price createTransaction would
-  // fetch at push time.
-  try {
-    const ctl = AbortSignal.timeout(AR_HTTP_TIMEOUT_MS);
-    const res = await fetch(`${AR_PROTOCOL}://${AR_HOST}:${AR_PORT}/price/${size}`, { signal: ctl });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const winston = (await res.text()).trim();
-    if (!/^\d+$/.test(winston)) throw new Error(`unexpected price response: ${winston.slice(0, 80)}`);
-    // Same optional usd_estimate as the turbo branch (winston and winc are both
-    // 1e12-per-AR, so one USD/AR rate converts either); null rate → field omitted.
-    const rate = await arUsdRate();
-    return structuredOk({
-      backend,
-      size_bytes: size,
-      cost: winston,
-      unit: 'winston',
-      approx_ar: Number(BigInt(winston)) / 1e12,
-      ...(rate !== null ? { usd_estimate: Number(((Number(BigInt(winston)) / 1e12) * rate).toFixed(6)) } : {}),
-      note: 'Arweave L1 network price (the reward createTransaction would set at push time). Paid in AR from the JWK wallet.',
-    });
-  } catch (e) {
-    return structuredOk({
-      backend,
-      size_bytes: size,
-      cost: null,
-      note: `estimate unavailable (gateway price query failed: ${errMsg(e)})`,
-    });
-  }
+  // The actual price computation (file/turbo/arweave, incl. the optional usd_estimate)
+  // lives in src/lib/estimate.ts — the SAME function the CLI `estimate` command calls,
+  // so this math is never re-implemented per surface (#159).
+  return structuredOk({ ...(await estimateCost(backend, size)) });
 }
 
 // schedule() (src/lib/schedule.ts, the SAME function the CLI's `schedule status`

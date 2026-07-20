@@ -131,6 +131,16 @@ function gatewayGet(url: string, signal: AbortSignal, pin: ScreenedTarget | null
   });
 }
 
+// Non-empty AND starts with AGE_MAGIC — every stored object is age ciphertext (push
+// enforces the same header), so anything else (a soft-404 page, a "tx pending"
+// placeholder, a CDN interstitial, an unrelated tx's bytes) must never be promoted to
+// the final output path. Shared by BOTH read paths (#118) so neither the gateway stream
+// nor the L1 chunk fallback can silently promote something that isn't actually the
+// pulled artifact.
+async function isAgeCiphertext(part: string): Promise<boolean> {
+  return (await stat(part)).size > 0 && (await readHead(part, 64)).startsWith(AGE_MAGIC);
+}
+
 // Stream an Arweave gateway GET to `part`; resolve true iff it produced a non-empty
 // file (the caller then promotes it to `out`). A STALL timeout (reset per chunk) bounds
 // a stalled gateway WITHOUT capping a large but progressing transfer (#17). Accept ONLY
@@ -169,7 +179,7 @@ async function streamArweaveGateway(url: string, part: string, timeoutMs: number
       // must NOT be promoted: returning false here falls through to the next gateway,
       // then the L1 chunk read, then the retryable error that drives `pull --wait`,
       // instead of writing garbage to --out during the propagation window.
-      if ((await stat(part)).size > 0 && (await readHead(part, 64)).startsWith(AGE_MAGIC)) return true;
+      if (await isAgeCiphertext(part)) return true;
     } else {
       resp.resume(); // drain a non-200 (202 pending / 404) so the socket frees
     }
@@ -195,6 +205,56 @@ interface ArweaveClient {
 interface ArweaveTransaction {
   id: string;
   addTag(name: string, value: string): void;
+}
+
+// arweave-js's HTTP client (`Api.request()`, node_modules/arweave/node/lib/api.js) — used
+// by BOTH `ar.transactions.getData()`'s chunk reads AND its own "gateway cache" fallback —
+// calls plain fetch() with no AbortSignal, and its ApiConfig.timeout is stored but never
+// wired into the fetch call (a dead option in this SDK version): nothing bounds a stalled
+// connection (#116). It also auto-follows any redirect the configured AR_HOST (or a
+// MITM/compromised CDN in front of it) returns, with NO host/IP screening — the SDK
+// exposes no fetch/redirect/AbortSignal injection point through its own public call sites
+// (Chunks.getTransactionOffset/getChunk call `this.api.get(endpoint)` with no init at all)
+// to fix this the way streamArweaveGateway() does for path 1 (#115). We can't even
+// validate-then-follow the redirect the way streamArweaveGateway() does: Node's fetch
+// (undici) returns an opaque, Location-less response for redirect:'manual' per the Fetch
+// spec — the same limitation documented on gatewayGet() above, which is why THAT path uses
+// node:http instead of fetch in the first place.
+//
+// Both gaps are closed together by wrapping the GLOBAL fetch for the lifetime of this one
+// SDK call: every request it issues is forced through redirect:'error' (a redirect makes
+// fetch() reject outright instead of being silently followed — strictly narrower than
+// streamArweaveGateway()'s validate-then-follow, but sufficient here: this is a
+// last-resort fallback, so a redirecting host just makes THIS read "not available", same
+// as any other chunk-read failure) and an AbortSignal from a STALL timer reset on every
+// individual fetch() call — mirrors streamArweaveGateway()'s per-chunk arm(), so a call
+// that keeps making forward progress across many small chunk requests isn't killed by one
+// flat deadline, but a genuinely stalled one aborts within `timeoutMs` instead of hanging
+// `pull` forever. The patch is restored only once the SDK's OWN promise truly settles (not
+// merely when our stall timer gives up on it) — an abandoned, still-running request could
+// otherwise receive and silently follow a redirect with the real fetch after we've already
+// moved on to the next gateway/attempt.
+// NOT reentrant: this mutates the process-global `fetch` for the duration of one call.
+// Safe today because `get()` is only ever awaited sequentially (one backend.get() per CLI
+// process, itself one `pull` command) — a future concurrent caller would need its own
+// dispatcher-scoped fix instead of overlapping calls to this function.
+function l1ChunkRead(ar: ArweaveClient, locator: string, timeoutMs: number): Promise<Uint8Array | string> {
+  const realFetch = globalThis.fetch;
+  const ctl = new AbortController();
+  let stall: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), timeoutMs); };
+  arm();
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    arm(); // a new request = forward progress; reset the stall deadline
+    return realFetch(input, { ...init, redirect: 'error', signal: ctl.signal });
+  }) as typeof fetch;
+  const p = ar.transactions.getData(locator, { decode: true });
+  // Restore the moment `p` settles, and swallow this settle-tracking chain's own
+  // rejection (`p`'s real rejection is separately handled by the caller's own
+  // try/catch around `l1ChunkRead(...)` — this `.catch` exists only so THIS derived
+  // promise doesn't itself surface as an unhandled rejection).
+  p.finally(() => { clearTimeout(stall); globalThis.fetch = realFetch; }).catch(() => {});
+  return p;
 }
 
 // arweave backend: stores the ciphertext as an Arweave transaction. The locator is
@@ -298,12 +358,28 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       //    the streamed path above. Needs the SDK: if `arweave` isn't installed, SKIP
       //    this fallback (the gateway path serves bundled items anyway) and let the
       //    retryable error below keep `--wait` polling — so a no-SDK machine still pulls.
+      //    l1ChunkRead() wraps the SDK call with the same two protections path 1 gets
+      //    for free from gatewayGet()/streamArweaveGateway(): a redirect-refusing,
+      //    SSRF-safe fetch (#115) and a stall-bounded timeout (#116) — see its header
+      //    comment for why a global fetch patch, not SDK config, is how this is done.
       let ar: ArweaveClient | null = null;
       try { ar = await getAr(); } catch (e) { if (!(e instanceof SdkMissingError)) throw e; /* no SDK → skip L1 fallback */ }
       if (ar) {
         let d: Uint8Array | string | null = null;
-        try { d = await ar.transactions.getData(locator, { decode: true }); } catch { /* not found / chunk error → not (yet) available */ }
-        if (d && d.length) { await writeFile(out, Buffer.from(d as Uint8Array)); return; }
+        try { d = await l1ChunkRead(ar, locator, AR_HTTP_TIMEOUT_MS); }
+        catch { /* not found / chunk error / redirect refused (SSRF guard, #115) / stalled (#116) → not (yet) available */ }
+        // Same promote-only-if-ciphertext gate as the gateway path (#118): a non-empty
+        // result here is not automatically trustworthy — it could be an unrelated tx's
+        // bytes, an error/placeholder page the SDK's "gateway cache" fallback served, or
+        // a typo'd-but-real tx id. Stage to `part`, validate, THEN atomically rename onto
+        // --out (#117) — never write (or truncate) --out directly, so an interrupted
+        // write can neither corrupt --out nor destroy a pre-existing valid one.
+        if (d && d.length) {
+          await writeFile(part, Buffer.from(d as Uint8Array));
+          if (await isAgeCiphertext(part)) { await rename(part, out); return; }
+          console.error(`arweave: L1 chunk read for tx ${locator} returned non-ciphertext data — discarding (not promoted to --out)`);
+          await rm(part, { force: true });
+        }
       }
       // a fresh upload may simply be propagating — mark this retryable so `pull --wait`
       // keeps trying (fatal errors like an invalid locator are NOT tagged, so they

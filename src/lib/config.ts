@@ -14,6 +14,7 @@ export const IDENTITY = join(HOME, 'identity.age');     // private key — requi
 export const RECIPIENT = join(HOME, 'recipient.txt');   // public key — all snapshot needs
 
 export const AGE_MAGIC = 'age-encryption.org/v1';
+export const AGE_ARMOR_HEADER = '-----BEGIN AGE ENCRYPTED FILE-----';
 
 // Optional recipient allowlist. When set, snapshot refuses to encrypt unless EVERY
 // effective recipient is on this list — so a tampered recipient.txt / an injected

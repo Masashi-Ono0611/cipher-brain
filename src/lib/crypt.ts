@@ -15,8 +15,8 @@ import { readFile } from 'node:fs/promises';
 import { spawn, type StdioNull, type StdioPipe } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { Encrypter, Decrypter, generateIdentity, identityToRecipient } from 'age-encryption';
-import { AGE_MAGIC } from './config.js';
+import { Encrypter, Decrypter, generateIdentity, identityToRecipient, armor } from 'age-encryption';
+import { AGE_MAGIC, AGE_ARMOR_HEADER } from './config.js';
 import { ACTIVE_CHILDREN } from './proc.js';
 import { errMsg } from './util.js';
 
@@ -70,9 +70,18 @@ export function wrapIdentity(text: string, passphrase: string): Promise<Uint8Arr
 
 // Read an identity file and return its identity lines. A passphrase-wrapped file
 // (it IS age ciphertext, so it starts with the age magic) is unwrapped first —
-// prompting on the TTY, or taking CIPHER_BRAIN_PASSPHRASE for automation.
+// prompting on the TTY, or taking CIPHER_BRAIN_PASSPHRASE for automation. A
+// passphrase-wrapped identity can ALSO be ASCII-armored (the reference `age -p -a`,
+// or an identity copied as printable text into a recovery note) — dearmor it back
+// to the raw ciphertext bytes before the magic check below, so both forms unwrap
+// identically (#87: armored identities used to fall through to "plaintext identity
+// lines", which is why armor text lines fed straight into addIdentity() and blew up
+// with "unrecognized identity type" instead of ever prompting for a passphrase).
 export async function loadIdentities(path: string): Promise<string[]> {
-  const raw = await readFile(path);
+  let raw = await readFile(path);
+  if (raw.subarray(0, AGE_ARMOR_HEADER.length).toString('latin1') === AGE_ARMOR_HEADER) {
+    raw = Buffer.from(armor.decode(raw.toString('utf8')));
+  }
   let text: string;
   if (raw.subarray(0, AGE_MAGIC.length).toString('latin1') === AGE_MAGIC) {
     const pass = await askPassphrase(`Enter passphrase for ${path}: `);

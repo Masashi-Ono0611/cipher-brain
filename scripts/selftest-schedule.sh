@@ -3,10 +3,18 @@
 # platform trigger, the paid-backend spend-cap refusal, two REAL back-to-back
 # end-to-end runs of the generated runner against the file backend (retry-safety:
 # a same-day re-run must not collide with the prior run's snapshot name), status
-# reporting, and idempotent uninstall. Never touches the real LaunchAgents/crontab:
-# CIPHER_BRAIN_SCHEDULE_DIR + CIPHER_BRAIN_LAUNCHD_DIR point into a temp dir and
-# every install/uninstall passes --no-load (artifacts only, no launchctl/crontab
-# registration).
+# reporting, idempotent uninstall, the --no-load uninstall consistency contract
+# (#113) and CIPHER_BRAIN_HOME-scoped LABEL/CRON_MARKER (#114). Every `install`
+# call uses --no-load (artifacts only) EXCEPT where a test specifically needs to
+# prove real (un)registration behavior — those calls use a LABEL/CRON_MARKER that
+# is hash-derived from a throwaway $TMP-based CIPHER_BRAIN_HOME (see home_hash()),
+# which can never collide with a real, machine-wide schedule, and are always
+# uninstalled again (trap-guarded) before this script exits. The one identifier
+# this script deliberately never mutates for real is the LEGACY (pre-#114,
+# unscoped) LABEL/CRON_MARKER — it is machine-wide, not test-scoped, and could
+# name a real production schedule on whatever machine runs this script; the
+# legacy-migration coverage below therefore only exercises detection (status) and
+# the --no-load report path (uninstall), never the real bootout/crontab-edit call.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,11 +30,24 @@ export CIPHER_BRAIN_LAUNCHD_DIR="$TMP/launchagents"
 export CIPHER_BRAIN_FILE_DIR="$TMP/store"
 cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 
+# First 8 hex chars of sha256(CIPHER_BRAIN_HOME) — must match src/lib/schedule.ts's
+# HOME_LABEL_HASH exactly (same input, same algorithm, same truncation) so this script can
+# predict the LABEL/CRON_MARKER/plist filename `schedule install` will actually use.
+home_hash() {
+  if command -v sha256sum > /dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -c1-8
+  else
+    printf '%s' "$1" | shasum -a 256 | cut -c1-8
+  fi
+}
+
 RUNNER="$CIPHER_BRAIN_SCHEDULE_DIR/nightly.sh"
 CONFIG="$CIPHER_BRAIN_SCHEDULE_DIR/schedule.json"
-PLIST="$CIPHER_BRAIN_LAUNCHD_DIR/dev.cipher-brain.nightly.plist"
+PLIST="$CIPHER_BRAIN_LAUNCHD_DIR/dev.cipher-brain.nightly.$(home_hash "$CIPHER_BRAIN_HOME").plist"
 CRON_ENTRY="$CIPHER_BRAIN_SCHEDULE_DIR/cron.entry"
 OS="$(uname -s)"
+HAS_CRONTAB=1
+if [ "$OS" != "Darwin" ] && ! command -v crontab > /dev/null 2>&1; then HAS_CRONTAB=0; fi
 
 SRC="$TMP/brain-src"; mkdir -p "$SRC"
 echo "a-thought" > "$SRC/note.txt"
@@ -254,7 +275,7 @@ if [ "$OS" = "Darwin" ]; then
   AMP_HOME="$TMP/home & co" # plausible in a real $HOME/username; must not corrupt the plist
   mkdir -p "$AMP_HOME"
   AMP_LAUNCHD_DIR="$TMP/launchagents-amp"
-  AMP_PLIST="$AMP_LAUNCHD_DIR/dev.cipher-brain.nightly.plist"
+  AMP_PLIST="$AMP_LAUNCHD_DIR/dev.cipher-brain.nightly.$(home_hash "$AMP_HOME").plist"
   # CIPHER_BRAIN_SCHEDULE_DIR is exported globally at top of this script (pointing at
   # $TMP/sched, no '&'), so it must be overridden here too — otherwise it would win over
   # CIPHER_BRAIN_HOME and the runner path baked into the plist would never see the '&'.
@@ -286,23 +307,157 @@ bash "$RUNNER" || { echo "[FAIL] runner with a not-yet-existing --index-file dir
 tail -n 1 "$LOG" | grep -q '^OK rc=0$' || { echo "[FAIL] log does not end with OK rc=0 after the nested-index-dir run"; tail -n 3 "$LOG"; exit 1; }
 echo "[PASS] runner mkdir -p's the --index-file's parent directory before appending, on a not-yet-existing nested path"
 
-echo "== (e) uninstall removes trigger + runner; second uninstall is a clean no-op =="
-cb schedule uninstall --no-load > "$TMP/uninstall1.log" 2>&1 || { echo "[FAIL] uninstall exited non-zero"; cat "$TMP/uninstall1.log"; exit 1; }
-[ ! -f "$RUNNER" ] || { echo "[FAIL] runner still present after uninstall"; exit 1; }
-[ ! -f "$CONFIG" ] || { echo "[FAIL] schedule.json still present after uninstall"; exit 1; }
+echo "== (e0) uninstall --no-load is a pure status report: never orphans a live trigger by deleting only the files (#113) =="
+# Symmetric with install's --no-load ("write artifacts, don't touch launchd/crontab"):
+# uninstall's --no-load must not touch launchd/crontab EITHER — and, unlike install,
+# that means it must also leave the runner/config/plist(or cron entry) alone, since
+# deleting them while the trigger is still registered would orphan a live launchd/cron
+# job pointing at a script that no longer exists (the exact #113 regression). This is a
+# pure file-existence check — no launchd/crontab call happens on this path at all.
+[ -f "$RUNNER" ] || { echo "[FAIL] test setup: runner missing before (e0)"; exit 1; }
+[ -f "$CONFIG" ] || { echo "[FAIL] test setup: config missing before (e0)"; exit 1; }
+cb schedule uninstall --no-load > "$TMP/uninstall-noload.log" 2>&1 || { echo "[FAIL] uninstall --no-load exited non-zero"; cat "$TMP/uninstall-noload.log"; exit 1; }
+[ -f "$RUNNER" ] || { echo "[FAIL] #113: uninstall --no-load deleted the runner — would orphan a still-registered trigger"; exit 1; }
+[ -f "$CONFIG" ] || { echo "[FAIL] #113: uninstall --no-load deleted schedule.json — would orphan a still-registered trigger"; exit 1; }
 if [ "$OS" = "Darwin" ]; then
-  [ ! -f "$PLIST" ] || { echo "[FAIL] plist still present after uninstall"; exit 1; }
+  [ -f "$PLIST" ] || { echo "[FAIL] #113: uninstall --no-load deleted the plist"; exit 1; }
 else
-  [ ! -f "$CRON_ENTRY" ] || { echo "[FAIL] cron entry artifact still present after uninstall"; exit 1; }
+  [ -f "$CRON_ENTRY" ] || { echo "[FAIL] #113: uninstall --no-load deleted the cron entry file"; exit 1; }
 fi
-grep -q 'removed: ' "$TMP/uninstall1.log" || { echo "[FAIL] uninstall did not report what it removed"; exit 1; }
-[ -f "$LOG" ] || { echo "[FAIL] uninstall must KEEP the logs"; exit 1; }
-[ -f "$SNAP" ] || { echo "[FAIL] uninstall must KEEP the snapshots"; exit 1; }
-[ -f "$IDX" ] || { echo "[FAIL] uninstall must KEEP index.tsv"; exit 1; }
-cb schedule uninstall --no-load > "$TMP/uninstall2.log" 2>&1 || { echo "[FAIL] second uninstall exited non-zero (must be idempotent)"; exit 1; }
-grep -q 'nothing to remove' "$TMP/uninstall2.log" || { echo "[FAIL] second uninstall did not report a no-op"; exit 1; }
-if cb schedule status > /dev/null 2>&1; then echo "[FAIL] status after uninstall must fail (not installed)"; exit 1; fi
-echo "[PASS] uninstall: trigger + runner removed, data kept, idempotent; status reports not installed"
+grep -q -- '--no-load: nothing removed' "$TMP/uninstall-noload.log" || { echo "[FAIL] uninstall --no-load did not report that nothing was removed"; cat "$TMP/uninstall-noload.log"; exit 1; }
+grep -q 'still live' "$TMP/uninstall-noload.log" || { echo "[FAIL] uninstall --no-load did not explain the trigger registration is still live"; cat "$TMP/uninstall-noload.log"; exit 1; }
+echo "[PASS] uninstall --no-load: pure status report — no files removed, launchd/crontab untouched, explains why"
+
+echo "== (e) uninstall (no --no-load) removes trigger + runner; second uninstall is a clean no-op =="
+if [ "$OS" != "Darwin" ] && [ "$HAS_CRONTAB" = "0" ]; then
+  echo "[SKIP] uninstall (real removal) — this host has no crontab binary (Linux, non-Darwin CI image gap, not a cipher-brain issue)"
+else
+  # No --no-load this time: every install above used --no-load, so nothing was ever REALLY
+  # registered — the launchctl bootout / crontab edit below hit the HOME-scoped (#114)
+  # LABEL/CRON_MARKER, which is unique to this test's throwaway CIPHER_BRAIN_HOME and can
+  # never match a real, machine-wide schedule, so this is safe to run for real.
+  cb schedule uninstall > "$TMP/uninstall1.log" 2>&1 || { echo "[FAIL] uninstall exited non-zero"; cat "$TMP/uninstall1.log"; exit 1; }
+  [ ! -f "$RUNNER" ] || { echo "[FAIL] runner still present after uninstall"; exit 1; }
+  [ ! -f "$CONFIG" ] || { echo "[FAIL] schedule.json still present after uninstall"; exit 1; }
+  if [ "$OS" = "Darwin" ]; then
+    [ ! -f "$PLIST" ] || { echo "[FAIL] plist still present after uninstall"; exit 1; }
+  else
+    [ ! -f "$CRON_ENTRY" ] || { echo "[FAIL] cron entry artifact still present after uninstall"; exit 1; }
+  fi
+  grep -q 'removed: ' "$TMP/uninstall1.log" || { echo "[FAIL] uninstall did not report what it removed"; exit 1; }
+  [ -f "$LOG" ] || { echo "[FAIL] uninstall must KEEP the logs"; exit 1; }
+  [ -f "$SNAP" ] || { echo "[FAIL] uninstall must KEEP the snapshots"; exit 1; }
+  [ -f "$IDX" ] || { echo "[FAIL] uninstall must KEEP index.tsv"; exit 1; }
+  cb schedule uninstall > "$TMP/uninstall2.log" 2>&1 || { echo "[FAIL] second uninstall exited non-zero (must be idempotent)"; exit 1; }
+  grep -q 'nothing to remove' "$TMP/uninstall2.log" || { echo "[FAIL] second uninstall did not report a no-op"; exit 1; }
+  if cb schedule status > /dev/null 2>&1; then echo "[FAIL] status after uninstall must fail (not installed)"; exit 1; fi
+  echo "[PASS] uninstall: trigger + runner removed, data kept, idempotent; status reports not installed"
+fi
+
+echo "== (f) two different CIPHER_BRAIN_HOME schedules never collide: distinct LABEL/CRON_MARKER, installing/uninstalling one never touches the other's REAL registration (#114) =="
+if [ "$OS" != "Darwin" ] && [ "$HAS_CRONTAB" = "0" ]; then
+  echo "[SKIP] multi-home collision check — this host has no crontab binary"
+else
+  MHOME1="$TMP/multi-home1"; MHOME2="$TMP/multi-home2"
+  MSRC1="$MHOME1/src"; MSRC2="$MHOME2/src"; mkdir -p "$MSRC1" "$MSRC2"
+  echo one > "$MSRC1/f.txt"; echo two > "$MSRC2/f.txt"
+  MSCHED1="$TMP/multi-sched1"; MSCHED2="$TMP/multi-sched2"
+  MLAUNCHD="$TMP/multi-launchagents" # a SHARED dir, like the real ~/Library/LaunchAgents
+  mkdir -p "$MLAUNCHD"
+  MH1="$(home_hash "$MHOME1")"; MH2="$(home_hash "$MHOME2")"
+  [ "$MH1" != "$MH2" ] || { echo "[FAIL] two different CIPHER_BRAIN_HOME produced the SAME label/marker hash"; exit 1; }
+
+  # These two installs are NOT --no-load — real launchctl/crontab registration — but that
+  # is safe: LABEL/CRON_MARKER are hash-derived from CIPHER_BRAIN_HOME (#114), so MH1/MH2
+  # are guaranteed unique to this run and can never match a real, machine-wide schedule.
+  # Guard with a trap so a failure partway through this block still unregisters both real
+  # jobs before the script exits (a leaked real trigger pointing at a $TMP dir that is
+  # about to be deleted is exactly the #113 orphan bug this whole file guards against).
+  cleanup_multi_home() {
+    CIPHER_BRAIN_HOME="$MHOME1" CIPHER_BRAIN_SCHEDULE_DIR="$MSCHED1" CIPHER_BRAIN_LAUNCHD_DIR="$MLAUNCHD" cb schedule uninstall > /dev/null 2>&1 || true
+    CIPHER_BRAIN_HOME="$MHOME2" CIPHER_BRAIN_SCHEDULE_DIR="$MSCHED2" CIPHER_BRAIN_LAUNCHD_DIR="$MLAUNCHD" cb schedule uninstall > /dev/null 2>&1 || true
+  }
+  trap 'cleanup_multi_home; rm -rf "$TMP"' EXIT
+
+  CIPHER_BRAIN_HOME="$MHOME1" CIPHER_BRAIN_SCHEDULE_DIR="$MSCHED1" CIPHER_BRAIN_LAUNCHD_DIR="$MLAUNCHD" \
+    cb schedule install --backend file --dir "$MSRC1" > "$TMP/multi-install1.log" 2>&1 \
+    || { echo "[FAIL] multi-home install 1 exited non-zero"; cat "$TMP/multi-install1.log"; exit 1; }
+  CIPHER_BRAIN_HOME="$MHOME2" CIPHER_BRAIN_SCHEDULE_DIR="$MSCHED2" CIPHER_BRAIN_LAUNCHD_DIR="$MLAUNCHD" \
+    cb schedule install --backend file --dir "$MSRC2" > "$TMP/multi-install2.log" 2>&1 \
+    || { echo "[FAIL] multi-home install 2 exited non-zero"; cat "$TMP/multi-install2.log"; exit 1; }
+
+  if [ "$OS" = "Darwin" ]; then
+    MP1="$MLAUNCHD/dev.cipher-brain.nightly.$MH1.plist"; MP2="$MLAUNCHD/dev.cipher-brain.nightly.$MH2.plist"
+    [ -f "$MP1" ] || { echo "[FAIL] home1 plist missing after both installs: $MP1"; exit 1; }
+    [ -f "$MP2" ] || { echo "[FAIL] home2 plist missing after both installs (#114: did it overwrite home1's file instead of writing a distinct one?)"; exit 1; }
+    launchctl print "gui/$(id -u)/dev.cipher-brain.nightly.$MH1" > /dev/null 2>&1 \
+      || { echo "[FAIL] #114: home1's launchd job is not loaded after home2 was installed — home2 clobbered it"; exit 1; }
+    launchctl print "gui/$(id -u)/dev.cipher-brain.nightly.$MH2" > /dev/null 2>&1 \
+      || { echo "[FAIL] home2's launchd job is not loaded"; exit 1; }
+    CIPHER_BRAIN_HOME="$MHOME2" CIPHER_BRAIN_SCHEDULE_DIR="$MSCHED2" CIPHER_BRAIN_LAUNCHD_DIR="$MLAUNCHD" \
+      cb schedule uninstall > "$TMP/multi-uninstall2.log" 2>&1 || { echo "[FAIL] home2 uninstall exited non-zero"; cat "$TMP/multi-uninstall2.log"; exit 1; }
+    [ -f "$MP1" ] || { echo "[FAIL] #114: uninstalling home2 removed home1's plist"; exit 1; }
+    launchctl print "gui/$(id -u)/dev.cipher-brain.nightly.$MH1" > /dev/null 2>&1 \
+      || { echo "[FAIL] #114: uninstalling home2 unregistered home1's launchd job"; exit 1; }
+  else
+    crontab -l 2>/dev/null | grep -q "# cipher-brain-nightly:$MH1" \
+      || { echo "[FAIL] home1's crontab entry missing after both installs"; exit 1; }
+    crontab -l 2>/dev/null | grep -q "# cipher-brain-nightly:$MH2" \
+      || { echo "[FAIL] #114: home2's crontab entry missing after both installs (did it overwrite home1's line?)"; exit 1; }
+    CIPHER_BRAIN_HOME="$MHOME2" CIPHER_BRAIN_SCHEDULE_DIR="$MSCHED2" CIPHER_BRAIN_LAUNCHD_DIR="$MLAUNCHD" \
+      cb schedule uninstall > "$TMP/multi-uninstall2.log" 2>&1 || { echo "[FAIL] home2 uninstall exited non-zero"; cat "$TMP/multi-uninstall2.log"; exit 1; }
+    crontab -l 2>/dev/null | grep -q "# cipher-brain-nightly:$MH1" \
+      || { echo "[FAIL] #114: uninstalling home2 removed home1's crontab entry"; exit 1; }
+  fi
+  cleanup_multi_home
+  trap 'rm -rf "$TMP"' EXIT
+  echo "[PASS] two different CIPHER_BRAIN_HOME schedules use distinct LABEL/CRON_MARKER; installing/uninstalling one never touches the other's real registration"
+fi
+
+echo "== (g) backward compat: a legacy (pre-#114, unscoped LABEL/CRON_MARKER) schedule is recognized by status and reported by uninstall --no-load (#114) =="
+# Hand-craft what a pre-#114 `install` would have left behind for THIS home: a
+# schedule.json whose trigger literally names the OLD unscoped plist/crontab-marker
+# (exactly the shape install() used to write before this fix), plus a plist/cron.entry
+# file at that legacy (unscoped, machine-wide) name. Detection-only coverage: this test
+# deliberately never invokes a REAL launchctl/crontab mutation against the legacy
+# identifier (see the file header) — it only exercises status's read-only launchctl
+# print / crontab -l and uninstall --no-load's pure (mutation-free) report path.
+LEGACY_HOME="$TMP/legacy-home"; LEGACY_SCHED="$TMP/legacy-sched"; LEGACY_LAUNCHD="$TMP/legacy-launchagents"
+LEGACY_SRC="$LEGACY_HOME/src"; mkdir -p "$LEGACY_SRC" "$LEGACY_LAUNCHD"
+echo legacy > "$LEGACY_SRC/f.txt"
+CIPHER_BRAIN_HOME="$LEGACY_HOME" CIPHER_BRAIN_SCHEDULE_DIR="$LEGACY_SCHED" CIPHER_BRAIN_LAUNCHD_DIR="$LEGACY_LAUNCHD" \
+  cb schedule install --backend file --dir "$LEGACY_SRC" --no-load > "$TMP/legacy-install.log" 2>&1 \
+  || { echo "[FAIL] legacy-fixture install exited non-zero"; cat "$TMP/legacy-install.log"; exit 1; }
+if [ "$OS" = "Darwin" ]; then
+  LEGACY_PLIST_PATH="$LEGACY_LAUNCHD/dev.cipher-brain.nightly.plist"
+  NEW_PLIST_PATH="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$LEGACY_SCHED/schedule.json','utf8')).trigger.path)")"
+  mv "$NEW_PLIST_PATH" "$LEGACY_PLIST_PATH"
+  node -e "
+    const fs = require('fs');
+    const p = '$LEGACY_SCHED/schedule.json';
+    const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
+    cfg.trigger.path = '$LEGACY_PLIST_PATH';
+    fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
+  "
+  CIPHER_BRAIN_HOME="$LEGACY_HOME" CIPHER_BRAIN_SCHEDULE_DIR="$LEGACY_SCHED" CIPHER_BRAIN_LAUNCHD_DIR="$LEGACY_LAUNCHD" \
+    cb schedule status > "$TMP/legacy-status.log" 2>&1 || { echo "[FAIL] status on a legacy-format schedule exited non-zero"; cat "$TMP/legacy-status.log"; exit 1; }
+  grep -qi 'legacy' "$TMP/legacy-status.log" || { echo "[FAIL] status did not flag the legacy unscoped launchd label"; cat "$TMP/legacy-status.log"; exit 1; }
+  CIPHER_BRAIN_HOME="$LEGACY_HOME" CIPHER_BRAIN_SCHEDULE_DIR="$LEGACY_SCHED" CIPHER_BRAIN_LAUNCHD_DIR="$LEGACY_LAUNCHD" \
+    cb schedule uninstall --no-load > "$TMP/legacy-uninstall-noload.log" 2>&1 || { echo "[FAIL] uninstall --no-load on a legacy-format schedule exited non-zero"; cat "$TMP/legacy-uninstall-noload.log"; exit 1; }
+  grep -q "legacy launchd plist" "$TMP/legacy-uninstall-noload.log" || { echo "[FAIL] uninstall --no-load did not report the legacy plist as present"; cat "$TMP/legacy-uninstall-noload.log"; exit 1; }
+  [ -f "$LEGACY_PLIST_PATH" ] || { echo "[FAIL] uninstall --no-load must not delete the legacy plist either"; exit 1; }
+  echo "[PASS] legacy-format schedule.json: status flags it, uninstall --no-load reports (but never deletes) the legacy plist"
+else
+  if [ "$HAS_CRONTAB" = "0" ]; then
+    echo "[SKIP] legacy backward-compat check — this host has no crontab binary"
+  else
+    printf '30 3 * * * /bin/bash "%s" # cipher-brain-nightly\n' "$LEGACY_SCHED/nightly.sh" > "$LEGACY_SCHED/cron.entry"
+    CIPHER_BRAIN_HOME="$LEGACY_HOME" CIPHER_BRAIN_SCHEDULE_DIR="$LEGACY_SCHED" CIPHER_BRAIN_LAUNCHD_DIR="$LEGACY_LAUNCHD" \
+      cb schedule status > "$TMP/legacy-status.log" 2>&1 || { echo "[FAIL] status on a legacy-format schedule exited non-zero"; cat "$TMP/legacy-status.log"; exit 1; }
+    grep -qi 'legacy' "$TMP/legacy-status.log" || { echo "[FAIL] status did not flag the legacy unscoped crontab marker"; cat "$TMP/legacy-status.log"; exit 1; }
+    echo "[PASS] legacy-format cron.entry: status flags the unscoped crontab marker"
+  fi
+fi
 
 echo
 echo "SCHEDULE SELFTEST PASS"

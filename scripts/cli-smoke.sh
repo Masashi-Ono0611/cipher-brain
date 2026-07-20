@@ -69,6 +69,15 @@ ADDR2="$(node "$DIST" wallet address --wallet "$WALLET_DEFAULT")" || { echo "[FA
 if [ "$ADDR2" = "$ADDR1" ]; then echo "[FAIL] wallet create --force did not generate a fresh keypair (address unchanged)"; exit 1; fi
 echo "[PASS] dist wallet create --force: replaces the wallet with a fresh keypair (new address)"
 
+# (c2) #164: `wallet address` with NEITHER --wallet NOR CIPHER_BRAIN_AR_WALLET set must
+# fall back to the same default path `wallet create` just wrote to, not error out.
+unset CIPHER_BRAIN_AR_WALLET
+ADDR3="$(node "$DIST" wallet address)" || { echo "[FAIL] dist wallet address (no --wallet, no CIPHER_BRAIN_AR_WALLET) exited non-zero"; exit 1; }
+if [ "$ADDR3" != "$ADDR2" ]; then
+  echo "[FAIL] wallet address without --wallet did not fall back to the default wallet.json path (got '$ADDR3', expected '$ADDR2')"; exit 1
+fi
+echo "[PASS] dist wallet address: falls back to \$CIPHER_BRAIN_HOME/wallet.json when --wallet and CIPHER_BRAIN_AR_WALLET are both unset"
+
 # (d) estimate --backend file: offline, deterministic — sizes an existing file (the
 # keygen'd recipient.txt) and must report the free-tier cost without touching the
 # network. Read-only: no upload happens.

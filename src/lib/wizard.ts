@@ -350,8 +350,17 @@ export async function init(_o: CliOptions): Promise<void> {
         'public key, either identity alone can restore — see MANAGEMENT.md "Key recovery #1".',
       );
       if (await askYesNo(rl, 'Generate an offline backup keypair now?', true)) {
+        // Shown BEFORE the path prompt (and BEFORE keygenAt() below writes anything) —
+        // not after, like it used to be. The old order printed this warning only once
+        // the keypair was already on disk and a "backup identity written to: ..." success
+        // line had already gone by, which reads as "done" and makes a one-line warning
+        // easy to skim past. The default path below (`${HOME}-backup`) sits right next to
+        // the primary identity on the SAME disk, so the "move this off-box" instruction
+        // needs to land before the user accepts that default, not after.
+        console.log('⚠  This will still be written ON this machine — move it OFF-BOX (encrypted USB, a second');
+        console.log('   location, a trusted person) once it is written; the recovery kit at the end restates this.');
         const defaultBackupHome = `${HOME}-backup`;
-        const backupHome = expandHome(await askLine(rl, `Path for the backup keypair [${defaultBackupHome}]: `, defaultBackupHome));
+        const backupHome = expandHome(await askLine(rl, `Path for the backup keypair (same disk unless you change this) [${defaultBackupHome}]: `, defaultBackupHome));
         const identityPath = join(backupHome, 'identity.age');
         const recipientPath = join(backupHome, 'recipient.txt');
         // Same partial-write hazard as the primary keygen above (identity.age written,
@@ -387,8 +396,6 @@ export async function init(_o: CliOptions): Promise<void> {
         const identityText = await readFile(identityPath, 'utf8');
         backup = { identityPath, recipientPath, recipient, identityText };
         console.log(`backup identity written to: ${identityPath}`);
-        console.log('⚠  This is still ON this machine. Move it OFF-BOX (encrypted USB, a second location, a trusted');
-        console.log('   person) once you are done — the recovery kit at the end of this wizard restates this.');
       } else {
         console.log('Skipping the backup key. You can add one later at any time: CIPHER_BRAIN_HOME=<path> cipher-brain keygen');
       }

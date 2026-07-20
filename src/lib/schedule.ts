@@ -369,13 +369,6 @@ async function readOwnCronEntry(): Promise<string | null> {
 // ---------- subcommands ----------
 
 async function install(o: CliOptions): Promise<void> {
-  // Read any PRE-EXISTING artifacts now, before anything below overwrites them — used only
-  // to detect (and, unless --no-load, migrate off) a legacy pre-#114 registration for THIS
-  // SAME home, so re-running install after upgrading cipher-brain doesn't leave BOTH the
-  // old unscoped job and the new scoped one running nightly (#114).
-  const priorCfg = await tryReadConfig();
-  const priorCronEntry = await readOwnCronEntry();
-
   if (!o.backend) throw new Error('--backend <file|arweave|turbo> required');
   if (!BACKENDS.has(o.backend)) throw new Error(`unknown backend: ${o.backend} (expected file|arweave|turbo)`);
   if (!o.pg && o.dirs.length === 0 && !o.profile) {
@@ -411,6 +404,15 @@ async function install(o: CliOptions): Promise<void> {
   } else if (o.max_spend) {
     throw new Error(`--max-spend only applies to the paid backends (arweave|turbo); --backend ${o.backend} is free`);
   }
+
+  // Read any PRE-EXISTING artifacts now, before anything below overwrites them — used only
+  // to detect (and, unless --no-load, migrate off) a legacy pre-#114 registration for THIS
+  // SAME home, so re-running install after upgrading cipher-brain doesn't leave BOTH the
+  // old unscoped job and the new scoped one running nightly (#114). Read AFTER the input
+  // validation above so a plain usage error (bad --backend, missing --max-spend, ...) never
+  // pays for this extra I/O.
+  const priorCfg = await tryReadConfig();
+  const priorCronEntry = await readOwnCronEntry();
 
   const cfg: ScheduleConfig = {
     schema: 1,
@@ -479,8 +481,10 @@ async function install(o: CliOptions): Promise<void> {
     console.error(`launchd job loaded: ${LABEL}`);
     if (isLegacyLaunchdCfg(priorCfg)) {
       sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${LEGACY_LABEL}`]); // failure = was not loaded, fine
-      if (await exists(LEGACY_PLIST)) await rm(LEGACY_PLIST);
-      console.error(`migrated off the legacy unscoped launchd label (${LEGACY_LABEL}) — removed it`);
+      if (await exists(LEGACY_PLIST)) {
+        await rm(LEGACY_PLIST);
+        console.error(`migrated off the legacy unscoped launchd label (${LEGACY_LABEL}) — removed ${LEGACY_PLIST}`);
+      }
     }
   } else {
     loadCron(cronLine(cfg));
@@ -491,8 +495,8 @@ async function install(o: CliOptions): Promise<void> {
       if (kept.length !== lines.length) {
         const r = sh('crontab', ['-'], { input: kept.length ? kept.join('\n') + '\n' : '' });
         if (r.error || r.status !== 0) throw new Error(`crontab write failed while migrating off the legacy entry: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
+        console.error(`migrated off the legacy unscoped crontab entry (${LEGACY_CRON_MARKER})`);
       }
-      console.error(`migrated off the legacy unscoped crontab entry (${LEGACY_CRON_MARKER})`);
     }
   }
 

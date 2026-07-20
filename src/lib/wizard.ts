@@ -81,6 +81,26 @@ async function askYesNo(rl: Rl, question: string, def: boolean): Promise<boolean
   return answer === 'y' || answer === 'yes';
 }
 
+// The recovery kit is a long-lived, physically-stored document, and a Postgres
+// connection string can embed a password (unlike the age identity, which the kit's
+// whole job IS to carry off-machine, the DB credential is only shown here for
+// REFERENCE — "this was the source, do not restore into it"). Strip a password before
+// it goes in (Fugu review finding); the username alone is left visible — it is not
+// itself a secret, and this project's own docs already print it in the clear (e.g.
+// README's `postgres://user@localhost:5432/gbrain` examples, and this wizard's own
+// peer-auth-style default a few lines below). Falls back to a conservative regex
+// redact for a non-URL keyword/value DSN (e.g. "host=... password=..."), which --pg
+// accepts just as pg_dump/pg_restore themselves do but the WHATWG URL parser cannot.
+function redactPgConn(conn: string): string {
+  try {
+    const u = new URL(conn);
+    if (u.password) u.password = '';
+    return u.toString();
+  } catch {
+    return conn.replace(/:\/\/([^:@/]+):[^@/]*@/, '://$1@').replace(/\bpassword=\S+/gi, 'password=REDACTED');
+  }
+}
+
 interface BackupKey {
   identityPath: string;
   recipientPath: string;
@@ -121,7 +141,7 @@ function buildRecoveryKit(k: KitInputs): string {
   lines.push(`Kit generated: ${k.generatedAt}`);
   lines.push(`Profile used:  ${k.profile}`);
   lines.push(`Backend used:  ${k.backend}`);
-  lines.push(`Postgres dump: ${k.pg ? `included (connection: ${k.pg})` : 'not included'}`);
+  lines.push(`Postgres dump: ${k.pg ? `included (connection: ${redactPgConn(k.pg)})` : 'not included'}`);
   lines.push('');
   lines.push('--- PRIMARY IDENTITY (already on this machine — not duplicated here) ---');
   lines.push(`Location:  ${k.primaryIdentityPath}`);
@@ -208,7 +228,7 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('');
     lines.push('!!! THIS BACKUP ALSO INCLUDES A POSTGRES DUMP: the restore command(s) above extract db.dump into');
     lines.push('    --out-dir but deliberately do NOT pg_restore it (no --pg is included above).');
-    lines.push(`    Its SOURCE connection was: ${k.pg}`);
+    lines.push(`    Its SOURCE connection was: ${redactPgConn(k.pg)}`);
     lines.push('    Do NOT pg_restore into that same database — "pg_restore --clean --if-exists" DROPS/replaces');
     lines.push('    objects in whatever database --pg names. Add --pg pointing at a SCRATCH database (never the');
     lines.push('    source above) to the restore command; see MANAGEMENT.md "Restore runbook" step 4 for the');
@@ -443,7 +463,9 @@ export async function init(_o: CliOptions): Promise<void> {
           // (Fugu review finding: a bare-Enter accept should not likely fail pg_dump).
           let osUser = 'you';
           try { osUser = userInfo().username; } catch { /* keep the 'you' fallback */ }
-          const defaultPg = `postgres://${osUser}@localhost:5432/gbrain`;
+          // percent-encode: a username with '@', ':', '/', or a space would otherwise
+          // corrupt the URI's own authority parsing (Fugu review finding).
+          const defaultPg = `postgres://${encodeURIComponent(osUser)}@localhost:5432/gbrain`;
           snapshotOpts.pg = await askLine(rl, `Postgres connection string [${defaultPg}]: `, defaultPg);
         }
       }

@@ -701,7 +701,11 @@ PG_STORE="$TMP/pg-store"
 PG_SRC="$TMP/pg-src"; mkdir -p "$PG_SRC"
 printf 'pg-marker\n' > "$PG_SRC/note.txt"
 PG_KIT_PATH="$PG_HOME/recovery-kit.txt"
-TEST_PG_CONN="postgres://tester@localhost:5432/gbrain-selftest"
+# A password is deliberately included: the kit must redact it (Fugu review finding —
+# see the redacted-form assertions below) while the username stays visible.
+TEST_PG_PASSWORD="s3cr3t-selftest-pw"
+TEST_PG_CONN="postgres://tester:${TEST_PG_PASSWORD}@localhost:5432/gbrain-selftest"
+TEST_PG_CONN_REDACTED="postgres://tester@localhost:5432/gbrain-selftest"
 
 FAKE_PGBIN="$TMP/fake-pgbin-snapshot"; mkdir -p "$FAKE_PGBIN"
 cat > "$FAKE_PGBIN/pg_dump" <<'SHIM'
@@ -751,15 +755,18 @@ grep -q 'pg_dump:custom' "$PG_RESTORE_DIR/manifest.json" || { echo "[FAIL] manif
 echo "[PASS] the snapshot genuinely contains a pg_dump component (shimmed pg_dump was invoked and its real output archived, not just a flag threaded through)"
 
 [ -f "$PG_KIT_PATH" ] || { echo "[FAIL] recovery kit was not written for the pg run"; exit 1; }
-grep -qF "Postgres dump: included (connection: $TEST_PG_CONN)" "$PG_KIT_PATH" || { echo "[FAIL] kit header does not record the Postgres connection used"; cat "$PG_KIT_PATH"; exit 1; }
+grep -qF "Postgres dump: included (connection: $TEST_PG_CONN_REDACTED)" "$PG_KIT_PATH" || { echo "[FAIL] kit header does not record the (redacted) Postgres connection used"; cat "$PG_KIT_PATH"; exit 1; }
 grep -q 'THIS BACKUP ALSO INCLUDES A POSTGRES DUMP' "$PG_KIT_PATH" || { echo "[FAIL] kit is missing the pg-restore safety block"; cat "$PG_KIT_PATH"; exit 1; }
-grep -qF "Its SOURCE connection was: $TEST_PG_CONN" "$PG_KIT_PATH" || { echo "[FAIL] pg-restore safety block does not name the source connection"; cat "$PG_KIT_PATH"; exit 1; }
+grep -qF "Its SOURCE connection was: $TEST_PG_CONN_REDACTED" "$PG_KIT_PATH" || { echo "[FAIL] pg-restore safety block does not name the (redacted) source connection"; cat "$PG_KIT_PATH"; exit 1; }
 grep -q 'SCRATCH database' "$PG_KIT_PATH" || { echo "[FAIL] pg-restore safety block does not point at a SCRATCH database"; cat "$PG_KIT_PATH"; exit 1; }
+# Fugu review finding: the kit is a long-lived, physically-stored document — it must
+# never contain the raw DB password, only the (already-asserted-above) redacted form.
+if grep -qF "$TEST_PG_PASSWORD" "$PG_KIT_PATH"; then echo "[FAIL] recovery kit leaks the raw Postgres password in plaintext"; cat "$PG_KIT_PATH"; exit 1; fi
 # Fugu review finding: the printed restore command must NOT auto-embed the SOURCE
 # connection as the restore --pg target — pg_restore --clean would DROP/replace objects
 # in whatever database --pg names, so a verbatim copy-paste could clobber a live DB.
-if grep -qF -- "--pg \"$TEST_PG_CONN\"" "$PG_KIT_PATH"; then echo "[FAIL] kit restore command auto-embeds the SOURCE connection as --pg — copy-paste risks clobbering the live database"; cat "$PG_KIT_PATH"; exit 1; fi
-echo "[PASS] the recovery kit records the Postgres connection used and warns to restore into a SCRATCH database instead of auto-embedding --pg with the source"
+if grep -qF -- "--pg \"$TEST_PG_CONN" "$PG_KIT_PATH"; then echo "[FAIL] kit restore command auto-embeds the SOURCE connection as --pg — copy-paste risks clobbering the live database"; cat "$PG_KIT_PATH"; exit 1; fi
+echo "[PASS] the recovery kit records the Postgres connection with its password redacted, never auto-embeds --pg with the source, and warns to restore into a SCRATCH database"
 
 echo
 echo "INIT SELFTEST PASS"

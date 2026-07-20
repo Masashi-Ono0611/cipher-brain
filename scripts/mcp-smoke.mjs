@@ -337,6 +337,46 @@ async function run(tmp) {
       throw new Error(`estimate_cost(file) result unexpected: ${JSON.stringify(estSc).slice(0, 300)}`);
     }
 
+    // 2g-ii. estimate_cost via size_bytes (the CLI `estimate` command's alternative —
+    // it always sizes a real --in file, so this argument shape is MCP-only) exercises
+    // the same shared estimateCost() (src/lib/estimate.ts) the file-arg call above did,
+    // now via the OTHER branch of handleEstimateCost's own file/size_bytes resolution
+    // (the part of the tool that did NOT move into the shared function).
+    send({
+      jsonrpc: '2.0',
+      id: 12,
+      method: 'tools/call',
+      params: { name: 'estimate_cost', arguments: { size_bytes: 12345, backend: 'file' } },
+    });
+    const estBytes = await waitFor(12);
+    const estBytesSc = estBytes.result?.structuredContent;
+    if (estBytes.result?.isError)
+      throw new Error(`estimate_cost(size_bytes) failed: ${JSON.stringify(estBytesSc).slice(0, 500)}`);
+    if (estBytesSc?.cost !== '0' || estBytesSc?.size_bytes !== 12345 || !estBytesSc?.note) {
+      throw new Error(`estimate_cost(size_bytes) result unexpected: ${JSON.stringify(estBytesSc).slice(0, 300)}`);
+    }
+
+    // 2g-iii. estimate_cost(backend: turbo) with @ardrive/turbo-sdk NOT installed in
+    // this environment — offline, deterministic (same optional-dependency-missing
+    // branch scripts/cli-smoke.sh exercises for the CLI `estimate` command; both are
+    // the SAME estimateCost() call, so this doubles as regression coverage for the
+    // #159 CLI/MCP extraction sharing one implementation).
+    send({
+      jsonrpc: '2.0',
+      id: 13,
+      method: 'tools/call',
+      params: { name: 'estimate_cost', arguments: { size_bytes: 12345, backend: 'turbo' } },
+    });
+    const estTurbo = await waitFor(13);
+    const estTurboSc = estTurbo.result?.structuredContent;
+    if (estTurbo.result?.isError)
+      throw new Error(`estimate_cost(turbo) failed: ${JSON.stringify(estTurboSc).slice(0, 500)}`);
+    if (estTurboSc?.cost !== null || !/not installed/.test(estTurboSc?.note ?? '')) {
+      throw new Error(
+        `estimate_cost(turbo, sdk missing) result unexpected: ${JSON.stringify(estTurboSc).slice(0, 300)}`,
+      );
+    }
+
     // 2h. schedule_status — thin wrapper over the SAME schedule() the CLI's `schedule
     // status` dispatches to; asserts against the --no-load schedule installed above,
     // verbatim report lines rather than re-parsed fields (matching handleScheduleStatus's
@@ -376,6 +416,7 @@ async function run(tmp) {
       `MCP SMOKE: PASS — tools=[${names.join(', ')}], spend gate=ERR_CONFIRM_REQUIRED, ` +
         `file round-trip locator=${snapSc.locator.split('/').pop()}, status.age=${latest.age_seconds}s, verify=${verSc.verdict}, ` +
         `verify(locator_file pin)=${verPinnedSc.verdict}, wrong-pin=fail-closed, estimate(file)=0, ` +
+        `estimate(size_bytes)=0, estimate(turbo, sdk missing)=unavailable, ` +
         `schedule_status.report.length=${schedSc.report.length}\n`,
     );
   } finally {

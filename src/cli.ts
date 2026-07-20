@@ -31,6 +31,7 @@ import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
 import { push, pull } from './lib/pushpull.js';
 import { schedule } from './lib/schedule.js';
+import { estimate } from './lib/estimate.js';
 import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
 import { printMascot } from './lib/ui.js';
@@ -119,7 +120,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       (file: store path; arweave: tx id; turbo: ANS-104 data item id).
       Storage sees ciphertext only.
       arweave/turbo are paid permanent stores — require --yes or CIPHER_BRAIN_YES=1;
-      turbo prints a winc/AR cost estimate plus an approximate USD line before uploading.
+      both print a native-unit cost estimate (winston/winc) plus an approximate USD
+      line before uploading. Preview the same estimate beforehand without pushing
+      anything via "cipher-brain estimate".
       --save-locator writes "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t
       <recipients_fingerprint>]]" to a file (rewritten atomically each push, so it
       always holds the LATEST + an integrity pin; legacy 3/4-field files are still
@@ -140,6 +143,13 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       just pushes normally: skip is an optimization, never a gate. --force uploads even
       when unchanged. (The digest is plaintext-side by necessity: age's ephemeral file
       key makes identical content encrypt to different ciphertext bytes every run.)
+
+  cipher-brain estimate --in <file.age> --backend <file|arweave|turbo>
+      Read-only preview: print what pushing --in to --backend would cost WITHOUT
+      uploading anything. turbo/arweave show the native unit (winc/winston) plus
+      an approximate USD line when a USD/AR rate is fetchable; file is always free.
+      Sizes --in the same way push does (a real byte count off disk). The SAME
+      computation backs the MCP estimate_cost tool, so the two never disagree.
 
   cipher-brain pull (--locator <id> --backend <…> | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>] [--force]
       Fetch ciphertext by locator into --out. --from-locator-file reads the locator, its
@@ -206,6 +216,8 @@ async function main(): Promise<void> {
       return push(o);
     case 'pull':
       return pull(o);
+    case 'estimate':
+      return estimate(o);
     case 'schedule':
       return schedule(o);
     // mascot on stderr (decoration only, EPIPE-safe — see printMascot in

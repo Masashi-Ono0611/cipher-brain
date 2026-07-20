@@ -161,6 +161,8 @@ cipher-brain snapshot \
 
 cipher-brain verify --in brain-2026-06-27.age      # real ciphertext? wrong key rejected?
 
+cipher-brain estimate --in brain-2026-06-27.age --backend turbo   # preview the cost — uploads nothing
+
 # park the ciphertext permanently on Arweave (storage only ever sees ciphertext).
 # push pays a one-time bundler fee (<100 KB free) and needs a JWK wallet;
 # pull is a plain gateway fetch — no wallet, no npm package.
@@ -218,11 +220,13 @@ for non-PATH installs: `CIPHER_BRAIN_PG_BIN` (dir holding
 
 `push`/`pull` are storage primitives over a pluggable backend (`--backend` is
 required — there is no default). Paid pushes print a cost estimate before
-uploading — turbo prints a winc/AR estimate plus an approximate USD line;
-arweave prints a winston-only estimate, with no USD line — and
-`push --skip-unchanged` skips a paid re-upload when the snapshot's plaintext
-content digest (the `<out>.digest` sidecar `snapshot` writes) matches the
-previous push. Three backends ship, but they are not peers:
+uploading — both turbo (winc) and arweave (winston) show an approximate USD line
+alongside the native unit. Preview that same estimate WITHOUT pushing anything via
+`cipher-brain estimate --in <file.age> --backend <backend>` (also exposed as the
+`estimate_cost` MCP tool — see below); `push --skip-unchanged` skips a paid
+re-upload when the snapshot's plaintext content digest (the `<out>.digest`
+sidecar `snapshot` writes) matches the previous push. Three backends ship, but
+they are not peers:
 
 - **`turbo` — the recommended mainline.** Uploads the ciphertext to the Arweave
   network as an ANS-104 bundled data item via a bundler (ArDrive Turbo), payable
@@ -320,7 +324,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP) |
 | `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
-| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable |
+| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable. Same computation as `cipher-brain estimate` (`src/lib/estimate.ts`) |
 | `schedule_status` | read-only | the same report as `cipher-brain schedule status`: configured time/backend, trigger registration state, last run log + its final rc line, next scheduled run |
 
 Claude Code config (`.mcp.json`):

@@ -39,4 +39,29 @@ if [ ! -f "$CIPHER_BRAIN_HOME/identity.age" ]; then echo "[FAIL] identity.age no
 if [ ! -f "$CIPHER_BRAIN_HOME/recipient.txt" ]; then echo "[FAIL] recipient.txt not created"; exit 1; fi
 echo "[PASS] dist keygen: identity.age + recipient.txt created in temp CIPHER_BRAIN_HOME"
 
+# (c) estimate --backend file: offline, deterministic — sizes an existing file (the
+# keygen'd recipient.txt) and must report the free-tier cost without touching the
+# network. Read-only: no upload happens.
+node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file > "$TMP/estimate-file.log" 2>&1 \
+  || { echo "[FAIL] dist estimate --backend file exited non-zero"; cat "$TMP/estimate-file.log"; exit 1; }
+grep -q "^cost: 0$" "$TMP/estimate-file.log" \
+  || { echo "[FAIL] estimate --backend file did not report cost: 0"; cat "$TMP/estimate-file.log"; exit 1; }
+echo "[PASS] dist estimate --backend file: cost: 0 for a local file"
+
+# (d) estimate --backend turbo with the optional @ardrive/turbo-sdk NOT installed in
+# this environment — must report a clear "not installed" note (offline, deterministic)
+# rather than crash, exercising src/lib/estimate.ts's estimateCost() turbo branch.
+node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend turbo > "$TMP/estimate-turbo.log" 2>&1 \
+  || { echo "[FAIL] dist estimate --backend turbo exited non-zero"; cat "$TMP/estimate-turbo.log"; exit 1; }
+grep -q "^cost: unavailable$" "$TMP/estimate-turbo.log" \
+  || { echo "[FAIL] estimate --backend turbo did not report cost: unavailable"; cat "$TMP/estimate-turbo.log"; exit 1; }
+echo "[PASS] dist estimate --backend turbo: cost: unavailable (optional dependency not installed)"
+
+# (e) estimate rejects a bad --backend value and a missing --in, same as push does
+node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend bogus > "$TMP/estimate-bad.log" 2>&1
+if [ $? -eq 0 ]; then echo "[FAIL] estimate --backend bogus exited 0, expected non-zero"; cat "$TMP/estimate-bad.log"; exit 1; fi
+grep -q "unknown backend" "$TMP/estimate-bad.log" \
+  || { echo "[FAIL] estimate --backend bogus did not report 'unknown backend'"; cat "$TMP/estimate-bad.log"; exit 1; }
+echo "[PASS] dist estimate --backend bogus: rejected with 'unknown backend'"
+
 echo "CLI SMOKE: PASS"

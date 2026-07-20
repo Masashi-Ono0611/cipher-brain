@@ -1,0 +1,160 @@
+// Cost-estimation math, shared by every surface that needs it: the CLI `estimate`
+// command below, the MCP `estimate_cost` tool (src/mcp.ts), and the paid backends'
+// own pre-flight cost estimate (src/lib/backends/{arweave,turbo}.ts, via arUsdRate/
+// usdApprox) — one home so this math is never re-implemented per surface (#159).
+import { stat } from 'node:fs/promises';
+import { AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS } from './config.js';
+import { exists, errMsg, fmtBytes } from './util.js';
+import type { CliOptions } from './types.js';
+
+export interface CostEstimate {
+  backend: string;
+  size_bytes: number;
+  cost: string | null; // native units (winc/winston), "0" for file, or null when unavailable
+  unit?: 'winc' | 'winston';
+  approx_ar?: number;
+  usd_estimate?: number;
+  note: string;
+}
+
+// Current USD price of 1 AR via the Turbo pricing endpoint the SDK exposes (winc is
+// pegged 1:1 to winston; 1 AR = 1e12 of either, so one rate converts both). Returns a
+// positive number or null on ANY failure — SDK not installed, offline, odd response —
+// and is raced against AR_HTTP_TIMEOUT_MS: the USD line is a courtesy estimate that
+// must never block, fail, or stall a push (or an estimate).
+export async function arUsdRate(): Promise<number | null> {
+  try {
+    const { TurboFactory } = await import('@ardrive/turbo-sdk');
+    const timeout = new Promise<null>((resolve) => {
+      const t = setTimeout(() => resolve(null), AR_HTTP_TIMEOUT_MS);
+      if (typeof t.unref === 'function') t.unref(); // don't keep the process alive for a lost race
+    });
+    const res = await Promise.race([TurboFactory.unauthenticated().getFiatToAR({ currency: 'usd' }), timeout]);
+    const rate = Number(res?.rate);
+    return Number.isFinite(rate) && rate > 0 ? rate : null;
+  } catch {
+    return null;
+  }
+}
+
+// "~$X USD" for a native amount (winc or winston) at the given USD/AR rate.
+// More decimals for sub-cent estimates so a tiny nightly push isn't shown as $0.00.
+export const usdApprox = (nativeAmount: bigint | number, rate: number): string => {
+  const usd = (Number(nativeAmount) / 1e12) * rate;
+  return `~$${usd.toFixed(usd >= 0.01 ? 2 : 6)} USD`;
+};
+
+// Estimate what pushing `sizeBytes` to `backend` would cost, WITHOUT uploading
+// anything (price queries only). `backend` must be one of file|arweave|turbo — any
+// other value is a caller bug (mcp.ts validates via requireBackend before calling
+// this; the CLI estimate() below validates too), so it is rejected explicitly
+// rather than silently falling through to the arweave branch.
+export async function estimateCost(backend: string, sizeBytes: number): Promise<CostEstimate> {
+  if (backend === 'file') {
+    return {
+      backend,
+      size_bytes: sizeBytes,
+      cost: '0',
+      note: 'file backend is a local content-addressed store — no upload cost (disk space only).',
+    };
+  }
+
+  if (backend === 'turbo') {
+    let TurboFactory: typeof import('@ardrive/turbo-sdk').TurboFactory;
+    try {
+      ({ TurboFactory } = await import('@ardrive/turbo-sdk'));
+    } catch (e) {
+      if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+        return {
+          backend,
+          size_bytes: sizeBytes,
+          cost: null,
+          note: 'estimate unavailable (optional dependency not installed) — run: npm install @ardrive/turbo-sdk. Uploads <100KB are free; larger ones spend Turbo Credits.',
+        };
+      }
+      throw e;
+    }
+    try {
+      const turbo = TurboFactory.unauthenticated();
+      const [{ winc }] = await turbo.getUploadCosts({ bytes: [sizeBytes] });
+      // usd_estimate is OPTIONAL: arUsdRate returns null on any rate-fetch failure,
+      // and a missing rate must never fail the (still useful) native estimate.
+      const rate = await arUsdRate();
+      return {
+        backend,
+        size_bytes: sizeBytes,
+        cost: String(winc),
+        unit: 'winc',
+        approx_ar: Number(BigInt(winc)) / 1e12,
+        ...(rate !== null ? { usd_estimate: Number(((Number(BigInt(winc)) / 1e12) * rate).toFixed(6)) } : {}),
+        note: 'Turbo upload cost estimate (uploads <100KB are free). Paid with Turbo Credits (fundable via ETH/USDC/fiat).',
+      };
+    } catch (e) {
+      return {
+        backend,
+        size_bytes: sizeBytes,
+        cost: null,
+        note: `estimate unavailable (Turbo pricing query failed: ${errMsg(e)})`,
+      };
+    }
+  }
+
+  if (backend === 'arweave') {
+    // the raw L1 backend: the gateway /price endpoint returns the network reward in
+    // winston for a payload of this size — the same price createTransaction would
+    // fetch at push time (src/lib/backends/arweave.ts's put()).
+    try {
+      const ctl = AbortSignal.timeout(AR_HTTP_TIMEOUT_MS);
+      const res = await fetch(`${AR_PROTOCOL}://${AR_HOST}:${AR_PORT}/price/${sizeBytes}`, { signal: ctl });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const winston = (await res.text()).trim();
+      if (!/^\d+$/.test(winston)) throw new Error(`unexpected price response: ${winston.slice(0, 80)}`);
+      // Same optional usd_estimate as the turbo branch (winston and winc are both
+      // 1e12-per-AR, so one USD/AR rate converts either); null rate → field omitted.
+      const rate = await arUsdRate();
+      return {
+        backend,
+        size_bytes: sizeBytes,
+        cost: winston,
+        unit: 'winston',
+        approx_ar: Number(BigInt(winston)) / 1e12,
+        ...(rate !== null ? { usd_estimate: Number(((Number(BigInt(winston)) / 1e12) * rate).toFixed(6)) } : {}),
+        note: 'Arweave L1 network price (the reward createTransaction would set at push time). Paid in AR from the JWK wallet.',
+      };
+    } catch (e) {
+      return {
+        backend,
+        size_bytes: sizeBytes,
+        cost: null,
+        note: `estimate unavailable (gateway price query failed: ${errMsg(e)})`,
+      };
+    }
+  }
+
+  throw new Error(`unknown backend: ${backend} — use file|arweave|turbo`);
+}
+
+// CLI `estimate` command: size --in the same way push does (a real byte count off
+// disk, not a guess) and print the SAME estimateCost() computation the MCP
+// estimate_cost tool returns, as a human-readable report — WITHOUT uploading
+// anything. `size_bytes` (the MCP tool's alternative to `file`) has no CLI
+// equivalent — --in is always a real file on disk here.
+export async function estimate(o: CliOptions): Promise<void> {
+  if (!o.in) throw new Error('--in <file.age> required');
+  if (!o.backend) throw new Error('--backend <file|arweave|turbo> required');
+  if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
+  const size = (await stat(o.in)).size;
+  const result = await estimateCost(o.backend, size);
+  console.log(`backend: ${result.backend}`);
+  console.log(`size: ${result.size_bytes} bytes (${fmtBytes(result.size_bytes)})`);
+  if (result.cost === null) {
+    console.log('cost: unavailable');
+  } else {
+    console.log(`cost: ${result.cost}${result.unit ? ` ${result.unit}` : ''}`);
+    if (result.approx_ar !== undefined) console.log(`approx: ~${result.approx_ar.toFixed(8)} AR`);
+    if (result.usd_estimate !== undefined) {
+      console.log(`approx: ~$${result.usd_estimate.toFixed(result.usd_estimate >= 0.01 ? 2 : 6)} USD`);
+    }
+  }
+  console.log(`note: ${result.note}`);
+}

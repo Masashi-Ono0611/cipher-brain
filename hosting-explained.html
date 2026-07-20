@@ -66,6 +66,7 @@
 
   /* ---------- pillars ---------- */
   .pillars{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:28px;}
+  .pillars.two-col{grid-template-columns:repeat(2,1fr);}
   .pillar{border:1px solid var(--line); border-radius:12px; padding:18px; background:var(--bg);}
   .pillar.hi{border-color:var(--accent); background:var(--accent-tint);}
   .pillar.risk{border-color:var(--bad-line); background:var(--bad-tint);}
@@ -125,7 +126,7 @@
 
   @media(max-width:720px){
     h1{font-size:38px;} .tagline{font-size:19px;} h2{font-size:24px;}
-    .pillars,.stats,.caps,.ba{grid-template-columns:1fr;}
+    .pillars,.pillars.two-col,.stats,.caps,.ba{grid-template-columns:1fr;}
     table{font-size:12.5px;} th,td{padding:9px 8px;}
   }
   @media print{ *{ -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; } }
@@ -140,7 +141,7 @@
       <div class="hero-text">
         <div class="kicker">Cipher Brain · Background</div>
         <h1>Is your data somewhere <span class="ac">someone else can delete</span>?</h1>
-        <p class="tagline">Ordinary cloud is convenient. But <strong>one company can delete it, read it, shut it down</strong>.<br>A way nobody can delete is now something you can choose.</p>
+        <p class="tagline">Ordinary cloud is convenient, but one company can delete it, read it, or shut it down.<br>A way nobody can delete is now something you can choose.</p>
         <p class="sub">What's a server? What's hosting? What is &ldquo;censorship resistance&rdquo;? &mdash; from the basics to comparing today's options, laid out in diagrams.</p>
       </div>
       <div class="hero-mascot"><img src="mascot.svg" width="172" height="172" alt="Cipher Brain mascot — a cypherpunk hooded dog in sunglasses"></div>
@@ -221,9 +222,9 @@
     </div>
 
     <div class="pillars">
-      <div class="pillar hi"><span class="pn">upside</span><div class="pt"><span>Simple, fast</span></div><div class="pd">Public in a few clicks. Speed and reliability at professional quality. <b>Best-in-class UX</b>.</div></div>
-      <div class="pillar hi"><span class="pn">upside</span><div class="pt"><span>Cheap</span>, hands-off</div><div class="pd">Pay for what you use. The company handles operations, so <b>zero hassle</b> for you.</div></div>
-      <div class="pillar risk"><span class="pn">weakness</span><div class="pt"><span>One company holds it</span></div><div class="pd"><b>That company can delete, read, and shut it down.</b> The data that matters most to you is the data you control least.</div></div>
+      <div class="pillar hi"><span class="pn">upside</span><div class="pt"><span>Simple, fast</span></div><div class="pd">Public in a few clicks, with professional-grade speed and reliability.</div></div>
+      <div class="pillar hi"><span class="pn">upside</span><div class="pt"><span>Cheap</span>, hands-off</div><div class="pd">Pay for what you use &mdash; the company handles operations, so there's little for you to maintain.</div></div>
+      <div class="pillar risk"><span class="pn">weakness</span><div class="pt"><span>One company holds it</span></div><div class="pd">That company can delete, read, and shut it down. The data that matters most to you is the data you control least.</div></div>
     </div>
   </section>
 
@@ -258,10 +259,10 @@
 
     <p class="lead" style="margin-top:30px">Censorship resistance actually has <strong>three separate properties</strong>. Separating them makes each service's strengths and weaknesses clear.</p>
     <div class="caps">
-      <div class="cap"><div class="cv">① Deletion resistance</div><div class="cb"><b>Can't be deleted.</b> Kill one host and the data survives</div></div>
-      <div class="cap"><div class="cv">② Privacy</div><div class="cb"><b>Can't be read.</b> i.e. you encrypt it yourself before it ever leaves your hands</div></div>
-      <div class="cap"><div class="cv">③ Naming</div><div class="cb"><b>Can't be seized.</b> A mechanism where the address (name) can't be taken from you</div></div>
-      <div class="cap"><div class="cv">Note</div><div class="cb"><b>Censorship resistance &ne; privacy.</b> &ldquo;Can't be deleted&rdquo; and &ldquo;can't be read&rdquo; are different things. You need encryption for both</div></div>
+      <div class="cap"><div class="cv">① Deletion resistance</div><div class="cb">Can't be deleted &mdash; kill one host and the data survives</div></div>
+      <div class="cap"><div class="cv">② Privacy</div><div class="cb">Can't be read, i.e. you encrypt it yourself before it ever leaves your hands</div></div>
+      <div class="cap"><div class="cv">③ Naming</div><div class="cb">Can't be seized &mdash; a mechanism where the address (name) can't be taken from you</div></div>
+      <div class="cap"><div class="cv">Note</div><div class="cb">Censorship resistance &ne; privacy. &ldquo;Can't be deleted&rdquo; and &ldquo;can't be read&rdquo; are different things &mdash; you need encryption for both</div></div>
     </div>
   </section>
 
@@ -281,8 +282,8 @@
         <circle cx="230" cy="98" r="15" fill="#E6F6FE" stroke="#0098EA"/>
         <circle cx="150" cy="128" r="15" fill="#E6F6FE" stroke="#0098EA"/>
         <circle cx="220" cy="145" r="15" fill="#E6F6FE" stroke="#0098EA"/>
-        <text x="155" y="180" text-anchor="middle" class="svg-l">Spread across many nodes worldwide</text>
-        <text x="155" y="196" text-anchor="middle" class="svg-s">one goes down, the others still have it (Arweave is forever)</text>
+        <text x="155" y="180" text-anchor="middle" class="svg-l">Spread across many nodes</text>
+        <text x="155" y="196" text-anchor="middle" class="svg-s">one goes down, the rest still have it</text>
 
         <line x1="380" y1="60" x2="380" y2="210" stroke="#E4EAEF"/>
         <!-- B self-hosted node -->
@@ -297,9 +298,9 @@
       <div class="fig-cap">A = shared among many / B = your own box, serving it yourself (you can combine both)</div>
     </div>
 
-    <div class="pillars">
-      <div class="pillar"><span class="pn">type A</span><div class="pt"><span>Distributed storage</span></div><div class="pd">Spreads data across nodes worldwide. <b>Arweave is &ldquo;pay once, stored forever.&rdquo;</b> Low effort, strong.</div></div>
-      <div class="pillar"><span class="pn">type B</span><div class="pt"><span>Your own node</span></div><div class="pd">Serve it from your own server (or a censorship-resistant provider's). <b>Maximum sovereignty, but you have to keep it running.</b></div></div>
+    <div class="pillars two-col">
+      <div class="pillar"><span class="pn">type A</span><div class="pt"><span>Distributed storage</span></div><div class="pd">Spreads data across nodes worldwide. Arweave is &ldquo;pay once, stored forever&rdquo; &mdash; low effort, strong.</div></div>
+      <div class="pillar"><span class="pn">type B</span><div class="pt"><span>Your own node</span></div><div class="pd">Serve it from your own server (or a censorship-resistant provider's) &mdash; maximum sovereignty, but you have to keep it running.</div></div>
     </div>
   </section>
 
@@ -361,7 +362,7 @@
   <section>
     <div class="label"><span class="n">06</span> &nbsp;Where this lands</div>
     <h2>Cipher Brain's approach: encrypt first, then park it somewhere it can't be erased</h2>
-    <p class="lead">The key insight: if <strong>you encrypt the content first</strong>, the place you park it can just be a simple <strong>&ldquo;storage that can't be deleted or tampered with.&rdquo;</strong> Making it unreadable is your job; making it undeletable is storage's job &mdash; that division of labor is what keeps this design simple.</p>
+    <p class="lead">The key insight: if you encrypt the content first, the place you park it can just be a simple storage that can't be deleted or tampered with. Making it unreadable is your job; making it undeletable is storage's job &mdash; that division of labor is what keeps this design simple.</p>
 
     <div class="fig">
       <svg viewBox="0 0 760 130" role="img" aria-label="Encrypt first, then park it on permanent storage">
@@ -371,7 +372,7 @@
 
         <rect x="245" y="40" width="230" height="56" rx="10" fill="#E6F6FE" stroke="#0098EA" stroke-width="1.6"/>
         <text x="360" y="64" text-anchor="middle" class="svg-o">Encrypted content</text>
-        <text x="360" y="82" text-anchor="middle" class="svg-s">age (X25519) · only you hold the key</text>
+        <text x="360" y="82" text-anchor="middle" class="svg-s">age (X25519) · your key only</text>
 
         <rect x="540" y="40" width="190" height="56" rx="10" fill="#E9F5EF" stroke="#C2E5D5"/>
         <text x="635" y="64" text-anchor="middle" class="svg-t" style="fill:#1A7F4B">Arweave</text>
@@ -399,8 +400,8 @@
     <table>
       <thead><tr><th>Decision</th><th>Current choice</th><th>Reason</th></tr></thead>
       <tbody>
-        <tr><td>Storing the content</td><td><b>Arweave, first</b></td><td>&ldquo;Pay once, permanent = never deleted&rdquo; matches the brand &mdash; low effort</td></tr>
-        <tr><td>Cloud (gcloud)</td><td><b>Not used</b></td><td>Convenient, but &ldquo;can be deleted&rdquo; &mdash; contradicts the whole premise of this project</td></tr>
+        <tr><td>Storing the content</td><td>Arweave, first</td><td>&ldquo;Pay once, permanent = never deleted&rdquo; matches the brand &mdash; low effort</td></tr>
+        <tr><td>Cloud (gcloud)</td><td>Not used</td><td>Convenient, but &ldquo;can be deleted&rdquo; &mdash; contradicts the whole premise of this project</td></tr>
       </tbody>
     </table>
   </section>
@@ -412,25 +413,25 @@
     <p class="lead">The explanation above &mdash; <strong>encrypt it</strong> (unreadable) and <strong>park it somewhere it can't be erased</strong> &mdash; hasn't stayed a concept. It's already assembled into a working tool (<code>cipher-brain</code>). We've run it end-to-end on a real, growing brain snapshot; here's where things honestly stand.</p>
 
     <div class="caps">
-      <div class="cap"><div class="cv">✓ Encryption (unreadable)</div><div class="cb">Encrypts and restores the brain with <b>only your key</b>. The always-on machine holds only the <b>public key</b>, so even if it's compromised the content stays unreadable</div></div>
-      <div class="cap"><div class="cv">✓ Push → pull back</div><div class="cb">Uploads the ciphertext, <b>pulls it back from elsewhere, decrypts it</b>. Storage only ever sees <b>ciphertext</b></div></div>
-      <div class="cap"><div class="cv">✓ Key recovery (mechanism)</div><div class="cb">A mechanism for restoring with a <b>backup key</b> exists (in production we chose to keep it simple: no backup key &mdash; instead the single key is <b>passphrase-protected and kept off-machine</b>)</div></div>
-      <div class="cap"><div class="cv">✓ Storage is swappable</div><div class="cb">The storage backend sits behind a <b>common interface</b> &mdash; a future permanent-storage option could be added without touching the encryption logic</div></div>
+      <div class="cap"><div class="cv">Encryption</div><div class="cb">Encrypts and restores the brain with only your key. The always-on machine holds only the public key, so even if it's compromised the content stays unreadable</div></div>
+      <div class="cap"><div class="cv">Push &rarr; pull back</div><div class="cb">Uploads the ciphertext, pulls it back from elsewhere, and decrypts it. Storage only ever sees ciphertext</div></div>
+      <div class="cap"><div class="cv">Key recovery</div><div class="cb">A mechanism for restoring with a backup key exists (in production we chose to keep it simple: no backup key &mdash; instead the single key is passphrase-protected and kept off-machine)</div></div>
+      <div class="cap"><div class="cv">Storage is swappable</div><div class="cb">The storage backend sits behind a common interface &mdash; a future permanent-storage option could be added without touching the encryption logic</div></div>
     </div>
 
     <p class="lead" style="margin-top:30px">Being honest about what's done and what's left &mdash;</p>
     <table>
-      <thead><tr><th>Item</th><th>Current status</th><th>Verdict</th></tr></thead>
+      <thead><tr><th>Item</th><th>Current status</th></tr></thead>
       <tbody>
-        <tr><td>Encrypt and restore</td><td>Verified with real data (a <b>whole brain</b>): encrypt → store → retrieve → decrypt, <b>content matches exactly</b></td><td><span class="tag good">✓ verified</span></td></tr>
-        <tr><td>Push, pull back, decrypt</td><td>Ciphertext pushed, deleted locally, pulled back, decrypted, and matches</td><td><span class="tag good">✓ verified</span></td></tr>
-        <tr><td>Key recovery / operations</td><td>Backup-key restore, versioning, and the restore runbook are documented and covered by automated tests</td><td><span class="tag good">✓ verified</span></td></tr>
-        <tr><td>Even at large sizes</td><td>Verified with a whole brain (<b>~630MB → 268MB encrypted</b>). <b>Streamed</b>, not buffered, in memory</td><td><span class="tag good">✓ verified</span></td></tr>
-        <tr><td>Proving &ldquo;never deleted&rdquo; in production</td><td>Actually <b>paid</b> (<b>$7.68</b>) to upload a whole brain to mainnet Arweave, then retrieved it via a path with no access to the key and confirmed a <b>byte-for-byte match</b></td><td><span class="tag good">✓ verified</span></td></tr>
-        <tr><td>How the production key is protected</td><td>Chose <b>not to use a backup key</b>, since it adds complexity. Instead, the single key is <b>passphrase-protected</b>, and a recovery note (key + location + restore steps) is kept <b>off the machine</b>. Retrieving and decrypting the full brain was measured and confirmed</td><td><span class="tag good">✓ done</span></td></tr>
+        <tr><td>Encrypt and restore</td><td>Verified with real data (a whole brain): encrypt → store → retrieve → decrypt, content matches exactly</td></tr>
+        <tr><td>Push, pull back, decrypt</td><td>Ciphertext pushed, deleted locally, pulled back, decrypted, and matches</td></tr>
+        <tr><td>Key recovery / operations</td><td>Backup-key restore, versioning, and the restore runbook are documented and covered by automated tests</td></tr>
+        <tr><td>Even at large sizes</td><td>Verified with a whole brain (~630MB → 268MB encrypted). Streamed, not buffered, in memory</td></tr>
+        <tr><td>Proving &ldquo;never deleted&rdquo; in production</td><td>Actually paid ($7.68) to upload a whole brain to mainnet Arweave, then retrieved it via a path with no access to the key and confirmed a byte-for-byte match</td></tr>
+        <tr><td>How the production key is protected</td><td>Chose not to use a backup key, since it adds complexity. Instead, the single key is passphrase-protected, and a recovery note (key + location + restore steps) is kept off the machine. Retrieving and decrypting the full brain was measured and confirmed</td></tr>
       </tbody>
     </table>
-    <p class="lead" style="margin-top:18px; font-size:14.5px"><strong>The core has already been proven for real</strong> &mdash; encrypted a whole brain, actually paid to upload it to mainnet Arweave, retrieved it without the key, and confirmed a byte-for-byte match. The key is <strong>passphrase-protected and kept off-machine</strong> (we chose not to use a backup key, since it adds complexity). The direction hasn't changed &mdash; <strong>the content lives on Arweave, forever</strong> (never deleted). Encryption is yours alone, from the start.</p>
+    <p class="lead" style="margin-top:18px; font-size:14.5px">The core has already been proven for real &mdash; encrypted a whole brain, actually paid to upload it to mainnet Arweave, retrieved it without the key, and confirmed a byte-for-byte match. The key is passphrase-protected and kept off-machine (we chose not to use a backup key, since it adds complexity). The direction hasn't changed: the content lives on Arweave, and encryption is yours alone, from the start.</p>
   </section>
 
   <!-- ============ FOOTER ============ -->

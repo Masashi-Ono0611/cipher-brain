@@ -219,6 +219,20 @@ cb verify --in "$TMP/got.age" > "$TMP/verify.log" 2>&1 || { echo "[FAIL] verify 
 grep -q 'VERDICT: PASS' "$TMP/verify.log" || { echo "[FAIL] verify verdict is not PASS"; exit 1; }
 echo "[PASS] runner end-to-end, twice same day: 2 distinct dated snapshots, 2nd push SKIPPED (#100, no new store object, index.tsv reuses the locator+sha) + trailing OK rc=0 + pull-back verify PASS"
 
+echo "== (c1b) genuinely CHANGED \$SRC content on a same-day 3rd run: a real re-upload happens, not a false SKIP (#100 coverage: --skip-unchanged must never suppress an actual content change) =="
+LOG_LINES_BEFORE_RUN3="$(wc -l < "$LOG" | tr -d ' ')"
+echo "a-different-thought" >> "$SRC/note.txt"
+bash "$RUNNER" || { echo "[FAIL] third runner invocation (changed \$SRC content) exited non-zero"; cat "$LOG" 2>/dev/null; exit 1; }
+STORE_COUNT_3="$(find "$CIPHER_BRAIN_FILE_DIR" -maxdepth 1 -name '*.age' 2>/dev/null | wc -l | tr -d ' ')"
+[ "$STORE_COUNT_3" = "$((STORE_COUNT_2 + 1))" ] || { echo "[FAIL] #100: changed \$SRC content did not add exactly 1 new object to the file backend store (expected $((STORE_COUNT_2 + 1)), got $STORE_COUNT_3) — skip-unchanged must never suppress a real content change"; exit 1; }
+RUN3_LOG="$(tail -n "+$((LOG_LINES_BEFORE_RUN3 + 1))" "$LOG")"
+if echo "$RUN3_LOG" | grep -q 'SKIPPED:'; then echo "[FAIL] #100: the 3rd run (changed content) was wrongly SKIPPED"; echo "$RUN3_LOG"; exit 1; fi
+echo "$RUN3_LOG" | grep -q '^pushed -> file:' || { echo "[FAIL] 3rd run log lacks the pushed confirmation line"; echo "$RUN3_LOG"; exit 1; }
+tail -n 1 "$LOG" | grep -q '^OK rc=0$' || { echo "[FAIL] log does not end with OK rc=0 after the 3rd (changed-content) run"; tail -n 3 "$LOG"; exit 1; }
+[ "$(wc -l < "$IDX" | tr -d ' ')" = "3" ] || { echo "[FAIL] index.tsv does not have exactly 3 appended lines after 3 runs (2 unchanged + 1 changed)"; cat "$IDX"; exit 1; }
+[ "$(awk -F'\t' '{print $2"\t"$3}' "$IDX" | sort -u | wc -l | tr -d ' ')" = "2" ] || { echo "[FAIL] #100: index.tsv should now have exactly 2 DISTINCT locator+sha pairs (the 2 unchanged runs sharing one, the changed run with a new one)"; cat "$IDX"; exit 1; }
+echo "[PASS] a genuinely changed \$SRC on a same-day 3rd run triggers a REAL re-upload (new store object, new locator+sha in index.tsv, no false SKIPPED) — --skip-unchanged never suppresses an actual content change"
+
 echo "== (d) status reports time, backend, last log rc, next run =="
 cb schedule status > "$TMP/status.log" 2>&1 || { echo "[FAIL] status exited non-zero"; cat "$TMP/status.log"; exit 1; }
 grep -q 'daily at 03:30' "$TMP/status.log" || { echo "[FAIL] status lacks the configured time"; exit 1; }

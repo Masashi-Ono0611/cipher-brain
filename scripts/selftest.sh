@@ -441,5 +441,68 @@ TMP_LEFTOVER2="$(find "$FORCE_HOME" -maxdepth 1 -name '*.tmp' 2>/dev/null | head
 [ -z "$TMP_LEFTOVER2" ] || { echo "FAIL: a .tmp sibling survived a successful --force keygen: $TMP_LEFTOVER2"; exit 1; }
 echo "[PASS] keygen --force replaces both identity and recipient with a fresh keypair (mode 600 preserved), no .tmp sibling left behind"
 
+echo "== #110: 'keygen --wrap-in-place' passphrase-protects an EXISTING identity WITHOUT replacing it =="
+WRAP_HOME="$TMP/wrap-home"
+CIPHER_BRAIN_HOME="$WRAP_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+WRAP_RECIPIENT_ORIG="$(cat "$WRAP_HOME/recipient.txt")"
+# Prove non-destructiveness end-to-end, not just "the recipient string didn't change":
+# encrypt a snapshot to this identity BEFORE wrapping it, then decrypt that SAME
+# snapshot AFTER wrapping — if --wrap-in-place secretly generated a brand-new keypair
+# (the exact #110 bug `keygen --passphrase --force` has), this pre-wrap snapshot would
+# no longer decrypt with the now-wrapped identity.
+CIPHER_BRAIN_HOME="$WRAP_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/wrap-presnap.age" >/dev/null
+
+CIPHER_BRAIN_HOME="$WRAP_HOME" CIPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place >/dev/null
+
+grep -qa '^-> scrypt ' "$WRAP_HOME/identity.age" || { echo "FAIL: keygen --wrap-in-place did not actually scrypt-wrap the identity"; exit 1; }
+[ "$(cat "$WRAP_HOME/recipient.txt")" = "$WRAP_RECIPIENT_ORIG" ] || { echo "FAIL: keygen --wrap-in-place changed the recipient — it generated a NEW keypair instead of wrapping the existing one (the #110 bug)"; exit 1; }
+
+CIPHER_BRAIN_HOME="$WRAP_HOME" CIPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/wrap-presnap.age" 2>&1 | grep -q 'VERDICT: PASS' \
+  || { echo "FAIL: a snapshot encrypted BEFORE the wrap no longer decrypts with the wrapped identity — wrap-in-place did not preserve the original keypair"; exit 1; }
+echo "[PASS] keygen --wrap-in-place scrypt-wraps the identity in place, keeps the SAME recipient, and a snapshot made BEFORE the wrap still decrypts with it afterward"
+
+echo "== keygen --wrap-in-place refuses a no-op re-wrap and a missing identity =="
+set +e
+OUT=$(CIPHER_BRAIN_HOME="$WRAP_HOME" CIPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place 2>&1); RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: re-wrapping an already-wrapped identity should refuse, not succeed"; echo "$OUT"; exit 1; fi
+printf '%s' "$OUT" | grep -qi "already passphrase-wrapped" || { echo "FAIL: wrong error for re-wrapping an already-wrapped identity"; echo "$OUT"; exit 1; }
+
+NOKEY_HOME="$TMP/wrap-no-identity-home"; mkdir -p "$NOKEY_HOME"
+set +e
+OUT=$(CIPHER_BRAIN_HOME="$NOKEY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place 2>&1); RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: --wrap-in-place should refuse when no identity exists yet"; echo "$OUT"; exit 1; fi
+printf '%s' "$OUT" | grep -qi "no identity found" || { echo "FAIL: wrong error for a missing identity"; echo "$OUT"; exit 1; }
+echo "[PASS] keygen --wrap-in-place refuses to re-wrap an already-wrapped identity, and refuses cleanly when no identity exists yet"
+
+echo "== keygen --wrap-in-place also refuses an ASCII-ARMORED already-wrapped identity, without corrupting it (#87-style edge case) =="
+# loadIdentities() (crypt.ts) treats a wrapped identity as EITHER raw age ciphertext OR
+# that same ciphertext ASCII-armored (`age -p -a`, or one re-typed from a printed
+# recovery note — #87's own motivating case) — wrap-in-place's "already wrapped" check
+# must recognize both shapes too, or it would silently double-wrap/corrupt an armored
+# one instead of refusing.
+ARMOR_HOME="$TMP/wrap-armor-home"
+CIPHER_BRAIN_HOME="$ARMOR_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+CIPHER_BRAIN_HOME="$ARMOR_HOME" CIPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place >/dev/null
+node -e "
+const fs = require('fs');
+const { armor } = require('age-encryption');
+const raw = fs.readFileSync(process.argv[1]);
+fs.writeFileSync(process.argv[1], armor.encode(new Uint8Array(raw)));
+" "$ARMOR_HOME/identity.age"
+grep -q -- '-----BEGIN AGE ENCRYPTED FILE-----' "$ARMOR_HOME/identity.age" || { echo "FAIL: test setup: identity.age was not actually armored"; exit 1; }
+ARMORED_SHA="$(shasum -a 256 "$ARMOR_HOME/identity.age" | cut -d' ' -f1)"
+set +e
+OUT=$(CIPHER_BRAIN_HOME="$ARMOR_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place 2>&1); RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: re-wrapping an ASCII-armored already-wrapped identity should refuse, not succeed"; echo "$OUT"; exit 1; fi
+printf '%s' "$OUT" | grep -qi "already passphrase-wrapped" || { echo "FAIL: wrong error for re-wrapping an armored already-wrapped identity"; echo "$OUT"; exit 1; }
+[ "$(shasum -a 256 "$ARMOR_HOME/identity.age" | cut -d' ' -f1)" = "$ARMORED_SHA" ] || { echo "FAIL: the armored identity was modified despite the refusal — double-wrap corruption"; exit 1; }
+echo "[PASS] keygen --wrap-in-place recognizes an ASCII-armored identity as already-wrapped too, refuses, and leaves it byte-identical (no double-wrap corruption)"
+
 echo
 echo "SELFTEST PASS"

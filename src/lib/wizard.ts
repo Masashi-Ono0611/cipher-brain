@@ -441,8 +441,15 @@ export async function init(_o: CliOptions): Promise<void> {
         console.log(`identity re-written, passphrase-wrapped: ${IDENTITY}`);
         rl = createInterface({ input: process.stdin, output: process.stdout });
       } else {
-        console.log('Skipping the passphrase wrap. You can wrap it later by re-running keygen --passphrase --force,');
-        console.log('or by full-disk-encrypting the machine that holds the identity (MANAGEMENT.md recommends both).');
+        // NOT "keygen --passphrase --force": --force still calls generateKeypair()
+        // unconditionally (keys.ts) and so DISCARDS this identity for a brand-new one,
+        // making every snapshot already encrypted to it unrecoverable (#110). The
+        // non-destructive option is --wrap-in-place, which reuses this exact same
+        // keypair and only changes its on-disk encoding.
+        console.log('Skipping the passphrase wrap. You can wrap it later by re-running "cipher-brain keygen');
+        console.log('--wrap-in-place" (keeps this same key — do NOT use --force, which generates a NEW key and');
+        console.log('makes every snapshot already encrypted to this one unrecoverable), or by full-disk-encrypting');
+        console.log('the machine that holds the identity (MANAGEMENT.md recommends both).');
       }
 
       // ---------- 4. recipient pin suggestion (CIPHER_BRAIN_PIN_RECIPIENTS) ----------

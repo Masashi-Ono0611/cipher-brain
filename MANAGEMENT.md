@@ -54,9 +54,14 @@ store. Treat it like a seed phrase.
 **Protect it at rest.** A bare `keygen` identity (the standard age secret-key file) is an unwrapped secret guarded
 only by file perms (0600) — theft of the file = every snapshot decryptable. Two
 defenses, ideally both:
-- **Passphrase-wrap it:** `cipher-brain keygen --passphrase` encrypts the identity with
-  a scrypt passphrase (you enter it on `restore`/`verify`). An exfiltrated identity file
-  is then useless without the passphrase.
+- **Passphrase-wrap it:** `cipher-brain keygen --passphrase` (for a *fresh* keypair) or
+  `cipher-brain keygen --wrap-in-place` (for an identity you already have — e.g. one
+  created by a bare `keygen`, or by `init` with this step skipped) encrypts the identity
+  with a scrypt passphrase (you enter it on `restore`/`verify`). An exfiltrated identity
+  file is then useless without the passphrase. **Do not** use `keygen --passphrase
+  --force` to add a passphrase to an existing identity — `--force` always generates a
+  brand-new keypair (it does not wrap the old one), so every snapshot already encrypted
+  to the old identity becomes unrecoverable; `--wrap-in-place` keeps the same keypair.
 - **Full-disk-encrypt the identity host.** The machine that holds the identity is
   secret-bearing (it can read every snapshot); FileVault / LUKS protects it (and any
   off-box copies) if the disk or USB is lost or stolen.

@@ -44,5 +44,11 @@ jobs:
       # dedupe a couple of CPU-seconds.
       - name: typecheck (strict tsc --noEmit)
         run: npm run typecheck
+      # Check-only (non-mutating): fails the job on lint/format drift but never
+      # writes to the tree. Same OS/node-invariance argument as typecheck above
+      # (biome's output doesn't depend on the runner or Node version), so it rides
+      # along on this per-cell job rather than getting a dedicated one.
+      - name: lint (biome check, non-mutating)
+        run: npm run lint
       - name: verify (build + all selftests + CLI smoke)
         run: npm run verify

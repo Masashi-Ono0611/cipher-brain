@@ -39,7 +39,9 @@ cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-a.log"
 [ -f "$CONFIG" ] || { echo "[FAIL] schedule.json not written"; exit 1; }
 grep -q '^set -euo pipefail$' "$RUNNER" || { echo "[FAIL] runner lacks set -euo pipefail"; exit 1; }
 grep -q -- "snapshot --dir '$SRC' --out" "$RUNNER" || { echo "[FAIL] runner lacks the composed snapshot flags"; exit 1; }
-grep -q -- "push --in \"\$OUT\" --backend 'file' --save-locator" "$RUNNER" || { echo "[FAIL] runner lacks the composed push flags (--backend/--save-locator)"; exit 1; }
+grep -q -- "push --in \"\$OUT\" --backend 'file' --skip-unchanged --save-locator" "$RUNNER" || { echo "[FAIL] runner lacks the composed push flags (--backend/--skip-unchanged/--save-locator, #100)"; exit 1; }
+grep -q -- 'SHA=$(cut -f3 ' "$RUNNER" || { echo "[FAIL] runner does not read the index SHA256 back from the save-locator file's 3rd field (#100 — re-hashing \$OUT would break the index on a skip)"; exit 1; }
+if grep -q 'sha256_of' "$RUNNER"; then echo "[FAIL] runner still contains the retired sha256_of \$OUT helper (#100)"; exit 1; fi
 grep -q 'STAMP="\$(date +%Y%m%dT%H%M%S)"' "$RUNNER" || { echo "[FAIL] runner lacks the dated+timed output stamp"; exit 1; }
 grep -q 'while \[ -e "\$OUT" \]' "$RUNNER" || { echo "[FAIL] runner lacks the retry-safe disambiguation loop"; exit 1; }
 grep -q -- "index.tsv" "$RUNNER" || { echo "[FAIL] runner lacks the index.tsv append"; exit 1; }
@@ -187,12 +189,19 @@ IDX="$CIPHER_BRAIN_SCHEDULE_DIR/index.tsv"
 SNAP_DIR="$CIPHER_BRAIN_SCHEDULE_DIR/snapshots"
 
 bash "$RUNNER" || { echo "[FAIL] first runner invocation exited non-zero"; cat "$LOG" 2>/dev/null; exit 1; }
+STORE_COUNT_1="$(find "$CIPHER_BRAIN_FILE_DIR" -maxdepth 1 -name '*.age' 2>/dev/null | wc -l | tr -d ' ')"
 # Same-day immediate re-run (manual test-on-install-day / retry-after-failure): must
-# NOT collide with run 1's snapshot name (this is the exact issue #69 regression).
+# NOT collide with run 1's snapshot name (this is the exact issue #69 regression). $SRC
+# is byte-identical to run 1 (nothing wrote to it in between), so this second run is
+# ALSO the #100 regression test: the runner's push line must carry --skip-unchanged and
+# actually skip the re-upload rather than silently re-paying/re-storing every night.
 bash "$RUNNER" || { echo "[FAIL] second runner invocation (same day, immediate retry) exited non-zero — retry-unsafe"; cat "$LOG" 2>/dev/null; exit 1; }
+STORE_COUNT_2="$(find "$CIPHER_BRAIN_FILE_DIR" -maxdepth 1 -name '*.age' 2>/dev/null | wc -l | tr -d ' ')"
 
 [ -f "$LOG" ] || { echo "[FAIL] dated log not produced: $LOG"; exit 1; }
 tail -n 1 "$LOG" | grep -q '^OK rc=0$' || { echo "[FAIL] log does not end with OK rc=0 after the second run"; tail -n 3 "$LOG"; exit 1; }
+grep -q 'SKIPPED: content and recipients unchanged' "$LOG" || { echo "[FAIL] #100: second same-day run (identical \$SRC content) did not SKIP the re-upload — the runner's --skip-unchanged is not wired in / not working"; tail -n 20 "$LOG"; exit 1; }
+[ "$STORE_COUNT_2" = "$STORE_COUNT_1" ] || { echo "[FAIL] #100: the file backend store gained a new object on the second (unchanged-content) run — expected $STORE_COUNT_1, got $STORE_COUNT_2 (skip-unchanged did not prevent the re-upload)"; exit 1; }
 SNAP_COUNT="$(find "$SNAP_DIR" -maxdepth 1 -name "brain-$TODAY_COMPACT*.age" | wc -l | tr -d ' ')"
 [ "$SNAP_COUNT" = "2" ] || { echo "[FAIL] expected 2 distinct dated snapshots after 2 same-day runs, got $SNAP_COUNT"; find "$SNAP_DIR" -maxdepth 1 -name "brain-$TODAY_COMPACT*.age"; exit 1; }
 [ -f "$LOCFILE" ] || { echo "[FAIL] --save-locator file not written: $LOCFILE"; exit 1; }
@@ -200,11 +209,29 @@ SNAP_COUNT="$(find "$SNAP_DIR" -maxdepth 1 -name "brain-$TODAY_COMPACT*.age" | w
 [ "$(awk -F'\t' '{print $2; exit}' "$LOCFILE")" = "file" ] || { echo "[FAIL] locator file backend != file"; exit 1; }
 [ "$(wc -l < "$IDX" | tr -d ' ')" = "2" ] || { echo "[FAIL] index.tsv does not have exactly 2 appended lines after 2 runs"; exit 1; }
 [ "$(awk -F'\t' '{print NF; exit}' "$IDX")" = "3" ] || { echo "[FAIL] index.tsv line is not timestamp/locator/sha256"; exit 1; }
+# The skipped 2nd run must have re-used run 1's locator+sha (read back from the
+# save-locator file's 3rd field, #100) — both index.tsv lines should therefore carry the
+# SAME locator+sha, only the leading timestamp differs.
+[ "$(awk -F'\t' '{print $2"\t"$3}' "$IDX" | sort -u | wc -l | tr -d ' ')" = "1" ] || { echo "[FAIL] #100: index.tsv locator/sha256 differ between the two runs even though the 2nd run skipped (expected the same locator+sha reused from the save-locator file)"; cat "$IDX"; exit 1; }
 SNAP="$(find "$SNAP_DIR" -maxdepth 1 -name "brain-$TODAY_COMPACT*.age" | sort | tail -n 1)"
 cb pull --from-locator-file "$LOCFILE" --out "$TMP/got.age" > /dev/null 2>&1 || { echo "[FAIL] pull via the saved locator failed"; exit 1; }
 cb verify --in "$TMP/got.age" > "$TMP/verify.log" 2>&1 || { echo "[FAIL] verify on the pulled snapshot failed"; cat "$TMP/verify.log"; exit 1; }
 grep -q 'VERDICT: PASS' "$TMP/verify.log" || { echo "[FAIL] verify verdict is not PASS"; exit 1; }
-echo "[PASS] runner end-to-end, twice same day: 2 distinct dated snapshots + index.tsv +2 lines + trailing OK rc=0 + pull-back verify PASS"
+echo "[PASS] runner end-to-end, twice same day: 2 distinct dated snapshots, 2nd push SKIPPED (#100, no new store object, index.tsv reuses the locator+sha) + trailing OK rc=0 + pull-back verify PASS"
+
+echo "== (c1b) genuinely CHANGED \$SRC content on a same-day 3rd run: a real re-upload happens, not a false SKIP (#100 coverage: --skip-unchanged must never suppress an actual content change) =="
+LOG_LINES_BEFORE_RUN3="$(wc -l < "$LOG" | tr -d ' ')"
+echo "a-different-thought" >> "$SRC/note.txt"
+bash "$RUNNER" || { echo "[FAIL] third runner invocation (changed \$SRC content) exited non-zero"; cat "$LOG" 2>/dev/null; exit 1; }
+STORE_COUNT_3="$(find "$CIPHER_BRAIN_FILE_DIR" -maxdepth 1 -name '*.age' 2>/dev/null | wc -l | tr -d ' ')"
+[ "$STORE_COUNT_3" = "$((STORE_COUNT_2 + 1))" ] || { echo "[FAIL] #100: changed \$SRC content did not add exactly 1 new object to the file backend store (expected $((STORE_COUNT_2 + 1)), got $STORE_COUNT_3) — skip-unchanged must never suppress a real content change"; exit 1; }
+RUN3_LOG="$(tail -n "+$((LOG_LINES_BEFORE_RUN3 + 1))" "$LOG")"
+if echo "$RUN3_LOG" | grep -q 'SKIPPED:'; then echo "[FAIL] #100: the 3rd run (changed content) was wrongly SKIPPED"; echo "$RUN3_LOG"; exit 1; fi
+echo "$RUN3_LOG" | grep -q '^pushed -> file:' || { echo "[FAIL] 3rd run log lacks the pushed confirmation line"; echo "$RUN3_LOG"; exit 1; }
+tail -n 1 "$LOG" | grep -q '^OK rc=0$' || { echo "[FAIL] log does not end with OK rc=0 after the 3rd (changed-content) run"; tail -n 3 "$LOG"; exit 1; }
+[ "$(wc -l < "$IDX" | tr -d ' ')" = "3" ] || { echo "[FAIL] index.tsv does not have exactly 3 appended lines after 3 runs (2 unchanged + 1 changed)"; cat "$IDX"; exit 1; }
+[ "$(awk -F'\t' '{print $2"\t"$3}' "$IDX" | sort -u | wc -l | tr -d ' ')" = "2" ] || { echo "[FAIL] #100: index.tsv should now have exactly 2 DISTINCT locator+sha pairs (the 2 unchanged runs sharing one, the changed run with a new one)"; cat "$IDX"; exit 1; }
+echo "[PASS] a genuinely changed \$SRC on a same-day 3rd run triggers a REAL re-upload (new store object, new locator+sha in index.tsv, no false SKIPPED) — --skip-unchanged never suppresses an actual content change"
 
 echo "== (d) status reports time, backend, last log rc, next run =="
 cb schedule status > "$TMP/status.log" 2>&1 || { echo "[FAIL] status exited non-zero"; cat "$TMP/status.log"; exit 1; }

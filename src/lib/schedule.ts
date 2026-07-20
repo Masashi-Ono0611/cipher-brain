@@ -23,6 +23,7 @@
 
 import { mkdir, writeFile, readFile, rm, readdir, chmod } from 'node:fs/promises';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { HOME } from './config.js';
@@ -31,14 +32,30 @@ import type { CliOptions } from './types.js';
 
 export const SCHEDULE_DIR = process.env.CIPHER_BRAIN_SCHEDULE_DIR || join(HOME, 'schedule');
 const LAUNCHD_DIR = process.env.CIPHER_BRAIN_LAUNCHD_DIR || join(homedir(), 'Library', 'LaunchAgents');
-const LABEL = 'dev.cipher-brain.nightly';
-const CRON_MARKER = '# cipher-brain-nightly'; // idempotent uninstall: remove exactly the lines that carry this tag
+// LABEL/CRON_MARKER are scoped to CIPHER_BRAIN_HOME (#114) so a second `install` under a
+// DIFFERENT CIPHER_BRAIN_HOME never overwrites or unregisters the first's launchd job /
+// crontab line — both LABEL (and therefore PLIST's filename) and CRON_MARKER used to be
+// fixed, machine-wide constants, so two brains on the same machine collided. The hash is
+// derived from HOME alone (not the rest of the config), so it stays the SAME across
+// reinstalls of the same home with different flags.
+const HOME_LABEL_HASH = createHash('sha256').update(HOME).digest('hex').slice(0, 8);
+const LABEL = `dev.cipher-brain.nightly.${HOME_LABEL_HASH}`;
+const CRON_MARKER = `# cipher-brain-nightly:${HOME_LABEL_HASH}`; // idempotent uninstall: remove exactly the lines that carry this tag
+// Pre-#114 installs registered under these FIXED, unscoped values (shared machine-wide,
+// by every CIPHER_BRAIN_HOME). Kept so uninstall/status/install can recognize and migrate
+// a schedule registered before this fix. Legacy handling is always gated on evidence from
+// THIS home's own recorded artifacts (schedule.json / cron.entry — see
+// isLegacyLaunchdCfg/isLegacyCronLine below), never a blind machine-wide sweep, so it can
+// never touch a DIFFERENT CIPHER_BRAIN_HOME's still-legacy job.
+const LEGACY_LABEL = 'dev.cipher-brain.nightly';
+const LEGACY_CRON_MARKER = '# cipher-brain-nightly';
 
 const RUNNER = join(SCHEDULE_DIR, 'nightly.sh');
 const CONFIG = join(SCHEDULE_DIR, 'schedule.json');
 const LOGS_DIR = join(SCHEDULE_DIR, 'logs');
 const SNAPS_DIR = join(SCHEDULE_DIR, 'snapshots');
 const PLIST = join(LAUNCHD_DIR, `${LABEL}.plist`);
+const LEGACY_PLIST = join(LAUNCHD_DIR, `${LEGACY_LABEL}.plist`);
 const CRON_ENTRY_FILE = join(SCHEDULE_DIR, 'cron.entry'); // Linux: the exact registered line, kept as an artifact for status/uninstall
 
 const BACKENDS = new Set(['file', 'arweave', 'turbo']);
@@ -310,6 +327,45 @@ function resolvePgDumpDir(): string | null {
   return found ? dirname(resolve(found)) : null;
 }
 
+// ---------- legacy (pre-#114 unscoped LABEL/CRON_MARKER) detection ----------
+
+// A cron line always ends with its marker (see cronLine()): a genuinely legacy line ends
+// with exactly LEGACY_CRON_MARKER, whereas a home-scoped one (this home's own, or another
+// CIPHER_BRAIN_HOME's) ends with the ":<hash>" suffix — so this can never mis-fire on a
+// DIFFERENT home's current-format entry, only on a truly unscoped pre-#114 one.
+const isLegacyCronLine = (l: string): boolean => l.trimEnd().endsWith(LEGACY_CRON_MARKER);
+
+// True only when THIS home's own schedule.json (as last written by `install`) recorded the
+// legacy, unscoped plist path — i.e. this home's job was registered before #114, not just
+// "some legacy plist happens to exist" (which could belong to a different home entirely,
+// since LEGACY_PLIST's filename isn't home-scoped).
+function isLegacyLaunchdCfg(cfg: ScheduleConfig | null): boolean {
+  return !!cfg && cfg.trigger.type === 'launchd' && cfg.trigger.path === LEGACY_PLIST;
+}
+
+// This home's own schedule.json — read WITHOUT throwing (returns null if absent/corrupt),
+// for the legacy-migration checks below, which must never treat "no prior config" as an
+// error.
+async function tryReadConfig(): Promise<ScheduleConfig | null> {
+  try {
+    return JSON.parse(await readFile(CONFIG, 'utf8')) as ScheduleConfig;
+  } catch {
+    return null;
+  }
+}
+
+// This home's own cron.entry artifact — the EXACT line `install` last registered (whatever
+// LABEL/marker scheme was in effect when it ran), used to tell whether THIS home's cron job
+// is legacy-format without having to re-derive it from schedule.json.
+async function readOwnCronEntry(): Promise<string | null> {
+  try {
+    const t = (await readFile(CRON_ENTRY_FILE, 'utf8')).trim();
+    return t || null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------- subcommands ----------
 
 async function install(o: CliOptions): Promise<void> {
@@ -348,6 +404,15 @@ async function install(o: CliOptions): Promise<void> {
   } else if (o.max_spend) {
     throw new Error(`--max-spend only applies to the paid backends (arweave|turbo); --backend ${o.backend} is free`);
   }
+
+  // Read any PRE-EXISTING artifacts now, before anything below overwrites them — used only
+  // to detect (and, unless --no-load, migrate off) a legacy pre-#114 registration for THIS
+  // SAME home, so re-running install after upgrading cipher-brain doesn't leave BOTH the
+  // old unscoped job and the new scoped one running nightly (#114). Read AFTER the input
+  // validation above so a plain usage error (bad --backend, missing --max-spend, ...) never
+  // pays for this extra I/O.
+  const priorCfg = await tryReadConfig();
+  const priorCronEntry = await readOwnCronEntry();
 
   const cfg: ScheduleConfig = {
     schema: 1,
@@ -408,12 +473,31 @@ async function install(o: CliOptions): Promise<void> {
 
   if (o.no_load) {
     console.error('--no-load: artifacts written, trigger NOT registered (launchctl/crontab untouched)');
+    if (isLegacyLaunchdCfg(priorCfg) || (priorCronEntry && isLegacyCronLine(priorCronEntry))) {
+      console.error(`note: a legacy (pre-CIPHER_BRAIN_HOME-scoped) registration for this home is still live — re-run install WITHOUT --no-load to migrate off it (otherwise both would end up running nightly)`);
+    }
   } else if (cfg.trigger.type === 'launchd') {
     loadLaunchd();
     console.error(`launchd job loaded: ${LABEL}`);
+    if (isLegacyLaunchdCfg(priorCfg)) {
+      sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${LEGACY_LABEL}`]); // failure = was not loaded, fine
+      if (await exists(LEGACY_PLIST)) {
+        await rm(LEGACY_PLIST);
+        console.error(`migrated off the legacy unscoped launchd label (${LEGACY_LABEL}) — removed ${LEGACY_PLIST}`);
+      }
+    }
   } else {
     loadCron(cronLine(cfg));
     console.error(`crontab entry registered (${CRON_MARKER})`);
+    if (priorCronEntry && isLegacyCronLine(priorCronEntry)) {
+      const lines = crontabText().split('\n').filter((l) => l.trim());
+      const kept = lines.filter((l) => !isLegacyCronLine(l));
+      if (kept.length !== lines.length) {
+        const r = sh('crontab', ['-'], { input: kept.length ? kept.join('\n') + '\n' : '' });
+        if (r.error || r.status !== 0) throw new Error(`crontab write failed while migrating off the legacy entry: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
+        console.error(`migrated off the legacy unscoped crontab entry (${LEGACY_CRON_MARKER})`);
+      }
+    }
   }
 
   // The write-window rationale (MANAGEMENT.md "Avoid the write window"): a run pg_dumps
@@ -459,14 +543,32 @@ async function status(): Promise<void> {
   console.log(`configured: daily at ${cfg.at}, backend ${cfg.backend}`);
   console.log(`runner: ${cfg.runner}`);
   if (cfg.trigger.type === 'launchd') {
-    const r = sh('launchctl', ['print', `gui/${process.getuid?.()}/${LABEL}`]);
+    // A legacy (pre-#114) schedule.json literally stored the unscoped plist path — trust
+    // THAT ground truth over re-deriving from the current (scoped) LABEL constant, so a
+    // legacy job that IS actually loaded is reported as loaded, not wrongly "no".
+    const legacy = isLegacyLaunchdCfg(cfg);
+    const label = legacy ? LEGACY_LABEL : LABEL;
+    const r = sh('launchctl', ['print', `gui/${process.getuid?.()}/${label}`]);
     const loaded = !r.error && r.status === 0;
     console.log(`trigger: launchd ${cfg.trigger.path} (loaded: ${loaded ? 'yes' : 'no'})`);
+    if (legacy) {
+      console.log(`note: this schedule is still registered under the legacy unscoped launchd label (${LEGACY_LABEL}) from before CIPHER_BRAIN_HOME-scoped labels — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`);
+    }
   } else {
+    // Same reasoning as the launchd branch: read back the EXACT line install last wrote
+    // (whatever marker scheme was in effect then) instead of re-deriving one from the
+    // current cfg + the current (scoped) CRON_MARKER constant, which would misreport a
+    // still-legacy registration as unregistered.
+    const entryLine = (await readOwnCronEntry()) ?? cronLine(cfg);
+    const legacy = isLegacyCronLine(entryLine);
+    const marker = legacy ? LEGACY_CRON_MARKER : CRON_MARKER;
     let loaded = 'unknown';
     const r = sh('crontab', ['-l']);
-    if (!r.error) loaded = r.status === 0 && r.stdout.includes(CRON_MARKER) ? 'yes' : 'no';
-    console.log(`trigger: cron "${cronLine(cfg)}" (registered: ${loaded})`);
+    if (!r.error) loaded = r.status === 0 && r.stdout.includes(marker) ? 'yes' : 'no';
+    console.log(`trigger: cron "${entryLine}" (registered: ${loaded})`);
+    if (legacy) {
+      console.log(`note: this schedule is still registered under the legacy unscoped crontab marker (${LEGACY_CRON_MARKER}) from before CIPHER_BRAIN_HOME-scoped markers — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`);
+    }
   }
   const last = await lastLog();
   console.log(last ? `last run: ${last.name} — ${last.rcLine}` : 'last run: none yet');
@@ -474,19 +576,52 @@ async function status(): Promise<void> {
 }
 
 async function uninstall(o: CliOptions): Promise<void> {
+  // Legacy detection is scoped to THIS home's own recorded artifacts — never a blind
+  // machine-wide launchctl/crontab sweep — so it can never touch a DIFFERENT
+  // CIPHER_BRAIN_HOME's still-legacy job (see isLegacyLaunchdCfg/isLegacyCronLine).
+  const priorCfg = await tryReadConfig();
+  const priorCronEntry = await readOwnCronEntry();
+
+  if (o.no_load) {
+    // Symmetric with install's --no-load ("write/keep artifacts, do not touch
+    // launchd/crontab"): --no-load here must not touch the scheduler either. UNLIKE
+    // install, though, deleting the runner/config/plist/cron-entry files while the
+    // trigger stays registered would orphan a live launchd/cron job pointing at a script
+    // that no longer exists — it fails silently every night with nothing left to explain
+    // why (#113). So --no-load is a pure status report here: nothing is removed, ever.
+    const present: string[] = [];
+    if (process.platform === 'darwin') {
+      if (await exists(PLIST)) present.push(`launchd plist ${PLIST}`);
+      if (isLegacyLaunchdCfg(priorCfg) && (await exists(LEGACY_PLIST))) present.push(`legacy launchd plist ${LEGACY_PLIST}`);
+    } else {
+      if (await exists(CRON_ENTRY_FILE)) present.push(`cron entry file ${CRON_ENTRY_FILE}`);
+    }
+    if (await exists(RUNNER)) present.push(`runner ${RUNNER}`);
+    if (await exists(CONFIG)) present.push(`config ${CONFIG}`);
+    if (present.length === 0) {
+      console.error('nothing to remove — schedule is not installed');
+    } else {
+      console.error(`--no-load: nothing removed — the trigger registration in launchd/crontab is still live. Re-run \`cipher-brain schedule uninstall\` WITHOUT --no-load to unregister it and remove: ${present.join(', ')}`);
+    }
+    return;
+  }
+
   const removed: string[] = [];
   if (process.platform === 'darwin') {
-    if (!o.no_load) sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${LABEL}`]); // failure = was not loaded
+    sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${LABEL}`]); // failure = was not loaded, fine
     if (await exists(PLIST)) { await rm(PLIST); removed.push(`launchd plist ${PLIST}`); }
+    if (isLegacyLaunchdCfg(priorCfg)) {
+      sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${LEGACY_LABEL}`]); // failure = was not loaded, fine
+      if (await exists(LEGACY_PLIST)) { await rm(LEGACY_PLIST); removed.push(`legacy launchd plist ${LEGACY_PLIST}`); }
+    }
   } else {
-    if (!o.no_load) {
-      const lines = crontabText().split('\n').filter((l) => l.trim());
-      const kept = lines.filter((l) => !l.includes(CRON_MARKER));
-      if (kept.length !== lines.length) {
-        const r = sh('crontab', ['-'], { input: kept.length ? kept.join('\n') + '\n' : '' });
-        if (r.error || r.status !== 0) throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
-        removed.push(`crontab entry (${CRON_MARKER})`);
-      }
+    const migrateLegacy = !!priorCronEntry && isLegacyCronLine(priorCronEntry);
+    const lines = crontabText().split('\n').filter((l) => l.trim());
+    const kept = lines.filter((l) => !l.includes(CRON_MARKER) && !(migrateLegacy && isLegacyCronLine(l)));
+    if (kept.length !== lines.length) {
+      const r = sh('crontab', ['-'], { input: kept.length ? kept.join('\n') + '\n' : '' });
+      if (r.error || r.status !== 0) throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
+      removed.push(migrateLegacy ? `crontab entry (${CRON_MARKER} + legacy ${LEGACY_CRON_MARKER})` : `crontab entry (${CRON_MARKER})`);
     }
     if (await exists(CRON_ENTRY_FILE)) { await rm(CRON_ENTRY_FILE); removed.push(`cron entry file ${CRON_ENTRY_FILE}`); }
   }

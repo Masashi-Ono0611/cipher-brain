@@ -79,8 +79,17 @@ export function wrapIdentity(text: string, passphrase: string): Promise<Uint8Arr
 // with "unrecognized identity type" instead of ever prompting for a passphrase).
 export async function loadIdentities(path: string): Promise<string[]> {
   let raw = await readFile(path);
-  if (raw.subarray(0, AGE_ARMOR_HEADER.length).toString('latin1') === AGE_ARMOR_HEADER) {
-    raw = Buffer.from(armor.decode(raw.toString('utf8')));
+  const rawText = raw.toString('utf8');
+  // trimStart, not a byte-0 match: a copy-pasted-into-a-note identity routinely picks
+  // up a leading blank line / BOM, and armor.decode() itself trims before parsing —
+  // matching that here means a padded paste doesn't silently fall through to the
+  // plaintext branch below (the same failure shape #87 was filed for).
+  if (rawText.trimStart().startsWith(AGE_ARMOR_HEADER)) {
+    try {
+      raw = Buffer.from(armor.decode(rawText));
+    } catch (e) {
+      throw new Error(`could not dearmor ${path}: ${errMsg(e)}`);
+    }
   }
   let text: string;
   if (raw.subarray(0, AGE_MAGIC.length).toString('latin1') === AGE_MAGIC) {

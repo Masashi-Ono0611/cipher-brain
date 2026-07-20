@@ -233,7 +233,7 @@ interface ArweaveClient {
   transactions: {
     getPrice(byteLength: number): Promise<string>;
     sign(tx: ArweaveTransaction, jwk: unknown): Promise<void>;
-    post(tx: ArweaveTransaction): Promise<{ status: number }>;
+    post(tx: ArweaveTransaction): Promise<{ status: number; data?: unknown }>;
     getData(id: string, opts?: { decode?: boolean }): Promise<Uint8Array | string>;
   };
   createTransaction(attrs: { data: Uint8Array; reward?: string }, jwk: unknown): Promise<ArweaveTransaction>;
@@ -241,6 +241,37 @@ interface ArweaveClient {
 interface ArweaveTransaction {
   id: string;
   addTag(name: string, value: string): void;
+}
+
+// arweave-js's Api.request() (node_modules/arweave/node/lib/api.js) already buffers the
+// POST response body into `res.data` — parsed as JSON when the body is a valid JSON
+// object, otherwise the raw decoded text — so surfacing it here costs no extra network
+// read. A real gateway's 400/410/etc body is far more actionable than the bare status
+// (#165 — an unfunded wallet's push used to surface an opaque "HTTP 400" indistinguishable
+// from any other 400 cause; issue #37's oversized-tx guard is a separate, already-handled
+// 400 case). Bounded to ~200 chars — the same excerpt-length turbo.ts's own upload-response
+// error already uses (`JSON.stringify(res).slice(0, 200)`). Never throws: a malformed/
+// unexpected `data` shape falls through to the bare `HTTP ${status}` message rather than
+// masking the real failure with a body-parsing error.
+function describeArweavePostError(status: number, data: unknown): string {
+  try {
+    if (data && typeof data === 'object') {
+      const obj = data as Record<string, unknown>;
+      const reason = obj.error ?? obj.message;
+      if (typeof reason === 'string' && reason.trim()) {
+        return `arweave post failed: HTTP ${status} — ${reason.trim().slice(0, 200)}`;
+      }
+      // no recognizable error/message field — fall back to the raw (stringified) body,
+      // same as the "otherwise the raw text" behavior for a non-JSON body below.
+      const raw = JSON.stringify(data);
+      if (raw && raw !== '{}') return `arweave post failed: HTTP ${status} — ${raw.slice(0, 200)}`;
+    } else if (typeof data === 'string' && data.trim()) {
+      return `arweave post failed: HTTP ${status} — ${data.trim().slice(0, 200)}`;
+    }
+  } catch {
+    /* fall through to the bare status message below */
+  }
+  return `arweave post failed: HTTP ${status}`;
 }
 
 // arweave-js's HTTP client (`Api.request()`, node_modules/arweave/node/lib/api.js) — used
@@ -390,7 +421,7 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       tx.addTag('Content-Type', 'application/octet-stream');
       await ar.transactions.sign(tx, jwk);
       const res = await ar.transactions.post(tx);
-      if (res.status !== 200 && res.status !== 208) throw new Error(`arweave post failed: HTTP ${res.status}`);
+      if (res.status !== 200 && res.status !== 208) throw new Error(describeArweavePostError(res.status, res.data));
       return tx.id; // 43-char base64url tx id
     },
     async get(locator: string, out: string): Promise<void> {

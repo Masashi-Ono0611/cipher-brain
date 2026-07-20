@@ -356,5 +356,90 @@ W2=$(cb snapshot --dir "$SRC" --recipient "$TMP/k-a/recipient.txt" --recipient "
 [ "$W2" != "0" ] || { echo "[FAIL] did NOT warn on two args naming the SAME key"; exit 1; }
 echo "[PASS] single-key warning is by distinct key, not arg count (2-key file silent; dup-arg warns)"
 
+echo "== #119 regression: keygenAt() fails closed when chmod(home, 0700) cannot succeed =="
+# chflags uchg (macOS "user immutable") makes even the OWNER's own chmod() fail EPERM,
+# without needing root — the only portable, non-root way found to force a chmod
+# failure deterministically. No Linux equivalent exists (chattr +i needs
+# CAP_LINUX_IMMUTABLE, i.e. root, on ext4/most filesystems), so this is macOS-only;
+# on Linux CI it SKIPs rather than fabricate a pass (rules/shell-ops.md: BLOCKED != PASS).
+if [ "$(uname -s)" = "Darwin" ]; then
+  CHMOD_FAIL_HOME="$TMP/chmod-fail-home"; mkdir -p "$CHMOD_FAIL_HOME"
+  chmod 755 "$CHMOD_FAIL_HOME"    # pre-existing, LOOSER than the 0700 keygenAt() must enforce
+  set +e
+  chflags uchg "$CHMOD_FAIL_HOME" # immutable: keygenAt()'s own chmod(home, 0700) will now EPERM
+  CHFLAGS_RC=$?
+  set -e
+  if [ "$CHFLAGS_RC" != "0" ]; then
+    echo "[SKIP] #119 chmod-fail-closed repro: chflags uchg is unsupported on this filesystem (e.g. a virtualized TMPDIR)"
+  else
+    set +e
+    OUT=$(CIPHER_BRAIN_HOME="$CHMOD_FAIL_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen 2>&1); RC=$?
+    set -e
+    chflags nouchg "$CHMOD_FAIL_HOME" # clear FIRST — every check below may exit 1, and the
+                                       # trap's rm -rf "$TMP" cannot remove an immutable dir
+    if [ "$RC" = "0" ]; then echo "FAIL: keygen succeeded despite chmod(home, 0700) failing — the #119 regression (a swallowed chmod error)"; echo "$OUT"; exit 1; fi
+    printf '%s' "$OUT" | grep -qi "operation not permitted\|EPERM" || { echo "FAIL: keygen's failure was not the expected chmod EPERM"; echo "$OUT"; exit 1; }
+    test ! -f "$CHMOD_FAIL_HOME/identity.age" || { echo "FAIL: an identity.age was written into a directory whose permissions could not be verified/corrected"; exit 1; }
+    [ "$(stat -f '%Lp' "$CHMOD_FAIL_HOME")" = "755" ] || { echo "FAIL: the directory's mode changed despite the chmod call failing"; exit 1; }
+    echo "[PASS] keygen fails closed (writes nothing) when chmod(home, 0700) cannot succeed, instead of silently proceeding"
+  fi
+else
+  echo "[SKIP] #119 chmod-fail-closed repro needs chflags (macOS-only — see comment above)"
+fi
+
+echo "== #120 regression: --recipient FILE whose path contains 'age1' is read as a file, not mistaken for an inline literal =="
+REC_AGE1_HOME="$TMP/rec-age1-home"
+CIPHER_BRAIN_HOME="$REC_AGE1_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+REC_AGE1_FILE="$TMP/age1-manual-recipients.txt"   # the filename itself starts with "age1"
+printf '%s\n' "$(cat "$REC_AGE1_HOME/recipient.txt")" > "$REC_AGE1_FILE"
+cb snapshot --dir "$SRC" --recipient "$REC_AGE1_FILE" --out "$TMP/age1-file-recipient.age" >/dev/null
+test -f "$TMP/age1-file-recipient.age" || { echo "FAIL: snapshot did not honor a recipients FILE whose path starts with 'age1'"; exit 1; }
+CIPHER_BRAIN_HOME="$REC_AGE1_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/age1-file-recipient.age" 2>&1 | grep -q 'VERDICT: PASS' \
+  || { echo "FAIL: the age1-named-file recipient did not actually decrypt (recipientEntries misread the filename as the literal key)"; exit 1; }
+echo "[PASS] --recipient honored a file-based recipient whose path contains 'age1' (recipientEntries checks existence before the age1 prefix, #120)"
+
+echo "== #121 regression: keygen refuses to silently re-key a stray recipient.txt that has no matching identity.age =="
+STRAY_HOME="$TMP/stray-recipient-home"
+CIPHER_BRAIN_HOME="$STRAY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+STRAY_RECIPIENT_ORIG="$(cat "$STRAY_HOME/recipient.txt")"
+rm -f "$STRAY_HOME/identity.age"   # simulate: identity moved offline (cold storage), recipient.txt left behind
+set +e
+OUT=$(CIPHER_BRAIN_HOME="$STRAY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen 2>&1); RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: keygen silently re-keyed a stray recipient.txt with no matching identity — the #121 regression"; echo "$OUT"; exit 1; fi
+printf '%s' "$OUT" | grep -qi "recipient already exists" || { echo "FAIL: wrong error for a stray pre-existing recipient.txt"; echo "$OUT"; exit 1; }
+[ "$(cat "$STRAY_HOME/recipient.txt")" = "$STRAY_RECIPIENT_ORIG" ] || { echo "FAIL: the stray recipient.txt was modified despite the refusal"; exit 1; }
+test ! -f "$STRAY_HOME/identity.age" || { echo "FAIL: an identity.age was written despite the recipientPath refusal"; exit 1; }
+echo "[PASS] keygen refuses to re-key a stray pre-existing recipient.txt without --force, leaving it byte-identical"
+
+echo "== #122 regression: a failed 'keygen --force' (new payload never finishes) must not lose the OLD identity =="
+FORCE_HOME="$TMP/force-atomic-home"
+CIPHER_BRAIN_HOME="$FORCE_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+ORIG_IDENTITY_SHA="$(shasum -a 256 "$FORCE_HOME/identity.age" | cut -d' ' -f1)"
+ORIG_RECIPIENT="$(cat "$FORCE_HOME/recipient.txt")"
+# --passphrase with no CIPHER_BRAIN_PASSPHRASE and no TTY (< /dev/null): askNewPassphrase()
+# throws deterministically ("stdin is not a TTY") AFTER the new keypair is generated but
+# BEFORE keygenAt() ever touches identityPath/recipientPath on disk (see keys.ts) — the
+# same "prepare fully, THEN replace" ordering the #122 fix requires.
+set +e
+OUT=$(CIPHER_BRAIN_HOME="$FORCE_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --force --passphrase < /dev/null 2>&1); RC=$?
+set -e
+if [ "$RC" = "0" ]; then echo "FAIL: keygen --force --passphrase succeeded despite no TTY / no CIPHER_BRAIN_PASSPHRASE"; echo "$OUT"; exit 1; fi
+printf '%s' "$OUT" | grep -qi "not a TTY" || { echo "FAIL: expected the passphrase-requires-a-TTY error"; echo "$OUT"; exit 1; }
+[ "$(shasum -a 256 "$FORCE_HOME/identity.age" | cut -d' ' -f1)" = "$ORIG_IDENTITY_SHA" ] || { echo "FAIL: the ORIGINAL identity was lost/modified by a failed --force keygen — the #122 regression (delete-before-ready)"; exit 1; }
+[ "$(cat "$FORCE_HOME/recipient.txt")" = "$ORIG_RECIPIENT" ] || { echo "FAIL: the ORIGINAL recipient was lost/modified by a failed --force keygen"; exit 1; }
+TMP_LEFTOVER="$(find "$FORCE_HOME" -maxdepth 1 -name '*.tmp' 2>/dev/null | head -n1)"
+[ -z "$TMP_LEFTOVER" ] || { echo "FAIL: a .tmp sibling survived a failed --force keygen: $TMP_LEFTOVER"; exit 1; }
+echo "[PASS] a failed --force keygen (passphrase step throwing) leaves the ORIGINAL identity/recipient completely intact — nothing is deleted before the replacement is ready"
+
+echo "== #122: a SUCCESSFUL 'keygen --force' actually replaces identity+recipient, atomically, with no leftover temp file =="
+CIPHER_BRAIN_HOME="$FORCE_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --force >/dev/null
+[ "$(shasum -a 256 "$FORCE_HOME/identity.age" | cut -d' ' -f1)" != "$ORIG_IDENTITY_SHA" ] || { echo "FAIL: --force did not actually replace the identity"; exit 1; }
+[ "$(cat "$FORCE_HOME/recipient.txt")" != "$ORIG_RECIPIENT" ] || { echo "FAIL: --force did not actually replace the recipient"; exit 1; }
+[ "$(stat -c '%a' "$FORCE_HOME/identity.age" 2>/dev/null || stat -f '%Lp' "$FORCE_HOME/identity.age")" = "600" ] || { echo "FAIL: the replaced identity is not mode 600"; exit 1; }
+TMP_LEFTOVER2="$(find "$FORCE_HOME" -maxdepth 1 -name '*.tmp' 2>/dev/null | head -n1)"
+[ -z "$TMP_LEFTOVER2" ] || { echo "FAIL: a .tmp sibling survived a successful --force keygen: $TMP_LEFTOVER2"; exit 1; }
+echo "[PASS] keygen --force replaces both identity and recipient with a fresh keypair (mode 600 preserved), no .tmp sibling left behind"
+
 echo
 echo "SELFTEST PASS"

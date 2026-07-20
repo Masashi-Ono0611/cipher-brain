@@ -518,16 +518,19 @@ fi
 grep -qi "already exists" "$TMP/locator-preserve-retry.log" || { echo "[FAIL] retry's refusal was not the expected pre-existing-identity error"; cat "$TMP/locator-preserve-retry.log"; exit 1; }
 echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME correctly refuses instead of silently starting over on top of the preserved, already-uploaded snapshot"
 
-echo "== (l) partial backup keygen (identity.age written, recipient.txt write denied) doesn't orphan a backup identity (7th-round P2 fix, finding 2b) =="
-# keygenAt() (keys.ts) writes identity.age (wx, exclusive-create) THEN recipient.txt.
-# Pre-create the backup keypair's recipient.txt as a WRITE-DENIED (0444) regular file
-# so identity.age's write still succeeds but recipient.txt's write throws EACCES —
-# reproducing "identity.age written, recipient.txt write then throws" deterministically,
-# without needing root/quota tricks. Before the fix, the wizard's OWN `backup` variable
-# is only assigned AFTER this call returns, so the outer catch's `if (backup) { rm... }`
-# rollback never runs for it — the freshly-written backup identity.age is orphaned even
-# though the (unrelated) primary identity gets cleaned up by the pre-existing generic
-# rollback (pushSucceeded is still false here).
+echo "== (l) backup keygen refuses when a stray recipient.txt pre-exists at the backup path — no identity.age is ever written, so no orphan is possible (#121 fix; supersedes the old 7th-round P2 finding-2b EACCES repro) =="
+# Before #121, keygenAt() (keys.ts) wrote identity.age (wx, exclusive-create) THEN
+# recipient.txt with NO existence check at all on recipientPath — a stray pre-existing
+# recipient.txt got silently clobbered. The 7th-round P2 finding-2b fix below this test
+# used to repro "identity.age written, recipient.txt write throws" by pre-creating
+# recipient.txt as WRITE-DENIED (0444) so only its write failed with EACCES; that relied
+# on the old ordering (identity write happens first, unconditionally). #121 adds its own
+# up-front no-clobber check on recipientPath, run BEFORE identity.age is generated or
+# written at all — so a pre-existing recipient.txt now refuses immediately, and the
+# specific "identity.age written but recipient.txt write throws" partial state this test
+# used to construct is no longer reachable via a pre-existing recipient.txt. Prove the
+# stronger guarantee directly: nothing is written on this path AT ALL, so there is no
+# orphan for the wizard's own cleanup (tested separately in (l2)/(l3) below) to catch.
 L_HOME="$TMP/backup-partial-home"; mkdir -p "$L_HOME"
 L_CB_HOME="$TMP/backup-partial-cb-home"
 L_STORE="$TMP/backup-partial-store"
@@ -537,7 +540,6 @@ L_BACKUP_HOME="${L_CB_HOME}-backup" # the default sibling path the wizard sugges
 mkdir -p "$L_BACKUP_HOME"
 L_BLOCKED_RECIPIENT="$L_BACKUP_HOME/recipient.txt"
 printf 'stale\n' > "$L_BLOCKED_RECIPIENT"
-chmod 444 "$L_BLOCKED_RECIPIENT"
 
 cat > "$TMP/qa-backup-partial-fail.json" <<JSON
 [
@@ -551,29 +553,22 @@ JSON
 if CIPHER_BRAIN_HOME="$L_CB_HOME" CIPHER_BRAIN_FILE_DIR="$L_STORE" HOME="$L_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-backup-partial-fail.json" --out "$TMP/backup-partial-fail.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
-  echo "[FAIL] init did not fail when the backup keypair's recipient.txt path is write-denied"; cat "$TMP/backup-partial-fail.log"; exit 1
+  echo "[FAIL] init did not fail when the backup keypair's recipient.txt path already exists"; cat "$TMP/backup-partial-fail.log"; exit 1
 fi
-grep -qi "EACCES\|permission denied" "$TMP/backup-partial-fail.log" || { echo "[FAIL] failure was not the expected recipient.txt permission error"; cat "$TMP/backup-partial-fail.log"; exit 1; }
-[ ! -f "$L_BACKUP_HOME/identity.age" ] || { echo "[FAIL] the orphaned backup identity.age survived a partial backup keygen — the finding-2b regression"; exit 1; }
+grep -qi "recipient already exists" "$TMP/backup-partial-fail.log" || { echo "[FAIL] failure was not keygenAt's new recipientPath no-clobber refusal (#121)"; cat "$TMP/backup-partial-fail.log"; exit 1; }
+[ ! -f "$L_BACKUP_HOME/identity.age" ] || { echo "[FAIL] a backup identity.age was written despite the recipientPath refusal — the #121 up-front check did not run before the identity write"; exit 1; }
+cmp -s "$L_BACKUP_HOME/recipient.txt" <(printf 'stale\n') || { echo "[FAIL] the stray recipient.txt fixture was modified — it must be left byte-identical"; exit 1; }
 [ ! -f "$L_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity survived (the pre-existing generic rollback should still have cleared it)"; exit 1; }
-echo "[PASS] a partial backup keygen (identity.age written, recipient.txt write denied) leaves NO orphaned backup identity behind"
+echo "[PASS] a stray pre-existing recipient.txt at the backup path refuses up front (#121) — no backup identity.age is ever written, and the stray file is left untouched"
 
-echo "== (l2) retry after the finding-2b cleanup succeeds (same default backup path, backup=yes again) =="
-# Before the fix this retry would be BLOCKED exactly like (h)'s original bug: the
-# orphaned backup identity.age would make THIS SAME keygenAt() call refuse with its own
-# "identity already exists" error (keys.ts), a second, independent brick beyond the
-# primary-identity refusal (h) already covers. After the fix there is nothing left at
-# that path, so a genuine retry (same answers) completes end-to-end.
-#
-# The round-8 fix (finding 1, backup-key site) changed WHICH files that cleanup is
-# allowed to touch: it now only removes a target it can prove this SAME invocation
-# just created — never something that pre-existed, since a pre-existing file at that
-# path might be a REAL, previously-set-up backup identity (see test (l3) below). This
-# test's own recipient.txt fixture (L_BLOCKED_RECIPIENT, chmod 444) pre-existed before
-# (l)'s run even started, so it is now correctly left in place by the wizard, exactly
-# like it would leave a real one alone — the wizard cannot tell "stale test fixture"
-# apart from "real pre-existing key" any more than it can tell "stale" apart from
-# "genuine" in general, and must not guess. A real user would notice the leftover
+echo "== (l2) retry after clearing the stray recipient.txt succeeds (same default backup path, backup=yes again) =="
+# (l)'s stray recipient.txt is still sitting at L_BACKUP_HOME and keygenAt() (#121)
+# will keep refusing it on every retry, same as (l3) below proves for a REAL
+# pre-existing backup identity — the wizard cannot tell "stale leftover fixture" apart
+# from "genuine pre-existing key" any more than it can tell "stale" apart from
+# "genuine" in general, and must not guess; it correctly leaves the file untouched
+# rather than removing something it did not itself create (see test (l3) below for
+# the case where that file IS a real key). A real user would notice the leftover
 # obstruction from the failed run and clear it by hand before retrying; simulate
 # exactly that one manual step here so this test still proves the REST of the retry
 # story (a clean retry succeeds once nothing is actually left in the way).
@@ -594,10 +589,10 @@ JSON
 CIPHER_BRAIN_HOME="$L_CB_HOME" CIPHER_BRAIN_FILE_DIR="$L_STORE" HOME="$L_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-backup-partial-retry.json" --out "$TMP/backup-partial-retry.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
-  || { echo "[FAIL] retry after the finding-2b cleanup did not complete (orphan still blocking, or another regression)"; cat "$TMP/backup-partial-retry.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/backup-partial-retry.log" || { echo "[FAIL] retry after finding-2b cleanup lacks its own completion marker"; cat "$TMP/backup-partial-retry.log"; exit 1; }
+  || { echo "[FAIL] retry after clearing the stray recipient.txt did not complete (still blocked, or another regression)"; cat "$TMP/backup-partial-retry.log"; exit 1; }
+grep -q 'cipher-brain init: complete' "$TMP/backup-partial-retry.log" || { echo "[FAIL] retry after clearing the stray recipient.txt lacks its own completion marker"; cat "$TMP/backup-partial-retry.log"; exit 1; }
 [ -f "$L_BACKUP_HOME/identity.age" ] || { echo "[FAIL] retry did not write a fresh backup identity at the same default path"; exit 1; }
-echo "[PASS] a retry against the same CIPHER_BRAIN_HOME (same default backup path, backup=yes again) succeeds after the finding-2b cleanup — no leftover orphan blocks it"
+echo "[PASS] a retry against the same CIPHER_BRAIN_HOME (same default backup path, backup=yes again) succeeds once the stray recipient.txt is cleared — the #121 refusal is not a permanent brick"
 
 echo "== (l3) pointing the backup-path prompt at an EXISTING real backup identity refuses without destroying it (round-8 regression fix) =="
 # Round 7's own fix (6177702) wrapped the backup keygenAt() call in a try/catch that

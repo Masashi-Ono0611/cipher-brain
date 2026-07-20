@@ -830,5 +830,113 @@ grep -qi 'Please answer' "$TMP/reprompt.log" || { echo "[FAIL] an unrecognized a
 grep -qi 'Skipping the backup key' "$TMP/reprompt.log" || { echo "[FAIL] the re-prompted 'n' answer was not honored (backup key generation was not skipped)"; cat "$TMP/reprompt.log"; exit 1; }
 echo "[PASS] an unrecognized yes/no answer re-prompts instead of silently defaulting to 'no', and the corrected answer is the one honored"
 
+echo "== (o) paid backend chosen with no CIPHER_BRAIN_AR_WALLET configured exits CLEANLY before the spend-consent prompt — no rollback (issue #161) =="
+# Before the fix, picking arweave/turbo with no wallet set sailed past the "spends
+# real funds" consent prompt, then failed deep inside push() (`arweave put needs
+# CIPHER_BRAIN_AR_WALLET ...`) — pushSucceeded stayed false, so the outer catch
+# rolled back the identity/backup key/recipient-pin choices this same run just spent
+# several steps creating. Drive a run through backup=yes (so both primary AND backup
+# identities exist), then answer the backend prompt with "arweave": the wizard must
+# print the wallet-setup guidance and return successfully (exit 0) WITHOUT ever
+# reaching the consent prompt, and WITHOUT touching anything already on disk.
+O_HOME="$TMP/wallet-precheck-home"; mkdir -p "$O_HOME"
+O_CB_HOME="$TMP/wallet-precheck-cb-home"
+O_SRC="$TMP/wallet-precheck-src"; mkdir -p "$O_SRC"
+printf 'wallet-precheck-marker\n' > "$O_SRC/note.txt"
+O_BACKUP_HOME="${O_CB_HOME}-backup" # the default sibling path the wizard suggests for the backup key
+
+cat > "$TMP/qa-wallet-precheck.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "y"],
+  ["Path for the backup keypair", ""],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$O_SRC"],
+  ["Backend [file/", "arweave"]
+]
+JSON
+# (Same reasoning as (j0)/(k)'s QA scripts: the wizard returns right after the
+# backend prompt on this path — never reaching the recovery-kit path prompt — so
+# the QA script intentionally stops there too.)
+
+unset CIPHER_BRAIN_AR_WALLET # this suite's own environment must not already have one set
+CIPHER_BRAIN_HOME="$O_CB_HOME" HOME="$O_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-wallet-precheck.json" --out "$TMP/wallet-precheck.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] the no-wallet paid-backend run did not exit cleanly (should return 0, not fail/roll back)"; cat "$TMP/wallet-precheck.log"; exit 1; }
+grep -qF 'needs a funded wallet to push' "$TMP/wallet-precheck.log" || { echo "[FAIL] wizard did not print the wallet-precheck guidance"; cat "$TMP/wallet-precheck.log"; exit 1; }
+grep -q 'cipher-brain wallet create' "$TMP/wallet-precheck.log" || { echo "[FAIL] guidance does not mention wallet create"; cat "$TMP/wallet-precheck.log"; exit 1; }
+grep -q 'cipher-brain wallet address' "$TMP/wallet-precheck.log" || { echo "[FAIL] guidance does not mention wallet address"; cat "$TMP/wallet-precheck.log"; exit 1; }
+if grep -qF 'PAID, PERMANENT store' "$TMP/wallet-precheck.log"; then echo "[FAIL] the spend-consent prompt was reached despite no wallet being configured"; cat "$TMP/wallet-precheck.log"; exit 1; fi
+if grep -q 'cipher-brain init: complete' "$TMP/wallet-precheck.log"; then echo "[FAIL] wizard reported completion despite exiting early on the wallet precheck"; cat "$TMP/wallet-precheck.log"; exit 1; fi
+echo "[PASS] choosing arweave with no wallet configured prints setup guidance and exits cleanly (exit 0), never reaching the spend-consent prompt"
+
+[ -f "$O_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity was deleted on the wallet-precheck early exit — this must be a graceful exit, not a rollback"; exit 1; }
+[ -f "$O_CB_HOME/recipient.txt" ] || { echo "[FAIL] primary recipient was deleted on the wallet-precheck early exit"; exit 1; }
+[ -f "$O_BACKUP_HOME/identity.age" ] || { echo "[FAIL] backup identity was deleted on the wallet-precheck early exit"; exit 1; }
+[ -f "$O_BACKUP_HOME/recipient.txt" ] || { echo "[FAIL] backup recipient was deleted on the wallet-precheck early exit"; exit 1; }
+O_SNAP_LEFTOVER="$(find "$O_CB_HOME" -maxdepth 1 -name 'brain-*.age' 2>/dev/null | head -n1)"
+[ -z "$O_SNAP_LEFTOVER" ] || { echo "[FAIL] a snapshot was produced despite exiting before step 6's snapshot+push"; exit 1; }
+echo "[PASS] the wallet-precheck early exit preserves the identity/recipient/backup-key this run already created, and never produces a snapshot"
+
+echo "== (o2) CIPHER_BRAIN_AR_WALLET set to a NONEXISTENT file behaves exactly like unset (issue #161: check 'set AND exists', not just 'set') =="
+O2_HOME="$TMP/wallet-precheck-missing-home"; mkdir -p "$O2_HOME"
+O2_CB_HOME="$TMP/wallet-precheck-missing-cb-home"
+O2_SRC="$TMP/wallet-precheck-missing-src"; mkdir -p "$O2_SRC"
+printf 'wallet-precheck-missing-marker\n' > "$O2_SRC/note.txt"
+O2_WALLET="$TMP/no-such-wallet.json" # set but deliberately never created
+
+cat > "$TMP/qa-wallet-precheck-missing.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$O2_SRC"],
+  ["Backend [file/", "turbo"]
+]
+JSON
+
+CIPHER_BRAIN_HOME="$O2_CB_HOME" HOME="$O2_HOME" CIPHER_BRAIN_AR_WALLET="$O2_WALLET" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-wallet-precheck-missing.json" --out "$TMP/wallet-precheck-missing.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] the missing-wallet-file turbo run did not exit cleanly"; cat "$TMP/wallet-precheck-missing.log"; exit 1; }
+grep -qF 'needs a funded wallet to push' "$TMP/wallet-precheck-missing.log" || { echo "[FAIL] wizard did not print the wallet-precheck guidance for a nonexistent wallet file"; cat "$TMP/wallet-precheck-missing.log"; exit 1; }
+[ -f "$O2_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity was deleted on the missing-wallet-file early exit"; exit 1; }
+echo "[PASS] CIPHER_BRAIN_AR_WALLET pointing at a nonexistent file is treated the same as unset — guidance shown, primary identity preserved"
+
+echo "== (o3) a wallet file actually present on disk still reaches the existing spend-consent prompt unchanged (issue #161: precheck only gates when the wallet is MISSING) =="
+O3_HOME="$TMP/wallet-precheck-present-home"; mkdir -p "$O3_HOME"
+O3_CB_HOME="$TMP/wallet-precheck-present-cb-home"
+O3_SRC="$TMP/wallet-precheck-present-src"; mkdir -p "$O3_SRC"
+printf 'wallet-precheck-present-marker\n' > "$O3_SRC/note.txt"
+O3_WALLET="$TMP/wallet-precheck-present-wallet.json"
+cb wallet create --out "$O3_WALLET" > "$TMP/wallet-precheck-present-walletcreate.log" 2>&1 \
+  || { echo "[FAIL] test setup: could not create a wallet fixture"; cat "$TMP/wallet-precheck-present-walletcreate.log"; exit 1; }
+
+cat > "$TMP/qa-wallet-precheck-present.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$O3_SRC"],
+  ["Backend [file/", "arweave"],
+  ["PAID, PERMANENT store", "n"]
+]
+JSON
+
+if CIPHER_BRAIN_HOME="$O3_CB_HOME" HOME="$O3_HOME" CIPHER_BRAIN_AR_WALLET="$O3_WALLET" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-wallet-precheck-present.json" --out "$TMP/wallet-precheck-present.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
+  echo "[FAIL] declining the spend-consent prompt should still abort (unchanged existing behavior)"; cat "$TMP/wallet-precheck-present.log"; exit 1
+fi
+grep -qF 'PAID, PERMANENT store' "$TMP/wallet-precheck-present.log" || { echo "[FAIL] the spend-consent prompt was never reached despite a configured, present-on-disk wallet"; cat "$TMP/wallet-precheck-present.log"; exit 1; }
+if grep -qF 'needs a funded wallet to push' "$TMP/wallet-precheck-present.log"; then echo "[FAIL] the wallet-precheck guidance fired despite a configured, present-on-disk wallet"; cat "$TMP/wallet-precheck-present.log"; exit 1; fi
+grep -qi "aborted before spending" "$TMP/wallet-precheck-present.log" || { echo "[FAIL] declined-consent error message missing (unchanged existing behavior expected)"; cat "$TMP/wallet-precheck-present.log"; exit 1; }
+[ ! -f "$O3_CB_HOME/identity.age" ] || { echo "[FAIL] declining consent should still roll back the identity (unchanged existing behavior, issue #161 non-goal)"; exit 1; }
+echo "[PASS] a configured, present-on-disk wallet still reaches the existing spend-consent prompt unchanged, and declining it still aborts + rolls back exactly as before"
+
 echo
 echo "INIT SELFTEST PASS"

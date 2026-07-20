@@ -289,10 +289,13 @@ export async function init(_o: CliOptions): Promise<void> {
   try {
     // ---------- 1. primary keygen (reuses keygen() verbatim — no reimplementation) ----------
     console.log('== 1/6: generating your primary identity ==');
-    // keygen() -> keygenAt() (keys.ts) writes identity.age THEN recipient.txt — if the
-    // recipient.txt write throws (a pre-existing dir at that path, ENOSPC, a permission
-    // error, a concurrent process, ...) identity.age is already on disk but keygen()
-    // still rejects. This call is BEFORE the rollback-tracking try below even starts
+    // keygen() -> keygenAt() (keys.ts) checks identity.age AND recipient.txt for
+    // pre-existence UP FRONT, before writing either — so a stray pre-existing
+    // recipient.txt (or a directory sitting at that path) now refuses cleanly before
+    // identity.age is ever touched (#121). identity.age can still land on disk before
+    // recipient.txt's own write fails for a reason the pre-flight check can't catch
+    // (ENOSPC, a permission error, a concurrent process racing past the check, ...) —
+    // this call is BEFORE the rollback-tracking try below even starts
     // (deliberately — everything inside that try is retry-safe via the catch further
     // down), so without this its own try/catch a partial keygen here would leave an
     // orphaned identity.age that nothing ever cleans up: every future `init` on this
@@ -385,12 +388,13 @@ export async function init(_o: CliOptions): Promise<void> {
         // nothing stops them from pointing it at a directory that already holds a REAL,
         // previously-set-up backup identity (e.g. re-running this step against their
         // existing offline backup location). keygenAt() itself already refuses to
-        // overwrite an existing identityPath (see keys.ts) and throws BEFORE writing
-        // anything in that case — so an unconditional rm here would delete that real,
-        // pre-existing backup identity for no reason other than "keygenAt declined to
-        // clobber it", which is strictly worse than the partial-write hazard this catch
-        // exists to fix (a blocked retry vs. permanent, unrecoverable loss of a real
-        // key). Check existence of each target BEFORE calling keygenAt, and only remove
+        // overwrite an existing identityPath OR recipientPath (see keys.ts, #121) and
+        // throws BEFORE writing anything in that case — so an unconditional rm here
+        // would delete that real, pre-existing backup identity for no reason other
+        // than "keygenAt declined to clobber it", which is strictly worse than the
+        // partial-write hazard this catch exists to fix (a blocked retry vs. permanent,
+        // unrecoverable loss of a real key). Check existence of each target BEFORE
+        // calling keygenAt, and only remove
         // whichever ones did NOT already exist beforehand.
         const identityPreExisted = await exists(identityPath);
         const recipientPreExisted = await exists(recipientPath);

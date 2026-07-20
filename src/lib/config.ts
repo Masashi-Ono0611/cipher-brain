@@ -5,13 +5,16 @@ import { join } from 'node:path';
 export const HOME = process.env.CIPHER_BRAIN_HOME || join(homedir(), '.cipher-brain');
 // #64: age runs in-process (typage, bundled) — the external-binary overrides are obsolete.
 for (const v of ['CIPHER_BRAIN_AGE', 'CIPHER_BRAIN_AGE_KEYGEN']) {
-  if (process.env[v]) console.error(`cipher-brain: ${v} is deprecated and ignored — age is bundled in-process (typage); no external age binary is used`);
+  if (process.env[v])
+    console.error(
+      `cipher-brain: ${v} is deprecated and ignored — age is bundled in-process (typage); no external age binary is used`,
+    );
 }
 export const PG_BIN = process.env.CIPHER_BRAIN_PG_BIN || ''; // dir holding pg_dump/pg_restore; '' => PATH
 export const pgTool = (name: string): string => (PG_BIN ? join(PG_BIN, name) : name);
 
-export const IDENTITY = join(HOME, 'identity.age');     // private key — required to restore
-export const RECIPIENT = join(HOME, 'recipient.txt');   // public key — all snapshot needs
+export const IDENTITY = join(HOME, 'identity.age'); // private key — required to restore
+export const RECIPIENT = join(HOME, 'recipient.txt'); // public key — all snapshot needs
 
 export const AGE_MAGIC = 'age-encryption.org/v1';
 export const AGE_ARMOR_HEADER = '-----BEGIN AGE ENCRYPTED FILE-----';

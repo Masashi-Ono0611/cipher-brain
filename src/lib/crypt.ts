@@ -103,7 +103,10 @@ export async function loadIdentities(path: string): Promise<string[]> {
   } else {
     text = raw.toString('utf8');
   }
-  const ids = text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  const ids = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
   if (ids.length === 0) throw new Error(`no identities found in ${path}`);
   return ids;
 }
@@ -138,19 +141,37 @@ function promptHidden(question: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const { stdin } = process;
     if (!stdin.isTTY) {
-      return reject(new Error('a passphrase is required but stdin is not a TTY — set CIPHER_BRAIN_PASSPHRASE for non-interactive use'));
+      return reject(
+        new Error(
+          'a passphrase is required but stdin is not a TTY — set CIPHER_BRAIN_PASSPHRASE for non-interactive use',
+        ),
+      );
     }
     process.stderr.write(question); // prompt on stderr so stdout stays machine-readable
     const wasRaw = stdin.isRaw;
     stdin.setRawMode(true);
     stdin.resume();
     let buf = '';
-    const cleanup = () => { stdin.off('data', onData); stdin.setRawMode(wasRaw); stdin.pause(); process.stderr.write('\n'); };
+    const cleanup = () => {
+      stdin.off('data', onData);
+      stdin.setRawMode(wasRaw);
+      stdin.pause();
+      process.stderr.write('\n');
+    };
     const onData = (d: Buffer) => {
       for (const ch of d.toString('utf8')) {
-        if (ch === '') { cleanup(); return reject(new Error('interrupted')); } // Ctrl-C (raw mode eats the signal)
-        if (ch === '\r' || ch === '\n') { cleanup(); return resolve(buf); }
-        if (ch === '' || ch === '\b') { buf = buf.slice(0, -1); continue; }
+        if (ch === '') {
+          cleanup();
+          return reject(new Error('interrupted'));
+        } // Ctrl-C (raw mode eats the signal)
+        if (ch === '\r' || ch === '\n') {
+          cleanup();
+          return resolve(buf);
+        }
+        if (ch === '' || ch === '\b') {
+          buf = buf.slice(0, -1);
+          continue;
+        }
         buf += ch;
       }
     };
@@ -170,32 +191,52 @@ export interface PipelineOpts {
 // stdout, which the encrypter would happily finalize into VALID ciphertext of a
 // truncated archive — gating on the exit code turns that into a hard failure (the
 // caller then removes the .part).
-export function encryptToFile(encrypter: Encrypter, prodCmd: string, prodArgs: string[], outPath: string, { timeoutMs }: PipelineOpts = {}): Promise<void> {
+export function encryptToFile(
+  encrypter: Encrypter,
+  prodCmd: string,
+  prodArgs: string[],
+  outPath: string,
+  { timeoutMs }: PipelineOpts = {},
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const prod = spawn(prodCmd, prodArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
     ACTIVE_CHILDREN.add(prod);
     const out = createWriteStream(outPath);
-    let pErr = '', settled = false, pipelineDone = false, prodClosed = false;
+    let pErr = '',
+      settled = false,
+      pipelineDone = false,
+      prodClosed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const childExit = () => new Promise<void>((r) => {
-      if (prod.exitCode !== null || prod.signalCode !== null) return r();
-      prod.once('close', () => r());
-    });
+    const childExit = () =>
+      new Promise<void>((r) => {
+        if (prod.exitCode !== null || prod.signalCode !== null) return r();
+        prod.once('close', () => r());
+      });
     const fail = (e: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { prod.kill('SIGTERM'); } catch {}
+      try {
+        prod.kill('SIGTERM');
+      } catch {}
       // escalate: a SIGTERM-ignoring child must not linger holding the pipeline open
-      killTimer = setTimeout(() => { try { prod.kill('SIGKILL'); } catch {} }, 2000);
+      killTimer = setTimeout(() => {
+        try {
+          prod.kill('SIGKILL');
+        } catch {}
+      }, 2000);
       killTimer.unref?.();
       prod.stdout?.destroy(); // unblock the encrypt reader so its promise settles too
       out.destroy();
       // Reject ONLY after the child is dead — the caller's catch/finally (rm of
       // .part / stage) must never race a still-writing tar (same discipline the
       // old pipe2() had; the signal guard covers signals in the meantime).
-      childExit().then(() => { clearTimeout(killTimer); ACTIVE_CHILDREN.delete(prod); reject(e); });
+      childExit().then(() => {
+        clearTimeout(killTimer);
+        ACTIVE_CHILDREN.delete(prod);
+        reject(e);
+      });
     };
     const maybeDone = () => {
       if (settled || !pipelineDone || !prodClosed) return;
@@ -204,7 +245,8 @@ export function encryptToFile(encrypter: Encrypter, prodCmd: string, prodArgs: s
       ACTIVE_CHILDREN.delete(prod);
       resolve();
     };
-    if (timeoutMs) timer = setTimeout(() => fail(new Error(`${prodCmd}|age pipeline timed out after ${timeoutMs}ms`)), timeoutMs);
+    if (timeoutMs)
+      timer = setTimeout(() => fail(new Error(`${prodCmd}|age pipeline timed out after ${timeoutMs}ms`)), timeoutMs);
     prod.stderr?.on('data', (d) => (pErr += d));
     prod.on('error', fail);
     prod.on('close', (code, signal) => {
@@ -217,7 +259,10 @@ export function encryptToFile(encrypter: Encrypter, prodCmd: string, prodArgs: s
       const ct = await encrypter.encrypt(Readable.toWeb(prod.stdout) as ReadableStream<Uint8Array>);
       await pipeline(Readable.fromWeb(ct as never), out);
     })().then(
-      () => { pipelineDone = true; maybeDone(); },
+      () => {
+        pipelineDone = true;
+        maybeDone();
+      },
       (e: unknown) => fail(new Error(`age encrypt failed: ${errMsg(e)}`)),
     );
   });
@@ -228,27 +273,47 @@ export function encryptToFile(encrypter: Encrypter, prodCmd: string, prodArgs: s
 // truncated or corrupt payload errors mid-stream and the whole call rejects even if
 // tar exited 0 on the resulting EOF — a partial extraction must never look like
 // success. Success = decrypt stream fully delivered AND the consumer exited 0.
-export function decryptToChild(decrypter: Decrypter, inPath: string, consCmd: string, consArgs: string[], { consStdout = 'inherit', timeoutMs }: PipelineOpts & { consStdout?: StdioNull | StdioPipe } = {}): Promise<void> {
+export function decryptToChild(
+  decrypter: Decrypter,
+  inPath: string,
+  consCmd: string,
+  consArgs: string[],
+  { consStdout = 'inherit', timeoutMs }: PipelineOpts & { consStdout?: StdioNull | StdioPipe } = {},
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const cons = spawn(consCmd, consArgs, { stdio: ['pipe', consStdout, 'pipe'] });
     ACTIVE_CHILDREN.add(cons);
     const src = createReadStream(inPath);
-    let cErr = '', settled = false, pipelineDone = false, consClosed = false;
+    let cErr = '',
+      settled = false,
+      pipelineDone = false,
+      consClosed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const childExit = () => new Promise<void>((r) => {
-      if (cons.exitCode !== null || cons.signalCode !== null) return r();
-      cons.once('close', () => r());
-    });
+    const childExit = () =>
+      new Promise<void>((r) => {
+        if (cons.exitCode !== null || cons.signalCode !== null) return r();
+        cons.once('close', () => r());
+      });
     const fail = (e: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { cons.kill('SIGTERM'); } catch {}
-      killTimer = setTimeout(() => { try { cons.kill('SIGKILL'); } catch {} }, 2000);
+      try {
+        cons.kill('SIGTERM');
+      } catch {}
+      killTimer = setTimeout(() => {
+        try {
+          cons.kill('SIGKILL');
+        } catch {}
+      }, 2000);
       killTimer.unref?.();
       src.destroy();
-      childExit().then(() => { clearTimeout(killTimer); ACTIVE_CHILDREN.delete(cons); reject(e); });
+      childExit().then(() => {
+        clearTimeout(killTimer);
+        ACTIVE_CHILDREN.delete(cons);
+        reject(e);
+      });
     };
     const maybeDone = () => {
       if (settled || !pipelineDone || !consClosed) return;
@@ -257,7 +322,8 @@ export function decryptToChild(decrypter: Decrypter, inPath: string, consCmd: st
       ACTIVE_CHILDREN.delete(cons);
       resolve();
     };
-    if (timeoutMs) timer = setTimeout(() => fail(new Error(`age|${consCmd} pipeline timed out after ${timeoutMs}ms`)), timeoutMs);
+    if (timeoutMs)
+      timer = setTimeout(() => fail(new Error(`age|${consCmd} pipeline timed out after ${timeoutMs}ms`)), timeoutMs);
     cons.stderr?.on('data', (d) => (cErr += d));
     cons.on('error', fail);
     // EPIPE when the consumer dies early — swallow on the pipe end so the real
@@ -273,7 +339,10 @@ export function decryptToChild(decrypter: Decrypter, inPath: string, consCmd: st
       if (!cons.stdin) throw new Error(`${consCmd}: no stdin stream`);
       await pipeline(Readable.fromWeb(pt as never), cons.stdin);
     })().then(
-      () => { pipelineDone = true; maybeDone(); },
+      () => {
+        pipelineDone = true;
+        maybeDone();
+      },
       (e: unknown) => fail(new Error(`age decrypt failed: ${errMsg(e)}`)),
     );
   });

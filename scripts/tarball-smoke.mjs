@@ -18,39 +18,39 @@
 //
 // Exits 0 on success, 1 on first failure with stderr context.
 
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const PKG = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'))
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PKG = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
 
-const log = (msg) => process.stdout.write(`  ${msg}\n`)
+const log = (msg) => process.stdout.write(`  ${msg}\n`);
 const fail = (msg) => {
-  process.stderr.write(`tarball smoke FAILED: ${msg}\n`)
-  process.exit(1)
-}
+  process.stderr.write(`tarball smoke FAILED: ${msg}\n`);
+  process.exit(1);
+};
 
-let sandbox = ''
-let tarballPath = ''
+let sandbox = '';
+let tarballPath = '';
 
 function cleanup() {
   if (sandbox && fs.existsSync(sandbox)) {
-    fs.rmSync(sandbox, { recursive: true, force: true })
+    fs.rmSync(sandbox, { recursive: true, force: true });
   }
   if (tarballPath && fs.existsSync(tarballPath)) {
-    fs.unlinkSync(tarballPath)
+    fs.unlinkSync(tarballPath);
   }
 }
-process.on('exit', cleanup)
-process.on('SIGINT', () => process.exit(130))
-process.on('SIGTERM', () => process.exit(143))
+process.on('exit', cleanup);
+process.on('SIGINT', () => process.exit(130));
+process.on('SIGTERM', () => process.exit(143));
 
 // ─── 1. npm pack + packed-file-list assertions ────────────────────────────
-log(`packing ${PKG.name}@${PKG.version}…`)
-let packedFiles = []
+log(`packing ${PKG.name}@${PKG.version}…`);
+let packedFiles = [];
 try {
   // --json is machine-parseable and includes the full packed file list, so
   // the content assertions need no tarball extraction.
@@ -58,20 +58,20 @@ try {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  const parsed = JSON.parse(json)
-  const tarballName = parsed[0]?.filename
-  if (!tarballName) fail('npm pack --json returned no filename')
-  tarballPath = path.join(REPO_ROOT, tarballName)
-  if (!fs.existsSync(tarballPath)) fail(`tarball not at ${tarballPath}`)
-  packedFiles = (parsed[0]?.files ?? []).map((f) => f.path)
-  if (packedFiles.length === 0) fail('npm pack --json returned an empty file list')
+  });
+  const parsed = JSON.parse(json);
+  const tarballName = parsed[0]?.filename;
+  if (!tarballName) fail('npm pack --json returned no filename');
+  tarballPath = path.join(REPO_ROOT, tarballName);
+  if (!fs.existsSync(tarballPath)) fail(`tarball not at ${tarballPath}`);
+  packedFiles = (parsed[0]?.files ?? []).map((f) => f.path);
+  if (packedFiles.length === 0) fail('npm pack --json returned an empty file list');
 } catch (err) {
-  fail(`npm pack failed: ${err.message}`)
+  fail(`npm pack failed: ${err.message}`);
 }
 
 for (const rel of ['package.json', 'README.md', 'dist/cli.mjs', 'dist/mcp.mjs']) {
-  if (!packedFiles.includes(rel)) fail(`expected file not in tarball: ${rel}`)
+  if (!packedFiles.includes(rel)) fail(`expected file not in tarball: ${rel}`);
 }
 const forbidden = packedFiles.filter(
   (p) =>
@@ -82,107 +82,107 @@ const forbidden = packedFiles.filter(
     /identity/i.test(p) ||
     /wallet/i.test(p) ||
     p.endsWith('.jwk'),
-)
-if (forbidden.length > 0) fail(`tarball ships files it must not: ${forbidden.join(', ')}`)
-log(`${packedFiles.length} packed files; dist/ present, no src/scripts/bin/key material`)
+);
+if (forbidden.length > 0) fail(`tarball ships files it must not: ${forbidden.join(', ')}`);
+log(`${packedFiles.length} packed files; dist/ present, no src/scripts/bin/key material`);
 
 // ─── 2. Install into a fresh sandbox ─────────────────────────────────────
-sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-tarball-smoke-'))
-log(`installing into ${sandbox}…`)
+sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-tarball-smoke-'));
+log(`installing into ${sandbox}…`);
 fs.writeFileSync(
   path.join(sandbox, 'package.json'),
   JSON.stringify({ name: 'cb-smoke', version: '0.0.0', private: true }, null, 2),
-)
+);
 const install = spawnSync('npm', ['install', tarballPath], {
   cwd: sandbox,
   encoding: 'utf8',
   stdio: 'pipe',
-})
+});
 if (install.status !== 0) {
   fail(
     `npm install failed (status=${install.status})\n` +
       `stdout: ${install.stdout?.slice(0, 500)}\n` +
       `stderr: ${install.stderr?.slice(0, 500)}`,
-  )
+  );
 }
-const installedRoot = path.join(sandbox, 'node_modules', PKG.name)
+const installedRoot = path.join(sandbox, 'node_modules', PKG.name);
 for (const rel of ['dist/cli.mjs', 'dist/mcp.mjs']) {
-  if (!fs.existsSync(path.join(installedRoot, rel))) fail(`installed package missing ${rel}`)
+  if (!fs.existsSync(path.join(installedRoot, rel))) fail(`installed package missing ${rel}`);
 }
 for (const rel of ['src', 'scripts', 'bin']) {
-  if (fs.existsSync(path.join(installedRoot, rel))) fail(`installed package must not contain ${rel}/`)
+  if (fs.existsSync(path.join(installedRoot, rel))) fail(`installed package must not contain ${rel}/`);
 }
 
 // ─── 3. CLI bin: --help + a real keygen in a temp CIPHER_BRAIN_HOME ──────
-log('running installed CLI bin (--help + keygen)…')
-const cliBin = path.join(sandbox, 'node_modules', '.bin', 'cipher-brain')
-if (!fs.existsSync(cliBin)) fail(`cli bin not at ${cliBin}`)
-const help = spawnSync(process.execPath, [cliBin, '--help'], { encoding: 'utf8' })
-if (help.status !== 0) fail(`cipher-brain --help failed (status=${help.status}): ${help.stderr}`)
-if (help.stdout.trim().length === 0) fail('cipher-brain --help printed nothing')
+log('running installed CLI bin (--help + keygen)…');
+const cliBin = path.join(sandbox, 'node_modules', '.bin', 'cipher-brain');
+if (!fs.existsSync(cliBin)) fail(`cli bin not at ${cliBin}`);
+const help = spawnSync(process.execPath, [cliBin, '--help'], { encoding: 'utf8' });
+if (help.status !== 0) fail(`cipher-brain --help failed (status=${help.status}): ${help.stderr}`);
+if (help.stdout.trim().length === 0) fail('cipher-brain --help printed nothing');
 for (const word of ['keygen', 'snapshot', 'restore', 'verify', 'push', 'pull']) {
-  if (!help.stdout.includes(word)) fail(`cipher-brain --help missing command: ${word}`)
+  if (!help.stdout.includes(word)) fail(`cipher-brain --help missing command: ${word}`);
 }
 
-const cbHome = path.join(sandbox, 'cb-home')
+const cbHome = path.join(sandbox, 'cb-home');
 const keygen = spawnSync(process.execPath, [cliBin, 'keygen'], {
   encoding: 'utf8',
   env: { ...process.env, CIPHER_BRAIN_HOME: cbHome },
-})
+});
 if (keygen.status !== 0) {
-  fail(`cipher-brain keygen failed (status=${keygen.status}): ${keygen.stderr}`)
+  fail(`cipher-brain keygen failed (status=${keygen.status}): ${keygen.stderr}`);
 }
-const recipientPath = path.join(cbHome, 'recipient.txt')
-if (!fs.existsSync(recipientPath)) fail(`keygen did not create ${recipientPath}`)
-const recipient = fs.readFileSync(recipientPath, 'utf8').trim()
-if (!recipient.startsWith('age1')) fail(`recipient does not look like an age key: ${recipient.slice(0, 20)}`)
-log(`keygen OK (recipient ${recipient.slice(0, 12)}…)`)
+const recipientPath = path.join(cbHome, 'recipient.txt');
+if (!fs.existsSync(recipientPath)) fail(`keygen did not create ${recipientPath}`);
+const recipient = fs.readFileSync(recipientPath, 'utf8').trim();
+if (!recipient.startsWith('age1')) fail(`recipient does not look like an age key: ${recipient.slice(0, 20)}`);
+log(`keygen OK (recipient ${recipient.slice(0, 12)}…)`);
 
 // ─── 4. MCP bin over stdio: initialize + tools/list ──────────────────────
-log('driving installed MCP bin over stdio (initialize + tools/list)…')
-const mcpBin = path.join(sandbox, 'node_modules', '.bin', 'cipher-brain-mcp')
-if (!fs.existsSync(mcpBin)) fail(`mcp bin not at ${mcpBin}`)
+log('driving installed MCP bin over stdio (initialize + tools/list)…');
+const mcpBin = path.join(sandbox, 'node_modules', '.bin', 'cipher-brain-mcp');
+if (!fs.existsSync(mcpBin)) fail(`mcp bin not at ${mcpBin}`);
 
-const EXPECTED_TOOLS = ['estimate_cost', 'last_snapshot_status', 'snapshot_now', 'verify_restore']
-const TIMEOUT_MS = 30_000
+const EXPECTED_TOOLS = ['estimate_cost', 'last_snapshot_status', 'snapshot_now', 'verify_restore'];
+const TIMEOUT_MS = 30_000;
 
 const parseFrames = (buf) => {
-  const out = []
+  const out = [];
   for (const line of buf.split('\n')) {
-    const s = line.trim()
-    if (!s) continue
+    const s = line.trim();
+    if (!s) continue;
     try {
-      out.push(JSON.parse(s))
+      out.push(JSON.parse(s));
     } catch {
       /* incomplete JSON line — ignore */
     }
   }
-  return out
-}
+  return out;
+};
 
 const mcp = spawn(process.execPath, [mcpBin], {
   stdio: ['pipe', 'pipe', 'pipe'],
   env: { ...process.env, CIPHER_BRAIN_HOME: cbHome },
-})
-let stdoutBuf = ''
-let stderrBuf = ''
+});
+let stdoutBuf = '';
+let stderrBuf = '';
 mcp.stdout.on('data', (d) => {
-  stdoutBuf += d.toString('utf8')
-})
+  stdoutBuf += d.toString('utf8');
+});
 mcp.stderr.on('data', (d) => {
-  stderrBuf += d.toString('utf8')
-})
+  stderrBuf += d.toString('utf8');
+});
 
-const send = (msg) => mcp.stdin.write(JSON.stringify(msg) + '\n')
-const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+const send = (msg) => mcp.stdin.write(JSON.stringify(msg) + '\n');
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(id) {
-  const deadline = Date.now() + TIMEOUT_MS
+  const deadline = Date.now() + TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const frame = parseFrames(stdoutBuf).find((f) => f.id === id)
-    if (frame) return frame
-    await wait(100)
+    const frame = parseFrames(stdoutBuf).find((f) => f.id === id);
+    if (frame) return frame;
+    await wait(100);
   }
-  fail(`no MCP response for id=${id} within ${TIMEOUT_MS}ms; stderr=${stderrBuf.slice(-500)}`)
+  fail(`no MCP response for id=${id} within ${TIMEOUT_MS}ms; stderr=${stderrBuf.slice(-500)}`);
 }
 
 try {
@@ -195,28 +195,28 @@ try {
       capabilities: {},
       clientInfo: { name: 'tarball-smoke', version: '0.0.0' },
     },
-  })
-  const init = await waitFor(1)
+  });
+  const init = await waitFor(1);
   if (init.result?.serverInfo?.name !== 'cipher-brain-mcp') {
-    fail(`initialize.serverInfo unexpected: ${JSON.stringify(init.result?.serverInfo)}`)
+    fail(`initialize.serverInfo unexpected: ${JSON.stringify(init.result?.serverInfo)}`);
   }
-  send({ jsonrpc: '2.0', method: 'notifications/initialized' })
-  await wait(100)
+  send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  await wait(100);
 
-  send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
-  const list = await waitFor(2)
-  const names = (list.result?.tools ?? []).map((t) => t.name).sort()
+  send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  const list = await waitFor(2);
+  const names = (list.result?.tools ?? []).map((t) => t.name).sort();
   if (JSON.stringify(names) !== JSON.stringify(EXPECTED_TOOLS)) {
-    fail(`tools/list mismatch: expected [${EXPECTED_TOOLS.join(', ')}], got [${names.join(', ')}]`)
+    fail(`tools/list mismatch: expected [${EXPECTED_TOOLS.join(', ')}], got [${names.join(', ')}]`);
   }
 } finally {
   try {
-    mcp.stdin.end()
+    mcp.stdin.end();
   } catch {
     /* ignore */
   }
   try {
-    mcp.kill()
+    mcp.kill();
   } catch {
     /* ignore */
   }
@@ -225,4 +225,4 @@ try {
 process.stdout.write(
   `tarball smoke OK — ${PKG.name}@${PKG.version}; ${packedFiles.length} packed files, ` +
     `cli --help + keygen + mcp tools=[${EXPECTED_TOOLS.join(', ')}] verified\n`,
-)
+);

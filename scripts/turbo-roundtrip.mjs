@@ -19,10 +19,16 @@ const BIN = join(HERE, '..', 'bin', 'cipher-brain.mjs');
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 let failed = false;
 const pass = (m) => console.log(`[PASS] ${m}`);
-const fail = (m) => { console.log(`[FAIL] ${m}`); failed = true; };
+const fail = (m) => {
+  console.log(`[FAIL] ${m}`);
+  failed = true;
+};
 
 const wallet = process.env.CIPHER_BRAIN_AR_WALLET;
-if (!wallet) { console.log('set CIPHER_BRAIN_AR_WALLET to a JWK (e.g. ~/.cipher-brain/ar-demo-wallet.json)'); process.exit(2); }
+if (!wallet) {
+  console.log('set CIPHER_BRAIN_AR_WALLET to a JWK (e.g. ~/.cipher-brain/ar-demo-wallet.json)');
+  process.exit(2);
+}
 
 const tmp = await mkdtemp(join(tmpdir(), 'cb-turbo-'));
 const env = { ...process.env, CIPHER_BRAIN_HOME: join(tmp, 'keys'), CIPHER_BRAIN_AR_WALLET: wallet };
@@ -50,13 +56,21 @@ try {
   console.log('· pulling back via --backend turbo from a public gateway, NO wallet (waiting for propagation)…');
   const pullEnv = { ...env };
   delete pullEnv.CIPHER_BRAIN_AR_WALLET; // a turbo PULL must need no wallet (fresh-machine recovery, runbook §3)
-  const rp = spawnSync('node', [BIN, 'pull', '--locator', id, '--backend', 'turbo', '--out', join(tmp, 'got.age'), '--wait', '720'], { env: pullEnv, encoding: 'utf8' });
+  const rp = spawnSync(
+    'node',
+    [BIN, 'pull', '--locator', id, '--backend', 'turbo', '--out', join(tmp, 'got.age'), '--wait', '720'],
+    { env: pullEnv, encoding: 'utf8' },
+  );
   if (rp.status !== 0) {
     fail(`pull failed: ${(rp.stderr || '').slice(-300)}`);
   } else {
     const got = await readFile(join(tmp, 'got.age'));
-    sha(got) === sha(cipher) ? pass('no-wallet pull: bytes == uploaded ciphertext (byte-identical)') : fail('pulled bytes differ');
-    cb('verify', '--in', join(tmp, 'got.age')).includes('VERDICT: PASS') ? pass('decrypts with the identity (VERDICT PASS)') : fail('verify did not pass');
+    sha(got) === sha(cipher)
+      ? pass('no-wallet pull: bytes == uploaded ciphertext (byte-identical)')
+      : fail('pulled bytes differ');
+    cb('verify', '--in', join(tmp, 'got.age')).includes('VERDICT: PASS')
+      ? pass('decrypts with the identity (VERDICT PASS)')
+      : fail('verify did not pass');
   }
 } catch (e) {
   fail(`exception: ${e.message}`);
@@ -65,5 +79,7 @@ try {
 }
 
 console.log('');
-console.log(failed ? 'TURBO ROUND-TRIP: FAIL' : 'TURBO ROUND-TRIP: PASS (real free Turbo upload → public-gateway pull → decrypt)');
+console.log(
+  failed ? 'TURBO ROUND-TRIP: FAIL' : 'TURBO ROUND-TRIP: PASS (real free Turbo upload → public-gateway pull → decrypt)',
+);
 process.exit(failed ? 1 : 0);

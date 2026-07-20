@@ -24,26 +24,25 @@
 //     — stay external: bundling them would break the documented "a gateway pull
 //     needs no npm dependency" recovery property (and the selftest that proves it).
 
-import { readFileSync, rmSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { readFileSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const dist = join(root, 'dist')
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const dist = join(root, 'dist');
 
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
-  dependencies?: Record<string, string>
-  peerDependencies?: Record<string, string>
-}
+  dependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+};
 
-const INLINE = new Set(['age-encryption', '@modelcontextprotocol/sdk'])
+const INLINE = new Set(['age-encryption', '@modelcontextprotocol/sdk']);
 
-const external = [
-  ...Object.keys(pkg.dependencies ?? {}),
-  ...Object.keys(pkg.peerDependencies ?? {}),
-].filter((d) => !INLINE.has(d))
+const external = [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.peerDependencies ?? {})].filter(
+  (d) => !INLINE.has(d),
+);
 
-rmSync(dist, { recursive: true, force: true })
+rmSync(dist, { recursive: true, force: true });
 const result = await Bun.build({
   entrypoints: [join(root, 'src/cli.ts'), join(root, 'src/mcp.ts')],
   outdir: dist,
@@ -52,11 +51,11 @@ const result = await Bun.build({
   external,
   naming: '[dir]/[name].mjs', // force the OUTPUT extension to .mjs (Bun defaults .ts sources to .js too)
   banner: '#!/usr/bin/env node',
-})
+});
 if (!result.success) {
-  for (const message of result.logs) console.error(message)
-  process.exit(1)
+  for (const message of result.logs) console.error(message);
+  process.exit(1);
 }
 // stderr, not stdout: this also runs as `prepack`, and `npm pack --json`
 // consumers parse stdout as JSON — a stdout status line would corrupt it.
-console.error(`✓ bun build → dist/ (${result.outputs.length} files, ${external.length} externals)`)
+console.error(`✓ bun build → dist/ (${result.outputs.length} files, ${external.length} externals)`);

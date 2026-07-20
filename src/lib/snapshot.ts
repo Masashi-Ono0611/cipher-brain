@@ -30,7 +30,8 @@ import type { CliOptions } from './types.js';
 // (a later run sees EEXIST and refuses with the same clobberErr, an operator can `rm`
 // the empty file and retry) rather than the silent, undetectable clobber this fix closes.
 async function promoteSnapshot(part: string, out: string): Promise<void> {
-  const clobberErr = () => new Error(`${out} already exists — refusing to overwrite a prior snapshot (move it aside or choose a new --out)`);
+  const clobberErr = () =>
+    new Error(`${out} already exists — refusing to overwrite a prior snapshot (move it aside or choose a new --out)`);
   try {
     await link(part, out);
   } catch (e) {
@@ -49,7 +50,11 @@ async function promoteSnapshot(part: string, out: string): Promise<void> {
       } catch (renameErr) {
         // best-effort: undo the placeholder create so a retry doesn't see a false
         // EEXIST; swallow any cleanup error so it never masks the real renameErr.
-        try { await rm(out, { force: true }); } catch { /* ignore */ }
+        try {
+          await rm(out, { force: true });
+        } catch {
+          /* ignore */
+        }
         throw renameErr;
       }
       return;
@@ -149,12 +154,16 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // (see profiles.ts) staged exactly like explicit --dir flags. Profile paths
   // come first; any extra --dir flags the user passed are appended after them.
   if (o.profile) o.dirs = [...(await resolveProfilePaths(o)), ...o.dirs];
-  if (!o.pg && o.dirs.length === 0) throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
+  if (!o.pg && o.dirs.length === 0)
+    throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
   // No-clobber: refuse to overwrite an existing snapshot (this is a backup tool — a
   // silent overwrite could destroy a prior, possibly only, copy of the brain). The old
   // `age -o o.out` write left this to age's version-dependent overwrite policy; the
   // atomic rename below would ALWAYS clobber, so enforce the safe behavior explicitly.
-  if (await exists(o.out)) throw new Error(`${o.out} already exists — refusing to overwrite a prior snapshot (move it aside or choose a new --out)`);
+  if (await exists(o.out))
+    throw new Error(
+      `${o.out} already exists — refusing to overwrite a prior snapshot (move it aside or choose a new --out)`,
+    );
   // Fail-fast (#109) on a bad --out PARENT directory (a typo'd path, an unwritable
   // mount) HERE — before pg_dump / --dir tar+extract+digest work below, which can take
   // minutes for a large brain. Without this, the bad path only surfaces once
@@ -184,7 +193,9 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // plaintext is staged or a .part is opened — so a refused run leaves nothing behind.
   const recipientList = [...entriesByRec.values()].flat();
   if (recipientList.length === 0) {
-    throw new Error(`recipient file(s) ${recs.join(', ')} resolved to ZERO recipients (only blank/comment lines?) — refusing to snapshot: encrypting to an empty recipient list would create a snapshot NO identity can ever decrypt`);
+    throw new Error(
+      `recipient file(s) ${recs.join(', ')} resolved to ZERO recipients (only blank/comment lines?) — refusing to snapshot: encrypting to an empty recipient list would create a snapshot NO identity can ever decrypt`,
+    );
   }
 
   // Recipient pin (opt-in): fail-fast if any effective recipient is not allowlisted,
@@ -198,18 +209,27 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // silently treated as "no pin" (which would defeat the whole point of the pin).
   if (PIN_RECIPIENTS !== undefined) {
     if (PIN_RECIPIENTS === '') {
-      throw new Error('CIPHER_BRAIN_PIN_RECIPIENTS is set but empty — refusing to snapshot (an explicitly empty pin looks like a misconfiguration; unset the variable entirely to run without an allowlist)');
+      throw new Error(
+        'CIPHER_BRAIN_PIN_RECIPIENTS is set but empty — refusing to snapshot (an explicitly empty pin looks like a misconfiguration; unset the variable entirely to run without an allowlist)',
+      );
     }
     const allowed = await resolvePinnedRecipients(PIN_RECIPIENTS);
-    if (allowed.size === 0) throw new Error('CIPHER_BRAIN_PIN_RECIPIENTS is set but lists no age1… pubkeys — refusing to snapshot');
+    if (allowed.size === 0)
+      throw new Error('CIPHER_BRAIN_PIN_RECIPIENTS is set but lists no age1… pubkeys — refusing to snapshot');
     for (const r of recs) {
       const entries = entriesByRec.get(r) ?? [];
-      if (entries.length === 0) throw new Error(`recipient "${r}" has no recipients to check against CIPHER_BRAIN_PIN_RECIPIENTS (refusing to snapshot)`);
+      if (entries.length === 0)
+        throw new Error(
+          `recipient "${r}" has no recipients to check against CIPHER_BRAIN_PIN_RECIPIENTS (refusing to snapshot)`,
+        );
       for (const e of entries) {
         // Fail-closed: every entry must be an allowlisted age1… key. A non-age1
         // recipient (e.g. an injected `ssh-ed25519 …` line) can't be on the
         // age1-only allowlist, so it is rejected — which is the point.
-        if (!allowed.has(e)) throw new Error(`recipient "${e}" (via "${r}") is NOT in CIPHER_BRAIN_PIN_RECIPIENTS — refusing to snapshot (an unexpected recipient could decrypt your brain)`);
+        if (!allowed.has(e))
+          throw new Error(
+            `recipient "${e}" (via "${r}") is NOT in CIPHER_BRAIN_PIN_RECIPIENTS — refusing to snapshot (an unexpected recipient could decrypt your brain)`,
+          );
       }
     }
     console.error(`recipient pin OK: all recipient(s) are allowlisted`);
@@ -223,7 +243,9 @@ export async function snapshot(o: CliOptions): Promise<void> {
   const effectiveKeys = new Set<string>();
   for (const entries of entriesByRec.values()) for (const e of entries) effectiveKeys.add(e);
   if (effectiveKeys.size === 1) {
-    console.error('⚠  snapshot encrypted to a SINGLE recipient key — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.');
+    console.error(
+      '⚠  snapshot encrypted to a SINGLE recipient key — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.',
+    );
   }
 
   // Recipients fingerprint: sha256 over the SORTED, de-duplicated set of effective
@@ -263,7 +285,13 @@ export async function snapshot(o: CliOptions): Promise<void> {
       // be byte-stable across runs even for identical data (internal ordering, embedded
       // metadata), so DB sources will rarely trigger --skip-unchanged — that is
       // conservative (an unnecessary push, never a wrongly skipped one) and fine.
-      components.push({ name: 'db.dump', kind: 'pg_dump:custom', tables: o.tables.length ? o.tables : 'all', content_digest: await sha256(dumpPath), captured_at: new Date().toISOString() });
+      components.push({
+        name: 'db.dump',
+        kind: 'pg_dump:custom',
+        tables: o.tables.length ? o.tables : 'all',
+        content_digest: await sha256(dumpPath),
+        captured_at: new Date().toISOString(),
+      });
     }
     const usedNames = new Set<string>();
     for (const d of o.dirs) {
@@ -315,7 +343,13 @@ export async function snapshot(o: CliOptions): Promise<void> {
         // must not leak into the snapshot: the final encryptToFile below tars stage/. whole
         await rm(extractDir, { recursive: true, force: true });
       }
-      components.push({ name, kind, source: abs, content_digest: contentDigest, captured_at: new Date().toISOString() }); // skew vs the DB is now detectable on restore
+      components.push({
+        name,
+        kind,
+        source: abs,
+        content_digest: contentDigest,
+        captured_at: new Date().toISOString(),
+      }); // skew vs the DB is now detectable on restore
     }
     // Combined content digest = sha256 over each component's (declared identity, kind,
     // content_digest) joined in component order. Identity, not just bytes: hashing bare
@@ -328,7 +362,9 @@ export async function snapshot(o: CliOptions): Promise<void> {
     // path) — never anything volatile like mtime. Same content, same identity, same
     // component order → same digest, regardless of mtimes or the (ephemeral-file-key)
     // ciphertext bytes.
-    const contentDigest = hexOf(components.map((c) => `${c.source ?? c.name}\t${c.kind}\t${c.content_digest}`).join('\n') + '\n');
+    const contentDigest = hexOf(
+      components.map((c) => `${c.source ?? c.name}\t${c.kind}\t${c.content_digest}`).join('\n') + '\n',
+    );
     // manifest carries NO secrets — just what's inside (+ capture timestamps so a
     // DB↔files skew is detectable after the fact, + which --profile produced it,
     // if any), so restore is self-describing. recipients_fingerprint sits alongside
@@ -337,7 +373,20 @@ export async function snapshot(o: CliOptions): Promise<void> {
     // signal push --skip-unchanged folds in (see its definition above).
     await writeFile(
       join(stage, 'manifest.json'),
-      JSON.stringify({ tool: 'cipher-brain', schema: 1, host: hostname(), created_at: createdAt, content_digest: contentDigest, recipients_fingerprint: recipientsFingerprint, ...(o.profile ? { profile: o.profile } : {}), components }, null, 2) + '\n',
+      JSON.stringify(
+        {
+          tool: 'cipher-brain',
+          schema: 1,
+          host: hostname(),
+          created_at: createdAt,
+          content_digest: contentDigest,
+          recipients_fingerprint: recipientsFingerprint,
+          ...(o.profile ? { profile: o.profile } : {}),
+          components,
+        },
+        null,
+        2,
+      ) + '\n',
     );
     // tar the staged components into one stream, encrypt to all recipients (in-process
     // typage, streaming — bounded RSS at any snapshot size). Write to a PER-RUN-UNIQUE
@@ -369,7 +418,9 @@ export async function snapshot(o: CliOptions): Promise<void> {
     try {
       await writeFile(`${o.out}.digest`, contentDigest + '\n');
     } catch (e) {
-      console.error(`warning: could not write digest sidecar ${o.out}.digest (${errMsg(e)}) — push --skip-unchanged will not have a digest for this snapshot`);
+      console.error(
+        `warning: could not write digest sidecar ${o.out}.digest (${errMsg(e)}) — push --skip-unchanged will not have a digest for this snapshot`,
+      );
     }
     // Recipients fingerprint sidecar — the SEPARATE signal (#70 review round 2) that
     // push --skip-unchanged additionally requires to match before it will skip (see
@@ -379,7 +430,9 @@ export async function snapshot(o: CliOptions): Promise<void> {
     try {
       await writeFile(`${o.out}.recipients-fingerprint`, recipientsFingerprint + '\n');
     } catch (e) {
-      console.error(`warning: could not write recipients-fingerprint sidecar ${o.out}.recipients-fingerprint (${errMsg(e)}) — push --skip-unchanged will not have a recipients fingerprint for this snapshot`);
+      console.error(
+        `warning: could not write recipients-fingerprint sidecar ${o.out}.recipients-fingerprint (${errMsg(e)}) — push --skip-unchanged will not have a recipients fingerprint for this snapshot`,
+      );
     }
     const sz = (await stat(o.out)).size;
     console.log(`wrote ${o.out} (${fmtBytes(sz)}, encrypted to ${recs.length} recipient(s): ${recs.join(', ')})`);

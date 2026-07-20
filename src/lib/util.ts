@@ -3,7 +3,10 @@ import { access, stat } from 'node:fs/promises';
 import { createReadStream, constants as FS } from 'node:fs';
 import { createHash } from 'node:crypto';
 
-export const exists = (p: string): Promise<boolean> => access(p, FS.F_OK).then(() => true).catch(() => false);
+export const exists = (p: string): Promise<boolean> =>
+  access(p, FS.F_OK)
+    .then(() => true)
+    .catch(() => false);
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // Warn (don't refuse) if a secret-bearing key file is group/other-accessible. The age
@@ -14,15 +17,22 @@ export async function warnIfLooseKeyPerms(path: string, what: string): Promise<v
   try {
     const { mode } = await stat(path);
     if (mode & 0o077) {
-      process.stderr.write(`⚠  ${what} at ${path} is group/other-accessible (mode ${(mode & 0o777).toString(8)}); chmod 600 it — it is a secret.\n`);
+      process.stderr.write(
+        `⚠  ${what} at ${path} is group/other-accessible (mode ${(mode & 0o777).toString(8)}); chmod 600 it — it is a secret.\n`,
+      );
     }
-  } catch { /* unreadable / missing perms info — the caller's own read will surface real errors */ }
+  } catch {
+    /* unreadable / missing perms info — the caller's own read will surface real errors */
+  }
 }
 
 export function sha256(file: string): Promise<string> {
   return new Promise((res, rej) => {
     const h = createHash('sha256');
-    createReadStream(file).on('data', (d) => h.update(d)).on('end', () => res(h.digest('hex'))).on('error', rej);
+    createReadStream(file)
+      .on('data', (d) => h.update(d))
+      .on('end', () => res(h.digest('hex')))
+      .on('error', rej);
   });
 }
 
@@ -46,7 +56,10 @@ export function errMsg(e: unknown): string {
 export function fmtBytes(n: number): string {
   const u = ['B', 'KB', 'MB', 'GB'];
   let i = 0;
-  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  while (n >= 1024 && i < u.length - 1) {
+    n /= 1024;
+    i++;
+  }
   return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
 }
 
@@ -85,7 +98,9 @@ export function redactPgConn(conn: string): string {
     // password='a\'b c') — match any of these shapes rather than only \S+, which would
     // leave a trailing fragment of a quoted, space-containing secret unredacted.
     const secretVal = `(?:'(?:[^'\\\\]|\\\\.)*'|"(?:[^"\\\\]|\\\\.)*"|\\S+)`;
-    return conn.replace(/:\/\/([^:@/]+):[^@/]*@/, '://$1@').replace(new RegExp(`\\b(password|sslpassword)=${secretVal}`, 'gi'), '$1=REDACTED');
+    return conn
+      .replace(/:\/\/([^:@/]+):[^@/]*@/, '://$1@')
+      .replace(new RegExp(`\\b(password|sslpassword)=${secretVal}`, 'gi'), '$1=REDACTED');
   }
 }
 

@@ -46,16 +46,24 @@ export function turboBackend(): StorageBackend {
       // neither @ardrive/turbo-sdk nor a wallet — only an upload does.
       let TurboFactory: typeof import('@ardrive/turbo-sdk').TurboFactory;
       let ArweaveSigner: typeof import('@ardrive/turbo-sdk').ArweaveSigner;
-      try { ({ TurboFactory, ArweaveSigner } = await import('@ardrive/turbo-sdk')); }
-      catch (e) {
-        if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') throw new Error('turbo backend needs the `@ardrive/turbo-sdk` package — run: npm install @ardrive/turbo-sdk');
+      try {
+        ({ TurboFactory, ArweaveSigner } = await import('@ardrive/turbo-sdk'));
+      } catch (e) {
+        if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND')
+          throw new Error('turbo backend needs the `@ardrive/turbo-sdk` package — run: npm install @ardrive/turbo-sdk');
         throw e;
       }
-      if (!AR_WALLET) throw new Error('turbo put needs CIPHER_BRAIN_AR_WALLET (a JWK signer; uploads <100KB are free, larger spend Turbo Credits funded to its address)');
+      if (!AR_WALLET)
+        throw new Error(
+          'turbo put needs CIPHER_BRAIN_AR_WALLET (a JWK signer; uploads <100KB are free, larger spend Turbo Credits funded to its address)',
+        );
       await warnIfLooseKeyPerms(AR_WALLET, 'turbo JWK wallet (spend-capable bearer key)');
       let jwk: unknown;
-      try { jwk = JSON.parse(await readFile(AR_WALLET, 'utf8')); }
-      catch (e) { throw new Error(`turbo: cannot read JWK wallet at ${AR_WALLET}: ${errMsg(e)}`); }
+      try {
+        jwk = JSON.parse(await readFile(AR_WALLET, 'utf8'));
+      } catch (e) {
+        throw new Error(`turbo: cannot read JWK wallet at ${AR_WALLET}: ${errMsg(e)}`);
+      }
       const turbo = TurboFactory.authenticated({ signer: new ArweaveSigner(jwk) });
       const abs = resolve(file);
       const { size } = await stat(abs); // stream the file (don't buffer an ~850MB brain) and give Turbo its size
@@ -71,19 +79,27 @@ export function turboBackend(): StorageBackend {
           throw new Error(`turbo: getUploadCosts returned a malformed winc value: ${JSON.stringify(uploadWincStr)}`);
         }
         uploadWinc = BigInt(uploadWincStr);
-        process.stderr.write(`turbo: upload cost estimate: ${uploadWinc} winc (~${(Number(uploadWinc) / 1e12).toFixed(8)} AR, ${size} bytes)\n`);
+        process.stderr.write(
+          `turbo: upload cost estimate: ${uploadWinc} winc (~${(Number(uploadWinc) / 1e12).toFixed(8)} AR, ${size} bytes)\n`,
+        );
         // Human-readable USD approximation next to the native estimate (#70). arUsdRate
         // never throws (null on any failure), so a dead pricing endpoint can neither
         // block the push nor skip the CIPHER_BRAIN_MAX_SPEND cap check below.
         const rate = await arUsdRate();
         if (rate !== null) {
-          process.stderr.write(`turbo: approx cost: ${fmtBytes(size)} -> ${usdApprox(uploadWinc, rate)} (at ~$${rate.toFixed(2)}/AR; rate-dependent estimate, not a quote)\n`);
+          process.stderr.write(
+            `turbo: approx cost: ${fmtBytes(size)} -> ${usdApprox(uploadWinc, rate)} (at ~$${rate.toFixed(2)}/AR; rate-dependent estimate, not a quote)\n`,
+          );
         }
         try {
           const { winc: balWincStr } = await turbo.getBalance();
           const balWinc = BigInt(balWincStr);
-          process.stderr.write(`turbo: Turbo Credit balance: ${balWinc} winc (~${(Number(balWinc) / 1e12).toFixed(8)} AR)\n`);
-        } catch { /* paidBy wallet has no personal balance on this signer — non-fatal */ }
+          process.stderr.write(
+            `turbo: Turbo Credit balance: ${balWinc} winc (~${(Number(balWinc) / 1e12).toFixed(8)} AR)\n`,
+          );
+        } catch {
+          /* paidBy wallet has no personal balance on this signer — non-fatal */
+        }
       } catch (e) {
         // A cost-estimate failure (getUploadCosts reject, empty-array destructure, bad
         // BigInt conversion, ...) must NOT be treated as "proceed anyway" when a spend cap
@@ -91,7 +107,9 @@ export function turboBackend(): StorageBackend {
         // the cap the user set to protect their wallet (#105). Fail-closed here; only
         // fail-open (log + continue, pre-existing behavior) when no cap is in effect.
         if (AR_MAX_SPEND > 0n) {
-          throw new Error(`turbo: could not estimate upload cost (${errMsg(e)}) while CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} is set — aborting (fail-closed) because the spend cap cannot be verified; set CIPHER_BRAIN_MAX_SPEND=0 to disable the cap and upload uncapped`);
+          throw new Error(
+            `turbo: could not estimate upload cost (${errMsg(e)}) while CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} is set — aborting (fail-closed) because the spend cap cannot be verified; set CIPHER_BRAIN_MAX_SPEND=0 to disable the cap and upload uncapped`,
+          );
         }
         process.stderr.write(`turbo: could not estimate upload cost (${errMsg(e)}); proceeding\n`);
       }
@@ -103,10 +121,14 @@ export function turboBackend(): StorageBackend {
       // must not be able to silently reopen the fail-open hole this fix closes (#105).
       if (AR_MAX_SPEND > 0n) {
         if (uploadWinc === null) {
-          throw new Error('turbo: internal error — CIPHER_BRAIN_MAX_SPEND is set but no upload cost estimate is available; refusing to proceed uncapped');
+          throw new Error(
+            'turbo: internal error — CIPHER_BRAIN_MAX_SPEND is set but no upload cost estimate is available; refusing to proceed uncapped',
+          );
         }
         if (uploadWinc > AR_MAX_SPEND) {
-          throw new Error(`turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
+          throw new Error(
+            `turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`,
+          );
         }
       }
       // paidBy (x-paid-by header): when set, Turbo pays from a Credit Share Approval the
@@ -114,9 +136,17 @@ export function turboBackend(): StorageBackend {
       // CLI path when credits were bought on a wallet we can't sign with (e.g. MetaMask)
       // and shared to this JWK. Not URL-interpolated (header only), but sanity-check the
       // shape (Arweave/Ethereum/Solana address) to reject header-breaking input.
-      const dataItemOpts: { tags: { name: string; value: string }[]; paidBy?: string[] } = { tags: [{ name: 'App-Name', value: 'cipher-brain' }, { name: 'Content-Type', value: 'application/octet-stream' }] };
+      const dataItemOpts: { tags: { name: string; value: string }[]; paidBy?: string[] } = {
+        tags: [
+          { name: 'App-Name', value: 'cipher-brain' },
+          { name: 'Content-Type', value: 'application/octet-stream' },
+        ],
+      };
       if (AR_PAID_BY) {
-        if (!/^[A-Za-z0-9_-]{30,64}$/.test(AR_PAID_BY)) throw new Error(`turbo: CIPHER_BRAIN_AR_PAID_BY must be a plain wallet address (Arweave/Ethereum/Solana): ${AR_PAID_BY}`);
+        if (!/^[A-Za-z0-9_-]{30,64}$/.test(AR_PAID_BY))
+          throw new Error(
+            `turbo: CIPHER_BRAIN_AR_PAID_BY must be a plain wallet address (Arweave/Ethereum/Solana): ${AR_PAID_BY}`,
+          );
         dataItemOpts.paidBy = [AR_PAID_BY];
       }
       const res = await turbo.uploadFile({
@@ -124,7 +154,8 @@ export function turboBackend(): StorageBackend {
         fileSizeFactory: () => size,
         dataItemOpts,
       });
-      if (!res || !res.id) throw new Error(`turbo upload returned no data item id: ${JSON.stringify(res).slice(0, 200)}`);
+      if (!res || !res.id)
+        throw new Error(`turbo upload returned no data item id: ${JSON.stringify(res).slice(0, 200)}`);
       return res.id; // 43-char data item id — retrievable like any bundled item
     },
     // reads are identical to the arweave backend (Turbo items are bundled). Pure

@@ -10,8 +10,15 @@ import { isIP } from 'node:net';
 import http, { type IncomingMessage } from 'node:http';
 import https from 'node:https';
 import {
-  AGE_MAGIC, AR_HOST, AR_PORT, AR_PROTOCOL, AR_WALLET, AR_DEFAULT_EXTRA_GATEWAYS,
-  AR_HTTP_TIMEOUT_MS, AR_MAX_SPEND, AR_L1_MAX_BYTES,
+  AGE_MAGIC,
+  AR_HOST,
+  AR_PORT,
+  AR_PROTOCOL,
+  AR_WALLET,
+  AR_DEFAULT_EXTRA_GATEWAYS,
+  AR_HTTP_TIMEOUT_MS,
+  AR_MAX_SPEND,
+  AR_L1_MAX_BYTES,
 } from '../config.js';
 import { warnIfLooseKeyPerms, readHead, errMsg, RetryableError, SdkMissingError } from '../util.js';
 import type { StorageBackend, PutOpts } from '../types.js';
@@ -23,7 +30,9 @@ import type { StorageBackend, PutOpts } from '../types.js';
 // first, then the extra public mirrors.
 function arGateways(): string[] {
   if (process.env.CIPHER_BRAIN_AR_GATEWAYS) {
-    const list = process.env.CIPHER_BRAIN_AR_GATEWAYS.split(',').map((s) => s.trim()).filter(Boolean);
+    const list = process.env.CIPHER_BRAIN_AR_GATEWAYS.split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (list.length) return list; // ignore an all-blank override → fall through to the default
   }
   if (process.env.CIPHER_BRAIN_AR_GATEWAY) return [process.env.CIPHER_BRAIN_AR_GATEWAY];
@@ -42,18 +51,18 @@ function arGateways(): string[] {
 function isPrivateAddr(ip: string): boolean {
   if (isIP(ip) === 4) {
     const [a, b] = ip.split('.').map(Number);
-    if (a === 0 || a === 127 || a === 10) return true;            // this-host / loopback / private
-    if (a === 169 && b === 254) return true;                      // link-local (AWS/GCP IMDS)
-    if (a === 172 && b >= 16 && b <= 31) return true;             // private
-    if (a === 192 && b === 168) return true;                      // private
-    if (a === 100 && b >= 64 && b <= 127) return true;            // CGNAT (RFC 6598) — carrier/cloud internal
-    if (a >= 224) return true;                                    // multicast / reserved
+    if (a === 0 || a === 127 || a === 10) return true; // this-host / loopback / private
+    if (a === 169 && b === 254) return true; // link-local (AWS/GCP IMDS)
+    if (a === 172 && b >= 16 && b <= 31) return true; // private
+    if (a === 192 && b === 168) return true; // private
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT (RFC 6598) — carrier/cloud internal
+    if (a >= 224) return true; // multicast / reserved
     return false;
   }
   const low = ip.toLowerCase().replace(/^\[|\]$/g, '');
-  if (low === '::1' || low === '::') return true;                 // loopback / unspecified
-  if (/^fe[89ab]/.test(low)) return true;                         // link-local fe80::/10 (fe80–febf)
-  if (low.startsWith('fc') || low.startsWith('fd')) return true;  // unique-local
+  if (low === '::1' || low === '::') return true; // loopback / unspecified
+  if (/^fe[89ab]/.test(low)) return true; // link-local fe80::/10 (fe80–febf)
+  if (low.startsWith('fc') || low.startsWith('fd')) return true; // unique-local
   // IPv4-mapped ::ffff:a.b.c.d — dotted form, OR the canonical hex-quad form
   // ::ffff:7f00:1 (which isIP() reports as v6, so it must be normalised here or a
   // hex-encoded loopback/IMDS literal would slip past the v4 checks above).
@@ -114,7 +123,11 @@ function gatewayGet(url: string, signal: AbortSignal, pin: ScreenedTarget | null
     // autoSelectFamily is a real node:net socket-connect option node:http forwards at
     // runtime, but @types/node's http.RequestOptions (ClientRequestArgs) doesn't
     // declare it — widen locally rather than losing the rest of the type's checking.
-    const opts: http.RequestOptions & { autoSelectFamily?: boolean } = { signal, autoSelectFamily: true, headers: { 'user-agent': 'cipher-brain', accept: '*/*' } };
+    const opts: http.RequestOptions & { autoSelectFamily?: boolean } = {
+      signal,
+      autoSelectFamily: true,
+      headers: { 'user-agent': 'cipher-brain', accept: '*/*' },
+    };
     if (pin) {
       // node:http's `lookup` option accepts either the `(err, address, family)` or
       // `(err, [{address, family}])` callback shape depending on whether the caller
@@ -149,7 +162,10 @@ async function isAgeCiphertext(part: string): Promise<boolean> {
 async function streamArweaveGateway(url: string, part: string, timeoutMs: number): Promise<boolean> {
   const ctl = new AbortController();
   let stall: ReturnType<typeof setTimeout> | undefined;
-  const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), timeoutMs); };
+  const arm = () => {
+    clearTimeout(stall);
+    stall = setTimeout(() => ctl.abort(), timeoutMs);
+  };
   try {
     let current = url;
     let pin: ScreenedTarget | null = null; // screened for the NEXT request — pins out DNS-rebinding
@@ -160,17 +176,33 @@ async function streamArweaveGateway(url: string, part: string, timeoutMs: number
       const sc = resp.statusCode ?? 0;
       if (sc >= 300 && sc < 400 && resp.headers.location) {
         resp.resume(); // drain & discard the redirect body so the socket frees
-        if (hop >= 3) { console.error(`arweave: too many redirects from ${url} — skipping gateway`); clearTimeout(stall); await rm(part, { force: true }); return false; }
+        if (hop >= 3) {
+          console.error(`arweave: too many redirects from ${url} — skipping gateway`);
+          clearTimeout(stall);
+          await rm(part, { force: true });
+          return false;
+        }
         const next = new URL(resp.headers.location, current).href;
-        try { pin = await assertPublicRedirectTarget(next); }
-        catch (e) { console.error(`arweave: ${errMsg(e)} — refusing redirect, skipping gateway (SSRF guard)`); clearTimeout(stall); await rm(part, { force: true }); return false; }
+        try {
+          pin = await assertPublicRedirectTarget(next);
+        } catch (e) {
+          console.error(`arweave: ${errMsg(e)} — refusing redirect, skipping gateway (SSRF guard)`);
+          clearTimeout(stall);
+          await rm(part, { force: true });
+          return false;
+        }
         current = next;
         continue;
       }
       break; // not a redirect (or a 3xx with no Location) → handle the response below
     }
     if (resp.statusCode === 200) {
-      const tap = new Transform({ transform(c, _e, cb) { arm(); cb(null, c); } }); // each chunk resets the stall deadline
+      const tap = new Transform({
+        transform(c, _e, cb) {
+          arm();
+          cb(null, c);
+        },
+      }); // each chunk resets the stall deadline
       await pipeline(resp, tap, createWriteStream(part));
       clearTimeout(stall);
       // Accept the body only if it is actually age ciphertext (every stored object
@@ -183,8 +215,11 @@ async function streamArweaveGateway(url: string, part: string, timeoutMs: number
     } else {
       resp.resume(); // drain a non-200 (202 pending / 404) so the socket frees
     }
-  } catch { /* stall / network / mid-stream error — try the next gateway */ }
-  finally { clearTimeout(stall); }
+  } catch {
+    /* stall / network / mid-stream error — try the next gateway */
+  } finally {
+    clearTimeout(stall);
+  }
   await rm(part, { force: true });
   return false;
 }
@@ -242,7 +277,10 @@ function l1ChunkRead(ar: ArweaveClient, locator: string, timeoutMs: number): Pro
   const realFetch = globalThis.fetch;
   const ctl = new AbortController();
   let stall: ReturnType<typeof setTimeout> | undefined;
-  const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), timeoutMs); };
+  const arm = () => {
+    clearTimeout(stall);
+    stall = setTimeout(() => ctl.abort(), timeoutMs);
+  };
   arm();
   globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     arm(); // a new request = forward progress; reset the stall deadline
@@ -253,7 +291,10 @@ function l1ChunkRead(ar: ArweaveClient, locator: string, timeoutMs: number): Pro
   // rejection (`p`'s real rejection is separately handled by the caller's own
   // try/catch around `l1ChunkRead(...)` — this `.catch` exists only so THIS derived
   // promise doesn't itself surface as an unhandled rejection).
-  p.finally(() => { clearTimeout(stall); globalThis.fetch = realFetch; }).catch(() => {});
+  p.finally(() => {
+    clearTimeout(stall);
+    globalThis.fetch = realFetch;
+  }).catch(() => {});
   return p;
 }
 
@@ -273,7 +314,8 @@ export async function arweaveBackend(): Promise<StorageBackend> {
     try {
       ArweaveCtor = (await import('arweave')).default as unknown as typeof ArweaveCtor;
     } catch (e) {
-      if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') throw new SdkMissingError('arweave backend needs the `arweave` package — run: npm install arweave');
+      if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND')
+        throw new SdkMissingError('arweave backend needs the `arweave` package — run: npm install arweave');
       throw e;
     }
     _ar = ArweaveCtor.init({ host: AR_HOST, port: AR_PORT, protocol: AR_PROTOCOL });
@@ -282,8 +324,11 @@ export async function arweaveBackend(): Promise<StorageBackend> {
   const loadWallet = async (): Promise<unknown> => {
     if (!AR_WALLET) throw new Error('arweave put needs CIPHER_BRAIN_AR_WALLET (path to a JWK key file)');
     await warnIfLooseKeyPerms(AR_WALLET, 'arweave JWK wallet');
-    try { return JSON.parse(await readFile(AR_WALLET, 'utf8')); }
-    catch (e) { throw new Error(`arweave: cannot read JWK wallet at ${AR_WALLET}: ${errMsg(e)}`); }
+    try {
+      return JSON.parse(await readFile(AR_WALLET, 'utf8'));
+    } catch (e) {
+      throw new Error(`arweave: cannot read JWK wallet at ${AR_WALLET}: ${errMsg(e)}`);
+    }
   };
   return {
     async put(file: string, _opts: PutOpts = {}): Promise<string> {
@@ -293,7 +338,9 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       // "HTTP 400". Redirect to the turbo backend (streams + ANS-104 bundles) instead.
       const { size: l1Size } = await stat(resolve(file));
       if (l1Size > AR_L1_MAX_BYTES) {
-        throw new Error(`arweave: ${l1Size} bytes exceeds the ~${(AR_L1_MAX_BYTES / 1048576).toFixed(0)} MiB single-tx limit of the raw arweave backend — use --backend turbo (it streams + bundles large uploads). Override the limit with CIPHER_BRAIN_AR_L1_MAX if you really mean to post one large L1 tx.`);
+        throw new Error(
+          `arweave: ${l1Size} bytes exceeds the ~${(AR_L1_MAX_BYTES / 1048576).toFixed(0)} MiB single-tx limit of the raw arweave backend — use --backend turbo (it streams + bundles large uploads). Override the limit with CIPHER_BRAIN_AR_L1_MAX if you really mean to post one large L1 tx.`,
+        );
       }
       const ar = await getAr(); // uploads genuinely need the SDK (createTransaction/sign/post)
       const jwk = await loadWallet(); // only uploads need a wallet/signature
@@ -315,12 +362,16 @@ export async function arweaveBackend(): Promise<StorageBackend> {
         process.stderr.write(`arweave: L1 cost estimate: ${reward} winston\n`);
       } catch (e) {
         if (AR_MAX_SPEND > 0n) {
-          throw new Error(`arweave: could not verify CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} (price estimate failed: ${errMsg(e)}) — aborting to protect your wallet`);
+          throw new Error(
+            `arweave: could not verify CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} (price estimate failed: ${errMsg(e)}) — aborting to protect your wallet`,
+          );
         }
         process.stderr.write(`arweave: could not estimate L1 cost (${errMsg(e)}); proceeding\n`);
       }
       if (reward !== undefined && AR_MAX_SPEND > 0n && reward > AR_MAX_SPEND) {
-        throw new Error(`arweave: L1 upload cost ${reward} winston exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
+        throw new Error(
+          `arweave: L1 upload cost ${reward} winston exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`,
+        );
       }
       const tx = await ar.createTransaction(reward !== undefined ? { data, reward: String(reward) } : { data }, jwk);
       tx.addTag('App-Name', 'cipher-brain');
@@ -363,11 +414,18 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       //    SSRF-safe fetch (#115) and a stall-bounded timeout (#116) — see its header
       //    comment for why a global fetch patch, not SDK config, is how this is done.
       let ar: ArweaveClient | null = null;
-      try { ar = await getAr(); } catch (e) { if (!(e instanceof SdkMissingError)) throw e; /* no SDK → skip L1 fallback */ }
+      try {
+        ar = await getAr();
+      } catch (e) {
+        if (!(e instanceof SdkMissingError)) throw e; /* no SDK → skip L1 fallback */
+      }
       if (ar) {
         let d: Uint8Array | string | null = null;
-        try { d = await l1ChunkRead(ar, locator, AR_HTTP_TIMEOUT_MS); }
-        catch { /* not found / chunk error / redirect refused (SSRF guard, #115) / stalled (#116) → not (yet) available */ }
+        try {
+          d = await l1ChunkRead(ar, locator, AR_HTTP_TIMEOUT_MS);
+        } catch {
+          /* not found / chunk error / redirect refused (SSRF guard, #115) / stalled (#116) → not (yet) available */
+        }
         // Same promote-only-if-ciphertext gate as the gateway path (#118): a non-empty
         // result here is not automatically trustworthy — it could be an unrelated tx's
         // bytes, an error/placeholder page the SDK's "gateway cache" fallback served, or
@@ -376,8 +434,13 @@ export async function arweaveBackend(): Promise<StorageBackend> {
         // write can neither corrupt --out nor destroy a pre-existing valid one.
         if (d && d.length) {
           await writeFile(part, Buffer.from(d as Uint8Array));
-          if (await isAgeCiphertext(part)) { await rename(part, out); return; }
-          console.error(`arweave: L1 chunk read for tx ${locator} returned non-ciphertext data — discarding (not promoted to --out)`);
+          if (await isAgeCiphertext(part)) {
+            await rename(part, out);
+            return;
+          }
+          console.error(
+            `arweave: L1 chunk read for tx ${locator} returned non-ciphertext data — discarding (not promoted to --out)`,
+          );
           await rm(part, { force: true });
         }
       }

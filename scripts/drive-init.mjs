@@ -45,8 +45,14 @@ function tryAdvance() {
   }
 }
 
-child.stdout.on('data', (d) => { transcript += d.toString('utf8'); tryAdvance(); });
-child.stderr.on('data', (d) => { transcript += d.toString('utf8'); tryAdvance(); });
+child.stdout.on('data', (d) => {
+  transcript += d.toString('utf8');
+  tryAdvance();
+});
+child.stderr.on('data', (d) => {
+  transcript += d.toString('utf8');
+  tryAdvance();
+});
 
 const exitCode = await new Promise((resolve) => {
   child.on('close', (code, signal) => resolve(code ?? (signal ? 1 : 1)));
@@ -58,8 +64,8 @@ if (qaIndex < qa.length) {
   const unused = qa.slice(qaIndex).map(([waitFor]) => waitFor);
   console.error(
     `drive-init.mjs: FAIL — only ${qaIndex}/${qa.length} scripted prompts were seen before the child exited (rc=${exitCode}); ` +
-    `${unused.length} scripted answer(s) were never consumed — see ${outPath}\n` +
-    `unused prompts (waitFor):\n${unused.map((s) => `  - ${JSON.stringify(s)}`).join('\n')}`
+      `${unused.length} scripted answer(s) were never consumed — see ${outPath}\n` +
+      `unused prompts (waitFor):\n${unused.map((s) => `  - ${JSON.stringify(s)}`).join('\n')}`,
   );
   process.exit(1);
 }

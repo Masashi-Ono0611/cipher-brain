@@ -1,12 +1,13 @@
 // push/pull move the ciphertext to/from a storage backend. The verb is a dumb
 // primitive against ONE backend endpoint; proving "fetched from elsewhere" (a
 // second, independent node) is the operator script's job, not the verb's.
-import { mkdir, writeFile, rm, readFile, rename, link } from 'node:fs/promises';
+import { mkdir, writeFile, rm, readFile, rename, link, stat } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { AGE_MAGIC, CIPHER_YES } from './config.js';
 import { exists, sleep, sha256, readHead, RetryableError } from './util.js';
 import { backendFor } from './backends/index.js';
+import { estimateCost, formatEstimate } from './estimate.js';
 import type { CliOptions } from './types.js';
 
 // The plaintext content digest for the artifact being pushed: an explicit --digest
@@ -156,6 +157,34 @@ export async function push(o: CliOptions): Promise<void> {
         return;
       }
     }
+  }
+  // arweave and turbo are paid, permanent stores. #160: the cost estimate must be
+  // VISIBLE in the SAME terminal output the --yes/CIPHER_BRAIN_YES consent decision is
+  // made against — previously push() asked "this spends real funds, confirm?" with no
+  // number attached, and the actual estimate (ar.transactions.getPrice() in
+  // arweave.ts / getUploadCosts() in turbo.ts) only ran INSIDE backend.put(), i.e. only
+  // AFTER the operator had already said yes. Compute + print it FIRST here, using the
+  // exact estimateCost() math the `estimate` command and the MCP estimate_cost tool
+  // already use (src/lib/estimate.ts, #159) — not a second, divergent computation —
+  // so a blind "--yes" is no longer required to learn the amount.
+  //
+  // This step is deliberately display-only: CIPHER_BRAIN_MAX_SPEND enforcement stays
+  // exactly where #105's fail-closed fix left it, INSIDE each backend's put()
+  // (arweave.ts/turbo.ts — verified unchanged, git log --grep 105 / -- those files).
+  // Duplicating the cap check here would create a second enforcement point to keep in
+  // sync, and this early estimate can go stale by the time put() actually signs
+  // (a real, independent price query, moments apart) — the backend's own re-check
+  // immediately before signing is, and remains, the sole authority on whether an
+  // upload proceeds. Skipped for the free `file` backend (no cost, nothing to show).
+  if (o.backend === 'arweave' || o.backend === 'turbo') {
+    const { size: sizeBytes } = await stat(o.in);
+    const est = await estimateCost(o.backend, sizeBytes);
+    // Wording deliberately avoids the literal substring "--yes"/"CIPHER_BRAIN_YES" here:
+    // selftest.sh's "CIPHER_BRAIN_YES=1 no longer hits the gate" check greps stderr for
+    // those tokens to detect the ACTUAL consent-gate error below — this informational
+    // header must never produce a false match of that check.
+    console.error(`${o.backend}: cost estimate (shown before the upload-consent check below):`);
+    for (const line of formatEstimate(est)) console.error(`  ${line}`);
   }
   const yes = !!o.yes || CIPHER_YES;
   // arweave and turbo are paid, permanent stores — require an explicit opt-in so

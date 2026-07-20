@@ -134,6 +134,27 @@ export async function estimateCost(backend: string, sizeBytes: number): Promise<
   throw new Error(`unknown backend: ${backend} — use file|arweave|turbo`);
 }
 
+// Render a CostEstimate as human-readable lines — SHARED by the CLI `estimate` command
+// below (its whole stdout output) and push()'s pre-consent estimate display
+// (src/lib/pushpull.ts, on stderr — push's stdout is reserved for the final locator
+// only — #160): one formatting so the number a `push --backend arweave` operator sees
+// before confirming --yes is presented identically to `cipher-brain estimate`'s report,
+// not a second, divergent rendering.
+export function formatEstimate(e: CostEstimate): string[] {
+  const lines = [`backend: ${e.backend}`, `size: ${e.size_bytes} bytes (${fmtBytes(e.size_bytes)})`];
+  if (e.cost === null) {
+    lines.push('cost: unavailable');
+  } else {
+    lines.push(`cost: ${e.cost}${e.unit ? ` ${e.unit}` : ''}`);
+    if (e.approx_ar !== undefined) lines.push(`approx: ~${e.approx_ar.toFixed(8)} AR`);
+    if (e.usd_estimate !== undefined) {
+      lines.push(`approx: ~$${e.usd_estimate.toFixed(e.usd_estimate >= 0.01 ? 2 : 6)} USD`);
+    }
+  }
+  lines.push(`note: ${e.note}`);
+  return lines;
+}
+
 // CLI `estimate` command: size --in the same way push does (a real byte count off
 // disk, not a guess) and print the SAME estimateCost() computation the MCP
 // estimate_cost tool returns, as a human-readable report — WITHOUT uploading
@@ -147,16 +168,5 @@ export async function estimate(o: CliOptions): Promise<void> {
   if (!st.isFile())
     throw new Error(`${o.in} is not a regular file (cannot size a directory/special file for an estimate)`);
   const result = await estimateCost(o.backend, st.size);
-  console.log(`backend: ${result.backend}`);
-  console.log(`size: ${result.size_bytes} bytes (${fmtBytes(result.size_bytes)})`);
-  if (result.cost === null) {
-    console.log('cost: unavailable');
-  } else {
-    console.log(`cost: ${result.cost}${result.unit ? ` ${result.unit}` : ''}`);
-    if (result.approx_ar !== undefined) console.log(`approx: ~${result.approx_ar.toFixed(8)} AR`);
-    if (result.usd_estimate !== undefined) {
-      console.log(`approx: ~$${result.usd_estimate.toFixed(result.usd_estimate >= 0.01 ? 2 : 6)} USD`);
-    }
-  }
-  console.log(`note: ${result.note}`);
+  for (const line of formatEstimate(result)) console.log(line);
 }

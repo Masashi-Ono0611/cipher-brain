@@ -16,7 +16,7 @@ exercised by `npm run selftest:recovery` (gated in CI).
 
 Recovery needs **two** things, and both can be lost. The private `identity.age` is the
 only thing that can *decrypt* — lose it and every snapshot is permanently unreadable.
-But the **locator** (which BagID / tx id / store path holds the latest ciphertext) is
+But the **locator** (which tx id / store path holds the latest ciphertext) is
 the only thing that tells a fresh machine *where to fetch from* — and today the full
 record of locators is a local `index.tsv` on the always-on box. If that box dies, an
 operator who backed up only the identity still cannot find the bytes. So back up both:

@@ -1,5 +1,5 @@
 // snapshot — stage components (pg_dump / dirs / manifest.json), then stream tar|age.
-import { mkdir, writeFile, rm, stat, lstat, rename, link, readdir, readlink } from 'node:fs/promises';
+import { mkdir, writeFile, rm, stat, lstat, rename, link, open, readdir, readlink } from 'node:fs/promises';
 import { mkdtempSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join, basename, dirname, resolve, relative, sep } from 'node:path';
@@ -17,8 +17,12 @@ import type { CliOptions } from './types.js';
 // and fails with EEXIST if out appeared meanwhile, giving a true exclusive no-clobber
 // even under overlapping snapshots. But hard links are unsupported on exFAT/FAT and some
 // network/cloud mounts (common backup media), where link throws EPERM/ENOTSUP — there,
-// fall back to a re-checked rename (best-effort no-clobber with a tiny TOCTOU window,
-// the same the original `age -o` write had). Atomicity-on-success holds either way.
+// fall back to an exclusive create (open with the 'wx' flag) as the no-clobber gate
+// instead of a racy exists()-then-rename() check-then-act: 'wx' atomically fails with
+// EEXIST if `out` already exists, so of two overlapping snapshots at most one can win
+// the create — the loser sees EEXIST and refuses, same as the link() path. The winner
+// then owns `out` and safely folds the real content in via rename(). Atomicity-on-success
+// holds either way; no TOCTOU window remains.
 async function promoteSnapshot(part: string, out: string): Promise<void> {
   const clobberErr = () => new Error(`${out} already exists — refusing to overwrite a prior snapshot (move it aside or choose a new --out)`);
   try {
@@ -27,8 +31,21 @@ async function promoteSnapshot(part: string, out: string): Promise<void> {
     const err = e as NodeJS.ErrnoException;
     if (err && err.code === 'EEXIST') throw clobberErr();
     if (err && err.code && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(err.code)) {
-      if (await exists(out)) throw clobberErr();
-      await rename(part, out);
+      let handle;
+      try {
+        handle = await open(out, 'wx');
+      } catch (openErr) {
+        const oe = openErr as NodeJS.ErrnoException;
+        if (oe && oe.code === 'EEXIST') throw clobberErr();
+        throw openErr;
+      }
+      await handle.close();
+      try {
+        await rename(part, out);
+      } catch (renameErr) {
+        await rm(out, { force: true }); // undo the placeholder create; don't leave `out` poisoned
+        throw renameErr;
+      }
       return;
     }
     throw e;

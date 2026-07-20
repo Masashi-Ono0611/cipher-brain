@@ -54,8 +54,9 @@ export const AR_MAX_SPEND = process.env.CIPHER_BRAIN_MAX_SPEND ? BigInt(process.
 // past ~12 MiB. Guard at a conservative 10 MiB and redirect large uploads to `turbo`
 // (which streams + ANS-104-bundles). Override for a deliberate large L1 post.
 export const AR_L1_MAX_BYTES = Number(process.env.CIPHER_BRAIN_AR_L1_MAX || 10 * 1024 * 1024);
-// Overall wall-clock cap for the tar|age / age|tar streaming pipelines and the pre-stage
-// tar, so a wedged binary (or a FIFO/special file under --dir) can't hang the CLI forever.
-// Generous default (1h) — a real ~850 MB brain streams in seconds, so this only ever trips
-// on a genuine hang. Override with CIPHER_BRAIN_PIPE_TIMEOUT (ms) for very large brains.
+// Overall wall-clock cap for the tar|age / age|tar streaming pipelines, the pre-stage
+// tar, and pg_restore, so a wedged binary (or a FIFO/special file under --dir) can't
+// hang the CLI forever. Generous default (1h) — a real ~850 MB brain streams in
+// seconds, so this only ever trips on a genuine hang. Override with
+// CIPHER_BRAIN_PIPE_TIMEOUT (ms) for very large brains / restores.
 export const PIPE_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_PIPE_TIMEOUT || 60 * 60 * 1000);

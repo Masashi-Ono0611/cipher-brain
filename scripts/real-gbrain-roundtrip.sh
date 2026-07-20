@@ -46,7 +46,7 @@ psql "$SCRATCH_URL" -c "create extension if not exists vector;"  >/dev/null 2>&1
 psql "$SCRATCH_URL" -c "create extension if not exists pg_trgm;" >/dev/null 2>&1 || true
 
 echo "== restore -> compare =="
-node "$CLI" restore --in "$WORK/snap.age" --out-dir "$WORK/out" --pg "$SCRATCH_URL" >/dev/null
+node "$CLI" restore --in "$WORK/snap.age" --out-dir "$WORK/out" --pg "$SCRATCH_URL" --yes >/dev/null
 DST_COUNT=$(psql "$SCRATCH_URL" -At -c "select count(*) from $TBL;")
 DST_SUM=$(psql "$SCRATCH_URL" -At -c "select md5(coalesce(string_agg(t::text, '' order by t::text),'')) from $TBL t;")
 echo "restored: count=$DST_COUNT checksum=$DST_SUM"

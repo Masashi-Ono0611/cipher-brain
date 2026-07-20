@@ -2,7 +2,7 @@
 import { rm, stat, readFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { AGE_MAGIC, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.js';
+import { AGE_MAGIC, CIPHER_YES, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.js';
 import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
 import { exists, sha256, readHead, fmtBytes } from './util.js';
@@ -12,6 +12,17 @@ import type { CliOptions } from './types.js';
 export async function restore(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.out_dir) throw new Error('--out-dir <dir> required');
+  // pg_restore --clean --if-exists below DROPS and replaces objects in the target
+  // database — an irreversible operation. Same consent gate as push's paid-backend
+  // guard (pushpull.ts): require --yes or CIPHER_BRAIN_YES=1 up front, before any
+  // decrypt/extract work happens, mirroring the "fail before out_dir is even created"
+  // discipline the identity check below already follows.
+  if (o.pg && !(o.yes || CIPHER_YES)) {
+    throw new Error(
+      `--pg ${o.pg}: pg_restore --clean --if-exists will DROP and replace objects in that database — ` +
+      `re-run restore with --yes or set CIPHER_BRAIN_YES=1 to confirm`
+    );
+  }
   const identity = o.identity || IDENTITY;
   if (!(await exists(identity))) throw new Error(`no identity at ${identity} — cannot decrypt without the private key`);
   // Load the identity FIRST (this prompts for the passphrase if the file is wrapped)
@@ -47,8 +58,11 @@ export async function restore(o: CliOptions): Promise<void> {
   // --no-same-owner/--no-same-permissions: a substituted/forged archive must not be
   // able to set hostile ownership or modes on extraction (defense-in-depth — the
   // bytes can be attacker-chosen if storage is compromised; see verify --sha256).
+  // --keep-old-files (GNU tar and bsdtar both support this exact long-form flag): when
+  // --out-dir already held files before this run (outDirPreExisted), extraction must
+  // not silently clobber them — skip a colliding name rather than overwrite it.
   try {
-    await decryptToChild(decrypter, o.in, 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
+    await decryptToChild(decrypter, o.in, 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '--keep-old-files', '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
   } catch (e) {
     if (!outDirPreExisted) await rm(o.out_dir, { recursive: true, force: true });
     else console.error(`warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`);
@@ -65,7 +79,7 @@ export async function restore(o: CliOptions): Promise<void> {
   if (o.pg) {
     const dump = join(o.out_dir, 'db.dump');
     if (!(await exists(dump))) throw new Error(`--pg given but no db.dump in snapshot`);
-    await run(pgTool('pg_restore'), ['--no-owner', '--no-privileges', '--clean', '--if-exists', '-d', o.pg, dump]);
+    await run(pgTool('pg_restore'), ['--no-owner', '--no-privileges', '--clean', '--if-exists', '-d', o.pg, dump], { timeoutMs: PIPE_TIMEOUT_MS });
     console.log(`pg_restore -> ${o.pg} done`);
   }
 }

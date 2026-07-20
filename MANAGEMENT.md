@@ -98,7 +98,7 @@ saved sha256 is applied automatically, so a substituted ciphertext is rejected:
 
 ```sh
 cipher-brain pull --from-locator-file ~/restore/latest-locator.tsv --out latest.age
-cipher-brain restore --in latest.age --out-dir ./restored --pg "$PG_RESTORE"
+cipher-brain restore --in latest.age --out-dir ./restored --pg "$PG_RESTORE" --yes
 ```
 
 For full version history (not just the latest), keep backing up the whole `index.tsv`
@@ -236,8 +236,10 @@ cipher-brain pull --locator "<locator>" --backend "$BACKEND" --out restored.age
 cipher-brain verify --in restored.age          # header + your key decrypts it
 
 # 4. decrypt + rebuild into a SCRATCH database (never straight over a live gbrain)
+# --pg runs pg_restore --clean --if-exists, which DROPS/replaces objects in the
+# target database — an irreversible operation, so it requires --yes to confirm.
 cipher-brain restore --in restored.age --out-dir ./restored \
-  --pg "postgres://you@localhost:5432/gbrain_restore"
+  --pg "postgres://you@localhost:5432/gbrain_restore" --yes
 
 # 5. sanity-check row counts / content, then cut over deliberately
 ```

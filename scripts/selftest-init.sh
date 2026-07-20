@@ -163,6 +163,15 @@ grep -q 'WHAT TO DO WITH THIS FILE' "$KIT_PATH" || { echo "[FAIL] kit missing th
 grep -q 'LOCATOR IS LOCAL-ONLY' "$KIT_PATH" || { echo "[FAIL] kit used the file backend but does not warn that its save-locator is local-only"; exit 1; }
 echo "[PASS] kit: mode 600, warning banner, primary location, backup identity inlined, exact locator line, pin-skip note, recovery commands, disposal note, file-backend local-only warning"
 
+echo "== (e2) file backend: interactive warning + completion summary both surface the local-only risk (issue #85) =="
+# Before the fix, the kit-only warning above (grepped in (e)) was the ONLY place a
+# file-backend user ever saw this — invisible unless they opened the printed kit.
+# Test (d)'s own run ($TMP/wizard.log) already selected the file backend (its default
+# Enter-key answer), so reuse that transcript rather than scripting a whole new run.
+grep -qF 'stores the pushed ciphertext ONLY on this machine' "$TMP/wizard.log" || { echo "[FAIL] wizard.log does not show the interactive file-backend warning"; cat "$TMP/wizard.log"; exit 1; }
+grep -qF 'LOCAL-ONLY — not reachable from another machine' "$TMP/wizard.log" || { echo "[FAIL] completion summary does not annotate the file backend as local-only"; cat "$TMP/wizard.log"; exit 1; }
+echo "[PASS] choosing the file backend prints an interactive warning, and the completion summary flags it as local-only"
+
 echo "== (f) passphrase=yes path completes end-to-end (readline/promptHidden interaction fix) =="
 # CIPHER_BRAIN_PASSPHRASE (crypt.ts's own automation escape hatch) makes
 # askNewPassphrase() return immediately without touching stdin's raw mode, so this
@@ -675,6 +684,76 @@ diff -r "$SRC" "$RESTORED_SRC_DIR" > "$TMP/drill-diff.log" 2>&1 \
   || { echo "DRILL RESULT: [FAIL] restored content differs from the source"; cat "$TMP/drill-diff.log"; exit 1; }
 grep -q "$MARKER" "$RESTORED_SRC_DIR/note.txt" || { echo "DRILL RESULT: [FAIL] restored content does not contain the source's unique marker"; exit 1; }
 echo "DRILL RESULT: [PASS] kit-only restore on a simulated fresh, isolated machine is byte-identical to the original source (issue #68 acceptance criterion 2 — recorded)"
+
+echo "== (m) a detected gbrain config prompts for --pg and actually threads it into the snapshot (issue #84) =="
+# Before the fix, --pg was unreachable from `init` at all (grep never found it in
+# wizard.ts) — a gbrain user answering the profile/directory prompts naturally (none +
+# ~/.gbrain) got a backup of gbrain's CONFIG only, never its real data (Postgres). Prove
+# both halves: (1) the new prompt actually appears when a local gbrain config exists,
+# defaulting to YES, and (2) the resulting snapshot/kit genuinely carry a pg_dump
+# component end-to-end — not just a flag the wizard silently drops. pg_dump is SHIMMED
+# (via CIPHER_BRAIN_PG_BIN) so this needs no real Postgres server, the same technique
+# scripts/selftest-schedule.sh's own --pg test already uses.
+PG_HOME="$TMP/pg-home"; mkdir -p "$PG_HOME/.gbrain"
+printf '{"schema_pack":"gbrain-base-v2"}\n' > "$PG_HOME/.gbrain/config.json"
+PG_CB_HOME="$TMP/pg-cb-home"
+PG_STORE="$TMP/pg-store"
+PG_SRC="$TMP/pg-src"; mkdir -p "$PG_SRC"
+printf 'pg-marker\n' > "$PG_SRC/note.txt"
+PG_KIT_PATH="$PG_HOME/recovery-kit.txt"
+TEST_PG_CONN="postgres://tester@localhost:5432/gbrain-selftest"
+
+FAKE_PGBIN="$TMP/fake-pgbin-snapshot"; mkdir -p "$FAKE_PGBIN"
+cat > "$FAKE_PGBIN/pg_dump" <<'SHIM'
+#!/usr/bin/env bash
+# args: -Fc --no-owner --no-privileges [-t table ...] -f <dumpPath> <conn> — find -f's value
+out=""; prev=""
+for a in "$@"; do
+  if [ "$prev" = "-f" ]; then out="$a"; fi
+  prev="$a"
+done
+printf 'fake-pg-dump-content\n' > "$out"
+exit 0
+SHIM
+chmod +x "$FAKE_PGBIN/pg_dump"
+
+cat > "$TMP/qa-pg.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$PG_SRC"],
+  ["Include a Postgres database dump", ""],
+  ["Postgres connection string", "$TEST_PG_CONN"],
+  ["Backend [file/", ""],
+  ["Path to write the recovery kit", "$PG_KIT_PATH"]
+]
+JSON
+
+CIPHER_BRAIN_HOME="$PG_CB_HOME" CIPHER_BRAIN_FILE_DIR="$PG_STORE" HOME="$PG_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN" \
+  with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-pg.json" --out "$TMP/wizard-pg.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] the gbrain-detected pg scripted run did not complete"; cat "$TMP/wizard-pg.log"; exit 1; }
+grep -q 'cipher-brain init: complete' "$TMP/wizard-pg.log" || { echo "[FAIL] pg run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pg.log"; exit 1; }
+grep -qF "Detected a gbrain config at $PG_HOME/.gbrain/config.json" "$TMP/wizard-pg.log" || { echo "[FAIL] wizard did not detect the gbrain config fixture"; cat "$TMP/wizard-pg.log"; exit 1; }
+grep -q 'postgres:          included (pg_dump)' "$TMP/wizard-pg.log" || { echo "[FAIL] completion summary does not report the Postgres dump as included"; cat "$TMP/wizard-pg.log"; exit 1; }
+echo "[PASS] a detected gbrain config prompts for --pg (defaulting to yes) and the wizard reports it as included"
+
+PG_SNAP="$(find "$PG_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
+[ -n "$PG_SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found for the pg run"; exit 1; }
+PG_RESTORE_DIR="$TMP/pg-restored"
+CIPHER_BRAIN_HOME="$PG_CB_HOME" cb restore --in "$PG_SNAP" --out-dir "$PG_RESTORE_DIR" > "$TMP/pg-restore.log" 2>&1 \
+  || { echo "[FAIL] restoring the pg run's snapshot failed"; cat "$TMP/pg-restore.log"; exit 1; }
+[ -f "$PG_RESTORE_DIR/db.dump" ] || { echo "[FAIL] restored tree has no db.dump — --pg was not actually threaded into snapshot()"; exit 1; }
+grep -qF 'fake-pg-dump-content' "$PG_RESTORE_DIR/db.dump" || { echo "[FAIL] db.dump does not contain the shimmed pg_dump output — the wizard is not really invoking pg_dump"; exit 1; }
+grep -q 'pg_dump:custom' "$PG_RESTORE_DIR/manifest.json" || { echo "[FAIL] manifest.json does not record a pg_dump:custom component"; cat "$PG_RESTORE_DIR/manifest.json"; exit 1; }
+echo "[PASS] the snapshot genuinely contains a pg_dump component (shimmed pg_dump was invoked and its real output archived, not just a flag threaded through)"
+
+[ -f "$PG_KIT_PATH" ] || { echo "[FAIL] recovery kit was not written for the pg run"; exit 1; }
+grep -qF "Postgres dump: included (connection: $TEST_PG_CONN)" "$PG_KIT_PATH" || { echo "[FAIL] kit header does not record the Postgres connection used"; cat "$PG_KIT_PATH"; exit 1; }
+grep -qF -- "--pg \"$TEST_PG_CONN\"" "$PG_KIT_PATH" || { echo "[FAIL] kit restore command does not include --pg with the connection string"; cat "$PG_KIT_PATH"; exit 1; }
+echo "[PASS] the recovery kit records the Postgres connection used and threads --pg into its own restore command"
 
 echo
 echo "INIT SELFTEST PASS"

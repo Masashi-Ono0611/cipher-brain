@@ -104,6 +104,7 @@ interface KitInputs {
   savedLocatorLine: string;
   profile: string;
   backend: string;
+  pg: string | null; // the --pg connection string used, if a Postgres dump was included (issue #84)
   generatedAt: string;
 }
 
@@ -120,6 +121,7 @@ function buildRecoveryKit(k: KitInputs): string {
   lines.push(`Kit generated: ${k.generatedAt}`);
   lines.push(`Profile used:  ${k.profile}`);
   lines.push(`Backend used:  ${k.backend}`);
+  lines.push(`Postgres dump: ${k.pg ? `included (connection: ${k.pg})` : 'not included'}`);
   lines.push('');
   lines.push('--- PRIMARY IDENTITY (already on this machine — not duplicated here) ---');
   lines.push(`Location:  ${k.primaryIdentityPath}`);
@@ -150,6 +152,11 @@ function buildRecoveryKit(k: KitInputs): string {
   lines.push(k.pinRecipientsLine ?? '(skipped during init — see MANAGEMENT.md / "cipher-brain help" for what this does)');
   lines.push('');
   lines.push('--- RECOVERY STEPS (run these on ANY machine with Node >=22.6 and this npm package installed) ---');
+  // The restore command needs --pg to also pg_restore the dump this backup included —
+  // without it, restore leaves db.dump sitting in --out-dir unrestored (restore.ts only
+  // pg_restores when --pg is passed). Requires pg_dump/pg_restore on the RESTORING
+  // machine too (same "Prerequisites for --pg" as the wizard's own step 5/6 prompt).
+  const pgFlag = k.pg ? ` --pg "${k.pg}"` : '';
   if (k.backend === 'file') {
     lines.push('!!! LOCATOR IS LOCAL-ONLY: this backup used the "file" backend, so the save-locator line above');
     lines.push('    points at a path inside a local object store (CIPHER_BRAIN_FILE_DIR) on THIS machine — it');
@@ -168,7 +175,7 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('  3) Copy the SAVE-LOCATOR line above (between its BEGIN and END markers) into its own');
     lines.push('     file, e.g.: ~/restore-locator.tsv');
     lines.push('  4) cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
-    lines.push('  5) cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ~/restore-identity.age');
+    lines.push(`  5) cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ~/restore-identity.age${pgFlag}`);
     lines.push('     (if the identity above is passphrase-wrapped, this step prompts for that passphrase)');
   } else {
     lines.push('!!! NO BACKUP IDENTITY IS IN THIS KIT: true kit-only recovery — restoring on a fresh machine');
@@ -184,7 +191,7 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('    (possibly passphrase-protected, per step 3 of the wizard — restore then prompts for it).');
     lines.push('    Copy the SAVE-LOCATOR line above into its own file, e.g. ~/restore-locator.tsv, then:');
     lines.push('      cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
-    lines.push(`      cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ${k.primaryIdentityPath}`);
+    lines.push(`      cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ${k.primaryIdentityPath}${pgFlag}`);
     lines.push('  * For real kit-based portable recovery (any machine, zero prior knowledge), a backup');
     lines.push('    identity has to exist and be inlined in the kit. To get there: generate one —');
     lines.push('    "CIPHER_BRAIN_HOME=<path> cipher-brain keygen" — then re-snapshot encrypting to BOTH the');
@@ -404,6 +411,25 @@ export async function init(_o: CliOptions): Promise<void> {
         throw new Error(`unknown profile "${profileChoice}" — valid choices: none, ${PROFILE_NAMES.join(', ')}`);
       }
 
+      // gbrain (this project's headline use case — README/MANAGEMENT.md) keeps its
+      // ACTUAL data (pages, embeddings, timeline, graph) in Postgres — the ~/.gbrain
+      // directory above is only its config/cache. There is no gbrain-specific profile
+      // (PROFILE_NAMES), so the natural-looking answer above ("none" + ~/.gbrain)
+      // silently backs up only the config and never the real data (issue #84). Only
+      // ask when a local gbrain config is actually detected: everyone else's flow is
+      // completely unchanged, and init already documents that anything beyond its
+      // opinionated fast path is driven by hand (see requireTTY's own message above).
+      const gbrainConfigPath = join(homedir(), '.gbrain', 'config.json');
+      if (await exists(gbrainConfigPath)) {
+        console.log(`\nDetected a gbrain config at ${gbrainConfigPath} — gbrain's actual data (pages, embeddings,`);
+        console.log('timeline, graph) lives in Postgres, not in that directory alone. Requires pg_dump/pg_restore');
+        console.log('on PATH — see README "Prerequisites for --pg".');
+        if (await askYesNo(rl, 'Include a Postgres database dump (--pg) for gbrain in this backup?', true)) {
+          const defaultPg = 'postgres://you@localhost:5432/gbrain';
+          snapshotOpts.pg = await askLine(rl, `Postgres connection string [${defaultPg}]: `, defaultPg);
+        }
+      }
+
       // ---------- 6. initial snapshot + push ----------
       console.log('\n== 6/6: first snapshot + push ==');
       console.log(`Storage backends: ${BACKEND_NAMES.join(', ')}. arweave/turbo are PAID, permanent stores.`);
@@ -421,6 +447,18 @@ export async function init(_o: CliOptions): Promise<void> {
         if (!consent) {
           throw new Error(`aborted before spending — re-run "cipher-brain init" and choose "file" (free) instead, or run keygen/snapshot/push by hand once you are ready to pay; see MANAGEMENT.md.`);
         }
+      } else if (backend === 'file') {
+        // issue #85: "file" is the silent Enter-key default, and it is NOT offsite —
+        // the recovery kit's own "LOCATOR IS LOCAL-ONLY" block (buildRecoveryKit above)
+        // already says so, but until now that warning was invisible unless someone
+        // opened the printed kit. Surface it here, interactively, before the push
+        // happens, and again in the completion summary below.
+        console.log(
+          '\n⚠  "file" stores the pushed ciphertext ONLY on this machine (CIPHER_BRAIN_FILE_DIR) — it is NOT\n' +
+          '   reachable from any other machine. If this machine is lost, this backup cannot be recovered\n' +
+          '   elsewhere. For real offsite recovery, re-run and choose arweave or turbo (paid) instead; see\n' +
+          '   MANAGEMENT.md "Key recovery #3".',
+        );
       }
 
       snapshotOpts.recipients = [RECIPIENT, ...(backup ? [backup.recipientPath] : [])];
@@ -487,6 +525,7 @@ export async function init(_o: CliOptions): Promise<void> {
         savedLocatorLine,
         profile: profileChoice,
         backend,
+        pg: snapshotOpts.pg ?? null,
         generatedAt: new Date().toISOString(),
       });
       // Write-then-chmod (the prior approach) has a real exposure window: if kitPath
@@ -516,7 +555,9 @@ export async function init(_o: CliOptions): Promise<void> {
       console.log(`primary identity:  ${IDENTITY}`);
       if (backup) console.log(`backup identity:   ${backup.identityPath}  (move this OFF this machine)`);
       console.log(`snapshot:          ${outPath}`);
-      console.log(`pushed to:         ${backend} (locator saved: ${locatorPath})`);
+      if (snapshotOpts.pg) console.log('postgres:          included (pg_dump)');
+      const backendWarning = backend === 'file' ? '  ⚠  LOCAL-ONLY — not reachable from another machine, see MANAGEMENT.md "Key recovery #3"' : '';
+      console.log(`pushed to:         ${backend} (locator saved: ${locatorPath})${backendWarning}`);
       console.log(`recovery kit:      ${kitPath}`);
       console.log('\nNext: print the recovery kit and store it securely, physically away from this machine.');
       if (backup) console.log('Also move the backup identity directory off this machine (encrypted USB, a second');

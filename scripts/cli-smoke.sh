@@ -45,7 +45,7 @@ echo "[PASS] dist keygen: identity.age + recipient.txt created in temp CIPHER_BR
 WALLET_DEFAULT="$CIPHER_BRAIN_HOME/wallet.json"
 node "$DIST" wallet create > "$TMP/wallet-create.log" 2>&1 || { echo "[FAIL] dist wallet create exited non-zero"; cat "$TMP/wallet-create.log"; exit 1; }
 if [ ! -f "$WALLET_DEFAULT" ]; then echo "[FAIL] wallet.json not created at default path"; exit 1; fi
-WALLET_MODE="$(stat -f '%Lp' "$WALLET_DEFAULT" 2>/dev/null || stat -c '%a' "$WALLET_DEFAULT")"
+WALLET_MODE="$(stat -c '%a' "$WALLET_DEFAULT" 2>/dev/null || stat -f '%Lp' "$WALLET_DEFAULT")"
 if [ "$WALLET_MODE" != "600" ]; then echo "[FAIL] wallet.json mode is $WALLET_MODE, expected 600"; exit 1; fi
 ADDR1="$(node "$DIST" wallet address --wallet "$WALLET_DEFAULT")" || { echo "[FAIL] dist wallet address exited non-zero"; exit 1; }
 if [ -z "$ADDR1" ]; then echo "[FAIL] wallet address printed nothing"; exit 1; fi

@@ -550,7 +550,14 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
 // into structured fields here would be exactly the re-implemented logic the
 // module comment at the top of this file rules out, so it is captured and
 // returned verbatim instead (one array entry per line, in print order).
-async function handleScheduleStatus(): Promise<CallToolResult> {
+async function handleScheduleStatus(args: ToolArgs): Promise<CallToolResult> {
+  // The low-level Server does not enforce the advertised inputSchema
+  // (additionalProperties: false) at runtime, so a stray/misunderstood field
+  // (e.g. a client expecting a schedule_dir override) would otherwise be
+  // silently discarded and this would report the server's own configured
+  // schedule instead of failing loud.
+  const unexpected = Object.keys(args);
+  if (unexpected.length > 0) throw new ToolError('ERR_INVALID_INPUT', `schedule_status takes no arguments — got: ${unexpected.join(', ')}`);
   const res = await captureCall(() => schedule({ _: 'status', dirs: [], tables: [], recipients: [] }));
   return structuredOk({ report: res.out });
 }
@@ -575,7 +582,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       case 'last_snapshot_status': return await handleLastSnapshotStatus(args);
       case 'verify_restore': return await handleVerifyRestore(args);
       case 'estimate_cost': return await handleEstimateCost(args);
-      case 'schedule_status': return await handleScheduleStatus();
+      case 'schedule_status': return await handleScheduleStatus(args);
       default: return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
     }
   } catch (err) {

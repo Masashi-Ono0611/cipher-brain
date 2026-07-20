@@ -247,6 +247,16 @@ async function run(tmp) {
       throw new Error(`schedule_status report missing the next-run line: ${JSON.stringify(schedSc.report)}`);
     }
 
+    // 2i. schedule_status must REJECT unexpected arguments rather than silently
+    // ignore them (the tool takes none — a stray field could otherwise mask a
+    // client's mistaken attempt to scope the report to a different schedule).
+    send({ jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'schedule_status', arguments: { unexpected: true } } });
+    const schedBad = await waitFor(11);
+    const schedBadSc = schedBad.result?.structuredContent;
+    if (schedBad.result?.isError !== true || schedBadSc?.code !== 'ERR_INVALID_INPUT') {
+      throw new Error(`schedule_status did not reject an unexpected argument: ${JSON.stringify(schedBad.result).slice(0, 300)}`);
+    }
+
     process.stdout.write(
       `MCP SMOKE: PASS — tools=[${names.join(', ')}], spend gate=ERR_CONFIRM_REQUIRED, ` +
       `file round-trip locator=${snapSc.locator.split('/').pop()}, status.age=${latest.age_seconds}s, verify=${verSc.verdict}, ` +

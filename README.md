@@ -166,6 +166,9 @@ cipher-brain estimate --in brain-2026-06-27.age --backend turbo   # preview the 
 # park the ciphertext permanently on Arweave (storage only ever sees ciphertext).
 # push pays a one-time bundler fee (<100 KB free) and needs a JWK wallet;
 # pull is a plain gateway fetch — no wallet, no npm package.
+cipher-brain wallet create                 # one-time: writes ~/.cipher-brain/wallet.json (0600)
+cipher-brain wallet address                # prints the address — fund THIS one (crypto or a card;
+                                            # see docs/arweave-upload-runbook.md), then push:
 TX=$(CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
   cipher-brain push --in brain-2026-06-27.age --backend turbo --yes)  # prints the locator (tx id)
 cipher-brain pull --locator "$TX" --backend turbo --out got.age \
@@ -231,9 +234,10 @@ they are not peers:
 - **`turbo` — the recommended mainline.** Uploads the ciphertext to the Arweave
   network as an ANS-104 bundled data item via a bundler (ArDrive Turbo), payable
   with **ETH/USDC** (`<100 KB` free); pushing needs `@ardrive/turbo-sdk` and a
-  JWK wallet. The `locator` is the data-item id assigned after upload. Pulling
-  needs neither — it is a plain HTTP read from any Arweave gateway. Funding/credit-share
-  details: [`docs/arweave-upload-runbook.md`](docs/arweave-upload-runbook.md).
+  JWK wallet — `cipher-brain wallet create` generates one, `cipher-brain wallet
+  address` prints what to fund. The `locator` is the data-item id assigned after
+  upload. Pulling needs neither — it is a plain HTTP read from any Arweave gateway.
+  Funding/credit-share details: [`docs/arweave-upload-runbook.md`](docs/arweave-upload-runbook.md).
 - **`arweave`** — the raw single-L1-transaction path to the same network, for
   small artifacts only (a ~10 MiB guard redirects anything larger to `turbo`).
 - **`file`** — a local content-addressed store (no daemon, no network); used by

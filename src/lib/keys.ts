@@ -40,7 +40,16 @@ export interface KeygenAtResult {
 //    old content is only ever touched by the rename succeeding, i.e. once the new
 //    payload already sits fully-written on disk — so a failure BEFORE this point
 //    (e.g. a mistyped passphrase confirmation, Ctrl-C) can never delete anything.
-async function writeKeyFile(path: string, payload: string | Uint8Array, mode: number, force: boolean): Promise<void> {
+// Exported so wallet.ts (`cipher-brain wallet create`, #158) can give the Arweave JWK
+// the SAME fail-closed, no-clobber-unless-force write this module already gives the
+// age identity, instead of a hand-rolled second write path with its own TOCTOU/partial-
+// write behavior to keep in sync.
+export async function writeKeyFile(
+  path: string,
+  payload: string | Uint8Array,
+  mode: number,
+  force: boolean,
+): Promise<void> {
   if (!force) {
     await writeFile(path, payload, { mode, flag: 'wx' });
     return;

@@ -172,10 +172,12 @@ for non-PATH installs: `CIPHER_BRAIN_PG_BIN` (dir holding
 ## Backends
 
 `push`/`pull` are storage primitives over a pluggable backend (`--backend` is
-required — there is no default). Paid pushes print a winc/AR estimate plus an
-approximate USD line, and `push --skip-unchanged` skips a paid re-upload when the
-snapshot's plaintext content digest (the `<out>.digest` sidecar `snapshot` writes)
-matches the previous push. Three backends ship, but they are not peers:
+required — there is no default). Paid pushes print a cost estimate before
+uploading — turbo prints a winc/AR estimate plus an approximate USD line;
+arweave prints a winston-only estimate, with no USD line — and
+`push --skip-unchanged` skips a paid re-upload when the snapshot's plaintext
+content digest (the `<out>.digest` sidecar `snapshot` writes) matches the
+previous push. Three backends ship, but they are not peers:
 
 - **`turbo` — the recommended mainline.** Uploads the ciphertext to the Arweave
   network as an ANS-104 bundled data item via a bundler (ArDrive Turbo), payable

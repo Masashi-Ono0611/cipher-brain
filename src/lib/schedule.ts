@@ -41,7 +41,7 @@ const SNAPS_DIR = join(SCHEDULE_DIR, 'snapshots');
 const PLIST = join(LAUNCHD_DIR, `${LABEL}.plist`);
 const CRON_ENTRY_FILE = join(SCHEDULE_DIR, 'cron.entry'); // Linux: the exact registered line, kept as an artifact for status/uninstall
 
-const BACKENDS = new Set(['file', 'ton', 'arweave', 'turbo']);
+const BACKENDS = new Set(['file', 'arweave', 'turbo']);
 const PAID = new Set(['arweave', 'turbo']);
 
 // Every CIPHER_BRAIN_* var a snapshot+push run could need that this runner does NOT
@@ -49,26 +49,20 @@ const PAID = new Set(['arweave', 'turbo']);
 // in runnerBody for the full exclusion list).
 const ENV_CAPTURE_VARS = [
   'CIPHER_BRAIN_FILE_DIR', 'CIPHER_BRAIN_PG_BIN', 'CIPHER_BRAIN_PIN_RECIPIENTS',
-  'CIPHER_BRAIN_TON_CLI', 'CIPHER_BRAIN_TON_API', 'CIPHER_BRAIN_TON_CLIENT', 'CIPHER_BRAIN_TON_SERVER', 'CIPHER_BRAIN_TON_TIMEOUT',
   'CIPHER_BRAIN_AR_HOST', 'CIPHER_BRAIN_AR_PORT', 'CIPHER_BRAIN_AR_PROTOCOL', 'CIPHER_BRAIN_AR_WALLET', 'CIPHER_BRAIN_AR_PAID_BY',
   'CIPHER_BRAIN_AR_HTTP_TIMEOUT', 'CIPHER_BRAIN_AR_L1_MAX', 'CIPHER_BRAIN_PIPE_TIMEOUT',
 ];
 
 // Of ENV_CAPTURE_VARS, the ones config.ts documents as naming a filesystem path (a
 // directory or a specific key/JWK file) rather than a bare value (a backend name, a
-// timeout, a spend cap, a hostname/URL/address) or — like CIPHER_BRAIN_TON_CLI, default
-// 'storage-daemon-cli' — a command name meant to be resolved via PATH at RUN time (which
-// path-resolving here would break, the same class of bug --pg's pg_dump auto-detect
-// already guards against). A relative value here resolves fine at install time (against
-// the operator's interactive cwd), but launchd/cron invoke the runner from a DIFFERENT,
-// unrelated cwd — so bake the ABSOLUTE path in, same treatment already given to
-// --vault/--zip/--recipient(file) below.
+// timeout, a spend cap, a hostname/URL/address). A relative value here resolves fine
+// at install time (against the operator's interactive cwd), but launchd/cron invoke
+// the runner from a DIFFERENT, unrelated cwd — so bake the ABSOLUTE path in, same
+// treatment already given to --vault/--zip/--recipient(file) below.
 const PATH_ENV_VARS = new Set([
   'CIPHER_BRAIN_FILE_DIR', // config.ts: "file backend object store"
   'CIPHER_BRAIN_PG_BIN',   // config.ts: "dir holding pg_dump/pg_restore"
   'CIPHER_BRAIN_AR_WALLET', // config.ts: "path to a JWK key file"
-  'CIPHER_BRAIN_TON_CLIENT', // ton.ts: "storage-daemon-cli key paths" (-k)
-  'CIPHER_BRAIN_TON_SERVER', // ton.ts: "storage-daemon-cli key paths" (-p)
 ]);
 
 // Snapshot + resolve, at install time, every ENV_CAPTURE_VARS value that is actually set —
@@ -157,7 +151,7 @@ function runnerBody(cfg: ScheduleConfig): string {
   // by the decrypt path — restore/verify/pull's decrypt-proof — which the nightly runner
   // never exercises; it only encrypts). launchd/cron start with a BARE env, so anything
   // here that was set at install time and is silently dropped makes a scheduled run of a
-  // non-default backend (ton/turbo/a custom arweave gateway) fail or fall back to the
+  // non-default backend (turbo/a custom arweave gateway) fail or fall back to the
   // WRONG default compared to the interactive setup the operator actually tested.
   // cfg.env was already resolved to absolute paths (where applicable) at install time by
   // captureEnv() — do NOT re-read process.env here (launchd/cron's bare env has none of
@@ -312,8 +306,8 @@ function resolvePgDumpDir(): string | null {
 // ---------- subcommands ----------
 
 async function install(o: CliOptions): Promise<void> {
-  if (!o.backend) throw new Error('--backend <file|ton|arweave|turbo> required');
-  if (!BACKENDS.has(o.backend)) throw new Error(`unknown backend: ${o.backend} (expected file|ton|arweave|turbo)`);
+  if (!o.backend) throw new Error('--backend <file|arweave|turbo> required');
+  if (!BACKENDS.has(o.backend)) throw new Error(`unknown backend: ${o.backend} (expected file|arweave|turbo)`);
   if (!o.pg && o.dirs.length === 0 && !o.profile) {
     throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
   }

@@ -16,7 +16,7 @@ exercised by `npm run selftest:recovery` (gated in CI).
 
 Recovery needs **two** things, and both can be lost. The private `identity.age` is the
 only thing that can *decrypt* — lose it and every snapshot is permanently unreadable.
-But the **locator** (which BagID / tx id / store path holds the latest ciphertext) is
+But the **locator** (which tx id / store path holds the latest ciphertext) is
 the only thing that tells a fresh machine *where to fetch from* — and today the full
 record of locators is a local `index.tsv` on the always-on box. If that box dies, an
 operator who backed up only the identity still cannot find the bytes. So back up both:
@@ -85,7 +85,7 @@ cipher-brain push --in brain-$(date +%F).age --backend turbo --yes \
 ```
 
 > **Use a network backend here.** For `--backend file` the locator is a *local* store
-> path, useless on a fresh machine — only `turbo`/`arweave`/`ton` locators are portable.
+> path, useless on a fresh machine — only `turbo`/`arweave` locators are portable.
 
 Back this file up **off-box, next to the backup identity** (same encrypted USB / secure
 note). Recovery on a fresh machine then needs only those two things — no `index.tsv`. The
@@ -98,9 +98,8 @@ cipher-brain restore --in latest.age --out-dir ./restored --pg "$PG_RESTORE"
 
 For full version history (not just the latest), keep backing up the whole `index.tsv`
 (below) — but the single latest-locator file is the minimum that makes disk-death
-recoverable. *(A stable name that always resolves to the newest snapshot — a `.ton` DNS
-record or an ArNS mutable pointer — is a future option; until then this file is the
-durable pointer.)*
+recoverable. *(A stable name that always resolves to the newest snapshot — an ArNS
+mutable pointer — is a future option; until then this file is the durable pointer.)*
 
 ## Cadence
 
@@ -158,7 +157,7 @@ cipher-brain snapshot --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.
 # suppresses the interactive --yes guard when running unattended, and
 # CIPHER_BRAIN_MAX_SPEND=<n> (native units: winc for turbo, winston for arweave L1)
 # aborts when the cost estimate exceeds your budget. Omit both (and the wallet) for
-# the free backends (file, or the experimental ton).
+# the free file backend.
 export CIPHER_BRAIN_YES=1
 export CIPHER_BRAIN_MAX_SPEND=500000000
 export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer for turbo
@@ -170,7 +169,7 @@ export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer f
 # locator instead of paying to re-upload (a changed --recipient set always re-uploads;
 # --force overrides either way).
 LOC=$(cipher-brain push --in "$OUT" --backend turbo --skip-unchanged \
-  --save-locator "$HOME/.cipher-brain/latest-locator.tsv")   # or: file | arweave | ton
+  --save-locator "$HOME/.cipher-brain/latest-locator.tsv")   # or: file | arweave
 # Read the SHA256 back from the save-locator file's 3rd field rather than re-hashing
 # "$OUT": on a --skip-unchanged SKIP, $LOC is the PREVIOUS run's locator while $OUT is
 # THIS run's freshly re-encrypted (age's ephemeral file key differs every run) and
@@ -209,16 +208,15 @@ boundary needs aligning.)
 ## Versioning
 
 Each snapshot is immutable: `push` returns a **locator** whose form depends on the
-backend — a store path (`file`), a hex BagID that is a content fingerprint (`ton`),
-or a tx id assigned *after* upload (`arweave`/`turbo`; not a content hash). Keep an
-append-only
+backend — a store path (`file`, content-addressed) or a tx id assigned *after*
+upload (`arweave`/`turbo`; not a content hash). Keep an append-only
 `index.tsv` of `timestamp · locator · sha256` (the scheduled nightly runner does this).
 That index *is* your version history — every line is an independently restorable
 point in time. To find the *most recent* backup, a fresh machine reads the latest
 line of `index.tsv`, or the one-line `--save-locator` file (Key recovery #3) if it
-has only that. *(A self-resolving stable name — a `.ton` DNS record or ArNS pointer
-updated to the newest locator — would let a fresh machine find the latest with no
-local file at all; that is a future option, not yet implemented.)*
+has only that. *(A self-resolving stable name — an ArNS pointer updated to the
+newest locator — would let a fresh machine find the latest with no local file at
+all; that is a future option, not yet implemented.)*
 
 ## Restore runbook
 
@@ -250,7 +248,6 @@ under `./restored` yourself.
 | `file` backend store/fetch | **proven** — `selftest:storage` (CI) |
 | `arweave` backend round-trip | **proven** — `selftest:arweave` (CI, against arlocal); real-network gateway pull confirmed operator-run |
 | `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |
-| `ton` cross-node fetch (experimental backend) | **PARTIAL** — blocked on seeder reachability; the TON leg is iceboxed (see issues) |
 | Identity at rest (passphrase-wrap via `keygen --passphrase`; FDE on the identity host) | **available / recommended** — `--passphrase` ships; FDE is operator config, not enforced by code |
 | Nightly cadence (`schedule install / status / uninstall`: generated runner + launchd/cron trigger, paid backends refused without a spend cap, end-to-end run of the generated runner) | **proven** — `selftest:schedule` (CI) |
 | Identity off-box backup, Shamir M-of-N | **recommended practice / future** — not enforced by code |

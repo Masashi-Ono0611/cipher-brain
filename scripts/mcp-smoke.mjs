@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-// MCP smoke test for the bundled build (adapted from ton-mesh-harness's
-// scripts/mcp-smoke.cjs, ESM here). Spawns `node dist/mcp.mjs` over stdio and:
+// MCP smoke test for the bundled build. Spawns `node dist/mcp.mjs` over stdio and:
 //   1. initialize + notifications/initialized + tools/list — asserts the four
 //      tool names (snapshot_now, last_snapshot_status, verify_restore,
 //      estimate_cost).

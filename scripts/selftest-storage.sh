@@ -3,8 +3,6 @@
 # gate push/pull: snapshot -> push -> (delete original) -> pull -> verify -> restore.
 # Asserts the locator is content-addressed (not the source path), the stored bytes
 # match, the pulled bytes round-trip and decrypt, and an absent locator errors.
-# The TON backend's real cross-node transfer is proven separately by an operator
-# (scripts/ton-roundtrip.sh) — that needs a running storage-daemon.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

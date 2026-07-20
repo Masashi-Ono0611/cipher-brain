@@ -25,11 +25,6 @@ export const AGE_PUBKEY_RE = /age1[0-9a-z]{50,63}/g; // an age X25519 recipient 
 
 // ---------- storage backend config (pluggable: storage only ever sees ciphertext) ----------
 export const FILE_DIR = process.env.CIPHER_BRAIN_FILE_DIR || join(HOME, 'store'); // file backend object store
-export const TON_CLI = process.env.CIPHER_BRAIN_TON_CLI || 'storage-daemon-cli';
-export const TON_API = process.env.CIPHER_BRAIN_TON_API || '127.0.0.1:15555';     // storage-daemon control addr
-export const TON_CLIENT = process.env.CIPHER_BRAIN_TON_CLIENT || '';              // storage-daemon-cli -k <client key>
-export const TON_SERVER = process.env.CIPHER_BRAIN_TON_SERVER || '';              // storage-daemon-cli -p <server.pub>
-export const TON_TIMEOUT_S = Number(process.env.CIPHER_BRAIN_TON_TIMEOUT || 300); // pull: wait this long for download
 export const AR_HOST = process.env.CIPHER_BRAIN_AR_HOST || 'arweave.net';
 export const AR_PORT = Number(process.env.CIPHER_BRAIN_AR_PORT || 443);
 export const AR_PROTOCOL = process.env.CIPHER_BRAIN_AR_PROTOCOL || 'https';

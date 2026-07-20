@@ -199,7 +199,7 @@ interface ArweaveTransaction {
 
 // arweave backend: stores the ciphertext as an Arweave transaction. The locator is
 // the tx id — assigned AFTER upload, NOT a content hash — which is exactly the case
-// the StorageBackend interface must handle (vs file/ton's pre-known content ids).
+// the StorageBackend interface must handle (vs file's pre-known content id).
 // The `arweave` SDK is imported LAZILY and only where it is actually needed — uploads
 // (put) and the rare L1 chunk fallback. The primary READ path (gateway HTTP, path 1
 // below) is pure native fetch, so a fresh machine recovers a bundled/Turbo brain from

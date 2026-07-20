@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-// End-to-end tarball install + run smoke (adapted from ton-mesh-harness's
-// scripts/tarball-smoke.cjs, ESM here). Packs the package (no registry write),
+// End-to-end tarball install + run smoke. Packs the package (no registry write),
 // installs the tarball into a fresh sandbox package, and runs BOTH installed
 // bins through the published surface:
 //

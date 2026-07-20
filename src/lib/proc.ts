@@ -26,8 +26,8 @@ export function run(cmd: string, args: string[], { input, timeoutMs }: RunOpts =
     let out = '', err = '';
     let timer: ReturnType<typeof setTimeout> | undefined;
     if (timeoutMs) {
-      // a stuck child (e.g. a storage-daemon-cli call that never returns) must not
-      // hang us forever — kill it and reject so callers can bound their own loops.
+      // a stuck child (e.g. a pg_dump call that never returns) must not hang us
+      // forever — kill it and reject so callers can bound their own loops.
       timer = setTimeout(() => { p.kill('SIGKILL'); rej(new Error(`${cmd} timed out after ${timeoutMs}ms`)); }, timeoutMs);
     }
     p.stdout?.on('data', (d) => (out += d));

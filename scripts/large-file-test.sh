@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # Large-file / multi-chunk round-trip (issue #8), operator-run. Confirms the
-# streaming snapshot and both backends hold at scale, and that the `ton` backend
-# produces a MULTI-PIECE bag the daemon stores intact. Cross-node transfer is still
-# blocked on reachability (#6), so the ton part is integrity-only (like #2).
+# streaming snapshot and the file backend hold at scale.
 #
-# Config: CB_SIZE_MB (default 256). CB_TON=1 to also exercise the ton backend
-#   (needs the storage-daemon + the CB_TRIAL_ROOT / ~.homebrew PATH like ton-roundtrip).
+# Config: CB_SIZE_MB (default 256).
 set -euo pipefail
 
 SIZE_MB="${CB_SIZE_MB:-256}"
@@ -45,7 +42,6 @@ else
   echo "[SKIP] streaming RSS assert — size < 128 MB is below Node's baseline RSS; run at >=256 MB to prove it"
 fi
 ORIG=$(sha "$TMP/big.age")
-cp "$TMP/big.age" "$TMP/ton.age"   # keep a copy for the ton test before the file backend deletes the original
 
 echo "== file backend: push -> (delete original) -> pull -> decrypt at size =="
 T0=$(now); LOC=$(cb push --in "$TMP/big.age" --backend file); T1=$(now)
@@ -57,31 +53,6 @@ cb restore --in "$TMP/got.age" --out-dir "$TMP/out" >/dev/null
 tar -xzf "$TMP/out/brain.tar.gz" -C "$TMP/out"
 diff -r "$SRC" "$TMP/out/brain" >/dev/null && echo "[PASS] decrypt + restore byte-identical at ${SIZE_MB} MB" \
   || { echo "[FAIL] restore mismatch"; exit 1; }
-
-if [ "${CB_TON:-0}" = "1" ]; then
-  echo "== ton backend: multi-piece bag stored intact (integrity-only; cross-node blocked, see #6) =="
-  ROOT="${CB_TRIAL_ROOT:-$HOME/ton-provider-trial}"; W="$ROOT/work"; CLIBIN="$ROOT/bin/storage-daemon-cli"
-  A() { "$CLIBIN" -I 127.0.0.1:15555 -k "$W/db/cli-keys/client" -p "$W/db/cli-keys/server.pub" -c "$1"; }
-  export CIPHER_BRAIN_TON_CLI="$CLIBIN" CIPHER_BRAIN_TON_API=127.0.0.1:15555
-  export CIPHER_BRAIN_TON_CLIENT="$W/db/cli-keys/client" CIPHER_BRAIN_TON_SERVER="$W/db/cli-keys/server.pub"
-  # CB_TON=1 explicitly requested the ton path — if the daemon is unreachable that's
-  # BLOCKED, not PASS (don't green-stamp a backend we never exercised).
-  A "list" >/dev/null 2>&1 || { echo "[BLOCKED] CB_TON=1 was requested but daemon A (:15555) is unreachable"; exit 2; }
-  TON_ORIG=$(sha "$TMP/ton.age")
-  BAG=$(cb push --in "$TMP/ton.age" --backend ton)
-  TOTAL=$(A "get $BAG --json" 2>/dev/null | grep -oE '"total_size"[^0-9]*[0-9]+' | grep -oE '[0-9]+' | head -1)
-  PIECES=$(( ${TOTAL:-0} / 131072 + 1 ))   # default piece size 128 KB
-  echo "ton bag $BAG: total_size ${TOTAL} bytes (~${PIECES} pieces of 128 KB)"
-  [ "$PIECES" -gt 1 ] && echo "[PASS] multi-piece bag (${PIECES} pieces)" || { echo "[FAIL] not multi-piece"; exit 1; }
-  SFILE=$(find "$W/db/torrent/torrent-files/$BAG" -type f 2>/dev/null | head -1)
-  [ -n "$SFILE" ] && [ "$(sha "$SFILE")" = "$TON_ORIG" ] && echo "[PASS] daemon stored the exact ${SIZE_MB} MB ciphertext (sha256 match)" \
-    || { echo "[FAIL] ton stored bytes mismatch"; exit 1; }
-  cb restore --in "$SFILE" --out-dir "$TMP/ton-out" >/dev/null
-  tar -xzf "$TMP/ton-out/brain.tar.gz" -C "$TMP/ton-out"
-  diff -r "$SRC" "$TMP/ton-out/brain" >/dev/null && echo "[PASS] ton-stored ciphertext decrypts byte-identical" \
-    || { echo "[FAIL] ton decrypt mismatch"; exit 1; }
-  A "remove $BAG --remove-files" >/dev/null 2>&1 || true   # tidy up the large test bag
-fi
 
 echo
 echo "LARGE-FILE TEST PASS (${SIZE_MB} MB)"

@@ -14,9 +14,7 @@ This repo is the **Cipher layer** of Cipher Brain: the part that turns your
 growing second brain into a single encrypted artifact. Storage is a pluggable
 backend behind one `push`/`pull` interface, and it only ever sees ciphertext.
 Arweave via the **`turbo`** backend is the recommended mainline; a local
-`file` backend covers dev and CI; an **experimental** `ton` backend exists for
-operators who already run TON Storage infrastructure (see
-[Backends](#backends)).
+`file` backend covers dev and CI (see [Backends](#backends)).
 
 > Status: proof-of-concept for [issue #1](https://github.com/Masashi-Ono0611/cipher-brain/issues/1).
 > The round-trip is validated end-to-end against real gbrain data (see below).
@@ -169,9 +167,7 @@ string is passed as a process argument; for password auth use `~/.pgpass` or
 `PGPASSWORD` so secrets stay out of the process list. Binary paths are overridable
 for non-PATH installs: `CIPHER_BRAIN_PG_BIN` (dir holding
 `pg_dump`/`pg_restore`), `CIPHER_BRAIN_HOME`. Storage backends read
-`CIPHER_BRAIN_FILE_DIR` (file backend object store) and
-`CIPHER_BRAIN_TON_{CLI,API,CLIENT,SERVER,TIMEOUT}` (the `storage-daemon-cli` path,
-control address, key paths, and download timeout for the ton backend).
+`CIPHER_BRAIN_FILE_DIR` (file backend object store).
 
 ## Backends
 
@@ -179,7 +175,7 @@ control address, key paths, and download timeout for the ton backend).
 required — there is no default). Paid pushes print a winc/AR estimate plus an
 approximate USD line, and `push --skip-unchanged` skips a paid re-upload when the
 snapshot's plaintext content digest (the `<out>.digest` sidecar `snapshot` writes)
-matches the previous push. Four backends ship, but they are not peers:
+matches the previous push. Three backends ship, but they are not peers:
 
 - **`turbo` — the recommended mainline.** Uploads the ciphertext to the Arweave
   network as an ANS-104 bundled data item via a bundler (ArDrive Turbo), payable
@@ -191,14 +187,9 @@ matches the previous push. Four backends ship, but they are not peers:
   small artifacts only (a ~10 MiB guard redirects anything larger to `turbo`).
 - **`file`** — a local content-addressed store (no daemon, no network); used by
   CI and for local drills.
-- **`ton` — experimental.** Shells out to a TON Storage `storage-daemon`
-  (`locator` = hex BagID, a content fingerprint). Only meaningful if you already
-  operate a TON Storage seeder: the TON mainnet storage-provider market is empty
-  as of a 2026-06 re-probe (see [`docs/durability.md`](docs/durability.md)), so
-  TON durability is something you run yourself, not something you can buy.
 
 The backend abstraction is what makes the same `snapshot → push … pull → restore`
-pipeline work across all four — content-addressed (`file`/`ton`) and
+pipeline work across all three — a content-addressed (`file`) and
 post-assigned-id (`arweave`/`turbo`) locators alike.
 
 ## Validation
@@ -218,35 +209,20 @@ post-assigned-id (`arweave`/`turbo`) locators alike.
    CI, no daemon/network) — snapshot → push → *delete the original* → pull → verify
    → restore, asserting the locator is content-addressed (not the source path), the
    pulled bytes decrypt to the source, and an absent locator errors. ✅
-4. **Storage round-trip — `ton` backend** (`scripts/ton-roundtrip.sh`,
-   operator-run) — pushes the ciphertext to a real `storage-daemon`, starts an
-   independent second daemon with its own db, and attempts a cross-node fetch by
-   BagID, gated on `get-peers` showing the seeder (so a local read can't pass as a
-   transfer).
-
-   Result (2026-06-27, testnet, home-NAT'd seeder): **PARTIAL**. The daemon stored
-   the *exact* ciphertext (sha256 match), it decrypts back to the original, storage
-   held no plaintext, and a flipped BagID returns nothing — but the two daemons
-   never peered (the seeder shows 0 peers), so the cross-node ADNL transfer was
-   **not** exercised. That gap is seeder reachability (NAT / sparse testnet DHT),
-   filed as a follow-up issue (#6). It is honestly *not* a full PASS — the path to
-   PASS (a public-IP seeder + the cross-node proof) is laid out in
-   [`docs/ton-public-seeder.md`](docs/ton-public-seeder.md).
-5. **Key recovery + versioning** (`npm run selftest:recovery`, gated in CI, no
+4. **Key recovery + versioning** (`npm run selftest:recovery`, gated in CI, no
    daemon) — encrypts a snapshot to a primary *and* an offline backup key, then
    shows the **backup key restores with the primary identity absent**, an unrelated
    identity cannot, and two snapshots restore independently. ✅
-6. **Large-file / multi-chunk** (`scripts/large-file-test.sh`, operator-run) —
-   runs the whole pipeline at scale through both backends.
+5. **Large-file / multi-chunk** (`scripts/large-file-test.sh`, operator-run) —
+   runs the whole pipeline at scale through the file backend.
 
    Result (2026-06-27, 256 MB): snapshot streamed in 9 s at **~101 MB node RSS**
    (≪ the 256 MB input → not buffered); the `file` backend round-tripped
-   byte-identical; the `ton` backend produced a **2050-piece** bag the daemon
-   stored exactly and that decrypted byte-identical. ✅
-7. **Arweave backend parity** (`npm run selftest:arweave`, gated in CI against a
+   byte-identical. ✅
+6. **Arweave backend parity** (`npm run selftest:arweave`, gated in CI against a
    local [arlocal](https://github.com/textury/arlocal) gateway — no real AR) —
    proves the `StorageBackend` abstraction holds for a backend whose locator is an
-   **Arweave tx id assigned *after* upload** (not a content hash like `file`/`ton`):
+   **Arweave tx id assigned *after* upload** (not a content hash like `file`):
    push → tx id, fetch by that id, byte-identical, decrypts; unknown id fails. ✅
    `pull` reads both plain **L1** txs and **ANS-104 bundled** data items — the form a
    bundler (Turbo/Irys) produces when you pay with **ETH/USDC/fiat** — via a gateway-HTTP
@@ -258,37 +234,30 @@ post-assigned-id (`arweave`/`turbo`) locators alike.
 [`MANAGEMENT.md`](MANAGEMENT.md) covers cadence (`cipher-brain schedule install`
 generates the nightly snapshot+push runner and its launchd/cron trigger),
 versioning (each push → an immutable locator + an append-only
-index — content-addressed for `file`/`ton`, a tx id for `arweave`/`turbo`), the
+index — content-addressed for `file`, a tx id for `arweave`/`turbo`), the
 restore runbook, and **key recovery** — the primary-plus-offline-backup
 model above, so losing one identity never loses the brain.
 
 **Durability** (will the bytes survive a year of neglect?) is a separate question from
 the round-trip: [`docs/durability.md`](docs/durability.md) lays out why Arweave's
-pay-once permanence (via `--backend turbo`) is the one recommended path, and why the
-TON alternative is an advanced run-it-yourself recipe — with the measured state of the
-TON provider market behind that call (#7).
+pay-once permanence (via `--backend turbo`) is the one recommended path.
 
 ## Roadmap
 
 - **#1 Cipher** — encrypt a snapshot client-side, key only yours. ✅
 - **#2 Storage** — pluggable backend, storage sees ciphertext only. `file` backend
-  round-trip ✅ (CI-gated); `ton` push/store/decrypt ✅, cross-node fetch blocked on
-  seeder reachability (PARTIAL — tracked as a follow-up).
+  round-trip ✅ (CI-gated).
 - **#3 Management** — key recovery (backup key, CI-proven ✅) + versioning ✅;
   cadence / restore runbook documented in [`MANAGEMENT.md`](MANAGEMENT.md).
 - **Backends** — `turbo` (**recommended** — upload via a bundler, payable with
   **ETH/USDC**, `<100KB` free; operator-proven real round-trip, #20) · `arweave`
-  (raw L1; parity CI-proven against arlocal ✅, #9) · `file` (local/CI ✅) · `ton`
-  (**experimental** — store/decrypt ✅, cross-node PARTIAL, #6). The abstraction is
-  validated across content-addressed *and* post-assigned-id backends.
+  (raw L1; parity CI-proven against arlocal ✅, #9) · `file` (local/CI ✅). The
+  abstraction is validated across content-addressed *and* post-assigned-id backends.
 
 The cipher layer is backend-agnostic by design — proven, not just asserted, now that
-both a content-addressed (`ton`) and a post-assigned-id (`arweave`) backend round-trip.
-The **Arweave-vs-TON** call is made (#60): Arweave is the mainline because its
-durability is purchasable (pay once), while TON's is operational — the mainnet
-provider market measured empty ([`docs/durability.md`](docs/durability.md)) — so the
-TON leg (#6 reachability, #7 persistence) is iceboxed, kept as proof of the
-abstraction and as optionality if that market matures.
+both a content-addressed (`file`) and a post-assigned-id (`arweave`) backend round-trip.
+Arweave is the mainline because its durability is purchasable (pay once) — see
+[`docs/durability.md`](docs/durability.md) for the reasoning behind that call (#60).
 
 ## MCP server
 
@@ -304,7 +273,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP) |
 | `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
-| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file/ton (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable |
+| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable |
 
 Claude Code config (`.mcp.json`):
 

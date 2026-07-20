@@ -80,7 +80,7 @@ async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> 
 
 export async function push(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|ton|arweave|turbo> required'); // no silent default
+  if (!o.backend) throw new Error('--backend <file|arweave|turbo> required'); // no silent default
   if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
   // storage must only ever see ciphertext — refuse to push a non-age artifact
   // (e.g. an accidental plaintext path), which would be the last gate before a
@@ -217,7 +217,7 @@ export async function pull(o: CliOptions): Promise<void> {
   }
   if (!o.locator) throw new Error('--locator <id> required (or --from-locator-file <path>)');
   if (!o.out) throw new Error('--out <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|ton|arweave|turbo> required');
+  if (!o.backend) throw new Error('--backend <file|arweave|turbo> required');
   const backend = await backendFor(o.backend);
   // --wait <seconds>: keep retrying while the item is not yet retrievable. A fresh
   // Turbo/ArDrive upload takes ~5-8 min to propagate to the gateway (bundle -> mine

@@ -31,6 +31,7 @@ import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
 import { push, pull } from './lib/pushpull.js';
 import { schedule } from './lib/schedule.js';
+import { wallet } from './lib/wallet.js';
 import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
 import { printMascot } from './lib/ui.js';
@@ -76,6 +77,19 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       snapshot unrecoverable) — use this if you skipped the passphrase step during "init"
       or a bare keygen and want to add one later. Refuses if the identity is already
       wrapped, or if none exists yet.
+
+  cipher-brain wallet create [--out <path>] [--force]
+      Generate a fresh Arweave JWK for the arweave/turbo storage backends (needs the
+      'arweave' package — a peerDependency, same as those backends). Defaults to
+      $CIPHER_BRAIN_HOME/wallet.json; --out picks a different path. Prints the wallet
+      path (PRIVATE) and its derived address (PUBLIC — fund THIS one). Refuses to
+      overwrite an existing wallet file (same no-clobber posture as keygen); --force to
+      replace it. Written 0600, same fail-closed handling as the age identity.
+
+  cipher-brain wallet address [--wallet <path>]
+      Derive and print the Arweave address a JWK spends from, without uploading
+      anything. --wallet defaults to CIPHER_BRAIN_AR_WALLET. Use this to confirm you
+      are funding the SAME wallet cipher-brain will sign uploads with.
 
   cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
@@ -183,7 +197,7 @@ Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_PG_BIN (dir of pg
      CIPHER_BRAIN_PIN_RECIPIENTS (snapshot: allowlist of age1… pubkeys, inline or a file — refuse to encrypt to any other recipient).
      CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 (init: bypass its TTY requirement — automation/CI only, e.g. this repo's own selftest; a human just runs init directly in a terminal).
 Storage: CIPHER_BRAIN_FILE_DIR (file);
-         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none);
+         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave; CIPHER_BRAIN_AR_WALLET is a path to a JWK key file — 'cipher-brain wallet create' generates one, 'wallet address' shows what to fund; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none);
          turbo: CIPHER_BRAIN_AR_WALLET (JWK signer) + optional CIPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
 Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the arweave/turbo cost estimate (winston/winc).
 Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes or CIPHER_BRAIN_YES=1.`;
@@ -208,6 +222,8 @@ async function main(): Promise<void> {
       return pull(o);
     case 'schedule':
       return schedule(o);
+    case 'wallet':
+      return wallet(o);
     // mascot on stderr (decoration only, EPIPE-safe — see printMascot in
     // ui.ts), HELP text stays on stdout so `cipher-brain --help | grep …`
     // still sees only the HELP text on its stdin.

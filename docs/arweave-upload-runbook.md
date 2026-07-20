@@ -17,7 +17,17 @@ cipher-brain snapshot --pg "<conn>" --pg-table <small_table> --out slice.age   #
 The recipient (public key) is all the snapshotting box needs; the private identity
 that decrypts stays off it.
 
-## 2. Upload via a bundler, paid with ETH/USDC
+## 2. Upload via a bundler
+
+Two ways to fund and sign the upload — pick ONE:
+
+- **Option A: browser (ArDrive + MetaMask)** — good for a one-off upload from a
+  laptop with a MetaMask wallet already funded in ETH/USDC. No local JWK file.
+- **Option B: CLI (`cipher-brain wallet` + `push --backend turbo`)** — good for
+  `schedule install`'s unattended pushes, or any push run from the machine that
+  ran `snapshot`. Signs with a local JWK file cipher-brain generates for you.
+
+### Option A: browser (ArDrive + MetaMask)
 
 1. Open **https://app.ardrive.io** → **Log In → Continue with MetaMask** (signs a
    message; derives an Arweave wallet from your Ethereum wallet — no key export).
@@ -31,10 +41,22 @@ that decrypts stays off it.
    serves the bytes. *Not* the **Metadata Tx ID**, and *not* the ArFS **File ID**
    (a UUID).
 
-### Or: upload from the CLI (`--backend turbo`)
+### Option B: CLI (`--backend turbo` / `--backend arweave`)
 
-For large blobs (the full brain) the browser is heavy. Upload straight from the host
-instead — `push` prints the data item id, no browser needed:
+For large blobs (the full brain) the browser is heavy — upload straight from the
+host instead. `push` signs with a **JWK file** at `CIPHER_BRAIN_AR_WALLET` — a
+DIFFERENT wallet from ArDrive's MetaMask-derived one above, so generate it with
+cipher-brain itself and you always know exactly which address you are funding:
+
+```sh
+cipher-brain wallet create                 # writes $CIPHER_BRAIN_HOME/wallet.json (0600, no-clobber)
+cipher-brain wallet address                # prints the address to fund — the SAME one push will sign with
+```
+
+Fund that address — either send it AR/ETH/USDC directly, or top it up with a card at
+[turbo.ar.io](https://turbo.ar.io) or [app.ardrive.io](https://app.ardrive.io)
+(Turbo natively supports fiat top-up, see `getFiatToAR` in `src/lib/backends/turbo.ts`).
+Then push — it prints the data item id, no browser needed:
 
 ```sh
 npm install @ardrive/turbo-sdk                      # optional, heavy — only for this backend

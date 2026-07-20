@@ -10,7 +10,7 @@
 // three always-initialized arrays is optional rather than a big union of exact
 // per-command shapes the parser can't actually guarantee.
 export interface CliOptions {
-  _?: string; // the schedule subcommand (install|status|uninstall) or the top-level positional arg
+  _?: string; // the schedule/wallet subcommand (install|status|uninstall|create|address) or the top-level positional arg
   dirs: string[];
   tables: string[];
   recipients: string[];
@@ -43,6 +43,7 @@ export interface CliOptions {
   at?: string;
   max_spend?: string;
   index_file?: string;
+  wallet?: string; // wallet address --wallet <path> (defaults to CIPHER_BRAIN_AR_WALLET)
 }
 
 // A StorageBackend is { put(file) -> locator, get(locator, outFile) }. Storage

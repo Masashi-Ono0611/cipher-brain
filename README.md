@@ -1,5 +1,13 @@
 # cipher-brain
 
+```text
+   ,--^--,
+  /           \    hi — I encrypt your second brain so only YOUR key opens it.
+ | [10]  [01] |    ( sunglasses stay on for verify PASS, slip for FAIL,
+ |     -      |      one lens shifts for PARTIAL — see `verify` below )
+  \___________/
+```
+
 [![CI](https://img.shields.io/github/actions/workflow/status/Masashi-Ono0611/cipher-brain/ci.yml?branch=main&label=CI&logo=github)](https://github.com/Masashi-Ono0611/cipher-brain/actions/workflows/ci.yml)
 
 > **For AI agents:** see [`llms.txt`](llms.txt) for a quick, machine-friendly orientation.

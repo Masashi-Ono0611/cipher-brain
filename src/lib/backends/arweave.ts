@@ -20,7 +20,8 @@ import {
   AR_MAX_SPEND,
   AR_L1_MAX_BYTES,
 } from '../config.js';
-import { warnIfLooseKeyPerms, readHead, errMsg, RetryableError, SdkMissingError } from '../util.js';
+import { warnIfLooseKeyPerms, readHead, fmtBytes, errMsg, RetryableError, SdkMissingError } from '../util.js';
+import { arUsdRate, usdApprox } from '../estimate.js';
 import type { StorageBackend, PutOpts } from '../types.js';
 
 // The public gateways to try (in order) for the HTTP read, before the L1 chunk
@@ -360,6 +361,17 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       try {
         reward = BigInt(await ar.transactions.getPrice(data.length));
         process.stderr.write(`arweave: L1 cost estimate: ${reward} winston\n`);
+        // Human-readable USD approximation next to the native estimate, the same way
+        // turbo.ts's put() already does (#159 — the CLI push path for arweave used to
+        // show winston only). arUsdRate never throws (null on any failure), so a dead
+        // pricing endpoint can neither block the push nor skip the CIPHER_BRAIN_MAX_SPEND
+        // cap check below.
+        const rate = await arUsdRate();
+        if (rate !== null) {
+          process.stderr.write(
+            `arweave: approx cost: ${fmtBytes(data.length)} -> ${usdApprox(reward, rate)} (at ~$${rate.toFixed(2)}/AR; rate-dependent estimate, not a quote)\n`,
+          );
+        }
       } catch (e) {
         if (AR_MAX_SPEND > 0n) {
           throw new Error(

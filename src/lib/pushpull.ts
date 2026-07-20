@@ -1,7 +1,7 @@
 // push/pull move the ciphertext to/from a storage backend. The verb is a dumb
 // primitive against ONE backend endpoint; proving "fetched from elsewhere" (a
 // second, independent node) is the operator script's job, not the verb's.
-import { mkdir, writeFile, rm, readFile, rename } from 'node:fs/promises';
+import { mkdir, writeFile, rm, readFile, rename, link } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { AGE_MAGIC, CIPHER_YES } from './config.js';
@@ -189,6 +189,47 @@ export async function push(o: CliOptions): Promise<void> {
   console.log(locator); // stdout = locator ONLY, so a script can capture it
 }
 
+// Promote a completed pull's temp part to --out, no-clobber (#107). Mirrors
+// snapshot.ts's promoteSnapshot exactly: prefer link(), atomic and fails with EEXIST if
+// `out` appeared meanwhile — a true exclusive no-clobber even under overlapping pulls.
+// Hard links are unsupported on exFAT/FAT and some network/cloud mounts (common backup
+// media), where link throws EPERM/ENOTSUP — there, fall back to an exclusive create
+// (writeFile with the 'wx' flag) as the no-clobber GATE instead of a racy
+// exists()-then-rename() check-then-act: 'wx' atomically fails with EEXIST if `out`
+// already exists, so of two overlapping pulls at most one can win the create — the
+// loser sees EEXIST and refuses, same as the link() path. The winner then owns `out`
+// and folds the real content in via rename() (itself atomic). Residual: an unclean kill
+// between the create and the rename can leave an empty placeholder at `out` — but that
+// fails SAFE (a later run sees EEXIST and refuses with the same clobberErr) rather than
+// a silent, undetectable clobber.
+async function promoteNoClobber(part: string, out: string): Promise<void> {
+  const clobberErr = () => new Error(`${out} already exists — refusing to overwrite it with a pull result (move it aside, choose a new --out, or pass --force)`);
+  try {
+    await link(part, out);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err && err.code === 'EEXIST') throw clobberErr();
+    if (err && err.code && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(err.code)) {
+      try {
+        await writeFile(out, '', { flag: 'wx' });
+      } catch (createErr) {
+        const ce = createErr as NodeJS.ErrnoException;
+        if (ce && ce.code === 'EEXIST') throw clobberErr();
+        throw createErr;
+      }
+      try {
+        await rename(part, out);
+      } catch (renameErr) {
+        try { await rm(out, { force: true }); } catch { /* ignore — never mask the real renameErr */ }
+        throw renameErr;
+      }
+      return;
+    }
+    throw e;
+  }
+  await rm(part, { force: true }); // drop the redundant link; out is the durable copy
+}
+
 export async function pull(o: CliOptions): Promise<void> {
   // --from-locator-file <path>: read the locator (and its backend) from a file written
   // by `push --save-locator`. This is the recovery path — a fresh machine that holds
@@ -218,39 +259,75 @@ export async function pull(o: CliOptions): Promise<void> {
   if (!o.locator) throw new Error('--locator <id> required (or --from-locator-file <path>)');
   if (!o.out) throw new Error('--out <file.age> required');
   if (!o.backend) throw new Error('--backend <file|arweave|turbo> required');
+  // No-clobber (#107): refuse to overwrite an existing --out by default. wizard.ts's
+  // printed recovery command reuses a FIXED path ("~/restored.age"), so a second pull
+  // (a different backup, or a re-run of the recovery steps) would otherwise destroy
+  // whatever the first pull already fetched with no warning — every backend's get()
+  // (file.ts's copyFile, arweave.ts's stream-then-rename, which turbo.ts also delegates
+  // to) writes unconditionally. Mirrors snapshot.ts's exists() gate on --out
+  // (src/lib/snapshot.ts). Checked up front, before the possibly long --wait retry loop
+  // below, so a doomed pull fails fast; --force opts into overwriting.
+  if (!o.force && (await exists(o.out))) {
+    throw new Error(`${o.out} already exists — refusing to overwrite it with a pull result (move it aside, choose a new --out, or pass --force)`);
+  }
   const backend = await backendFor(o.backend);
   // --wait <seconds>: keep retrying while the item is not yet retrievable. A fresh
   // Turbo/ArDrive upload takes ~5-8 min to propagate to the gateway (bundle -> mine
   // -> index); with --wait 0 (the default) pull fails immediately, preserving the old
   // behavior. CIPHER_BRAIN_PULL_RETRY_MS overrides the 30s retry interval (tests use it).
   const waitMs = (Number(o.wait) || 0) * 1000;       // `|| 0` OUTSIDE Number → a non-numeric --wait is 0, not NaN (no infinite loop)
-  const retryMs = Number(process.env.CIPHER_BRAIN_PULL_RETRY_MS) || 30000;
+  // Unlike waitMs above (where "unset" and "explicit 0" both correctly mean 0ms — a
+  // bare `|| 0` is safe there), retryMs's default (30000) and its explicit-zero value
+  // (0, immediate retry — the natural choice for a test avoiding a real sleep) are
+  // DIFFERENT, so a bare `Number(env) || 30000` (the #108 bug) breaks: Number("0") is
+  // 0, and 0 is falsy, so `|| 30000` silently overrides the very value it was asked to
+  // apply. Unset or empty falls back to the 30000ms default; anything else that parses
+  // as a number is honored AS GIVEN, including 0.
+  const retryMsEnv = process.env.CIPHER_BRAIN_PULL_RETRY_MS;
+  const retryMsNum = retryMsEnv !== undefined && retryMsEnv !== '' ? Number(retryMsEnv) : NaN;
+  const retryMs = Number.isFinite(retryMsNum) ? retryMsNum : 30000; // unset/empty/non-numeric -> default; anything else (incl. 0) is respected
   const deadline = Date.now() + waitMs;
-  for (let attempt = 1; ; attempt++) {
-    try {
-      await backend.get(o.locator, o.out);
-      break;
-    } catch (e) {
-      const remaining = deadline - Date.now();
-      if (!(e instanceof RetryableError) || remaining <= 0) throw e; // fatal (bad locator etc.) or out of budget → fail now
-      const naptime = Math.min(retryMs, remaining);   // honor a budget shorter than the retry interval
-      console.error(`pull attempt ${attempt} not ready (${e.message}); retrying in ${Math.round(naptime / 1000)}s…`);
-      await sleep(naptime);
+  // Fetch into a PER-RUN-UNIQUE temp sibling of --out, never --out itself (#107): this
+  // keeps --out completely untouched until the fetched bytes are verified good, so
+  // neither a failed/retried attempt nor a --sha256 mismatch below (which previously
+  // deleted --out itself) can ever harm a file that was already there. The final
+  // promotion is the same atomic no-clobber pattern snapshot.ts's promoteSnapshot uses
+  // for its own --out write (promoteNoClobber above).
+  const part = `${o.out}.${process.pid}.${randomBytes(4).toString('hex')}.part`;
+  try {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await backend.get(o.locator, part);
+        break;
+      } catch (e) {
+        const remaining = deadline - Date.now();
+        if (!(e instanceof RetryableError) || remaining <= 0) throw e; // fatal (bad locator etc.) or out of budget → fail now
+        const naptime = Math.min(retryMs, remaining);   // honor a budget shorter than the retry interval
+        console.error(`pull attempt ${attempt} not ready (${e.message}); retrying in ${Math.round(naptime / 1000)}s…`);
+        await sleep(naptime);
+      }
     }
-  }
-  // --sha256 <hex>: bind the fetched bytes to a hash known out-of-band (from a TRUSTED
-  // source, e.g. an off-box index.tsv — NOT the maybe-compromised snapshotting box).
-  // For the post-assigned-id backends (arweave/turbo) the locator is not a content
-  // hash, so without this a gateway/storage attacker could serve a rolled-back or
-  // substituted (but still age-decryptable) ciphertext. Fail-closed: delete and error
-  // on mismatch so a bad artifact never lands at --out.
-  if (o.sha256) {
-    const got = await sha256(o.out);
-    if (got.toLowerCase() !== String(o.sha256).toLowerCase()) {
-      await rm(o.out, { force: true });
-      throw new Error(`sha256 mismatch: fetched ${got}, expected ${o.sha256} — deleted ${o.out} (the storage/gateway served bytes that do not match the pinned hash)`);
+    // --sha256 <hex>: bind the fetched bytes to a hash known out-of-band (from a TRUSTED
+    // source, e.g. an off-box index.tsv — NOT the maybe-compromised snapshotting box).
+    // For the post-assigned-id backends (arweave/turbo) the locator is not a content
+    // hash, so without this a gateway/storage attacker could serve a rolled-back or
+    // substituted (but still age-decryptable) ciphertext. Checked against the TEMP part
+    // (never --out), so a mismatch here can never touch a pre-existing --out.
+    if (o.sha256) {
+      const got = await sha256(part);
+      if (got.toLowerCase() !== String(o.sha256).toLowerCase()) {
+        throw new Error(`sha256 mismatch: fetched ${got}, expected ${o.sha256} (the storage/gateway served bytes that do not match the pinned hash — nothing was written to ${o.out})`);
+      }
+      console.error(`sha256 OK: ${got}`);
     }
-    console.error(`sha256 OK: ${got}`);
+    // Promote the verified fetch to --out. --force is the explicit opt-in to overwrite
+    // (rename() atomically replaces an existing --out on POSIX); without it,
+    // promoteNoClobber refuses if --out appeared since the check above (TOCTOU-safe).
+    if (o.force) await rename(part, o.out);
+    else await promoteNoClobber(part, o.out);
+  } catch (e) {
+    await rm(part, { force: true });
+    throw e;
   }
   console.error(`pulled ${o.backend}:${o.locator} -> ${o.out}`);
 }

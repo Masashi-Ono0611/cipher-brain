@@ -55,6 +55,36 @@ fi
 test ! -f "$TMP/got-bad.age"   # fail-closed: the bad artifact must not be left at --out
 echo "[PASS] pull --sha256 (wrong) errored and deleted --out"
 
+echo "== issue #107: pull refuses to overwrite an existing --out by default =="
+printf 'pre-existing bytes, must survive the refusal\n' > "$TMP/collide.age"
+COLLIDE_BEFORE=$(sha "$TMP/collide.age")
+if cb pull --locator "$LOC" --backend file --out "$TMP/collide.age" 2>"$TMP/collide.err"; then
+  echo "[FAIL] pull overwrote an existing --out without --force"; exit 1
+fi
+grep -q "already exists" "$TMP/collide.err" || { echo "[FAIL] no-clobber error message missing 'already exists'"; cat "$TMP/collide.err"; exit 1; }
+[ "$(sha "$TMP/collide.age")" = "$COLLIDE_BEFORE" ] || { echo "[FAIL] the pre-existing --out was modified despite the no-clobber refusal"; exit 1; }
+echo "[PASS] pull refuses to overwrite an existing --out, which survives byte-identical"
+
+echo "== issue #107: pull --force overwrites an existing --out =="
+cb pull --locator "$LOC" --backend file --out "$TMP/collide.age" --force
+[ "$(sha "$TMP/collide.age")" = "$ORIG" ] || { echo "[FAIL] pull --force did not overwrite with the fetched bytes"; exit 1; }
+echo "[PASS] pull --force overwrites an existing --out"
+
+echo "== issue #107: a --sha256 mismatch never touches a PRE-EXISTING --out (verified before promotion) =="
+printf 'pre-existing bytes, must survive a hash mismatch too\n' > "$TMP/collide2.age"
+COLLIDE2_BEFORE=$(sha "$TMP/collide2.age")
+if cb pull --locator "$LOC" --backend file --out "$TMP/collide2.age" --force --sha256 "$WRONG" 2>/dev/null; then
+  echo "[FAIL] pull --force --sha256 (wrong) unexpectedly succeeded"; exit 1
+fi
+[ "$(sha "$TMP/collide2.age")" = "$COLLIDE2_BEFORE" ] || { echo "[FAIL] a --sha256 mismatch modified a pre-existing --out (the fetch must land in a temp part, never --out itself, until verified)"; exit 1; }
+echo "[PASS] a --sha256 mismatch leaves a pre-existing --out completely untouched"
+
+echo "== issue #107: no stray pull .part temp files are left behind =="
+if find "$TMP" -maxdepth 1 -name '*.part' | grep -q .; then
+  echo "[FAIL] a stray pull .part temp file was left in \$TMP"; find "$TMP" -maxdepth 1 -name '*.part'; exit 1
+fi
+echo "[PASS] no stray pull .part temp files left behind"
+
 echo "== negative control: an absent locator must fail =="
 if cb pull --locator "$CIPHER_BRAIN_FILE_DIR/deadbeef.age" --backend file --out "$TMP/no.age" 2>/dev/null; then
   echo "[FAIL] absent locator returned bytes"; exit 1

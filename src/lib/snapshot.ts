@@ -155,6 +155,15 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // `age -o o.out` write left this to age's version-dependent overwrite policy; the
   // atomic rename below would ALWAYS clobber, so enforce the safe behavior explicitly.
   if (await exists(o.out)) throw new Error(`${o.out} already exists — refusing to overwrite a prior snapshot (move it aside or choose a new --out)`);
+  // Fail-fast (#109) on a bad --out PARENT directory (a typo'd path, an unwritable
+  // mount) HERE — before pg_dump / --dir tar+extract+digest work below, which can take
+  // minutes for a large brain. Without this, the bad path only surfaces once
+  // encryptToFile's createWriteStream(part) tries to open the .part sibling deep into
+  // the run (part lives next to o.out, so its parent dir is the same one). Mirrors the
+  // mkdir(dirname(resolve(out)), { recursive: true }) file.ts:36 / arweave.ts:280
+  // already do before their own writes; a no-op if the directory already exists, a real
+  // ENOTDIR/EACCES if the path is genuinely bad.
+  await mkdir(dirname(resolve(o.out)), { recursive: true });
   // Recipients = who can decrypt. Each --recipient is an `age1...` pubkey OR a
   // file of pubkeys; default to the keypair's own recipient. Passing more than one
   // is key recovery: encrypt to a primary AND an offline backup key so that losing

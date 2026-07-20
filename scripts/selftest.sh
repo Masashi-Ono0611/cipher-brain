@@ -59,6 +59,22 @@ if [ "$RC" = "0" ]; then echo "FAIL: snapshot overwrote an existing --out"; exit
 printf '%s' "$OUT" | grep -q "already exists" || { echo "FAIL: wrong error for existing --out"; echo "$OUT"; exit 1; }
 echo "[PASS] snapshot refused to overwrite an existing snapshot"
 
+echo "== issue #109: snapshot auto-creates a missing --out parent directory =="
+NESTED_OUT="$TMP/nested/does/not/exist/yet/new.age"
+cb snapshot --dir "$SRC" --out "$NESTED_OUT"
+test -f "$NESTED_OUT" || { echo "FAIL: snapshot did not write to the auto-created nested --out path"; exit 1; }
+cb verify --in "$NESTED_OUT" | grep -q "VERDICT: PASS" || { echo "FAIL: snapshot at an auto-created nested --out did not verify"; exit 1; }
+echo "[PASS] snapshot auto-created the missing --out parent directory chain"
+
+echo "== issue #109: a bad --out parent path (an ancestor component is a FILE, not a dir) is rejected, nothing written =="
+BADPARENT="$TMP/blocking-file"; printf 'not a directory\n' > "$BADPARENT"
+BADOUT="$BADPARENT/sub/out.age"
+if cb snapshot --dir "$SRC" --out "$BADOUT" 2>/dev/null; then
+  echo "FAIL: snapshot succeeded despite a bad --out parent path (an ancestor is a plain file)"; exit 1
+fi
+test ! -e "$BADOUT"   # nothing was ever written under the bad path
+echo "[PASS] a bad --out parent path (ancestor is a file) is rejected, nothing written"
+
 echo "== restore + compare =="
 cb restore --in "$TMP/snap.age" --out-dir "$TMP/out"
 tar -xzf "$TMP/out/brain-src.tar.gz" -C "$TMP/out"

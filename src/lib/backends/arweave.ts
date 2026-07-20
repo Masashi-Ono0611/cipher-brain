@@ -432,7 +432,7 @@ export async function arweaveBackend(): Promise<StorageBackend> {
         // a typo'd-but-real tx id. Stage to `part`, validate, THEN atomically rename onto
         // --out (#117) — never write (or truncate) --out directly, so an interrupted
         // write can neither corrupt --out nor destroy a pre-existing valid one.
-        if (d && d.length) {
+        if (d?.length) {
           await writeFile(part, Buffer.from(d as Uint8Array));
           if (await isAgeCiphertext(part)) {
             await rename(part, out);

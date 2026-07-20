@@ -138,16 +138,14 @@ export async function push(o: CliOptions): Promise<void> {
       const prev = await readSavedLocatorLine(o.save_locator);
       const contentUnchanged = !!(
         cur &&
-        prev &&
-        prev.locator &&
+        prev?.locator &&
         prev.backend === o.backend &&
         prev.contentDigest &&
         prev.contentDigest.toLowerCase() === cur
       );
       const recipientsUnchanged = !!(
         curRecipients &&
-        prev &&
-        prev.recipientsFingerprint &&
+        prev?.recipientsFingerprint &&
         prev.recipientsFingerprint.toLowerCase() === curRecipients
       );
       if (contentUnchanged && recipientsUnchanged && prev) {
@@ -248,7 +246,7 @@ async function promoteNoClobber(part: string, out: string): Promise<void> {
   } catch (e) {
     const err = e as NodeJS.ErrnoException;
     if (err && err.code === 'EEXIST') throw clobberErr();
-    if (err && err.code && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(err.code)) {
+    if (err?.code && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(err.code)) {
       try {
         await writeFile(out, '', { flag: 'wx' });
       } catch (createErr) {

@@ -85,7 +85,7 @@ async function chatgptExportPaths(o: CliOptions): Promise<string[]> {
   if (!o.zip) throw new Error('profile chatgpt-export requires --zip <path> (the official ChatGPT export zip)');
   const zip = resolve(o.zip);
   const st = await stat(zip).catch(() => null);
-  if (!st || !st.isFile())
+  if (!st?.isFile())
     throw new Error(`no export zip at ${zip} — profile chatgpt-export takes the official ChatGPT export zip`);
   if (!zip.endsWith('.zip'))
     throw new Error(

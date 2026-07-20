@@ -37,7 +37,7 @@ async function promoteSnapshot(part: string, out: string): Promise<void> {
   } catch (e) {
     const err = e as NodeJS.ErrnoException;
     if (err && err.code === 'EEXIST') throw clobberErr();
-    if (err && err.code && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(err.code)) {
+    if (err?.code && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(err.code)) {
       try {
         await writeFile(out, '', { flag: 'wx' });
       } catch (createErr) {

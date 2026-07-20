@@ -154,8 +154,7 @@ export function turboBackend(): StorageBackend {
         fileSizeFactory: () => size,
         dataItemOpts,
       });
-      if (!res || !res.id)
-        throw new Error(`turbo upload returned no data item id: ${JSON.stringify(res).slice(0, 200)}`);
+      if (!res?.id) throw new Error(`turbo upload returned no data item id: ${JSON.stringify(res).slice(0, 200)}`);
       return res.id; // 43-char data item id — retrievable like any bundled item
     },
     // reads are identical to the arweave backend (Turbo items are bundled). Pure

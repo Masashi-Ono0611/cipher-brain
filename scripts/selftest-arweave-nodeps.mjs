@@ -16,7 +16,6 @@ import { DEV_ARGS } from './dev-node-flags.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, '..', 'bin', 'cipher-brain.mjs');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const tmp = await mkdtemp(join(tmpdir(), 'cb-nodeps-'));
 let failed = false;
 const pass = (m) => console.log(`[PASS] ${m}`);

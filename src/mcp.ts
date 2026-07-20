@@ -462,7 +462,7 @@ async function handleLastSnapshotStatus(args: ToolArgs): Promise<CallToolResult>
   if (args.index_file !== undefined && !isStr(args.index_file))
     throw new ToolError('ERR_INVALID_INPUT', 'index_file must be a string path');
   let locatorFile: string | undefined = isStr(args.locator_file) ? args.locator_file : undefined;
-  let indexFile: string | undefined = isStr(args.index_file) ? args.index_file : undefined;
+  const indexFile: string | undefined = isStr(args.index_file) ? args.index_file : undefined;
   let defaulted = false;
   if (!locatorFile && !indexFile) {
     locatorFile = join(HOME, 'latest-locator.tsv'); // the MANAGEMENT.md cadence default

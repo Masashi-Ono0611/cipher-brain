@@ -76,7 +76,7 @@ export async function keygenAt(opts: KeygenAtOpts): Promise<KeygenAtResult> {
     throw new Error(`identity already exists at ${opts.identityPath} (refusing to overwrite — losing it = losing the brain). Pass --force only if you are certain.`);
   }
   if (await exists(opts.recipientPath) && !opts.force) {
-    throw new Error(`recipient already exists at ${opts.recipientPath} (refusing to overwrite — a recipient.txt that gets silently re-keyed lets whoever triggers this re-key every FUTURE snapshot). Pass --force only if you are certain.`);
+    throw new Error(`recipient already exists at ${opts.recipientPath} (refusing to overwrite — a silently re-keyed recipient.txt would re-key every FUTURE snapshot). Pass --force only if you are certain.`);
   }
   // The key is generated in-process (typage) and — on the passphrase path — wrapped
   // in memory too (#36): unlike the old external `age -p` flow there is no unwrapped

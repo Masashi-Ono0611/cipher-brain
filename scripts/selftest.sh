@@ -349,17 +349,24 @@ echo "== #119 regression: keygenAt() fails closed when chmod(home, 0700) cannot 
 if [ "$(uname -s)" = "Darwin" ]; then
   CHMOD_FAIL_HOME="$TMP/chmod-fail-home"; mkdir -p "$CHMOD_FAIL_HOME"
   chmod 755 "$CHMOD_FAIL_HOME"    # pre-existing, LOOSER than the 0700 keygenAt() must enforce
-  chflags uchg "$CHMOD_FAIL_HOME" # immutable: keygenAt()'s own chmod(home, 0700) will now EPERM
   set +e
-  OUT=$(CIPHER_BRAIN_HOME="$CHMOD_FAIL_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen 2>&1); RC=$?
+  chflags uchg "$CHMOD_FAIL_HOME" # immutable: keygenAt()'s own chmod(home, 0700) will now EPERM
+  CHFLAGS_RC=$?
   set -e
-  chflags nouchg "$CHMOD_FAIL_HOME" # clear FIRST — every check below may exit 1, and the
-                                     # trap's rm -rf "$TMP" cannot remove an immutable dir
-  if [ "$RC" = "0" ]; then echo "FAIL: keygen succeeded despite chmod(home, 0700) failing — the #119 regression (a swallowed chmod error)"; echo "$OUT"; exit 1; fi
-  printf '%s' "$OUT" | grep -qi "operation not permitted\|EPERM" || { echo "FAIL: keygen's failure was not the expected chmod EPERM"; echo "$OUT"; exit 1; }
-  test ! -f "$CHMOD_FAIL_HOME/identity.age" || { echo "FAIL: an identity.age was written into a directory whose permissions could not be verified/corrected"; exit 1; }
-  [ "$(stat -f '%Lp' "$CHMOD_FAIL_HOME")" = "755" ] || { echo "FAIL: the directory's mode changed despite the chmod call failing"; exit 1; }
-  echo "[PASS] keygen fails closed (writes nothing) when chmod(home, 0700) cannot succeed, instead of silently proceeding"
+  if [ "$CHFLAGS_RC" != "0" ]; then
+    echo "[SKIP] #119 chmod-fail-closed repro: chflags uchg is unsupported on this filesystem (e.g. a virtualized TMPDIR)"
+  else
+    set +e
+    OUT=$(CIPHER_BRAIN_HOME="$CHMOD_FAIL_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen 2>&1); RC=$?
+    set -e
+    chflags nouchg "$CHMOD_FAIL_HOME" # clear FIRST — every check below may exit 1, and the
+                                       # trap's rm -rf "$TMP" cannot remove an immutable dir
+    if [ "$RC" = "0" ]; then echo "FAIL: keygen succeeded despite chmod(home, 0700) failing — the #119 regression (a swallowed chmod error)"; echo "$OUT"; exit 1; fi
+    printf '%s' "$OUT" | grep -qi "operation not permitted\|EPERM" || { echo "FAIL: keygen's failure was not the expected chmod EPERM"; echo "$OUT"; exit 1; }
+    test ! -f "$CHMOD_FAIL_HOME/identity.age" || { echo "FAIL: an identity.age was written into a directory whose permissions could not be verified/corrected"; exit 1; }
+    [ "$(stat -f '%Lp' "$CHMOD_FAIL_HOME")" = "755" ] || { echo "FAIL: the directory's mode changed despite the chmod call failing"; exit 1; }
+    echo "[PASS] keygen fails closed (writes nothing) when chmod(home, 0700) cannot succeed, instead of silently proceeding"
+  fi
 else
   echo "[SKIP] #119 chmod-fail-closed repro needs chflags (macOS-only — see comment above)"
 fi

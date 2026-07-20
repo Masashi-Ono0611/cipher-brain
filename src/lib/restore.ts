@@ -7,6 +7,7 @@ import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
 import { exists, sha256, readHead, fmtBytes, redactPgConn } from './util.js';
 import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
+import { moodForVerdict, printMascot } from './ui.js';
 import type { CliOptions } from './types.js';
 
 // GNU tar's --keep-old-files, unlike bsdtar's identically-named flag, treats an
@@ -177,15 +178,23 @@ export async function verify(o: CliOptions): Promise<void> {
   // artifact is restorable BY YOU, so on a public-key-only box (positive control
   // skipped) we must NOT print PASS / exit 0 — a cron/log reading "PASS" would be
   // false-green and could mask a month of snapshots encrypted to a wrong/lost key.
+  let verdict: 'PASS' | 'FAIL' | 'PARTIAL';
   if (!isAge || !wrongKeyRejected || !positiveOk || !hashOk) {
+    verdict = 'FAIL';
     console.log('\nVERDICT: FAIL');
     process.exitCode = 1;
   } else if (positiveSkipped) {
+    verdict = 'PARTIAL';
     console.log(
       '\nVERDICT: PARTIAL — header + wrong-key checks passed, but decryptability was NOT proven on this box (no private identity here). Run verify where the identity lives to prove it is restorable by you.',
     );
     process.exitCode = 2; // distinct from PASS(0) and FAIL(1) so automation can tell them apart
   } else {
+    verdict = 'PASS';
     console.log('\nVERDICT: PASS');
   }
+  // Human-facing decoration only (mascot faced for the verdict) — see
+  // printMascot in ui.ts for why this is EPIPE-safe against a caller piping/
+  // grepping verify's output for the VERDICT line.
+  printMascot(moodForVerdict(verdict));
 }

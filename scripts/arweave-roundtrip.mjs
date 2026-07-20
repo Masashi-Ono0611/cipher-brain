@@ -158,6 +158,84 @@ try {
     ? pass('fallback: L1 chunk read serves when the gateway HTTP path is dead')
     : fail(`fallback path did not serve via getData: ${fb.stderr || 'bytes differ'}`);
 
+  // L1 fallback safety (#115/#116/#117/#118): the chunk-read path (getData(), exercised
+  // above via fbEnv) gets the SAME protections the gateway path already has — an
+  // AGE_MAGIC gate, an atomic .part->rename (never a direct/truncating write to --out),
+  // and a bounded timeout — plus a redirect-refusing fetch closing the SSRF gap that was
+  // open only on this path. Each case dead-ends the gateway (path 1) via a
+  // connection-refused address so ONLY the L1 chunk read (path 2) can be exercised.
+  const l1Env = { ...env, CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1' };
+
+  log('L1 fallback: AGE_MAGIC gate rejects non-ciphertext chunk data, preserving a prior --out');
+  // a real, minable tx whose body is NOT age ciphertext — arlocal will genuinely serve
+  // its chunks via getData(), so this exercises the AGE_MAGIC check itself, not "not found".
+  const junkTx = await ar.createTransaction({ data: new TextEncoder().encode('not age ciphertext — issue #118 L1 test junk') }, jwk);
+  await ar.transactions.sign(junkTx, jwk);
+  await ar.transactions.post(junkTx);
+  await mine();
+  const l1AgeOut = join(tmp, 'l1-agemagic.age');
+  const sentinel = 'PRE-EXISTING-VALID-CONTENT-SENTINEL-' + randomBytes(6).toString('hex');
+  await writeFile(l1AgeOut, sentinel); // a prior, valid --out that must survive a rejected L1 write
+  const l1age = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', junkTx.id, '--backend', 'arweave', '--out', l1AgeOut], { env: l1Env, encoding: 'utf8' });
+  const l1AgeAfter = await readFile(l1AgeOut, 'utf8').catch(() => null);
+  const l1AgePartLingers = await readFile(`${l1AgeOut}.part`, 'utf8').then(() => true).catch(() => false);
+  (l1age.status !== 0 && l1AgeAfter === sentinel && !l1AgePartLingers)
+    ? pass('L1 fallback: non-ciphertext chunk data is rejected AND a pre-existing --out is left untouched (atomic .part->rename, no-clobber)')
+    : fail(`L1 AGE_MAGIC/atomic gate did not hold: status=${l1age.status} outUnchanged=${l1AgeAfter === sentinel} partLingers=${l1AgePartLingers} stderr=${(l1age.stderr || '').slice(0, 200)}`);
+
+  log('L1 fallback: a redirecting chunk-read host is refused, not silently followed (SSRF guard, #115)');
+  const l1SsrfSrvFile = join(tmp, 'l1-ssrf-stub.mjs');
+  await writeFile(l1SsrfSrvFile,
+    "import {createServer} from 'node:http';\n" +
+    "const s=createServer((_q,res)=>{res.writeHead(302,{location:'http://169.254.169.254/latest/meta-data/'});res.end();});\n" +
+    "s.listen(0,'127.0.0.1',()=>console.log('READY:'+s.address().port));\n");
+  const l1SsrfSrv = spawn('node', [l1SsrfSrvFile], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const l1SsrfPort = await new Promise((res, rej) => {
+    const to = setTimeout(() => rej(new Error('L1 ssrf stub did not start')), 8000);
+    l1SsrfSrv.stdout.on('data', (d) => { const m = String(d).match(/READY:(\d+)/); if (m) { clearTimeout(to); res(m[1]); } });
+  });
+  const l1SsrfOut = join(tmp, 'l1-ssrf.age');
+  const l1ssrf = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', l1SsrfOut],
+    { env: { ...env, CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1', CIPHER_BRAIN_AR_HOST: '127.0.0.1', CIPHER_BRAIN_AR_PORT: l1SsrfPort, CIPHER_BRAIN_AR_PROTOCOL: 'http' },
+      encoding: 'utf8', timeout: 15000 });
+  let l1SsrfWrote = false; try { await readFile(l1SsrfOut); l1SsrfWrote = true; } catch { /* not written = good */ }
+  l1SsrfSrv.kill('SIGKILL');
+  (l1ssrf.status !== 0 && !l1SsrfWrote)
+    ? pass('L1 fallback: a redirect from the configured host is refused, never silently followed')
+    : fail(`L1 SSRF redirect was not refused: status=${l1ssrf.status} wrote=${l1SsrfWrote}`);
+
+  log('L1 fallback: a stalled chunk-read host is bounded by a timeout, not hung forever (#116)');
+  const stallSrvFile = join(tmp, 'stall-stub.mjs');
+  await writeFile(stallSrvFile,
+    "import {createServer} from 'node:http';\n" +
+    "const s=createServer((_q,_res)=>{ /* never respond — simulate a stalled L1 host */ });\n" +
+    "s.listen(0,'127.0.0.1',()=>console.log('READY:'+s.address().port));\n");
+  const stallSrv = spawn('node', [stallSrvFile], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const stallPort = await new Promise((res, rej) => {
+    const to = setTimeout(() => rej(new Error('stall stub did not start')), 8000);
+    stallSrv.stdout.on('data', (d) => { const m = String(d).match(/READY:(\d+)/); if (m) { clearTimeout(to); res(m[1]); } });
+  });
+  const t0 = Date.now();
+  const timeoutOut = join(tmp, 'l1-timeout.age');
+  const l1to = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', timeoutOut],
+    {
+      env: {
+        ...env,
+        CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1',
+        CIPHER_BRAIN_AR_HOST: '127.0.0.1',
+        CIPHER_BRAIN_AR_PORT: stallPort,
+        CIPHER_BRAIN_AR_PROTOCOL: 'http',
+        CIPHER_BRAIN_AR_HTTP_TIMEOUT: '300', // short bound so the test stays fast
+      },
+      encoding: 'utf8',
+      timeout: 15000, // hard safety net — must NOT be what actually stops this (that would mean the fix regressed)
+    });
+  const elapsed = Date.now() - t0;
+  stallSrv.kill('SIGKILL');
+  (l1to.status !== 0 && l1to.signal == null && elapsed < 8000)
+    ? pass(`L1 fallback: a stalled chunk-read host is bounded by the timeout, not a hang (${elapsed}ms)`)
+    : fail(`L1 timeout did not bound the stall: status=${l1to.status} signal=${l1to.signal} elapsed=${elapsed}ms`);
+
   // --wait retry (#19): a not-yet-available id with a wait budget retries (then still
   // fails for a truly-missing id). A short retry interval keeps the test fast.
   const wEnv = { ...env, CIPHER_BRAIN_PULL_RETRY_MS: '150' };

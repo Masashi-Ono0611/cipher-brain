@@ -1,5 +1,9 @@
 # cipher-brain
 
+[![CI](https://img.shields.io/github/actions/workflow/status/Masashi-Ono0611/cipher-brain/ci.yml?branch=main&label=CI&logo=github)](https://github.com/Masashi-Ono0611/cipher-brain/actions/workflows/ci.yml)
+
+> **For AI agents:** see [`llms.txt`](llms.txt) for a quick, machine-friendly orientation.
+
 Encrypt your growing second brain — the AI memory, conversation history, and
 knowledge store you build up over years — so that **only you** can read it,
 then park the ciphertext **permanently on Arweave**: pay once at upload, and
@@ -18,6 +22,21 @@ Arweave via the **`turbo`** backend is the recommended mainline; a local
 
 > Status: proof-of-concept for [issue #1](https://github.com/Masashi-Ono0611/cipher-brain/issues/1).
 > The round-trip is validated end-to-end against real gbrain data (see below).
+
+**What cipher-brain isn't:**
+
+- Not a general-purpose backup tool — it targets one shape: encrypt a snapshot
+  (gbrain, Claude Code memory, an Obsidian vault, a ChatGPT export) client-side and
+  park it durably. See [`--profile`](#usage) for the sources it knows about.
+- Not a key management service — there is no server holding your keys. The
+  identity file is yours to keep offline; lose it and the snapshots are
+  unrecoverable (see Threat model below).
+- Not gbrain itself — gbrain is the second-brain product (Postgres + `~/.gbrain`)
+  that produces the plaintext. cipher-brain only ever touches it long enough to
+  encrypt.
+- Not a crypto wallet or exchange integration — an Arweave upload goes through a
+  bundler ([Turbo](https://ardrive.io)) paid with **ETH/USDC**; no native AR
+  purchase and no exchange account are needed (see [Backends](#backends)).
 
 ## Threat model — "the key is only mine"
 
@@ -97,13 +116,23 @@ gateway need no extra dependency.
 
 ## Usage
 
+### Quickstart
+
 New here? `cipher-brain init` is the recommended starting point: an interactive
 wizard that walks keygen, an offline backup key, passphrase-wrap,
 `CIPHER_BRAIN_PIN_RECIPIENTS`, a `--profile`, a `--pg` dump when it detects a local
 gbrain config, and the first snapshot + push in one sitting, ending in a printable
 recovery kit (see MANAGEMENT.md's "Key recovery" section for what each step means).
-The manual flow below is exactly what it wraps — useful once you know what you want,
-or for scripting/automation `init` itself refuses (it is interactive only).
+
+```sh
+cipher-brain init
+```
+
+That's it. The manual flow below is exactly what it wraps — useful once you know
+what you want, or for scripting/automation `init` itself refuses (it is
+interactive only).
+
+### Manual flow
 
 ```sh
 cipher-brain keygen                 # one-time: creates ~/.cipher-brain/{identity.age,recipient.txt}
@@ -141,6 +170,8 @@ cipher-brain schedule install --backend turbo --pg "postgres://user@localhost:54
 cipher-brain schedule status   # last run + rc, next scheduled run
 ```
 
+### Profiles
+
 Not running gbrain? `--profile` is a one-flag entry point for the common
 sources — it resolves to the same `--dir` assembly (extra `--dir` flags are
 appended after the profile's paths) and records the profile name in the
@@ -157,6 +188,8 @@ cipher-brain snapshot --profile obsidian --vault ~/Vaults/main --out vault.age
 # ChatGPT: the official data-export zip, archived as-is (never extracted)
 cipher-brain snapshot --profile chatgpt-export --zip ~/Downloads/chatgpt-export.zip --out chatgpt.age
 ```
+
+### Staging & env vars
 
 Each component (the `pg_dump`, each `--dir` archive) is staged into a private
 (0700) temp dir, then the bundle is streamed `tar -> age`, so the final ciphertext

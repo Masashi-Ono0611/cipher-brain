@@ -1,0 +1,49 @@
+# cipher-brain
+
+> Encrypt a growing second-brain snapshot (gbrain, Claude Code memory, an Obsidian
+> vault, a ChatGPT export) client-side with age (X25519 + ChaCha20-Poly1305), then
+> park the ciphertext permanently on Arweave. Storage backends only ever see
+> ciphertext. Recovery needs just the identity file and a locator — no wallet, no
+> npm package, to pull the bytes back.
+
+## Quickstart
+
+```sh
+npx cipher-brain init   # interactive wizard: keygen -> backup key -> first snapshot+push -> recovery kit
+```
+
+## Key concepts
+
+- **identity** (private key) — the only thing that can decrypt. Lives off the
+  always-on machine; lose it and the snapshots are unrecoverable.
+- **recipient** (public key) — all the snapshotting machine needs. Safe to keep
+  on the box that runs gbrain.
+- **backend** — pluggable `push`/`pull` storage behind one interface: `file`
+  (local, dev/CI), `turbo` (recommended — Arweave via a bundler, ETH/USDC),
+  `arweave` (raw L1, small artifacts only).
+- **recovery kit** — the printable artifact `init` produces: the backup identity
+  (raw, not passphrase-wrapped — keep the kit itself physically secure), the
+  latest locator, and restore steps. Kit-only recovery on a fresh machine needs
+  both the backup key (`init` defaults to generating one, but it can be
+  declined) and a portable backend (`turbo`/`arweave` — `file` locators are
+  machine-local).
+
+## Everyday commands
+
+```sh
+cipher-brain keygen                                             # one-time identity + recipient
+cipher-brain snapshot --dir <path> --recipient <file> --out <f.age>
+cipher-brain verify --in <f.age>                                # real ciphertext? wrong key rejected?
+cipher-brain push --in <f.age> --backend turbo --yes             # pays a one-time bundler fee
+cipher-brain pull --locator <id> --backend turbo --out <f.age>   # plain gateway fetch, no wallet
+cipher-brain restore --in <f.age> --out-dir <dir>
+cipher-brain schedule install --backend turbo --dir <path> --max-spend <n>   # unattended nightly
+```
+
+## Docs
+
+- [README.md](README.md) — full walkthrough, threat model, backends, MCP server.
+- [MANAGEMENT.md](MANAGEMENT.md) — cadence, versioning, restore runbook, key recovery.
+- [docs/durability.md](docs/durability.md) — why Arweave is the recommended backend.
+- [docs/arweave-upload-runbook.md](docs/arweave-upload-runbook.md) — funding an
+  Arweave upload with ETH/USDC.

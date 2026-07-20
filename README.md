@@ -317,6 +317,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
 | `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable |
+| `schedule_status` | read-only | the same report as `cipher-brain schedule status`: configured time/backend, trigger registration state, last run log + its final rc line, next scheduled run |
 
 Claude Code config (`.mcp.json`):
 
@@ -332,5 +333,6 @@ Claude Code config (`.mcp.json`):
 ```
 
 `scripts/mcp-smoke.mjs` (part of `npm run verify`) proves initialize/tools-list,
-a real `snapshot_now` round-trip on the `file` backend, and that the paid-backend
-spend gate refuses without `confirm_paid`.
+a real `snapshot_now` round-trip on the `file` backend, `schedule_status` against a
+`--no-load` schedule installed via the CLI, and that the paid-backend spend gate
+refuses without `confirm_paid`.

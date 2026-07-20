@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // MCP smoke test for the bundled build. Spawns `node dist/mcp.mjs` over stdio and:
-//   1. initialize + notifications/initialized + tools/list — asserts the four
+//   1. initialize + notifications/initialized + tools/list — asserts the five
 //      tool names (snapshot_now, last_snapshot_status, verify_restore,
-//      estimate_cost).
+//      estimate_cost, schedule_status).
 //   2. a REAL snapshot_now round-trip against the free `file` backend inside a
 //      temp CIPHER_BRAIN_HOME/CIPHER_BRAIN_FILE_DIR (keygen via the existing
 //      lib first), then last_snapshot_status + verify_restore (by bare locator;
 //      by locator_file, asserting its sha256 integrity pin was applied; and a
 //      wrong-sha256 negative control that must fail closed with no verdict)
-//      + estimate_cost on the result.
+//      + estimate_cost on the result + schedule_status against a --no-load
+//      schedule installed via the CLI (same schedule.ts state `cipher-brain
+//      schedule status` reads).
 //   3. the spend gate: snapshot_now with backend=turbo and no confirm_paid
 //      must be refused with ERR_CONFIRM_REQUIRED — even with CIPHER_BRAIN_YES
 //      set in the environment (never silently spend).
@@ -52,6 +54,7 @@ async function run(tmp) {
   const data = join(tmp, 'data');
   const outAge = join(tmp, 'snap.age');
   const locatorFile = join(tmp, 'latest-locator.tsv');
+  const launchdDir = join(tmp, 'launchagents'); // install() writes a plist here even with --no-load — must never touch the real ~/Library/LaunchAgents
 
   // keygen via the bundled CLI (dist/cli.mjs — already built by the time this smoke
   // test runs in `npm run verify`). Previously this dynamic-imported src/lib/keys.mjs
@@ -73,6 +76,18 @@ async function run(tmp) {
 
   await mkdir(data, { recursive: true });
   await writeFile(join(data, 'hello.txt'), 'cipher-brain mcp smoke payload\n');
+
+  // schedule_status is a thin read of schedule.json (+ the trigger + last log) — no MCP
+  // tool can install a schedule (deliberately, see src/mcp.ts's design comment), so set
+  // one up here via the CLI, same as a human running `cipher-brain schedule install`
+  // would. --no-load: artifacts only, never registers a REAL launchd/cron trigger.
+  const scheduleInstallRes = spawnSync(process.execPath, [SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs'), 'schedule', 'install', '--backend', 'file', '--dir', data, '--no-load'], {
+    env: { ...process.env, CIPHER_BRAIN_HOME: home, CIPHER_BRAIN_FILE_DIR: store, CIPHER_BRAIN_LAUNCHD_DIR: launchdDir },
+    encoding: 'utf8',
+  });
+  if (scheduleInstallRes.status !== 0) {
+    throw new Error(`schedule install --no-load failed (${scheduleInstallRes.status}): ${scheduleInstallRes.stderr || scheduleInstallRes.stdout}`);
+  }
 
   const child = spawn(process.execPath, [SERVER_PATH], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -115,7 +130,7 @@ async function run(tmp) {
     send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
     const list = await waitFor(2);
     const names = (list.result?.tools ?? []).map((t) => t.name).sort();
-    const expected = ['estimate_cost', 'last_snapshot_status', 'snapshot_now', 'verify_restore'];
+    const expected = ['estimate_cost', 'last_snapshot_status', 'schedule_status', 'snapshot_now', 'verify_restore'];
     if (JSON.stringify(names) !== JSON.stringify(expected)) {
       throw new Error(`tools/list mismatch: expected ${expected.join(', ')} got ${names.join(', ')}`);
     }
@@ -214,10 +229,39 @@ async function run(tmp) {
       throw new Error(`estimate_cost(file) result unexpected: ${JSON.stringify(estSc).slice(0, 300)}`);
     }
 
+    // 2h. schedule_status — thin wrapper over the SAME schedule() the CLI's `schedule
+    // status` dispatches to; asserts against the --no-load schedule installed above,
+    // verbatim report lines rather than re-parsed fields (matching handleScheduleStatus's
+    // "no re-implemented logic" design).
+    send({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'schedule_status', arguments: {} } });
+    const sched = await waitFor(10);
+    const schedSc = sched.result?.structuredContent;
+    if (sched.result?.isError) throw new Error(`schedule_status failed: ${JSON.stringify(schedSc).slice(0, 500)}`);
+    if (!Array.isArray(schedSc?.report) || schedSc.report.length === 0) {
+      throw new Error(`schedule_status report missing/empty: ${JSON.stringify(schedSc)}`);
+    }
+    if (!schedSc.report.some((l) => l === 'configured: daily at 03:30, backend file')) {
+      throw new Error(`schedule_status report missing the configured line: ${JSON.stringify(schedSc.report)}`);
+    }
+    if (!schedSc.report.some((l) => /^next run: /.test(l))) {
+      throw new Error(`schedule_status report missing the next-run line: ${JSON.stringify(schedSc.report)}`);
+    }
+
+    // 2i. schedule_status must REJECT unexpected arguments rather than silently
+    // ignore them (the tool takes none — a stray field could otherwise mask a
+    // client's mistaken attempt to scope the report to a different schedule).
+    send({ jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'schedule_status', arguments: { unexpected: true } } });
+    const schedBad = await waitFor(11);
+    const schedBadSc = schedBad.result?.structuredContent;
+    if (schedBad.result?.isError !== true || schedBadSc?.code !== 'ERR_INVALID_INPUT') {
+      throw new Error(`schedule_status did not reject an unexpected argument: ${JSON.stringify(schedBad.result).slice(0, 300)}`);
+    }
+
     process.stdout.write(
       `MCP SMOKE: PASS — tools=[${names.join(', ')}], spend gate=ERR_CONFIRM_REQUIRED, ` +
       `file round-trip locator=${snapSc.locator.split('/').pop()}, status.age=${latest.age_seconds}s, verify=${verSc.verdict}, ` +
-      `verify(locator_file pin)=${verPinnedSc.verdict}, wrong-pin=fail-closed, estimate(file)=0\n`,
+      `verify(locator_file pin)=${verPinnedSc.verdict}, wrong-pin=fail-closed, estimate(file)=0, ` +
+      `schedule_status.report.length=${schedSc.report.length}\n`,
     );
   } finally {
     try { child.stdin.end(); } catch { /* ignore */ }

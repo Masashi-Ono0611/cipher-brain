@@ -89,8 +89,10 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
 
   cipher-brain wallet address [--wallet <path>]
       Derive and print the Arweave address a JWK spends from, without uploading
-      anything. --wallet defaults to CIPHER_BRAIN_AR_WALLET. Use this to confirm you
-      are funding the SAME wallet cipher-brain will sign uploads with.
+      anything. --wallet defaults to CIPHER_BRAIN_AR_WALLET, then to
+      $CIPHER_BRAIN_HOME/wallet.json (the same default 'wallet create' writes to). Use
+      this to confirm you are funding the SAME wallet cipher-brain will sign uploads
+      with.
 
   cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).

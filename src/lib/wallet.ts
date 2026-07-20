@@ -45,9 +45,15 @@ async function getArweave(): Promise<ArweaveWalletClient> {
   return ArweaveCtor.init({});
 }
 
+// The default path `wallet create` writes to when --out is omitted. Pulled out to a
+// module-level constant (rather than inlined at each call site) so `walletAddress`'s
+// fallback below reuses the exact same path `walletCreate` just wrote to (#164) instead
+// of re-deriving it and risking the two drifting apart.
+const WALLET_DEFAULT_PATH = join(HOME, 'wallet.json');
+
 async function walletCreate(o: CliOptions): Promise<void> {
   const usingDefaultPath = !o.out;
-  const outPath = o.out || join(HOME, 'wallet.json');
+  const outPath = o.out || WALLET_DEFAULT_PATH;
   // No-clobber by default (same posture as keygen's --force precedent), checked BEFORE
   // the JWK is generated so a refusal never even spends the RSA keygen work.
   if ((await exists(outPath)) && !o.force) {
@@ -78,8 +84,11 @@ async function walletCreate(o: CliOptions): Promise<void> {
 }
 
 async function walletAddress(o: CliOptions): Promise<void> {
-  const walletPath = o.wallet || AR_WALLET;
-  if (!walletPath) throw new Error('wallet address needs --wallet <path> or CIPHER_BRAIN_AR_WALLET');
+  // Falls back to the same default `wallet create` writes to when neither --wallet nor
+  // CIPHER_BRAIN_AR_WALLET is set, so `wallet create` (no --out) followed by `wallet
+  // address` (no --wallet) just works (#164) instead of erroring out. If nothing exists
+  // there, readFile below still fails closed with a clear "cannot read" error.
+  const walletPath = o.wallet || AR_WALLET || WALLET_DEFAULT_PATH;
   await warnIfLooseKeyPerms(walletPath, 'arweave JWK wallet');
   let jwk: unknown;
   try {

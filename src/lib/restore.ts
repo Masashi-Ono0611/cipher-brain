@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { AGE_MAGIC, CIPHER_YES, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.js';
 import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
-import { exists, sha256, readHead, fmtBytes } from './util.js';
+import { exists, sha256, readHead, fmtBytes, redactPgConn } from './util.js';
 import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
 import type { CliOptions } from './types.js';
 
@@ -19,7 +19,7 @@ export async function restore(o: CliOptions): Promise<void> {
   // discipline the identity check below already follows.
   if (o.pg && !(o.yes || CIPHER_YES)) {
     throw new Error(
-      `--pg ${o.pg}: pg_restore --clean --if-exists will DROP and replace objects in that database — ` +
+      `--pg ${redactPgConn(o.pg)}: pg_restore --clean --if-exists will DROP and replace objects in that database — ` +
       `re-run restore with --yes or set CIPHER_BRAIN_YES=1 to confirm`
     );
   }
@@ -80,7 +80,7 @@ export async function restore(o: CliOptions): Promise<void> {
     const dump = join(o.out_dir, 'db.dump');
     if (!(await exists(dump))) throw new Error(`--pg given but no db.dump in snapshot`);
     await run(pgTool('pg_restore'), ['--no-owner', '--no-privileges', '--clean', '--if-exists', '-d', o.pg, dump], { timeoutMs: PIPE_TIMEOUT_MS });
-    console.log(`pg_restore -> ${o.pg} done`);
+    console.log(`pg_restore -> ${redactPgConn(o.pg)} done`);
   }
 }
 

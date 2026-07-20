@@ -29,7 +29,7 @@ import { PROFILE_NAMES } from './profiles.js';
 import { snapshot } from './snapshot.js';
 import { push, PushLocatorWriteError } from './pushpull.js';
 import { BACKEND_NAMES } from './backends/index.js';
-import { exists, errMsg } from './util.js';
+import { exists, errMsg, redactPgConn } from './util.js';
 import type { CliOptions } from './types.js';
 
 type Rl = ReturnType<typeof createInterface>;
@@ -87,46 +87,6 @@ async function askYesNo(rl: Rl, question: string, def: boolean): Promise<boolean
     if (answer === 'y' || answer === 'yes') return true;
     if (answer === 'n' || answer === 'no') return false;
     console.log(`Please answer "y" or "n" (or press Enter for the default).`);
-  }
-}
-
-// The recovery kit is a long-lived, physically-stored document, and a Postgres
-// connection string can embed a password (unlike the age identity, which the kit's
-// whole job IS to carry off-machine, the DB credential is only shown here for
-// REFERENCE — "this was the source, do not restore into it"). Strip a password before
-// it goes in (Fugu review finding); the username alone is left visible — it is not
-// itself a secret, and this project's own docs already print it in the clear (e.g.
-// README's `postgres://user@localhost:5432/gbrain` examples, and this wizard's own
-// peer-auth-style default a few lines below). Falls back to a conservative regex
-// redact for a non-URL keyword/value DSN (e.g. "host=... password=..."), which --pg
-// accepts just as pg_dump/pg_restore themselves do but the WHATWG URL parser cannot.
-// The two standard libpq keywords that can carry a credential value (the connection
-// password, and the passphrase for an --sslkey client certificate) — checked
-// case-insensitively below since libpq's own keyword matching is (Grok review).
-const PG_SECRET_KEYS = /^(password|sslpassword)$/i;
-
-function redactPgConn(conn: string): string {
-  try {
-    const u = new URL(conn);
-    if (u.password) u.password = '';
-    // libpq connection URIs also accept a credential as an ordinary query parameter
-    // (postgres://user@host/db?password=...) — the user:pass@ authority form above is
-    // not the only place it can hide (Fugu review finding, round 2). Iterate keys
-    // rather than a fixed .has('password') lookup: URLSearchParams keys are
-    // case-sensitive, so a literal check would miss e.g. ?Password= (Grok review).
-    for (const key of [...u.searchParams.keys()]) {
-      if (PG_SECRET_KEYS.test(key)) u.searchParams.set(key, 'REDACTED');
-    }
-    return u.toString();
-  } catch {
-    // Keyword/value DSN form (e.g. "host=... password=..."). A value may be a bare
-    // token, or quoted (single OR double — Grok review noted only single was handled;
-    // libpq's own conninfo grammar only recognizes single quotes, but matching both is
-    // a strictly safer over-match here) optionally containing escaped characters (e.g.
-    // password='a\'b c') — match any of these shapes rather than only \S+, which would
-    // leave a trailing fragment of a quoted, space-containing secret unredacted.
-    const secretVal = `(?:'(?:[^'\\\\]|\\\\.)*'|"(?:[^"\\\\]|\\\\.)*"|\\S+)`;
-    return conn.replace(/:\/\/([^:@/]+):[^@/]*@/, '://$1@').replace(new RegExp(`\\b(password|sslpassword)=${secretVal}`, 'gi'), '$1=REDACTED');
   }
 }
 

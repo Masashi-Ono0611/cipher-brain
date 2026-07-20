@@ -504,5 +504,82 @@ printf '%s' "$OUT" | grep -qi "already passphrase-wrapped" || { echo "FAIL: wron
 [ "$(shasum -a 256 "$ARMOR_HOME/identity.age" | cut -d' ' -f1)" = "$ARMORED_SHA" ] || { echo "FAIL: the armored identity was modified despite the refusal — double-wrap corruption"; exit 1; }
 echo "[PASS] keygen --wrap-in-place recognizes an ASCII-armored identity as already-wrapped too, refuses, and leaves it byte-identical (no double-wrap corruption)"
 
+echo "== #111 regression: restore --pg requires --yes/CIPHER_BRAIN_YES before pg_restore --clean --if-exists =="
+# pg_restore --clean --if-exists DROPs/replaces objects in the target DB — an
+# irreversible operation, so it needs the same explicit-opt-in gate as push's
+# paid-backend guard above. The gate fires before any decrypt/extract work, so
+# this needs no real Postgres and no valid identity for the negative case.
+set +e
+OUT=$(node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$TMP/pg-noyes-out" --pg "postgres://x/y" 2>&1); RC=$?
+set -e
+[ "$RC" != "0" ] || { echo "[FAIL] restore --pg without --yes exited 0"; exit 1; }
+printf '%s' "$OUT" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
+  || { echo "[FAIL] restore --pg without --yes error lacks --yes guidance"; echo "$OUT"; exit 1; }
+test ! -e "$TMP/pg-noyes-out" || { echo "[FAIL] the consent gate ran AFTER out-dir was created"; exit 1; }
+echo "[PASS] restore --pg without --yes fails with clear guidance, before touching --out-dir"
+# --yes (or CIPHER_BRAIN_YES=1) passes the gate — the error moves further in (this
+# snapshot has no db.dump, so it now fails on THAT check instead), proving the gate
+# no longer blocks. Needs the correct identity ($TMP/keys, snap.age's recipient).
+set +e
+OUT2=$(CIPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$TMP/pg-yes-out" --pg "postgres://x/y" --yes 2>&1); RC2=$?
+set -e
+[ "$RC2" != "0" ] || { echo "[FAIL] restore --pg --yes against a snapshot with no db.dump exited 0"; exit 1; }
+printf '%s' "$OUT2" | grep -qi "no db.dump in snapshot" \
+  || { echo "[FAIL] --yes did not pass the consent gate (expected to fail further in, on the missing db.dump)"; echo "$OUT2"; exit 1; }
+set +e
+OUT3=$(CIPHER_BRAIN_HOME="$TMP/keys" CIPHER_BRAIN_YES=1 node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$TMP/pg-envyes-out" --pg "postgres://x/y" 2>&1); RC3=$?
+set -e
+[ "$RC3" != "0" ] || { echo "[FAIL] restore --pg with CIPHER_BRAIN_YES=1 against a snapshot with no db.dump exited 0"; exit 1; }
+printf '%s' "$OUT3" | grep -qi "no db.dump in snapshot" \
+  || { echo "[FAIL] CIPHER_BRAIN_YES=1 did not pass the consent gate"; echo "$OUT3"; exit 1; }
+echo "[PASS] --yes and CIPHER_BRAIN_YES=1 both pass the consent gate (fail further in: missing db.dump)"
+
+echo "== #112 regression: restore --keep-old-files does not clobber a pre-existing file in --out-dir =="
+KOF_OUT="$TMP/keep-old-out"
+mkdir -p "$KOF_OUT"
+SENTINEL="PRE-EXISTING-DO-NOT-OVERWRITE-$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')"
+printf '%s\n' "$SENTINEL" > "$KOF_OUT/manifest.json"   # same top-level name a real restore would extract
+CIPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$KOF_OUT" >/dev/null
+[ "$(cat "$KOF_OUT/manifest.json")" = "$SENTINEL" ] || { echo "[FAIL] restore overwrote a pre-existing file in --out-dir (missing --keep-old-files)"; exit 1; }
+test -f "$KOF_OUT/brain-src.tar.gz" || { echo "[FAIL] restore did not extract the non-colliding component alongside the kept file"; exit 1; }
+echo "[PASS] restore --keep-old-files preserves a pre-existing file in --out-dir while extracting the rest of the archive around it"
+
+echo "== #106 regression: pg_restore is bounded by a timeout (a wedged pg_restore can't hang the CLI) =="
+# A fake pg_dump/pg_restore pair: pg_dump behaves normally (so the snapshot really
+# gets a db.dump component); pg_restore just sleeps, simulating a wedged/hung
+# process. run()'s timeout SIGKILLs on expiry (proc.ts) — no SIGTERM-ignoring
+# trick needed, unlike the pipeline-tar wedge test above.
+FAKE_PGBIN_R="$TMP/fake-pgbin-restore-timeout"; mkdir -p "$FAKE_PGBIN_R"
+cat > "$FAKE_PGBIN_R/pg_dump" <<'SHIM'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do
+  if [ "$prev" = "-f" ]; then out="$a"; fi
+  prev="$a"
+done
+printf 'fake-pg-dump-content\n' > "$out"
+exit 0
+SHIM
+chmod +x "$FAKE_PGBIN_R/pg_dump"
+cat > "$FAKE_PGBIN_R/pg_restore" <<'SHIM'
+#!/usr/bin/env bash
+exec sleep 30
+SHIM
+chmod +x "$FAKE_PGBIN_R/pg_restore"
+PGTO_SNAP="$TMP/pg-timeout-snap.age"
+CIPHER_BRAIN_HOME="$TMP/keys" CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN_R" \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --pg "postgres://fake/conn" --out "$PGTO_SNAP" >/dev/null
+PGTO_OUT="$TMP/pg-timeout-out"
+START=$(date +%s)
+set +e
+TERR=$(CIPHER_BRAIN_HOME="$TMP/keys" CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN_R" CIPHER_BRAIN_PIPE_TIMEOUT=600 \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$PGTO_SNAP" --out-dir "$PGTO_OUT" --pg "postgres://fake/scratch" --yes 2>&1); TRC=$?
+set -e
+ELAPSED=$(( $(date +%s) - START ))
+[ "$TRC" != "0" ] || { echo "[FAIL] restore with a wedged pg_restore exited 0"; exit 1; }
+printf '%s' "$TERR" | grep -qi "timed out" || { echo "[FAIL] no timeout error surfaced for a wedged pg_restore"; echo "$TERR"; exit 1; }
+[ "$ELAPSED" -lt 15 ] || { echo "[FAIL] pg_restore took ${ELAPSED}s — timeoutMs did not bound it (< the 30s stub sleep)"; exit 1; }
+echo "[PASS] a wedged pg_restore is killed by the timeout in ${ELAPSED}s instead of hanging the CLI"
+
 echo
 echo "SELFTEST PASS"

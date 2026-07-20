@@ -83,6 +83,18 @@ async function walletCreate(o: CliOptions): Promise<void> {
   );
 }
 
+// Shared "is there a usable wallet?" check — reused by wizard.ts's paid-backend
+// pre-check (issue #161) so it can steer a user away from the "spends real funds"
+// consent prompt BEFORE CIPHER_BRAIN_AR_WALLET is even set, rather than letting the
+// wizard discover the same problem deep inside push() and roll everything back
+// (issue #161's motivation). Mirrors exactly what backends/arweave.ts's/turbo.ts's own
+// put() already require (set AND present on disk) — this does not read/parse the file
+// (that stays at the real call sites: walletAddress above, the two backends' put()),
+// it only answers the yes/no question those sites would otherwise fail deep inside.
+export async function walletConfigured(walletPath: string = AR_WALLET): Promise<boolean> {
+  return !!walletPath && (await exists(walletPath));
+}
+
 async function walletAddress(o: CliOptions): Promise<void> {
   // Falls back to the same default `wallet create` writes to when neither --wallet nor
   // CIPHER_BRAIN_AR_WALLET is set, so `wallet create` (no --out) followed by `wallet

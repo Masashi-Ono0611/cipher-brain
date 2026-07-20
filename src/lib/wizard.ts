@@ -29,6 +29,7 @@ import { PROFILE_NAMES } from './profiles.js';
 import { snapshot } from './snapshot.js';
 import { push, PushLocatorWriteError } from './pushpull.js';
 import { BACKEND_NAMES } from './backends/index.js';
+import { walletConfigured } from './wallet.js';
 import { exists, errMsg, redactPgConn } from './util.js';
 import type { CliOptions } from './types.js';
 
@@ -513,6 +514,35 @@ export async function init(_o: CliOptions): Promise<void> {
         throw new Error(`unknown backend "${backend}" — valid choices: ${BACKEND_NAMES.join(', ')}`);
       }
       const paid = backend === 'arweave' || backend === 'turbo';
+      // #161: check a wallet FILE is present BEFORE the "spends real funds" consent
+      // prompt below, not after. Without this, a user who picks
+      // arweave/turbo with no CIPHER_BRAIN_AR_WALLET set sails past that consent
+      // prompt, then fails deep inside push() ("arweave put needs
+      // CIPHER_BRAIN_AR_WALLET ...") — pushSucceeded stays false, and the catch
+      // block below rolls back the identity/backup key/recipient pin this same run
+      // just spent five steps setting up: the worst possible first-run experience.
+      // walletConfigured() only checks presence (set + file on disk) — an actual
+      // funding shortfall still can't be known without a network call, and remains
+      // push's own estimate/consent job (issue #160), unchanged here.
+      if (paid && !(await walletConfigured())) {
+        console.log(
+          `\n${backend} needs a funded wallet to push, and CIPHER_BRAIN_AR_WALLET is not set to an existing wallet file.`,
+        );
+        console.log('Set one up first:');
+        console.log('  cipher-brain wallet create           # writes a JWK wallet (0600, no-clobber)');
+        console.log('  cipher-brain wallet address           # prints the address to fund (crypto or a card —');
+        console.log('                                         see docs/arweave-upload-runbook.md)');
+        console.log(
+          `\nEverything this run already set up — primary identity (${IDENTITY})` +
+            `${backup ? `, backup identity (${backup.identityPath})` : ''}, and any choices above — is` +
+            ' untouched; nothing has been rolled back. Fund the wallet, then drive snapshot + push by hand',
+        );
+        console.log(
+          `(see MANAGEMENT.md) — "cipher-brain init" cannot be re-run, since it refuses whenever an identity` +
+            ` already exists at ${IDENTITY}.`,
+        );
+        return;
+      }
       if (paid) {
         const consent = await askYesNo(
           rl,

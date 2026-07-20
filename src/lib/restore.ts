@@ -1,10 +1,12 @@
 // restore + verify — the decrypt half and its falsifiable proof.
-import { mkdir, rm, stat, readFile } from 'node:fs/promises';
+import { rm, stat, readFile } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { AGE_MAGIC, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.js';
 import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
 import { exists, sha256, readHead, fmtBytes } from './util.js';
+import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
 import type { CliOptions } from './types.js';
 
 export async function restore(o: CliOptions): Promise<void> {
@@ -18,8 +20,29 @@ export async function restore(o: CliOptions): Promise<void> {
   // age streams plaintext chunk-by-chunk, so a truncated/corrupt artifact errors only
   // AFTER tar has already extracted the leading components — leaving a partial tree.
   // Track whether we created out_dir so we can remove it (or warn) on a mid-stream fail.
-  const outDirPreExisted = await exists(o.out_dir);
-  await mkdir(o.out_dir, { recursive: true });
+  // The tar child spawned below lands in the same ACTIVE_CHILDREN set snapshot's tar
+  // does (see proc.ts), but until now nothing ever installed a signal guard for
+  // restore() — a SIGINT/SIGTERM/SIGHUP mid-extract hit Node's default handler, the
+  // tar child was never killed, and out_dir was left with a silently partial tree
+  // with no cleanup and no warning (#95). installStageSignalGuard() is idempotent, so
+  // calling it here is safe whether or not a snapshot() in the same process already did.
+  installStageSignalGuard();
+  // mkdirSync (not async mkdir), and its return value (not a separate exists() check)
+  // decides outDirPreExisted: recursive mkdirSync returns undefined when the path
+  // already fully existed, or the first path segment it created otherwise — a single
+  // atomic syscall sequence with no TOCTOU gap between "check" and "create" (an
+  // async exists() followed by mkdir leaves a window where something else could
+  // create out_dir in between, misclassifying it as "we created this, safe to erase").
+  // It also keeps dir-creation and the registration below in one tick with no
+  // event-loop yield — same discipline snapshot() uses for ACTIVE_STAGE (mkdtempSync +
+  // setActiveStage, see signal-guard.ts): otherwise a signal landing during an await
+  // could fire before out_dir is registered and leave a freshly-created empty dir
+  // untracked.
+  const outDirPreExisted = mkdirSync(o.out_dir, { recursive: true }) === undefined;
+  // Register out_dir with the guard so a mid-extract signal is handled the same way
+  // snapshot's stage/.part are: erase it if we created it ourselves, or otherwise flag
+  // it (see installStageSignalGuard) rather than destroy content we don't own.
+  setActiveRestoreOutDir(o.out_dir, outDirPreExisted);
   // decrypt(in) | tar -xf - -C out-dir
   // --no-same-owner/--no-same-permissions: a substituted/forged archive must not be
   // able to set hostile ownership or modes on extraction (defense-in-depth — the
@@ -30,6 +53,11 @@ export async function restore(o: CliOptions): Promise<void> {
     if (!outDirPreExisted) await rm(o.out_dir, { recursive: true, force: true });
     else console.error(`warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`);
     throw e;
+  } finally {
+    // the extract is settled (cleanly, or the catch above already ran its own
+    // non-signal cleanup) — a later signal (e.g. during pg_restore below) must not
+    // touch out_dir anymore.
+    setActiveRestoreOutDir(null);
   }
   console.log(`restored components into ${o.out_dir}`);
   const manifestPath = join(o.out_dir, 'manifest.json');

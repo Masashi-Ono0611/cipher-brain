@@ -17,8 +17,18 @@ import type { CliOptions } from './types.js';
 // and fails with EEXIST if out appeared meanwhile, giving a true exclusive no-clobber
 // even under overlapping snapshots. But hard links are unsupported on exFAT/FAT and some
 // network/cloud mounts (common backup media), where link throws EPERM/ENOTSUP — there,
-// fall back to a re-checked rename (best-effort no-clobber with a tiny TOCTOU window,
-// the same the original `age -o` write had). Atomicity-on-success holds either way.
+// fall back to an exclusive create (writeFile with the 'wx' flag, the same no-clobber
+// idiom keys.ts/wizard.ts already use) as the no-clobber GATE, instead of a racy
+// exists()-then-rename() check-then-act: 'wx' atomically fails with EEXIST if `out`
+// already exists, so of two overlapping snapshots at most one can win the create — the
+// loser sees EEXIST and refuses, same as the link() path. The winner then owns `out`
+// and folds the real content in via rename() (itself atomic: readers see either the
+// empty placeholder or the complete file, never a torn write). The promotion DECISION
+// is now race-free either way; no TOCTOU window remains there. Residual: an unclean
+// kill (SIGKILL bypasses any in-process cleanup, on the link() path too) between the
+// create and the rename can leave an empty placeholder at `out` — but that fails SAFE
+// (a later run sees EEXIST and refuses with the same clobberErr, an operator can `rm`
+// the empty file and retry) rather than the silent, undetectable clobber this fix closes.
 async function promoteSnapshot(part: string, out: string): Promise<void> {
   const clobberErr = () => new Error(`${out} already exists — refusing to overwrite a prior snapshot (move it aside or choose a new --out)`);
   try {
@@ -27,8 +37,21 @@ async function promoteSnapshot(part: string, out: string): Promise<void> {
     const err = e as NodeJS.ErrnoException;
     if (err && err.code === 'EEXIST') throw clobberErr();
     if (err && err.code && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(err.code)) {
-      if (await exists(out)) throw clobberErr();
-      await rename(part, out);
+      try {
+        await writeFile(out, '', { flag: 'wx' });
+      } catch (createErr) {
+        const ce = createErr as NodeJS.ErrnoException;
+        if (ce && ce.code === 'EEXIST') throw clobberErr();
+        throw createErr;
+      }
+      try {
+        await rename(part, out);
+      } catch (renameErr) {
+        // best-effort: undo the placeholder create so a retry doesn't see a false
+        // EEXIST; swallow any cleanup error so it never masks the real renameErr.
+        try { await rm(out, { force: true }); } catch { /* ignore */ }
+        throw renameErr;
+      }
       return;
     }
     throw e;

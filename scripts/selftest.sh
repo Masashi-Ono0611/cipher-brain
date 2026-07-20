@@ -294,11 +294,24 @@ grep -q "CIPHER_BRAIN_PIN_RECIPIENTS is set but empty" "$TMP/pin-empty.log" || {
 echo "[PASS] snapshot fails closed when CIPHER_BRAIN_PIN_RECIPIENTS is explicitly empty"
 
 echo "== push arweave/turbo --yes guard: requires explicit opt-in before a paid permanent store =="
-# Without --yes or CIPHER_BRAIN_YES, push to arweave/turbo must fail at the gate
-# (before the SDK / wallet is even loaded), so this test needs no external deps.
+# #160: push now computes + prints the cost estimate BEFORE the --yes/CIPHER_BRAIN_YES
+# gate (previously the gate fired first, and the estimate only ran INSIDE backend.put(),
+# i.e. only after consent was already given). That estimate is a real, unauthenticated
+# price query (arweave: GET <gateway>/price/<bytes>; turbo: the SDK's pricing call) —
+# no longer "no external deps" for the arweave case, so point it at a closed local port
+# (connection refused, near-instant) rather than the real network. arweave's redirect
+# below (AR_OFFLINE) makes ITS query fully offline/deterministic; turbo has no such
+# override (the SDK's pricing endpoint isn't configurable) — its query only fires at all
+# when `@ardrive/turbo-sdk` happens to be installed (an optional peerDependency, absent
+# in this repo's own devDependencies), same conditional-network precedent cli-smoke.sh's
+# `estimate --backend turbo` test already relies on (its "(sdk installed)" vs
+# "(dependency not installed)" branches). Either way, the wallet/SDK signing path is
+# still never reached without --yes (put() is never called), so the gate itself remains
+# a no-signing, no-spend check.
+AR_OFFLINE=(CIPHER_BRAIN_AR_HOST=127.0.0.1 CIPHER_BRAIN_AR_PORT=1 CIPHER_BRAIN_AR_PROTOCOL=http)
 set +e
-OUT_AR=$(node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC_AR=$?
-OUT_TU=$(node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend turbo  2>&1); RC_TU=$?
+OUT_AR=$(env "${AR_OFFLINE[@]}" node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC_AR=$?
+OUT_TU=$(env "${AR_OFFLINE[@]}" node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend turbo  2>&1); RC_TU=$?
 set -e
 [ "$RC_AR" != "0" ] || { echo "[FAIL] push arweave without --yes exited 0"; exit 1; }
 [ "$RC_TU" != "0" ] || { echo "[FAIL] push turbo without --yes exited 0"; exit 1; }
@@ -307,10 +320,25 @@ printf '%s' "$OUT_AR" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
 printf '%s' "$OUT_TU" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
   || { echo "[FAIL] push turbo error lacks --yes guidance"; echo "$OUT_TU"; exit 1; }
 echo "[PASS] push arweave/turbo without --yes fails with clear guidance"
+# #160 regression: the cost estimate must appear BEFORE the --yes consent-gate error in
+# the SAME output — not just present somewhere, but ahead of it (line-order check).
+EST_LINE_AR=$(printf '%s\n' "$OUT_AR" | grep -n -i "cost estimate" | head -1 | cut -d: -f1)
+YES_LINE_AR=$(printf '%s\n' "$OUT_AR" | grep -n -i "re-run push with --yes" | head -1 | cut -d: -f1)
+[ -n "$EST_LINE_AR" ] || { echo "[FAIL] push arweave (no --yes) printed no cost estimate"; echo "$OUT_AR"; exit 1; }
+[ -n "$YES_LINE_AR" ] || { echo "[FAIL] push arweave (no --yes) printed no --yes consent error"; echo "$OUT_AR"; exit 1; }
+[ "$EST_LINE_AR" -lt "$YES_LINE_AR" ] \
+  || { echo "[FAIL] push arweave printed the --yes consent gate before the cost estimate (#160 regression)"; echo "$OUT_AR"; exit 1; }
+EST_LINE_TU=$(printf '%s\n' "$OUT_TU" | grep -n -i "cost estimate" | head -1 | cut -d: -f1)
+YES_LINE_TU=$(printf '%s\n' "$OUT_TU" | grep -n -i "re-run push with --yes" | head -1 | cut -d: -f1)
+[ -n "$EST_LINE_TU" ] || { echo "[FAIL] push turbo (no --yes) printed no cost estimate"; echo "$OUT_TU"; exit 1; }
+[ -n "$YES_LINE_TU" ] || { echo "[FAIL] push turbo (no --yes) printed no --yes consent error"; echo "$OUT_TU"; exit 1; }
+[ "$EST_LINE_TU" -lt "$YES_LINE_TU" ] \
+  || { echo "[FAIL] push turbo printed the --yes consent gate before the cost estimate (#160 regression)"; echo "$OUT_TU"; exit 1; }
+echo "[PASS] push arweave/turbo prints the cost estimate BEFORE asking for --yes consent (#160)"
 # With CIPHER_BRAIN_YES=1 the --yes guard passes; the error moves further in
 # (wallet / SDK missing), which proves the guard no longer blocks.
 set +e
-OUT2=$(CIPHER_BRAIN_YES=1 node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC2=$?
+OUT2=$(env "${AR_OFFLINE[@]}" CIPHER_BRAIN_YES=1 node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC2=$?
 set -e
 [ "$RC2" != "0" ] || { echo "[FAIL] arweave push should fail (no wallet in test env)"; exit 1; }
 printf '%s' "$OUT2" | grep -qi "CIPHER_BRAIN_YES\|--yes" \

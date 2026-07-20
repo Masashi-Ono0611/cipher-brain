@@ -147,9 +147,9 @@ set -euo pipefail
 # test/retry on install day — or any same-day re-run — never refuses to overwrite
 # the prior run's snapshot.
 STAMP="$(date +%Y%m%dT%H%M%S)"
-OUT="$HOME/brain-snapshots/brain-$STAMP.age"
+OUT="$HOME/.cipher-brain/schedule/snapshots/brain-$STAMP.age"
 n=1
-while [ -e "$OUT" ]; do n=$((n + 1)); OUT="$HOME/brain-snapshots/brain-$STAMP-$n.age"; done
+while [ -e "$OUT" ]; do n=$((n + 1)); OUT="$HOME/.cipher-brain/schedule/snapshots/brain-$STAMP-$n.age"; done
 cipher-brain snapshot --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.gbrain" \
   --recipient ~/.cipher-brain/recipient.txt --recipient ~/.cipher-brain-backup/recipient.txt \
   --out "$OUT"
@@ -180,7 +180,7 @@ LOC=$(cipher-brain push --in "$OUT" --backend turbo --skip-unchanged \
 # leaves it untouched — still correct — on a skip).
 SHA=$(cut -f3 "$HOME/.cipher-brain/latest-locator.tsv")
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$SHA" \
-  >> "$HOME/brain-snapshots/index.tsv"
+  >> "$HOME/.cipher-brain/schedule/index.tsv"
 ```
 
 Snapshotting needs only the **public** key, so the snapshots the always-on box

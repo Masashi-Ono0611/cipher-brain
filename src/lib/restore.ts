@@ -9,6 +9,29 @@ import { exists, sha256, readHead, fmtBytes, redactPgConn } from './util.js';
 import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
 import type { CliOptions } from './types.js';
 
+// GNU tar's --keep-old-files, unlike bsdtar's identically-named flag, treats an
+// existing-file collision as a FATAL error (exit 2, "Cannot open: File exists")
+// rather than silently skipping it — so on Linux the very protection this flag is
+// meant to give would instead trip the SAME code path that handles a truncated/
+// corrupt artifact, misreporting "a file was protected" as "the restore failed"
+// (#112 fix regressed ubuntu-latest CI, both Node 22 and 24 — confirmed locally
+// against a real GNU tar 1.35 via `brew install gnu-tar`). GNU tar's
+// --skip-old-files is the flag that actually matches bsdtar's --keep-old-files
+// semantics (skip existing files silently, exit 0) — but bsdtar does not
+// understand --skip-old-files at all ("Option --skip-old-files is not
+// supported"), so neither flag alone behaves the same on both. Detect the tar
+// flavor once via `tar --version` (GNU tar's output starts with "tar (GNU tar)
+// …"; bsdtar's does not mention GNU at all) and pick whichever flag gives the
+// SAME behavior (skip silently, exit 0) on it.
+async function tarNoClobberFlag(): Promise<string> {
+  try {
+    const { out } = await run('tar', ['--version']);
+    return out.includes('GNU tar') ? '--skip-old-files' : '--keep-old-files';
+  } catch {
+    return '--keep-old-files'; // conservative default if `tar --version` itself fails to run
+  }
+}
+
 export async function restore(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.out_dir) throw new Error('--out-dir <dir> required');
@@ -58,11 +81,12 @@ export async function restore(o: CliOptions): Promise<void> {
   // --no-same-owner/--no-same-permissions: a substituted/forged archive must not be
   // able to set hostile ownership or modes on extraction (defense-in-depth — the
   // bytes can be attacker-chosen if storage is compromised; see verify --sha256).
-  // --keep-old-files (GNU tar and bsdtar both support this exact long-form flag): when
-  // --out-dir already held files before this run (outDirPreExisted), extraction must
-  // not silently clobber them — skip a colliding name rather than overwrite it.
+  // The no-clobber flag (see tarNoClobberFlag above): when --out-dir already held
+  // files before this run (outDirPreExisted), extraction must not silently clobber
+  // them — skip a colliding name rather than overwrite it, on EITHER tar flavor.
+  const noClobberFlag = await tarNoClobberFlag();
   try {
-    await decryptToChild(decrypter, o.in, 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '--keep-old-files', '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
+    await decryptToChild(decrypter, o.in, 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', noClobberFlag, '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
   } catch (e) {
     if (!outDirPreExisted) await rm(o.out_dir, { recursive: true, force: true });
     else console.error(`warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`);

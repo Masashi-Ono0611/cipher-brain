@@ -96,8 +96,15 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
         chatgpt-export --zip <path>  the official ChatGPT export zip, archived as-is
                                      (never extracted)
 
-  cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>]
-      Decrypt with the PRIVATE identity; optionally pg_restore the db.dump.
+  cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>] [--yes]
+      Decrypt with the PRIVATE identity. Extraction never clobbers a file already
+      present in --out-dir (--keep-old-files: an existing file is left untouched,
+      the rest of the archive still extracts around it).
+      --pg additionally pg_restore's the db.dump into that connection. pg_restore
+      --clean --if-exists DROPS and replaces objects in the target database — an
+      irreversible operation — so it requires --yes or CIPHER_BRAIN_YES=1 to confirm,
+      same as push's paid-backend guard below. Bounded by the same pipe timeout as
+      the decrypt/extract step (CIPHER_BRAIN_PIPE_TIMEOUT).
 
   cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>]
       Assert it is real age ciphertext, a wrong key cannot open it, AND (when the
@@ -176,7 +183,8 @@ Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_PG_BIN (dir of pg
 Storage: CIPHER_BRAIN_FILE_DIR (file);
          CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none);
          turbo: CIPHER_BRAIN_AR_WALLET (JWK signer) + optional CIPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
-Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the arweave/turbo cost estimate (winston/winc).`;
+Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the arweave/turbo cost estimate (winston/winc).
+Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes or CIPHER_BRAIN_YES=1.`;
 
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);

@@ -2,16 +2,50 @@
 import { rm, stat, readFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { AGE_MAGIC, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.js';
+import { AGE_MAGIC, CIPHER_YES, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.js';
 import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
-import { exists, sha256, readHead, fmtBytes } from './util.js';
+import { exists, sha256, readHead, fmtBytes, redactPgConn } from './util.js';
 import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
 import type { CliOptions } from './types.js';
+
+// GNU tar's --keep-old-files, unlike bsdtar's identically-named flag, treats an
+// existing-file collision as a FATAL error (exit 2, "Cannot open: File exists")
+// rather than silently skipping it — so on Linux the very protection this flag is
+// meant to give would instead trip the SAME code path that handles a truncated/
+// corrupt artifact, misreporting "a file was protected" as "the restore failed"
+// (#112 fix regressed ubuntu-latest CI, both Node 22 and 24 — confirmed locally
+// against a real GNU tar 1.35 via `brew install gnu-tar`). GNU tar's
+// --skip-old-files is the flag that actually matches bsdtar's --keep-old-files
+// semantics (skip existing files silently, exit 0) — but bsdtar does not
+// understand --skip-old-files at all ("Option --skip-old-files is not
+// supported"), so neither flag alone behaves the same on both. Detect the tar
+// flavor once via `tar --version` (GNU tar's output starts with "tar (GNU tar)
+// …"; bsdtar's does not mention GNU at all) and pick whichever flag gives the
+// SAME behavior (skip silently, exit 0) on it.
+async function tarNoClobberFlag(): Promise<string> {
+  try {
+    const { out } = await run('tar', ['--version']);
+    return out.includes('GNU tar') ? '--skip-old-files' : '--keep-old-files';
+  } catch {
+    return '--keep-old-files'; // conservative default if `tar --version` itself fails to run
+  }
+}
 
 export async function restore(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.out_dir) throw new Error('--out-dir <dir> required');
+  // pg_restore --clean --if-exists below DROPS and replaces objects in the target
+  // database — an irreversible operation. Same consent gate as push's paid-backend
+  // guard (pushpull.ts): require --yes or CIPHER_BRAIN_YES=1 up front, before any
+  // decrypt/extract work happens, mirroring the "fail before out_dir is even created"
+  // discipline the identity check below already follows.
+  if (o.pg && !(o.yes || CIPHER_YES)) {
+    throw new Error(
+      `--pg ${redactPgConn(o.pg)}: pg_restore --clean --if-exists will DROP and replace objects in that database — ` +
+      `re-run restore with --yes or set CIPHER_BRAIN_YES=1 to confirm`
+    );
+  }
   const identity = o.identity || IDENTITY;
   if (!(await exists(identity))) throw new Error(`no identity at ${identity} — cannot decrypt without the private key`);
   // Load the identity FIRST (this prompts for the passphrase if the file is wrapped)
@@ -47,8 +81,12 @@ export async function restore(o: CliOptions): Promise<void> {
   // --no-same-owner/--no-same-permissions: a substituted/forged archive must not be
   // able to set hostile ownership or modes on extraction (defense-in-depth — the
   // bytes can be attacker-chosen if storage is compromised; see verify --sha256).
+  // The no-clobber flag (see tarNoClobberFlag above): when --out-dir already held
+  // files before this run (outDirPreExisted), extraction must not silently clobber
+  // them — skip a colliding name rather than overwrite it, on EITHER tar flavor.
+  const noClobberFlag = await tarNoClobberFlag();
   try {
-    await decryptToChild(decrypter, o.in, 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
+    await decryptToChild(decrypter, o.in, 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', noClobberFlag, '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
   } catch (e) {
     if (!outDirPreExisted) await rm(o.out_dir, { recursive: true, force: true });
     else console.error(`warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`);
@@ -65,8 +103,8 @@ export async function restore(o: CliOptions): Promise<void> {
   if (o.pg) {
     const dump = join(o.out_dir, 'db.dump');
     if (!(await exists(dump))) throw new Error(`--pg given but no db.dump in snapshot`);
-    await run(pgTool('pg_restore'), ['--no-owner', '--no-privileges', '--clean', '--if-exists', '-d', o.pg, dump]);
-    console.log(`pg_restore -> ${o.pg} done`);
+    await run(pgTool('pg_restore'), ['--no-owner', '--no-privileges', '--clean', '--if-exists', '-d', o.pg, dump], { timeoutMs: PIPE_TIMEOUT_MS });
+    console.log(`pg_restore -> ${redactPgConn(o.pg)} done`);
   }
 }
 

@@ -76,7 +76,28 @@ export async function estimateCost(backend: string, sizeBytes: number): Promise<
     }
     try {
       const turbo = TurboFactory.unauthenticated();
-      const [{ winc }] = await turbo.getUploadCosts({ bytes: [sizeBytes] });
+      // Bounded the same way arUsdRate() below bounds its own Turbo SDK call: the SDK
+      // exposes no timeout/AbortSignal option on getUploadCosts(), so an unresponsive
+      // Turbo pricing endpoint would otherwise hang this call indefinitely — and, since
+      // push() now calls estimateCost() BEFORE its --yes consent gate (#160), that hang
+      // would block a `push` before the operator ever gets to answer --yes, not just a
+      // read-only `estimate` invocation. A race against AR_HTTP_TIMEOUT_MS doesn't cancel
+      // the underlying request (the SDK gives no cancellation hook either), only bounds
+      // how long THIS call waits for it — the same trade-off arUsdRate() already makes.
+      const timeout = new Promise<null>((resolve) => {
+        const t = setTimeout(() => resolve(null), AR_HTTP_TIMEOUT_MS);
+        if (typeof t.unref === 'function') t.unref();
+      });
+      const res = await Promise.race([turbo.getUploadCosts({ bytes: [sizeBytes] }), timeout]);
+      if (res === null) {
+        return {
+          backend,
+          size_bytes: sizeBytes,
+          cost: null,
+          note: `estimate unavailable (Turbo pricing query timed out after ${AR_HTTP_TIMEOUT_MS}ms)`,
+        };
+      }
+      const [{ winc }] = res;
       // usd_estimate is OPTIONAL: arUsdRate returns null on any rate-fetch failure,
       // and a missing rate must never fail the (still useful) native estimate.
       const rate = await arUsdRate();

@@ -299,9 +299,15 @@ echo "== push arweave/turbo --yes guard: requires explicit opt-in before a paid 
 # i.e. only after consent was already given). That estimate is a real, unauthenticated
 # price query (arweave: GET <gateway>/price/<bytes>; turbo: the SDK's pricing call) —
 # no longer "no external deps" for the arweave case, so point it at a closed local port
-# (connection refused, near-instant) rather than the real network, keeping this suite
-# offline/deterministic. The wallet/SDK is still never loaded without --yes (put() is
-# never reached), so the gate itself remains a no-signing, no-spend check either way.
+# (connection refused, near-instant) rather than the real network. arweave's redirect
+# below (AR_OFFLINE) makes ITS query fully offline/deterministic; turbo has no such
+# override (the SDK's pricing endpoint isn't configurable) — its query only fires at all
+# when `@ardrive/turbo-sdk` happens to be installed (an optional peerDependency, absent
+# in this repo's own devDependencies), same conditional-network precedent cli-smoke.sh's
+# `estimate --backend turbo` test already relies on (its "(sdk installed)" vs
+# "(dependency not installed)" branches). Either way, the wallet/SDK signing path is
+# still never reached without --yes (put() is never called), so the gate itself remains
+# a no-signing, no-spend check.
 AR_OFFLINE=(CIPHER_BRAIN_AR_HOST=127.0.0.1 CIPHER_BRAIN_AR_PORT=1 CIPHER_BRAIN_AR_PROTOCOL=http)
 set +e
 OUT_AR=$(env "${AR_OFFLINE[@]}" node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC_AR=$?

@@ -234,10 +234,14 @@ interface ArweaveTransaction {
 // merely when our stall timer gives up on it) — an abandoned, still-running request could
 // otherwise receive and silently follow a redirect with the real fetch after we've already
 // moved on to the next gateway/attempt.
+// NOT reentrant: this mutates the process-global `fetch` for the duration of one call.
+// Safe today because `get()` is only ever awaited sequentially (one backend.get() per CLI
+// process, itself one `pull` command) — a future concurrent caller would need its own
+// dispatcher-scoped fix instead of overlapping calls to this function.
 function l1ChunkRead(ar: ArweaveClient, locator: string, timeoutMs: number): Promise<Uint8Array | string> {
   const realFetch = globalThis.fetch;
   const ctl = new AbortController();
-  let stall: ReturnType<typeof setTimeout>;
+  let stall: ReturnType<typeof setTimeout> | undefined;
   const arm = () => { clearTimeout(stall); stall = setTimeout(() => ctl.abort(), timeoutMs); };
   arm();
   globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {

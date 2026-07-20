@@ -26,7 +26,12 @@ import { join } from 'node:path';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, type Tool, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type Tool,
+  type CallToolResult,
+} from '@modelcontextprotocol/sdk/types.js';
 
 import { HOME, AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS } from './lib/config.js';
 import { snapshot } from './lib/snapshot.js';
@@ -83,7 +88,9 @@ function captureCall<T>(fn: () => Promise<T>): Promise<CaptureResult<T>> {
     const prevErr = console.error;
     const prevExit = process.exitCode;
     process.exitCode = undefined;
-    console.log = (...a: unknown[]) => { out.push(a.map(String).join(' ')); };
+    console.log = (...a: unknown[]) => {
+      out.push(a.map(String).join(' '));
+    };
     console.error = (...a: unknown[]) => {
       const s = a.map(String).join(' ');
       err.push(s);
@@ -98,7 +105,10 @@ function captureCall<T>(fn: () => Promise<T>): Promise<CaptureResult<T>> {
       process.exitCode = prevExit;
     }
   });
-  callChain = run.then(() => {}, () => {});
+  callChain = run.then(
+    () => {},
+    () => {},
+  );
   return run;
 }
 
@@ -142,7 +152,10 @@ function isStrArray(v: unknown): v is string[] {
 
 function requireBackend(value: unknown, what: string): asserts value is string {
   if (typeof value !== 'string' || !BACKENDS.includes(value)) {
-    throw new ToolError('ERR_INVALID_INPUT', `${what} must be one of ${BACKENDS.join('|')} — got ${JSON.stringify(value)}`);
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      `${what} must be one of ${BACKENDS.join('|')} — got ${JSON.stringify(value)}`,
+    );
   }
 }
 
@@ -163,13 +176,37 @@ const SNAPSHOT_NOW_TOOL: Tool = {
   inputSchema: {
     type: 'object',
     properties: {
-      dirs: { type: 'array', items: { type: 'string' }, description: 'Directories to include (tar.gz each). At least one of dirs/pg is required.' },
+      dirs: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Directories to include (tar.gz each). At least one of dirs/pg is required.',
+      },
       pg: { type: 'string', description: 'Postgres connection string to pg_dump into the snapshot.' },
-      recipients: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'age recipients (age1… pubkey or a recipients file path). Pass 2+ (primary + offline backup) for key recovery.' },
-      out: { type: 'string', description: 'Output path for the .age ciphertext (must not already exist — no-clobber).' },
-      backend: { type: 'string', enum: BACKENDS, description: 'When given, push the snapshot: file (free) or arweave|turbo (PAID — needs confirm_paid).' },
-      locator_file: { type: 'string', description: 'Path for push --save-locator: writes "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]" (the durable recovery pointer; back it up off-box).' },
-      confirm_paid: { type: 'boolean', description: 'REQUIRED true to push to arweave/turbo. Confirms you accept an irreversible, real-money upload.' },
+      recipients: {
+        type: 'array',
+        items: { type: 'string' },
+        minItems: 1,
+        description:
+          'age recipients (age1… pubkey or a recipients file path). Pass 2+ (primary + offline backup) for key recovery.',
+      },
+      out: {
+        type: 'string',
+        description: 'Output path for the .age ciphertext (must not already exist — no-clobber).',
+      },
+      backend: {
+        type: 'string',
+        enum: BACKENDS,
+        description: 'When given, push the snapshot: file (free) or arweave|turbo (PAID — needs confirm_paid).',
+      },
+      locator_file: {
+        type: 'string',
+        description:
+          'Path for push --save-locator: writes "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]" (the durable recovery pointer; back it up off-box).',
+      },
+      confirm_paid: {
+        type: 'boolean',
+        description: 'REQUIRED true to push to arweave/turbo. Confirms you accept an irreversible, real-money upload.',
+      },
     },
     required: ['recipients', 'out'],
     additionalProperties: false,
@@ -188,8 +225,14 @@ const LAST_SNAPSHOT_STATUS_TOOL: Tool = {
   inputSchema: {
     type: 'object',
     properties: {
-      locator_file: { type: 'string', description: 'Path to a push --save-locator file. Default: <CIPHER_BRAIN_HOME>/latest-locator.tsv' },
-      index_file: { type: 'string', description: 'Path to an append-only index.tsv (timestamp<TAB>locator<TAB>sha256 lines).' },
+      locator_file: {
+        type: 'string',
+        description: 'Path to a push --save-locator file. Default: <CIPHER_BRAIN_HOME>/latest-locator.tsv',
+      },
+      index_file: {
+        type: 'string',
+        description: 'Path to an append-only index.tsv (timestamp<TAB>locator<TAB>sha256 lines).',
+      },
     },
     additionalProperties: false,
   },
@@ -213,12 +256,34 @@ const VERIFY_RESTORE_TOOL: Tool = {
   inputSchema: {
     type: 'object',
     properties: {
-      locator: { type: 'string', description: 'Storage locator to pull first (requires backend). Exactly one of locator/file/locator_file.' },
-      file: { type: 'string', description: 'Local .age file to verify directly. Exactly one of locator/file/locator_file.' },
-      locator_file: { type: 'string', description: 'Path to a push --save-locator file ("<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]"; legacy 3/4-field lines accepted): pull using its recorded locator + backend, with its saved sha256 applied as the integrity pin (the CLI --from-locator-file recovery path). Exactly one of locator/file/locator_file; do not also pass backend.' },
-      backend: { type: 'string', enum: BACKENDS, description: 'Backend to pull the locator from (required with locator; not allowed with locator_file — the file records it).' },
-      sha256: { type: 'string', description: 'Optional integrity pin: 64-hex sha256 of the expected ciphertext, sourced from a TRUSTED off-box record (index.tsv / a backed-up save-locator file). A pulled artifact that does not match is deleted and the call fails closed (no verdict); with file the mismatch is a hard FAIL verdict. Overrides the pin recorded in locator_file.' },
-      identity: { type: 'string', description: 'Private identity file for the decrypt proof. Default: <CIPHER_BRAIN_HOME>/identity.age' },
+      locator: {
+        type: 'string',
+        description: 'Storage locator to pull first (requires backend). Exactly one of locator/file/locator_file.',
+      },
+      file: {
+        type: 'string',
+        description: 'Local .age file to verify directly. Exactly one of locator/file/locator_file.',
+      },
+      locator_file: {
+        type: 'string',
+        description:
+          'Path to a push --save-locator file ("<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]"; legacy 3/4-field lines accepted): pull using its recorded locator + backend, with its saved sha256 applied as the integrity pin (the CLI --from-locator-file recovery path). Exactly one of locator/file/locator_file; do not also pass backend.',
+      },
+      backend: {
+        type: 'string',
+        enum: BACKENDS,
+        description:
+          'Backend to pull the locator from (required with locator; not allowed with locator_file — the file records it).',
+      },
+      sha256: {
+        type: 'string',
+        description:
+          'Optional integrity pin: 64-hex sha256 of the expected ciphertext, sourced from a TRUSTED off-box record (index.tsv / a backed-up save-locator file). A pulled artifact that does not match is deleted and the call fails closed (no verdict); with file the mismatch is a hard FAIL verdict. Overrides the pin recorded in locator_file.',
+      },
+      identity: {
+        type: 'string',
+        description: 'Private identity file for the decrypt proof. Default: <CIPHER_BRAIN_HOME>/identity.age',
+      },
     },
     additionalProperties: false,
   },
@@ -238,7 +303,11 @@ const ESTIMATE_COST_TOOL: Tool = {
     type: 'object',
     properties: {
       file: { type: 'string', description: 'Path of the payload to size (exactly one of file/size_bytes).' },
-      size_bytes: { type: 'number', minimum: 0, description: 'Payload size in bytes (exactly one of file/size_bytes).' },
+      size_bytes: {
+        type: 'number',
+        minimum: 0,
+        description: 'Payload size in bytes (exactly one of file/size_bytes).',
+      },
       backend: { type: 'string', enum: BACKENDS, description: 'Backend to estimate for.' },
     },
     required: ['backend'],
@@ -263,7 +332,13 @@ const SCHEDULE_STATUS_TOOL: Tool = {
   },
 };
 
-const ALL_TOOLS: Tool[] = [SNAPSHOT_NOW_TOOL, LAST_SNAPSHOT_STATUS_TOOL, VERIFY_RESTORE_TOOL, ESTIMATE_COST_TOOL, SCHEDULE_STATUS_TOOL];
+const ALL_TOOLS: Tool[] = [
+  SNAPSHOT_NOW_TOOL,
+  LAST_SNAPSHOT_STATUS_TOOL,
+  VERIFY_RESTORE_TOOL,
+  ESTIMATE_COST_TOOL,
+  SCHEDULE_STATUS_TOOL,
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
@@ -271,12 +346,17 @@ const ALL_TOOLS: Tool[] = [SNAPSHOT_NOW_TOOL, LAST_SNAPSHOT_STATUS_TOOL, VERIFY_
 
 async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
   const { dirs = [], pg, recipients, out, backend, locator_file: locatorFile, confirm_paid: confirmPaid } = args;
-  if (!isStrArray(recipients) || recipients.length === 0) throw new ToolError('ERR_INVALID_INPUT', 'recipients must be a non-empty array of strings (age1… pubkeys or recipient file paths)');
+  if (!isStrArray(recipients) || recipients.length === 0)
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      'recipients must be a non-empty array of strings (age1… pubkeys or recipient file paths)',
+    );
   if (!isStr(out)) throw new ToolError('ERR_INVALID_INPUT', 'out (string path for the .age ciphertext) is required');
   if (!isStrArray(dirs)) throw new ToolError('ERR_INVALID_INPUT', 'dirs must be an array of strings');
   if (backend !== undefined) requireBackend(backend, 'backend');
   if (pg !== undefined && !isStr(pg)) throw new ToolError('ERR_INVALID_INPUT', 'pg must be a string connection URI');
-  if (locatorFile !== undefined && !isStr(locatorFile)) throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
+  if (locatorFile !== undefined && !isStr(locatorFile))
+    throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
   // Spend gate FIRST — before any snapshot work — so a refused paid push does no
   // work and leaves no artifact behind. Never silently spend: the CLI accepts
   // CIPHER_BRAIN_YES=1 for unattended cadence loops, but via MCP the consent
@@ -285,9 +365,9 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
     throw new ToolError(
       'ERR_CONFIRM_REQUIRED',
       `backend "${backend}" is a PAID, PERMANENT Arweave store — pushing spends real funds ` +
-      `irreversibly. Re-call snapshot_now with confirm_paid=true to consent (the MCP equivalent ` +
-      `of the CLI --yes guard). The CIPHER_BRAIN_YES environment escape hatch is not honored ` +
-      `over MCP, so no call can spend without this flag.`,
+        `irreversibly. Re-call snapshot_now with confirm_paid=true to consent (the MCP equivalent ` +
+        `of the CLI --yes guard). The CIPHER_BRAIN_YES environment escape hatch is not honored ` +
+        `over MCP, so no call can spend without this flag.`,
     );
   }
 
@@ -305,7 +385,15 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
   };
 
   if (backend) {
-    const pushOpts: CliOptions = { in: out, backend, yes: confirmPaid === true, save_locator: locatorFile, dirs: [], tables: [], recipients: [] };
+    const pushOpts: CliOptions = {
+      in: out,
+      backend,
+      yes: confirmPaid === true,
+      save_locator: locatorFile,
+      dirs: [],
+      tables: [],
+      recipients: [],
+    };
     const pushRes = await captureCall(() => push(pushOpts));
     const locator = pushRes.out.join('\n').trim(); // push() prints ONLY the locator to stdout
     result.pushed = true;
@@ -336,25 +424,55 @@ interface LocatorSource {
 // an existing file.
 async function readLocatorFile(path: string): Promise<LocatorSource> {
   const text = await readFile(path, 'utf8');
-  const line = text.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+  const line = text
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l && !l.startsWith('#'));
   if (!line) throw new ToolError('ERR_INVALID_INPUT', `locator file ${path} has no locator line`);
   const [locator, backend, digest, contentDigest] = line.split('\t');
-  if (!locator || !backend) throw new ToolError('ERR_INVALID_INPUT', `locator file ${path} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]]" — got: ${JSON.stringify(line)}`);
+  if (!locator || !backend)
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      `locator file ${path} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]]" — got: ${JSON.stringify(line)}`,
+    );
   const { mtime } = await stat(path);
-  return { source: 'locator_file', path, locator, backend, sha256: digest || null, content_digest: contentDigest || null, timestamp: mtime.toISOString() };
+  return {
+    source: 'locator_file',
+    path,
+    locator,
+    backend,
+    sha256: digest || null,
+    content_digest: contentDigest || null,
+    timestamp: mtime.toISOString(),
+  };
 }
 
 // Parse an append-only index.tsv ("<timestamp>\t<locator>\t<sha256>", newest LAST).
 async function readIndexFile(path: string): Promise<LocatorSource> {
   const text = await readFile(path, 'utf8');
-  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
   if (lines.length === 0) throw new ToolError('ERR_INVALID_INPUT', `index file ${path} has no entries`);
   const last = lines[lines.length - 1];
   const [timestamp, locator, digest] = last.split('\t');
-  if (!timestamp || !locator) throw new ToolError('ERR_INVALID_INPUT', `index file ${path} lines must be "<timestamp>\\t<locator>[\\t<sha256>]" — got: ${JSON.stringify(last)}`);
+  if (!timestamp || !locator)
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      `index file ${path} lines must be "<timestamp>\\t<locator>[\\t<sha256>]" — got: ${JSON.stringify(last)}`,
+    );
   // The index records timestamp+locator+sha256 but not the backend — that lives
   // in the save-locator file / the push command itself.
-  return { source: 'index_file', path, locator, backend: null, sha256: digest || null, timestamp, entries: lines.length };
+  return {
+    source: 'index_file',
+    path,
+    locator,
+    backend: null,
+    sha256: digest || null,
+    timestamp,
+    entries: lines.length,
+  };
 }
 
 const ageSeconds = (iso: string): number | null => {
@@ -363,16 +481,21 @@ const ageSeconds = (iso: string): number | null => {
 };
 
 async function handleLastSnapshotStatus(args: ToolArgs): Promise<CallToolResult> {
-  if (args.locator_file !== undefined && !isStr(args.locator_file)) throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
-  if (args.index_file !== undefined && !isStr(args.index_file)) throw new ToolError('ERR_INVALID_INPUT', 'index_file must be a string path');
+  if (args.locator_file !== undefined && !isStr(args.locator_file))
+    throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
+  if (args.index_file !== undefined && !isStr(args.index_file))
+    throw new ToolError('ERR_INVALID_INPUT', 'index_file must be a string path');
   let locatorFile: string | undefined = isStr(args.locator_file) ? args.locator_file : undefined;
-  let indexFile: string | undefined = isStr(args.index_file) ? args.index_file : undefined;
+  const indexFile: string | undefined = isStr(args.index_file) ? args.index_file : undefined;
   let defaulted = false;
   if (!locatorFile && !indexFile) {
     locatorFile = join(HOME, 'latest-locator.tsv'); // the MANAGEMENT.md cadence default
     defaulted = true;
     if (!(await exists(locatorFile))) {
-      throw new ToolError('ERR_INVALID_INPUT', `no locator_file/index_file given and the default save-locator file does not exist: ${locatorFile}. Pass locator_file (a push --save-locator file) or index_file (an append-only index.tsv).`);
+      throw new ToolError(
+        'ERR_INVALID_INPUT',
+        `no locator_file/index_file given and the default save-locator file does not exist: ${locatorFile}. Pass locator_file (a push --save-locator file) or index_file (an append-only index.tsv).`,
+      );
     }
   }
   const sources: LocatorSource[] = [];
@@ -394,16 +517,27 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
   const { locator, file, backend, identity, sha256: pin, locator_file: locatorFile } = args;
   const given = [locator, file, locatorFile].filter((v) => v !== undefined).length;
   if (given !== 1) {
-    throw new ToolError('ERR_INVALID_INPUT', 'pass exactly one of locator (pull first), file (verify a local .age), or locator_file (a push --save-locator file: locator + backend + sha256 pin in one)');
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      'pass exactly one of locator (pull first), file (verify a local .age), or locator_file (a push --save-locator file: locator + backend + sha256 pin in one)',
+    );
   }
   if (locatorFile !== undefined) {
     if (!isStr(locatorFile)) throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
-    if (backend !== undefined) throw new ToolError('ERR_INVALID_INPUT', 'backend cannot be combined with locator_file — the file records the backend itself');
+    if (backend !== undefined)
+      throw new ToolError(
+        'ERR_INVALID_INPUT',
+        'backend cannot be combined with locator_file — the file records the backend itself',
+      );
   }
   if (pin !== undefined && !(isStr(pin) && SHA256_HEX.test(pin))) {
-    throw new ToolError('ERR_INVALID_INPUT', 'sha256 must be a 64-char hex string (the expected ciphertext digest, from a trusted off-box record)');
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      'sha256 must be a 64-char hex string (the expected ciphertext digest, from a trusted off-box record)',
+    );
   }
-  if (identity !== undefined && !isStr(identity)) throw new ToolError('ERR_INVALID_INPUT', 'identity must be a string path');
+  if (identity !== undefined && !isStr(identity))
+    throw new ToolError('ERR_INVALID_INPUT', 'identity must be a string path');
   let target: string | undefined = isStr(file) ? file : undefined;
   let effectivePin: string | undefined = isStr(pin) ? pin : undefined;
   let tdir: string | null = null;
@@ -427,7 +561,9 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
         out: target,
         sha256: effectivePin,
         from_locator_file: isStr(locatorFile) ? locatorFile : undefined,
-        dirs: [], tables: [], recipients: [],
+        dirs: [],
+        tables: [],
+        recipients: [],
       };
       await captureCall(() => pull(pullOpts));
       effectivePin = pullOpts.sha256;
@@ -451,7 +587,14 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
     // The pin (explicit or read from locator_file) is ALSO handed to verify() so
     // the checks record "[PASS] sha256 matches the expected hash" like the CLI;
     // for a local file this is where the pin is enforced (mismatch = FAIL).
-    const verifyOpts: CliOptions = { in: target, identity: isStr(identity) ? identity : undefined, sha256: effectivePin, dirs: [], tables: [], recipients: [] };
+    const verifyOpts: CliOptions = {
+      in: target,
+      identity: isStr(identity) ? identity : undefined,
+      sha256: effectivePin,
+      dirs: [],
+      tables: [],
+      recipients: [],
+    };
     const res = await captureCall(() => verify(verifyOpts));
     // verify() reports through process.exitCode: 0 PASS, 1 FAIL, 2 PARTIAL.
     const verdict = res.exitCode === 0 ? 'PASS' : res.exitCode === 2 ? 'PARTIAL' : 'FAIL';
@@ -463,7 +606,9 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
       ...(pulled ? { pulled } : {}),
       ...(warning ? { warning } : {}),
       ...(verdict === 'PARTIAL'
-        ? { note: 'header + wrong-key checks passed but no private identity could prove decryptability on this box — run verify_restore where the identity lives for a full PASS.' }
+        ? {
+            note: 'header + wrong-key checks passed but no private identity could prove decryptability on this box — run verify_restore where the identity lives for a full PASS.',
+          }
         : {}),
     });
   } finally {
@@ -483,7 +628,8 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
     if (!(await exists(file))) throw new ToolError('ERR_INVALID_INPUT', `no such file: ${file}`);
     size = (await stat(file)).size;
   } else {
-    if (typeof sizeBytes !== 'number' || !Number.isFinite(sizeBytes) || sizeBytes < 0) throw new ToolError('ERR_INVALID_INPUT', 'size_bytes must be a non-negative number');
+    if (typeof sizeBytes !== 'number' || !Number.isFinite(sizeBytes) || sizeBytes < 0)
+      throw new ToolError('ERR_INVALID_INPUT', 'size_bytes must be a non-negative number');
     size = Math.ceil(sizeBytes);
   }
 
@@ -502,7 +648,12 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
       ({ TurboFactory } = await import('@ardrive/turbo-sdk'));
     } catch (e) {
       if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
-        return structuredOk({ backend, size_bytes: size, cost: null, note: 'estimate unavailable (optional dependency not installed) — run: npm install @ardrive/turbo-sdk. Uploads <100KB are free; larger ones spend Turbo Credits.' });
+        return structuredOk({
+          backend,
+          size_bytes: size,
+          cost: null,
+          note: 'estimate unavailable (optional dependency not installed) — run: npm install @ardrive/turbo-sdk. Uploads <100KB are free; larger ones spend Turbo Credits.',
+        });
       }
       throw e;
     }
@@ -513,12 +664,21 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
       // and a missing rate must never fail the (still useful) native estimate.
       const rate = await arUsdRate();
       return structuredOk({
-        backend, size_bytes: size, cost: String(winc), unit: 'winc', approx_ar: Number(BigInt(winc)) / 1e12,
+        backend,
+        size_bytes: size,
+        cost: String(winc),
+        unit: 'winc',
+        approx_ar: Number(BigInt(winc)) / 1e12,
         ...(rate !== null ? { usd_estimate: Number(((Number(BigInt(winc)) / 1e12) * rate).toFixed(6)) } : {}),
         note: 'Turbo upload cost estimate (uploads <100KB are free). Paid with Turbo Credits (fundable via ETH/USDC/fiat).',
       });
     } catch (e) {
-      return structuredOk({ backend, size_bytes: size, cost: null, note: `estimate unavailable (Turbo pricing query failed: ${errMsg(e)})` });
+      return structuredOk({
+        backend,
+        size_bytes: size,
+        cost: null,
+        note: `estimate unavailable (Turbo pricing query failed: ${errMsg(e)})`,
+      });
     }
   }
 
@@ -535,12 +695,21 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
     // 1e12-per-AR, so one USD/AR rate converts either); null rate → field omitted.
     const rate = await arUsdRate();
     return structuredOk({
-      backend, size_bytes: size, cost: winston, unit: 'winston', approx_ar: Number(BigInt(winston)) / 1e12,
+      backend,
+      size_bytes: size,
+      cost: winston,
+      unit: 'winston',
+      approx_ar: Number(BigInt(winston)) / 1e12,
       ...(rate !== null ? { usd_estimate: Number(((Number(BigInt(winston)) / 1e12) * rate).toFixed(6)) } : {}),
       note: 'Arweave L1 network price (the reward createTransaction would set at push time). Paid in AR from the JWK wallet.',
     });
   } catch (e) {
-    return structuredOk({ backend, size_bytes: size, cost: null, note: `estimate unavailable (gateway price query failed: ${errMsg(e)})` });
+    return structuredOk({
+      backend,
+      size_bytes: size,
+      cost: null,
+      note: `estimate unavailable (gateway price query failed: ${errMsg(e)})`,
+    });
   }
 }
 
@@ -557,7 +726,8 @@ async function handleScheduleStatus(args: ToolArgs): Promise<CallToolResult> {
   // silently discarded and this would report the server's own configured
   // schedule instead of failing loud.
   const unexpected = Object.keys(args);
-  if (unexpected.length > 0) throw new ToolError('ERR_INVALID_INPUT', `schedule_status takes no arguments — got: ${unexpected.join(', ')}`);
+  if (unexpected.length > 0)
+    throw new ToolError('ERR_INVALID_INPUT', `schedule_status takes no arguments — got: ${unexpected.join(', ')}`);
   const res = await captureCall(() => schedule({ _: 'status', dirs: [], tables: [], recipients: [] }));
   return structuredOk({ report: res.out });
 }
@@ -566,10 +736,7 @@ async function handleScheduleStatus(args: ToolArgs): Promise<CallToolResult> {
 // Server bootstrap
 // ─────────────────────────────────────────────────────────────────────────────
 
-const server = new Server(
-  { name: SERVER_NAME, version: SERVER_VERSION },
-  { capabilities: { tools: {} } },
-);
+const server = new Server({ name: SERVER_NAME, version: SERVER_VERSION }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: ALL_TOOLS }));
 
@@ -578,12 +745,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
   const args: ToolArgs = request.params.arguments ?? {};
   try {
     switch (name) {
-      case 'snapshot_now': return await handleSnapshotNow(args);
-      case 'last_snapshot_status': return await handleLastSnapshotStatus(args);
-      case 'verify_restore': return await handleVerifyRestore(args);
-      case 'estimate_cost': return await handleEstimateCost(args);
-      case 'schedule_status': return await handleScheduleStatus(args);
-      default: return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
+      case 'snapshot_now':
+        return await handleSnapshotNow(args);
+      case 'last_snapshot_status':
+        return await handleLastSnapshotStatus(args);
+      case 'verify_restore':
+        return await handleVerifyRestore(args);
+      case 'estimate_cost':
+        return await handleEstimateCost(args);
+      case 'schedule_status':
+        return await handleScheduleStatus(args);
+      default:
+        return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
     }
   } catch (err) {
     return structuredErr(err);

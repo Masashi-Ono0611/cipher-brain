@@ -65,9 +65,17 @@ const PAID = new Set(['arweave', 'turbo']);
 // already bake unconditionally or separately (see the comment above envLines' loop
 // in runnerBody for the full exclusion list).
 const ENV_CAPTURE_VARS = [
-  'CIPHER_BRAIN_FILE_DIR', 'CIPHER_BRAIN_PG_BIN', 'CIPHER_BRAIN_PIN_RECIPIENTS',
-  'CIPHER_BRAIN_AR_HOST', 'CIPHER_BRAIN_AR_PORT', 'CIPHER_BRAIN_AR_PROTOCOL', 'CIPHER_BRAIN_AR_WALLET', 'CIPHER_BRAIN_AR_PAID_BY',
-  'CIPHER_BRAIN_AR_HTTP_TIMEOUT', 'CIPHER_BRAIN_AR_L1_MAX', 'CIPHER_BRAIN_PIPE_TIMEOUT',
+  'CIPHER_BRAIN_FILE_DIR',
+  'CIPHER_BRAIN_PG_BIN',
+  'CIPHER_BRAIN_PIN_RECIPIENTS',
+  'CIPHER_BRAIN_AR_HOST',
+  'CIPHER_BRAIN_AR_PORT',
+  'CIPHER_BRAIN_AR_PROTOCOL',
+  'CIPHER_BRAIN_AR_WALLET',
+  'CIPHER_BRAIN_AR_PAID_BY',
+  'CIPHER_BRAIN_AR_HTTP_TIMEOUT',
+  'CIPHER_BRAIN_AR_L1_MAX',
+  'CIPHER_BRAIN_PIPE_TIMEOUT',
 ];
 
 // Of ENV_CAPTURE_VARS, the ones config.ts documents as naming a filesystem path (a
@@ -78,7 +86,7 @@ const ENV_CAPTURE_VARS = [
 // treatment already given to --vault/--zip/--recipient(file) below.
 const PATH_ENV_VARS = new Set([
   'CIPHER_BRAIN_FILE_DIR', // config.ts: "file backend object store"
-  'CIPHER_BRAIN_PG_BIN',   // config.ts: "dir holding pg_dump/pg_restore"
+  'CIPHER_BRAIN_PG_BIN', // config.ts: "dir holding pg_dump/pg_restore"
   'CIPHER_BRAIN_AR_WALLET', // config.ts: "path to a JWK key file"
 ]);
 
@@ -187,7 +195,9 @@ function runnerBody(cfg: ScheduleConfig): string {
       `export CIPHER_BRAIN_MAX_SPEND=${cfg.max_spend}`,
     );
     if (!process.env.CIPHER_BRAIN_AR_WALLET) {
-      spendLines.push(`# export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer — required to push via ${cfg.backend}`);
+      spendLines.push(
+        `# export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer — required to push via ${cfg.backend}`,
+      );
     }
   }
   const snapshotArgs: string[] = [];
@@ -277,19 +287,21 @@ function plistBody(cfg: ScheduleConfig): string {
 `;
 }
 
-const cronLine = (cfg: ScheduleConfig): string => `${cfg.minute} ${cfg.hour} * * * /bin/bash "${cfg.runner}" ${CRON_MARKER}`;
+const cronLine = (cfg: ScheduleConfig): string =>
+  `${cfg.minute} ${cfg.hour} * * * /bin/bash "${cfg.runner}" ${CRON_MARKER}`;
 
 // Escape a string for embedding as PLIST XML text content (e.g. inside <string>…</string>).
 // & must go first, or the entities the other replacements introduce would themselves be
 // re-escaped. Without this, a path containing any of these characters (plausible in a
 // $HOME or username, e.g. "O'Brien & Co") produces invalid XML that `launchctl bootstrap`
 // rejects even though the runner itself was generated fine.
-const xmlEscape = (s: unknown): string => String(s)
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;')
-  .replace(/'/g, '&apos;');
+const xmlEscape = (s: unknown): string =>
+  String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 
 // ---------- trigger registration ----------
 
@@ -298,7 +310,9 @@ function loadLaunchd(): void {
   sh('launchctl', ['bootout', `gui/${uid}/${LABEL}`]); // clear a prior registration; failure = was not loaded, fine
   const r = sh('launchctl', ['bootstrap', `gui/${uid}`, PLIST]);
   if (r.error || r.status !== 0) {
-    throw new Error(`launchctl bootstrap failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`} — artifacts are written; retry with: launchctl bootstrap gui/${uid} ${PLIST}`);
+    throw new Error(
+      `launchctl bootstrap failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`} — artifacts are written; retry with: launchctl bootstrap gui/${uid} ${PLIST}`,
+    );
   }
 }
 
@@ -309,10 +323,13 @@ function crontabText(): string {
 }
 
 function loadCron(entry: string): void {
-  const kept = crontabText().split('\n').filter((l) => l.trim() && !l.includes(CRON_MARKER));
+  const kept = crontabText()
+    .split('\n')
+    .filter((l) => l.trim() && !l.includes(CRON_MARKER));
   const next = [...kept, entry].join('\n') + '\n';
   const r = sh('crontab', ['-'], { input: next });
-  if (r.error || r.status !== 0) throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
+  if (r.error || r.status !== 0)
+    throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
 }
 
 // Resolve pg_dump's directory the SAME way config.ts's PG_BIN is consumed (a directory
@@ -384,10 +401,14 @@ async function install(o: CliOptions): Promise<void> {
   if (o.pg && !process.env.CIPHER_BRAIN_PG_BIN) {
     const dir = resolvePgDumpDir();
     if (!dir) {
-      throw new Error(`--pg requires pg_dump for the unattended run — could not resolve it (command -v pg_dump found nothing on PATH); install the postgresql client tools or pass CIPHER_BRAIN_PG_BIN=<dir containing pg_dump/pg_restore>`);
+      throw new Error(
+        `--pg requires pg_dump for the unattended run — could not resolve it (command -v pg_dump found nothing on PATH); install the postgresql client tools or pass CIPHER_BRAIN_PG_BIN=<dir containing pg_dump/pg_restore>`,
+      );
     }
     process.env.CIPHER_BRAIN_PG_BIN = dir;
-    console.error(`resolved pg_dump -> ${join(dir, 'pg_dump')} (baked into the runner as CIPHER_BRAIN_PG_BIN — launchd/cron do not inherit PATH)`);
+    console.error(
+      `resolved pg_dump -> ${join(dir, 'pg_dump')} (baked into the runner as CIPHER_BRAIN_PG_BIN — launchd/cron do not inherit PATH)`,
+    );
   }
   const at = o.at || '03:30';
   const { hour, minute } = parseAt(at);
@@ -396,7 +417,9 @@ async function install(o: CliOptions): Promise<void> {
   // MANDATORY here — refuse to install rather than schedule an uncapped nightly upload.
   if (PAID.has(o.backend)) {
     if (!o.max_spend) {
-      throw new Error(`--backend ${o.backend} is a paid store: --max-spend <n> is required for an unattended schedule (native units: winc for turbo, winston for arweave L1) — the runner gets CIPHER_BRAIN_YES=1, so it must also get a spend cap`);
+      throw new Error(
+        `--backend ${o.backend} is a paid store: --max-spend <n> is required for an unattended schedule (native units: winc for turbo, winston for arweave L1) — the runner gets CIPHER_BRAIN_YES=1, so it must also get a spend cap`,
+      );
     }
     if (!/^\d+$/.test(String(o.max_spend)) || BigInt(o.max_spend) <= 0n) {
       throw new Error(`--max-spend must be a positive integer (native units), got: ${o.max_spend}`);
@@ -416,7 +439,9 @@ async function install(o: CliOptions): Promise<void> {
 
   const cfg: ScheduleConfig = {
     schema: 1,
-    at, hour, minute,
+    at,
+    hour,
+    minute,
     backend: o.backend,
     ...(o.profile ? { profile: o.profile } : {}),
     // --vault/--zip are always filesystem paths (a directory / a zip file) — resolve
@@ -444,9 +469,8 @@ async function install(o: CliOptions): Promise<void> {
     runner: RUNNER,
     node: process.execPath,
     cli: resolve(process.argv[1]),
-    trigger: process.platform === 'darwin'
-      ? { type: 'launchd', path: PLIST }
-      : { type: 'cron', entry_file: CRON_ENTRY_FILE },
+    trigger:
+      process.platform === 'darwin' ? { type: 'launchd', path: PLIST } : { type: 'cron', entry_file: CRON_ENTRY_FILE },
     // Same reasoning as --vault/--zip/--dir/--recipient above, applied to the ambient
     // CIPHER_BRAIN_* env vars and TMPDIR: snapshot this process's env NOW (resolving any
     // relative path-valued vars to absolute) so the runner still resolves the same
@@ -474,7 +498,9 @@ async function install(o: CliOptions): Promise<void> {
   if (o.no_load) {
     console.error('--no-load: artifacts written, trigger NOT registered (launchctl/crontab untouched)');
     if (isLegacyLaunchdCfg(priorCfg) || (priorCronEntry && isLegacyCronLine(priorCronEntry))) {
-      console.error(`note: a legacy (pre-CIPHER_BRAIN_HOME-scoped) registration for this home is still live — re-run install WITHOUT --no-load to migrate off it (otherwise both would end up running nightly)`);
+      console.error(
+        `note: a legacy (pre-CIPHER_BRAIN_HOME-scoped) registration for this home is still live — re-run install WITHOUT --no-load to migrate off it (otherwise both would end up running nightly)`,
+      );
     }
   } else if (cfg.trigger.type === 'launchd') {
     loadLaunchd();
@@ -490,11 +516,16 @@ async function install(o: CliOptions): Promise<void> {
     loadCron(cronLine(cfg));
     console.error(`crontab entry registered (${CRON_MARKER})`);
     if (priorCronEntry && isLegacyCronLine(priorCronEntry)) {
-      const lines = crontabText().split('\n').filter((l) => l.trim());
+      const lines = crontabText()
+        .split('\n')
+        .filter((l) => l.trim());
       const kept = lines.filter((l) => !isLegacyCronLine(l));
       if (kept.length !== lines.length) {
         const r = sh('crontab', ['-'], { input: kept.length ? kept.join('\n') + '\n' : '' });
-        if (r.error || r.status !== 0) throw new Error(`crontab write failed while migrating off the legacy entry: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
+        if (r.error || r.status !== 0)
+          throw new Error(
+            `crontab write failed while migrating off the legacy entry: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`,
+          );
         console.error(`migrated off the legacy unscoped crontab entry (${LEGACY_CRON_MARKER})`);
       }
     }
@@ -503,11 +534,17 @@ async function install(o: CliOptions): Promise<void> {
   // The write-window rationale (MANAGEMENT.md "Avoid the write window"): a run pg_dumps
   // the DB and tars the files at different instants, so it must not straddle the nightly
   // re-synthesis of the source.
-  console.error(`scheduled daily at ${at} — run well after the source re-synthesizes overnight, so the DB and files are captured from the same settled state`);
+  console.error(
+    `scheduled daily at ${at} — run well after the source re-synthesizes overnight, so the DB and files are captured from the same settled state`,
+  );
   if (PAID.has(cfg.backend)) {
-    console.error(`review CIPHER_BRAIN_MAX_SPEND=${cfg.max_spend} in ${RUNNER} — every unattended ${cfg.backend} push is capped at that estimate (native units)`);
+    console.error(
+      `review CIPHER_BRAIN_MAX_SPEND=${cfg.max_spend} in ${RUNNER} — every unattended ${cfg.backend} push is capped at that estimate (native units)`,
+    );
   }
-  console.error(`runs log to ${LOGS_DIR}/nightly-YYYY-MM-DD.log (final line: "OK rc=0" or "FAILED rc=N"); check with: cipher-brain schedule status`);
+  console.error(
+    `runs log to ${LOGS_DIR}/nightly-YYYY-MM-DD.log (final line: "OK rc=0" or "FAILED rc=N"); check with: cipher-brain schedule status`,
+  );
 }
 
 async function readConfig(): Promise<ScheduleConfig> {
@@ -521,12 +558,15 @@ async function lastLog(): Promise<{ name: string; rcLine: string } | null> {
   let names: string[] = [];
   try {
     names = (await readdir(LOGS_DIR)).filter((n) => /^nightly-\d{4}-\d{2}-\d{2}\.log$/.test(n)).sort();
-  } catch { /* logs dir absent = no runs yet */ }
+  } catch {
+    /* logs dir absent = no runs yet */
+  }
   if (names.length === 0) return null;
   const name = names[names.length - 1];
   const lines = (await readFile(join(LOGS_DIR, name), 'utf8')).split('\n').filter((l) => l.trim());
   // The runner guarantees a trailing OK/FAILED rc line per run; take the last one.
-  const rcLine = [...lines].reverse().find((l) => /^(OK|FAILED) rc=\d+$/.test(l)) || lines[lines.length - 1] || '(empty log)';
+  const rcLine =
+    [...lines].reverse().find((l) => /^(OK|FAILED) rc=\d+$/.test(l)) || lines[lines.length - 1] || '(empty log)';
   return { name, rcLine };
 }
 
@@ -552,7 +592,9 @@ async function status(): Promise<void> {
     const loaded = !r.error && r.status === 0;
     console.log(`trigger: launchd ${cfg.trigger.path} (loaded: ${loaded ? 'yes' : 'no'})`);
     if (legacy) {
-      console.log(`note: this schedule is still registered under the legacy unscoped launchd label (${LEGACY_LABEL}) from before CIPHER_BRAIN_HOME-scoped labels — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`);
+      console.log(
+        `note: this schedule is still registered under the legacy unscoped launchd label (${LEGACY_LABEL}) from before CIPHER_BRAIN_HOME-scoped labels — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`,
+      );
     }
   } else {
     // Same reasoning as the launchd branch: read back the EXACT line install last wrote
@@ -567,7 +609,9 @@ async function status(): Promise<void> {
     if (!r.error) loaded = r.status === 0 && r.stdout.includes(marker) ? 'yes' : 'no';
     console.log(`trigger: cron "${entryLine}" (registered: ${loaded})`);
     if (legacy) {
-      console.log(`note: this schedule is still registered under the legacy unscoped crontab marker (${LEGACY_CRON_MARKER}) from before CIPHER_BRAIN_HOME-scoped markers — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`);
+      console.log(
+        `note: this schedule is still registered under the legacy unscoped crontab marker (${LEGACY_CRON_MARKER}) from before CIPHER_BRAIN_HOME-scoped markers — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`,
+      );
     }
   }
   const last = await lastLog();
@@ -592,7 +636,8 @@ async function uninstall(o: CliOptions): Promise<void> {
     const present: string[] = [];
     if (process.platform === 'darwin') {
       if (await exists(PLIST)) present.push(`launchd plist ${PLIST}`);
-      if (isLegacyLaunchdCfg(priorCfg) && (await exists(LEGACY_PLIST))) present.push(`legacy launchd plist ${LEGACY_PLIST}`);
+      if (isLegacyLaunchdCfg(priorCfg) && (await exists(LEGACY_PLIST)))
+        present.push(`legacy launchd plist ${LEGACY_PLIST}`);
     } else {
       if (await exists(CRON_ENTRY_FILE)) present.push(`cron entry file ${CRON_ENTRY_FILE}`);
     }
@@ -601,7 +646,9 @@ async function uninstall(o: CliOptions): Promise<void> {
     if (present.length === 0) {
       console.error('nothing to remove — schedule is not installed');
     } else {
-      console.error(`--no-load: nothing removed — the trigger registration in launchd/crontab is still live. Re-run \`cipher-brain schedule uninstall\` WITHOUT --no-load to unregister it and remove: ${present.join(', ')}`);
+      console.error(
+        `--no-load: nothing removed — the trigger registration in launchd/crontab is still live. Re-run \`cipher-brain schedule uninstall\` WITHOUT --no-load to unregister it and remove: ${present.join(', ')}`,
+      );
     }
     return;
   }
@@ -609,38 +656,66 @@ async function uninstall(o: CliOptions): Promise<void> {
   const removed: string[] = [];
   if (process.platform === 'darwin') {
     sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${LABEL}`]); // failure = was not loaded, fine
-    if (await exists(PLIST)) { await rm(PLIST); removed.push(`launchd plist ${PLIST}`); }
+    if (await exists(PLIST)) {
+      await rm(PLIST);
+      removed.push(`launchd plist ${PLIST}`);
+    }
     if (isLegacyLaunchdCfg(priorCfg)) {
       sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${LEGACY_LABEL}`]); // failure = was not loaded, fine
-      if (await exists(LEGACY_PLIST)) { await rm(LEGACY_PLIST); removed.push(`legacy launchd plist ${LEGACY_PLIST}`); }
+      if (await exists(LEGACY_PLIST)) {
+        await rm(LEGACY_PLIST);
+        removed.push(`legacy launchd plist ${LEGACY_PLIST}`);
+      }
     }
   } else {
     const migrateLegacy = !!priorCronEntry && isLegacyCronLine(priorCronEntry);
-    const lines = crontabText().split('\n').filter((l) => l.trim());
+    const lines = crontabText()
+      .split('\n')
+      .filter((l) => l.trim());
     const kept = lines.filter((l) => !l.includes(CRON_MARKER) && !(migrateLegacy && isLegacyCronLine(l)));
     if (kept.length !== lines.length) {
       const r = sh('crontab', ['-'], { input: kept.length ? kept.join('\n') + '\n' : '' });
-      if (r.error || r.status !== 0) throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
-      removed.push(migrateLegacy ? `crontab entry (${CRON_MARKER} + legacy ${LEGACY_CRON_MARKER})` : `crontab entry (${CRON_MARKER})`);
+      if (r.error || r.status !== 0)
+        throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
+      removed.push(
+        migrateLegacy
+          ? `crontab entry (${CRON_MARKER} + legacy ${LEGACY_CRON_MARKER})`
+          : `crontab entry (${CRON_MARKER})`,
+      );
     }
-    if (await exists(CRON_ENTRY_FILE)) { await rm(CRON_ENTRY_FILE); removed.push(`cron entry file ${CRON_ENTRY_FILE}`); }
+    if (await exists(CRON_ENTRY_FILE)) {
+      await rm(CRON_ENTRY_FILE);
+      removed.push(`cron entry file ${CRON_ENTRY_FILE}`);
+    }
   }
-  for (const [p, what] of [[RUNNER, 'runner'], [CONFIG, 'config']]) {
-    if (await exists(p)) { await rm(p); removed.push(`${what} ${p}`); }
+  for (const [p, what] of [
+    [RUNNER, 'runner'],
+    [CONFIG, 'config'],
+  ]) {
+    if (await exists(p)) {
+      await rm(p);
+      removed.push(`${what} ${p}`);
+    }
   }
   if (removed.length === 0) {
     console.error('nothing to remove — schedule is not installed');
   } else {
     for (const r of removed) console.error(`removed: ${r}`);
-    console.error(`kept: logs (${LOGS_DIR}), snapshots (${SNAPS_DIR}) and index.tsv — they are your data, delete manually if unwanted`);
+    console.error(
+      `kept: logs (${LOGS_DIR}), snapshots (${SNAPS_DIR}) and index.tsv — they are your data, delete manually if unwanted`,
+    );
   }
 }
 
 export async function schedule(o: CliOptions): Promise<void> {
   switch (o._) {
-    case 'install': return install(o);
-    case 'status': return status();
-    case 'uninstall': return uninstall(o);
-    default: throw new Error(`schedule: expected install | uninstall | status, got: ${o._ || '(nothing)'}`);
+    case 'install':
+      return install(o);
+    case 'status':
+      return status();
+    case 'uninstall':
+      return uninstall(o);
+    default:
+      throw new Error(`schedule: expected install | uninstall | status, got: ${o._ || '(nothing)'}`);
   }
 }

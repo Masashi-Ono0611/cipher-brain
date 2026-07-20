@@ -39,6 +39,8 @@
     "build": "bun run scripts/build.ts",
     "prepack": "bun run scripts/build.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "biome check --error-on-warnings .",
+    "format": "biome format --write .",
     "verify": "npm run build && npm run typecheck && npm run selftest && npm run selftest:profiles && npm run selftest:interop && npm run selftest:storage && npm run selftest:recovery && npm run selftest:schedule && npm run selftest:init && npm run selftest:arweave && npm run selftest:arweave-nodeps && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
     "selftest": "bash scripts/selftest.sh",
     "selftest:profiles": "bash scripts/selftest-profiles.sh",
@@ -67,6 +69,7 @@
     }
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.16",
     "@types/node": "^26.1.0",
     "arlocal": "^1.1.66",
     "arweave": "^1.15.7",

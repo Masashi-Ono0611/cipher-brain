@@ -17,9 +17,14 @@ import type { CliOptions } from './types.js';
 async function contentDigestFor(o: CliOptions): Promise<string | null> {
   if (o.digest) return String(o.digest).trim().toLowerCase();
   try {
-    const line = (await readFile(`${o.in}.digest`, 'utf8')).split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+    const line = (await readFile(`${o.in}.digest`, 'utf8'))
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l && !l.startsWith('#'));
     return line ? line.toLowerCase() : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 // The recipients fingerprint for the artifact being pushed: read from the
@@ -33,9 +38,14 @@ async function contentDigestFor(o: CliOptions): Promise<string | null> {
 // (#70 review round 2, a real security regression, not just a correctness nit).
 async function recipientsFingerprintFor(o: CliOptions): Promise<string | null> {
   try {
-    const line = (await readFile(`${o.in}.recipients-fingerprint`, 'utf8')).split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+    const line = (await readFile(`${o.in}.recipients-fingerprint`, 'utf8'))
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l && !l.startsWith('#'));
     return line ? line.toLowerCase() : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 // Thrown when backend.put() (the actual, possibly PAID/PERMANENT upload) already
@@ -51,7 +61,9 @@ async function recipientsFingerprintFor(o: CliOptions): Promise<string | null> {
 export class PushLocatorWriteError extends Error {
   readonly locator: string;
   constructor(locator: string, cause: unknown) {
-    super(`upload succeeded (locator: ${locator}) but writing --save-locator failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    super(
+      `upload succeeded (locator: ${locator}) but writing --save-locator failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
     this.name = 'PushLocatorWriteError';
     this.locator = locator;
   }
@@ -71,8 +83,15 @@ interface SavedLocator {
 // the 5-field one (+recipients_fingerprint) all parse here identically.
 async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> {
   let text: string;
-  try { text = await readFile(path, 'utf8'); } catch { return null; }
-  const line = text.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+  try {
+    text = await readFile(path, 'utf8');
+  } catch {
+    return null;
+  }
+  const line = text
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l && !l.startsWith('#'));
   if (!line) return null;
   const [locator, backend, sha, contentDigest, recipientsFingerprint] = line.split('\t');
   return { locator, backend, sha, contentDigest, recipientsFingerprint };
@@ -109,15 +128,30 @@ export async function push(o: CliOptions): Promise<void> {
   // anyway. Checked before the paid-backend consent gate: a skipped push contacts
   // nothing and spends nothing.
   if (o.skip_unchanged) {
-    if (!o.save_locator) throw new Error('--skip-unchanged requires --save-locator <file> (the previous content digest and recipients fingerprint live in its 4th/5th fields)');
+    if (!o.save_locator)
+      throw new Error(
+        '--skip-unchanged requires --save-locator <file> (the previous content digest and recipients fingerprint live in its 4th/5th fields)',
+      );
     if (!o.force) {
       const cur = await contentDigestFor(o);
       const curRecipients = await recipientsFingerprintFor(o);
       const prev = await readSavedLocatorLine(o.save_locator);
-      const contentUnchanged = !!(cur && prev && prev.locator && prev.backend === o.backend && prev.contentDigest && prev.contentDigest.toLowerCase() === cur);
-      const recipientsUnchanged = !!(curRecipients && prev && prev.recipientsFingerprint && prev.recipientsFingerprint.toLowerCase() === curRecipients);
+      const contentUnchanged = !!(
+        cur &&
+        prev?.locator &&
+        prev.backend === o.backend &&
+        prev.contentDigest &&
+        prev.contentDigest.toLowerCase() === cur
+      );
+      const recipientsUnchanged = !!(
+        curRecipients &&
+        prev?.recipientsFingerprint &&
+        prev.recipientsFingerprint.toLowerCase() === curRecipients
+      );
       if (contentUnchanged && recipientsUnchanged && prev) {
-        console.error(`SKIPPED: content and recipients unchanged (digest ${cur}) — already pushed to ${o.backend} as ${prev.locator} (--force to push anyway)`);
+        console.error(
+          `SKIPPED: content and recipients unchanged (digest ${cur}) — already pushed to ${o.backend} as ${prev.locator} (--force to push anyway)`,
+        );
         console.log(prev.locator); // stdout contract unchanged: a script still captures a valid locator
         return;
       }
@@ -130,7 +164,7 @@ export async function push(o: CliOptions): Promise<void> {
   if ((o.backend === 'arweave' || o.backend === 'turbo') && !yes) {
     throw new Error(
       `${o.backend}: uploading to a permanent Arweave store spends real funds — ` +
-      `re-run push with --yes or set CIPHER_BRAIN_YES=1 in the environment to confirm`
+        `re-run push with --yes or set CIPHER_BRAIN_YES=1 in the environment to confirm`,
     );
   }
   const backend = await backendFor(o.backend);
@@ -203,13 +237,16 @@ export async function push(o: CliOptions): Promise<void> {
 // fails SAFE (a later run sees EEXIST and refuses with the same clobberErr) rather than
 // a silent, undetectable clobber.
 async function promoteNoClobber(part: string, out: string): Promise<void> {
-  const clobberErr = () => new Error(`${out} already exists — refusing to overwrite it with a pull result (move it aside, choose a new --out, or pass --force)`);
+  const clobberErr = () =>
+    new Error(
+      `${out} already exists — refusing to overwrite it with a pull result (move it aside, choose a new --out, or pass --force)`,
+    );
   try {
     await link(part, out);
   } catch (e) {
     const err = e as NodeJS.ErrnoException;
     if (err && err.code === 'EEXIST') throw clobberErr();
-    if (err && err.code && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(err.code)) {
+    if (err?.code && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(err.code)) {
       try {
         await writeFile(out, '', { flag: 'wx' });
       } catch (createErr) {
@@ -220,7 +257,11 @@ async function promoteNoClobber(part: string, out: string): Promise<void> {
       try {
         await rename(part, out);
       } catch (renameErr) {
-        try { await rm(out, { force: true }); } catch { /* ignore — never mask the real renameErr */ }
+        try {
+          await rm(out, { force: true });
+        } catch {
+          /* ignore — never mask the real renameErr */
+        }
         throw renameErr;
       }
       return;
@@ -238,7 +279,10 @@ export async function pull(o: CliOptions): Promise<void> {
   // still win if both are also given.
   if (o.from_locator_file) {
     if (!(await exists(o.from_locator_file))) throw new Error(`no such locator file: ${o.from_locator_file}`);
-    const line = (await readFile(o.from_locator_file, 'utf8')).split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+    const line = (await readFile(o.from_locator_file, 'utf8'))
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l && !l.startsWith('#'));
     if (!line) throw new Error(`locator file ${o.from_locator_file} has no locator line`);
     // Accept the legacy 3-field line, the 4-field one (a trailing content_digest,
     // written since --skip-unchanged) AND the 5-field one (+recipients_fingerprint):
@@ -248,7 +292,9 @@ export async function pull(o: CliOptions): Promise<void> {
     // A truncated / hand-mangled file missing the backend column would otherwise fall
     // through to the generic "--backend required" error, hiding the real cause.
     if (!savedLoc || !savedBackend) {
-      throw new Error(`locator file ${o.from_locator_file} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]]" — got: ${JSON.stringify(line)}`);
+      throw new Error(
+        `locator file ${o.from_locator_file} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]]" — got: ${JSON.stringify(line)}`,
+      );
     }
     if (!o.locator) o.locator = savedLoc;
     if (!o.backend) o.backend = savedBackend;
@@ -268,14 +314,16 @@ export async function pull(o: CliOptions): Promise<void> {
   // (src/lib/snapshot.ts). Checked up front, before the possibly long --wait retry loop
   // below, so a doomed pull fails fast; --force opts into overwriting.
   if (!o.force && (await exists(o.out))) {
-    throw new Error(`${o.out} already exists — refusing to overwrite it with a pull result (move it aside, choose a new --out, or pass --force)`);
+    throw new Error(
+      `${o.out} already exists — refusing to overwrite it with a pull result (move it aside, choose a new --out, or pass --force)`,
+    );
   }
   const backend = await backendFor(o.backend);
   // --wait <seconds>: keep retrying while the item is not yet retrievable. A fresh
   // Turbo/ArDrive upload takes ~5-8 min to propagate to the gateway (bundle -> mine
   // -> index); with --wait 0 (the default) pull fails immediately, preserving the old
   // behavior. CIPHER_BRAIN_PULL_RETRY_MS overrides the 30s retry interval (tests use it).
-  const waitMs = (Number(o.wait) || 0) * 1000;       // `|| 0` OUTSIDE Number → a non-numeric --wait is 0, not NaN (no infinite loop)
+  const waitMs = (Number(o.wait) || 0) * 1000; // `|| 0` OUTSIDE Number → a non-numeric --wait is 0, not NaN (no infinite loop)
   // Unlike waitMs above (where "unset" and "explicit 0" both correctly mean 0ms — a
   // bare `|| 0` is safe there), retryMs's default (30000) and its explicit-zero value
   // (0, immediate retry — the natural choice for a test avoiding a real sleep) are
@@ -302,7 +350,7 @@ export async function pull(o: CliOptions): Promise<void> {
       } catch (e) {
         const remaining = deadline - Date.now();
         if (!(e instanceof RetryableError) || remaining <= 0) throw e; // fatal (bad locator etc.) or out of budget → fail now
-        const naptime = Math.min(retryMs, remaining);   // honor a budget shorter than the retry interval
+        const naptime = Math.min(retryMs, remaining); // honor a budget shorter than the retry interval
         console.error(`pull attempt ${attempt} not ready (${e.message}); retrying in ${Math.round(naptime / 1000)}s…`);
         await sleep(naptime);
       }
@@ -316,7 +364,9 @@ export async function pull(o: CliOptions): Promise<void> {
     if (o.sha256) {
       const got = await sha256(part);
       if (got.toLowerCase() !== String(o.sha256).toLowerCase()) {
-        throw new Error(`sha256 mismatch: fetched ${got}, expected ${o.sha256} (the storage/gateway served bytes that do not match the pinned hash — nothing was written to ${o.out})`);
+        throw new Error(
+          `sha256 mismatch: fetched ${got}, expected ${o.sha256} (the storage/gateway served bytes that do not match the pinned hash — nothing was written to ${o.out})`,
+        );
       }
       console.error(`sha256 OK: ${got}`);
     }

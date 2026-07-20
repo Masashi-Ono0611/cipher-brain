@@ -9,6 +9,12 @@ const port = Number(process.argv[2] || 1984);
 const arlocal = new ArLocal(port, false);
 await arlocal.start();
 console.error(`arlocal listening on ${port}`);
-const stop = async () => { try { await arlocal.stop(); } finally { process.exit(0); } };
+const stop = async () => {
+  try {
+    await arlocal.stop();
+  } finally {
+    process.exit(0);
+  }
+};
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);

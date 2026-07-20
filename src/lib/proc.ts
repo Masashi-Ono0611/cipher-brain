@@ -23,21 +23,33 @@ export function run(cmd: string, args: string[], { input, timeoutMs }: RunOpts =
     const p = spawn(cmd, args, { stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     ACTIVE_CHILDREN.add(p);
     const doneChild = () => ACTIVE_CHILDREN.delete(p);
-    let out = '', err = '';
+    let out = '',
+      err = '';
     let timer: ReturnType<typeof setTimeout> | undefined;
     if (timeoutMs) {
       // a stuck child (e.g. a pg_dump call that never returns) must not hang us
       // forever — kill it and reject so callers can bound their own loops.
-      timer = setTimeout(() => { p.kill('SIGKILL'); rej(new Error(`${cmd} timed out after ${timeoutMs}ms`)); }, timeoutMs);
+      timer = setTimeout(() => {
+        p.kill('SIGKILL');
+        rej(new Error(`${cmd} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
     }
     p.stdout?.on('data', (d) => (out += d));
     p.stderr?.on('data', (d) => (err += d));
-    p.on('error', (e) => { clearTimeout(timer); doneChild(); rej(e); });
+    p.on('error', (e) => {
+      clearTimeout(timer);
+      doneChild();
+      rej(e);
+    });
     p.on('close', (code) => {
-      clearTimeout(timer); doneChild();
+      clearTimeout(timer);
+      doneChild();
       code === 0 ? res({ out, err }) : rej(new Error(`${cmd} exited ${code}: ${err.trim() || out.trim()}`));
     });
-    if (input) { p.stdin?.write(input); p.stdin?.end(); }
+    if (input) {
+      p.stdin?.write(input);
+      p.stdin?.end();
+    }
   });
 }
 

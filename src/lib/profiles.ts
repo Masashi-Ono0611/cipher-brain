@@ -20,9 +20,12 @@ export const PROFILE_NAMES = ['claude-code', 'obsidian', 'chatgpt-export'];
 // Resolve --profile to the concrete source paths it snapshots.
 export async function resolveProfilePaths(o: CliOptions): Promise<string[]> {
   switch (o.profile) {
-    case 'claude-code': return claudeCodePaths();
-    case 'obsidian': return obsidianPaths(o);
-    case 'chatgpt-export': return chatgptExportPaths(o);
+    case 'claude-code':
+      return claudeCodePaths();
+    case 'obsidian':
+      return obsidianPaths(o);
+    case 'chatgpt-export':
+      return chatgptExportPaths(o);
     default:
       throw new Error(`unknown profile "${o.profile}" — valid profiles: ${PROFILE_NAMES.join(', ')}`);
   }
@@ -39,7 +42,11 @@ async function claudeCodePaths(): Promise<string[]> {
   const claudeMd = join(claude, 'CLAUDE.md');
   const paths: string[] = [];
   let entries: Dirent[] = [];
-  try { entries = await readdir(projects, { withFileTypes: true }); } catch { /* no projects dir — CLAUDE.md may still exist */ }
+  try {
+    entries = await readdir(projects, { withFileTypes: true });
+  } catch {
+    /* no projects dir — CLAUDE.md may still exist */
+  }
   for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!e.isDirectory()) continue;
     const mem = join(projects, e.name, 'memory');
@@ -47,7 +54,9 @@ async function claudeCodePaths(): Promise<string[]> {
   }
   if (await exists(claudeMd)) paths.push(await realpath(claudeMd));
   if (paths.length === 0) {
-    throw new Error(`profile claude-code found nothing to snapshot — looked for ${join(projects, '*', 'memory')} and ${claudeMd}`);
+    throw new Error(
+      `profile claude-code found nothing to snapshot — looked for ${join(projects, '*', 'memory')} and ${claudeMd}`,
+    );
   }
   return paths;
 }
@@ -62,7 +71,9 @@ async function obsidianPaths(o: CliOptions): Promise<string[]> {
   if (!st) throw new Error(`no vault at ${vault} — profile obsidian snapshots the vault directory`);
   if (!st.isDirectory()) throw new Error(`${vault} is not a directory — profile obsidian expects the vault directory`);
   if (!(await exists(join(vault, '.obsidian'))) && !o.force_vault) {
-    throw new Error(`${vault} does not look like an Obsidian vault (no .obsidian/ inside) — pass --force-vault to snapshot it anyway`);
+    throw new Error(
+      `${vault} does not look like an Obsidian vault (no .obsidian/ inside) — pass --force-vault to snapshot it anyway`,
+    );
   }
   return [await realpath(vault)];
 }
@@ -74,7 +85,11 @@ async function chatgptExportPaths(o: CliOptions): Promise<string[]> {
   if (!o.zip) throw new Error('profile chatgpt-export requires --zip <path> (the official ChatGPT export zip)');
   const zip = resolve(o.zip);
   const st = await stat(zip).catch(() => null);
-  if (!st || !st.isFile()) throw new Error(`no export zip at ${zip} — profile chatgpt-export takes the official ChatGPT export zip`);
-  if (!zip.endsWith('.zip')) throw new Error(`${zip} does not end in .zip — profile chatgpt-export takes the official export zip as-is (not an extracted tree; use --dir for that)`);
+  if (!st?.isFile())
+    throw new Error(`no export zip at ${zip} — profile chatgpt-export takes the official ChatGPT export zip`);
+  if (!zip.endsWith('.zip'))
+    throw new Error(
+      `${zip} does not end in .zip — profile chatgpt-export takes the official export zip as-is (not an extracted tree; use --dir for that)`,
+    );
   return [await realpath(zip)];
 }

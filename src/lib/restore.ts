@@ -44,7 +44,7 @@ export async function restore(o: CliOptions): Promise<void> {
   if (o.pg && !(o.yes || CIPHER_YES)) {
     throw new Error(
       `--pg ${redactPgConn(o.pg)}: pg_restore --clean --if-exists will DROP and replace objects in that database — ` +
-      `re-run restore with --yes or set CIPHER_BRAIN_YES=1 to confirm`
+        `re-run restore with --yes or set CIPHER_BRAIN_YES=1 to confirm`,
     );
   }
   const identity = o.identity || IDENTITY;
@@ -87,10 +87,19 @@ export async function restore(o: CliOptions): Promise<void> {
   // them — skip a colliding name rather than overwrite it, on EITHER tar flavor.
   const noClobberFlag = await tarNoClobberFlag();
   try {
-    await decryptToChild(decrypter, o.in, 'tar', ['-xf', '-', '--no-same-owner', '--no-same-permissions', noClobberFlag, '-C', o.out_dir], { timeoutMs: PIPE_TIMEOUT_MS });
+    await decryptToChild(
+      decrypter,
+      o.in,
+      'tar',
+      ['-xf', '-', '--no-same-owner', '--no-same-permissions', noClobberFlag, '-C', o.out_dir],
+      { timeoutMs: PIPE_TIMEOUT_MS },
+    );
   } catch (e) {
     if (!outDirPreExisted) await rm(o.out_dir, { recursive: true, force: true });
-    else console.error(`warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`);
+    else
+      console.error(
+        `warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`,
+      );
     throw e;
   } finally {
     // the extract is settled (cleanly, or the catch above already ran its own
@@ -104,7 +113,9 @@ export async function restore(o: CliOptions): Promise<void> {
   if (o.pg) {
     const dump = join(o.out_dir, 'db.dump');
     if (!(await exists(dump))) throw new Error(`--pg given but no db.dump in snapshot`);
-    await run(pgTool('pg_restore'), ['--no-owner', '--no-privileges', '--clean', '--if-exists', '-d', o.pg, dump], { timeoutMs: PIPE_TIMEOUT_MS });
+    await run(pgTool('pg_restore'), ['--no-owner', '--no-privileges', '--clean', '--if-exists', '-d', o.pg, dump], {
+      timeoutMs: PIPE_TIMEOUT_MS,
+    });
     console.log(`pg_restore -> ${redactPgConn(o.pg)} done`);
   }
 }
@@ -135,7 +146,9 @@ export async function verify(o: CliOptions): Promise<void> {
   if (o.sha256) {
     const got = await sha256(o.in);
     hashOk = got.toLowerCase() === String(o.sha256).toLowerCase();
-    console.log(`[${hashOk ? 'PASS' : 'FAIL'}] sha256 matches the expected hash${hashOk ? '' : ` (expected ${o.sha256}, got ${got})`}`);
+    console.log(
+      `[${hashOk ? 'PASS' : 'FAIL'}] sha256 matches the expected hash${hashOk ? '' : ` (expected ${o.sha256}, got ${got})`}`,
+    );
   }
 
   // negative control: a throwaway key must NOT decrypt (header-only check — fast on any size)
@@ -172,7 +185,9 @@ export async function verify(o: CliOptions): Promise<void> {
     process.exitCode = 1;
   } else if (positiveSkipped) {
     verdict = 'PARTIAL';
-    console.log('\nVERDICT: PARTIAL — header + wrong-key checks passed, but decryptability was NOT proven on this box (no private identity here). Run verify where the identity lives to prove it is restorable by you.');
+    console.log(
+      '\nVERDICT: PARTIAL — header + wrong-key checks passed, but decryptability was NOT proven on this box (no private identity here). Run verify where the identity lives to prove it is restorable by you.',
+    );
     process.exitCode = 2; // distinct from PASS(0) and FAIL(1) so automation can tell them apart
   } else {
     verdict = 'PASS';

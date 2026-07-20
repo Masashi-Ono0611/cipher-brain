@@ -50,9 +50,9 @@ function requireTTY(): void {
   if (process.env.CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE === '1') return;
   throw new Error(
     'cipher-brain init is an interactive wizard and requires stdin to be a TTY — run it directly in a ' +
-    'terminal, not via a pipe, a redirected file, or in CI (same posture keygen --passphrase already has ' +
-    'for its passphrase prompt). For a non-interactive/scripted setup, drive the individual commands it ' +
-    'wraps (keygen, snapshot, push, schedule) by hand instead; see MANAGEMENT.md.',
+      'terminal, not via a pipe, a redirected file, or in CI (same posture keygen --passphrase already has ' +
+      'for its passphrase prompt). For a non-interactive/scripted setup, drive the individual commands it ' +
+      'wraps (keygen, snapshot, push, schedule) by hand instead; see MANAGEMENT.md.',
   );
 }
 
@@ -158,7 +158,9 @@ function buildRecoveryKit(k: KitInputs): string {
   lines.push('END SAVE-LOCATOR LINE');
   lines.push('');
   lines.push('--- CIPHER_BRAIN_PIN_RECIPIENTS (add to your shell rc, e.g. ~/.zshrc or ~/.bashrc) ---');
-  lines.push(k.pinRecipientsLine ?? '(skipped during init — see MANAGEMENT.md / "cipher-brain help" for what this does)');
+  lines.push(
+    k.pinRecipientsLine ?? '(skipped during init — see MANAGEMENT.md / "cipher-brain help" for what this does)',
+  );
   lines.push('');
   lines.push('--- RECOVERY STEPS (run these on ANY machine with Node >=22.6 and this npm package installed) ---');
   // Deliberately do NOT auto-append --pg (with the SOURCE connection string) to the
@@ -202,7 +204,9 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('    (possibly passphrase-protected, per step 3 of the wizard — restore then prompts for it).');
     lines.push('    Copy the SAVE-LOCATOR line above into its own file, e.g. ~/restore-locator.tsv, then:');
     lines.push('      cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
-    lines.push(`      cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ${k.primaryIdentityPath}`);
+    lines.push(
+      `      cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ${k.primaryIdentityPath}`,
+    );
     lines.push('  * For real kit-based portable recovery (any machine, zero prior knowledge), a backup');
     lines.push('    identity has to exist and be inlined in the kit. To get there: generate one —');
     lines.push('    "CIPHER_BRAIN_HOME=<path> cipher-brain keygen" — then re-snapshot encrypting to BOTH the');
@@ -237,9 +241,9 @@ export async function init(_o: CliOptions): Promise<void> {
   if (await exists(IDENTITY)) {
     throw new Error(
       `an identity already exists at ${IDENTITY} — "cipher-brain init" is for a FRESH setup, not overwriting ` +
-      `one. To redo it deliberately, run "cipher-brain keygen --force" (overwrites the identity — you lose ` +
-      `access to anything only that identity could decrypt) or drive keygen/snapshot/push/schedule by hand; ` +
-      `see MANAGEMENT.md.`,
+        `one. To redo it deliberately, run "cipher-brain keygen --force" (overwrites the identity — you lose ` +
+        `access to anything only that identity could decrypt) or drive keygen/snapshot/push/schedule by hand; ` +
+        `see MANAGEMENT.md.`,
     );
   }
 
@@ -318,8 +322,8 @@ export async function init(_o: CliOptions): Promise<void> {
       console.log('\n== 2/6: offline backup key (recommended) ==');
       console.log(
         'cipher-brain gives you two independent defenses against losing the primary identity; the first is a\n' +
-        'second, OFFLINE backup keypair. If you encrypt every snapshot to BOTH the primary and the backup\n' +
-        'public key, either identity alone can restore — see MANAGEMENT.md "Key recovery #1".',
+          'second, OFFLINE backup keypair. If you encrypt every snapshot to BOTH the primary and the backup\n' +
+          'public key, either identity alone can restore — see MANAGEMENT.md "Key recovery #1".',
       );
       if (await askYesNo(rl, 'Generate an offline backup keypair now?', true)) {
         // Shown BEFORE the path prompt (and BEFORE keygenAt() below writes anything) —
@@ -332,7 +336,13 @@ export async function init(_o: CliOptions): Promise<void> {
         console.log('⚠  This will still be written ON this machine — move it OFF-BOX (encrypted USB, a second');
         console.log('   location, a trusted person) once it is written; the recovery kit at the end restates this.');
         const defaultBackupHome = `${HOME}-backup`;
-        const backupHome = expandHome(await askLine(rl, `Path for the backup keypair (same disk unless you change this) [${defaultBackupHome}]: `, defaultBackupHome));
+        const backupHome = expandHome(
+          await askLine(
+            rl,
+            `Path for the backup keypair (same disk unless you change this) [${defaultBackupHome}]: `,
+            defaultBackupHome,
+          ),
+        );
         const identityPath = join(backupHome, 'identity.age');
         const recipientPath = join(backupHome, 'recipient.txt');
         // Same partial-write hazard as the primary keygen above (identity.age written,
@@ -370,16 +380,18 @@ export async function init(_o: CliOptions): Promise<void> {
         backup = { identityPath, recipientPath, recipient, identityText };
         console.log(`backup identity written to: ${identityPath}`);
       } else {
-        console.log('Skipping the backup key. You can add one later at any time: CIPHER_BRAIN_HOME=<path> cipher-brain keygen');
+        console.log(
+          'Skipping the backup key. You can add one later at any time: CIPHER_BRAIN_HOME=<path> cipher-brain keygen',
+        );
       }
 
       // ---------- 3. passphrase wrap the primary identity (MANAGEMENT.md Key recovery #2) ----------
       console.log('\n== 3/6: protect the primary identity at rest (recommended) ==');
       console.log(
         'The identity file just written is a bare secret guarded only by file permissions (0600) — anyone who\n' +
-        'copies it off this machine can decrypt every snapshot. A passphrase wrap (scrypt, the same "keygen\n' +
-        '--passphrase" flag uses) makes an exfiltrated identity file useless without it. See MANAGEMENT.md\n' +
-        '"Key recovery #2".',
+          'copies it off this machine can decrypt every snapshot. A passphrase wrap (scrypt, the same "keygen\n' +
+          '--passphrase" flag uses) makes an exfiltrated identity file useless without it. See MANAGEMENT.md\n' +
+          '"Key recovery #2".',
       );
       if (await askYesNo(rl, 'Protect the primary identity with a passphrase now?', false)) {
         // Reuses the EXACT same pieces keygen --passphrase uses (askNewPassphrase / wrapIdentity from
@@ -416,16 +428,20 @@ export async function init(_o: CliOptions): Promise<void> {
       console.log('\n== 4/6: recipient pin (optional, recommended) ==');
       console.log(
         'CIPHER_BRAIN_PIN_RECIPIENTS is an env var snapshot reads at run time: when set, it refuses to encrypt\n' +
-        'to any recipient NOT on the list — so a tampered recipient.txt, or an injected extra --recipient, can\n' +
-        'never silently re-key your snapshots to an attacker. It is not something init can "turn on" for you\n' +
-        'persistently (it is read from the environment at snapshot time, not a file init controls) — the most\n' +
-        'this wizard can do is suggest the exact line to add to your shell rc file yourself.',
+          'to any recipient NOT on the list — so a tampered recipient.txt, or an injected extra --recipient, can\n' +
+          'never silently re-key your snapshots to an attacker. It is not something init can "turn on" for you\n' +
+          'persistently (it is read from the environment at snapshot time, not a file init controls) — the most\n' +
+          'this wizard can do is suggest the exact line to add to your shell rc file yourself.',
       );
       let pinRecipientsLine: string | null = null;
       if (await askYesNo(rl, 'Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line for your shell rc file?', true)) {
         const primaryPub = (await readFile(RECIPIENT, 'utf8')).trim();
         const defaultLine = `export CIPHER_BRAIN_PIN_RECIPIENTS="${[primaryPub, backup?.recipient].filter(Boolean).join(' ')}"`;
-        pinRecipientsLine = await askLine(rl, `Suggested line (edit or press Enter to accept):\n${defaultLine}\n> `, defaultLine);
+        pinRecipientsLine = await askLine(
+          rl,
+          `Suggested line (edit or press Enter to accept):\n${defaultLine}\n> `,
+          defaultLine,
+        );
         console.log(`\nAdd this to your shell rc (~/.zshrc / ~/.bashrc), then open a new shell:\n${pinRecipientsLine}`);
       } else {
         console.log('Skipping the recipient pin suggestion.');
@@ -439,13 +455,21 @@ export async function init(_o: CliOptions): Promise<void> {
       const snapshotOpts: CliOptions = { dirs: [], tables: [], recipients: [] };
       if (profileChoice === 'none') {
         const dirsInput = await askLine(rl, 'Directory path(s) to back up, comma-separated (at least one, required): ');
-        const dirs = dirsInput.split(',').map((d) => expandHome(d.trim())).filter(Boolean);
-        if (dirs.length === 0) throw new Error('no directory given — "cipher-brain init" cannot produce an empty snapshot; re-run and pass at least one path, or pick a profile');
+        const dirs = dirsInput
+          .split(',')
+          .map((d) => expandHome(d.trim()))
+          .filter(Boolean);
+        if (dirs.length === 0)
+          throw new Error(
+            'no directory given — "cipher-brain init" cannot produce an empty snapshot; re-run and pass at least one path, or pick a profile',
+          );
         snapshotOpts.dirs = dirs;
       } else if (PROFILE_NAMES.includes(profileChoice)) {
         snapshotOpts.profile = profileChoice;
-        if (profileChoice === 'obsidian') snapshotOpts.vault = expandHome(await askLine(rl, 'Path to your Obsidian vault (must contain .obsidian/): '));
-        if (profileChoice === 'chatgpt-export') snapshotOpts.zip = expandHome(await askLine(rl, 'Path to the official ChatGPT export .zip: '));
+        if (profileChoice === 'obsidian')
+          snapshotOpts.vault = expandHome(await askLine(rl, 'Path to your Obsidian vault (must contain .obsidian/): '));
+        if (profileChoice === 'chatgpt-export')
+          snapshotOpts.zip = expandHome(await askLine(rl, 'Path to the official ChatGPT export .zip: '));
       } else {
         throw new Error(`unknown profile "${profileChoice}" — valid choices: none, ${PROFILE_NAMES.join(', ')}`);
       }
@@ -469,7 +493,11 @@ export async function init(_o: CliOptions): Promise<void> {
           // guess rather than a literal "you" placeholder nobody's account is ever named
           // (Fugu review finding: a bare-Enter accept should not likely fail pg_dump).
           let osUser = 'you';
-          try { osUser = userInfo().username; } catch { /* keep the 'you' fallback */ }
+          try {
+            osUser = userInfo().username;
+          } catch {
+            /* keep the 'you' fallback */
+          }
           // percent-encode: a username with '@', ':', '/', or a space would otherwise
           // corrupt the URI's own authority parsing (Fugu review finding).
           const defaultPg = `postgres://${encodeURIComponent(osUser)}@localhost:5432/gbrain`;
@@ -492,7 +520,9 @@ export async function init(_o: CliOptions): Promise<void> {
           false,
         );
         if (!consent) {
-          throw new Error(`aborted before spending — re-run "cipher-brain init" and choose "file" (free) instead, or run keygen/snapshot/push by hand once you are ready to pay; see MANAGEMENT.md.`);
+          throw new Error(
+            `aborted before spending — re-run "cipher-brain init" and choose "file" (free) instead, or run keygen/snapshot/push by hand once you are ready to pay; see MANAGEMENT.md.`,
+          );
         }
       } else if (backend === 'file') {
         // issue #85: "file" is the silent Enter-key default, and it is NOT offsite —
@@ -502,9 +532,9 @@ export async function init(_o: CliOptions): Promise<void> {
         // happens, and again in the completion summary below.
         console.log(
           '\n⚠  "file" stores the pushed ciphertext ONLY on this machine (CIPHER_BRAIN_FILE_DIR) — it is NOT\n' +
-          '   reachable from any other machine. If this machine is lost, this backup cannot be recovered\n' +
-          '   elsewhere. For real offsite recovery, re-run and choose arweave or turbo (paid) instead; see\n' +
-          '   MANAGEMENT.md "Key recovery #3".',
+            '   reachable from any other machine. If this machine is lost, this backup cannot be recovered\n' +
+            '   elsewhere. For real offsite recovery, re-run and choose arweave or turbo (paid) instead; see\n' +
+            '   MANAGEMENT.md "Key recovery #3".',
         );
       }
 
@@ -550,8 +580,8 @@ export async function init(_o: CliOptions): Promise<void> {
           pushedLocatorPath = null;
           throw new Error(
             `${pushErr.message}\nACTION REQUIRED: the upload already happened and cannot be undone — hand-record ` +
-            `this locator now, since --save-locator itself failed to: locator="${pushErr.locator}" backend="${backend}". ` +
-            `Without recording it, this snapshot is unrecoverable even though it durably exists in the backend.`,
+              `this locator now, since --save-locator itself failed to: locator="${pushErr.locator}" backend="${backend}". ` +
+              `Without recording it, this snapshot is unrecoverable even though it durably exists in the backend.`,
           );
         }
         // Any other push() failure (declined paid-backend consent, a network error
@@ -563,7 +593,9 @@ export async function init(_o: CliOptions): Promise<void> {
       // ---------- recovery kit ----------
       const primaryRecipient = (await readFile(RECIPIENT, 'utf8')).trim();
       const defaultKitPath = join(homedir(), 'recovery-kit.txt');
-      const kitPath = expandHome(await askLine(rl, `\nPath to write the recovery kit [${defaultKitPath}]: `, defaultKitPath));
+      const kitPath = expandHome(
+        await askLine(rl, `\nPath to write the recovery kit [${defaultKitPath}]: `, defaultKitPath),
+      );
       const kitText = buildRecoveryKit({
         primaryIdentityPath: IDENTITY,
         primaryRecipient,
@@ -603,13 +635,18 @@ export async function init(_o: CliOptions): Promise<void> {
       if (backup) console.log(`backup identity:   ${backup.identityPath}  (move this OFF this machine)`);
       console.log(`snapshot:          ${outPath}`);
       if (snapshotOpts.pg) console.log('postgres:          included (pg_dump)');
-      const backendWarning = backend === 'file' ? '  ⚠  LOCAL-ONLY — not reachable from another machine, see MANAGEMENT.md "Key recovery #3"' : '';
+      const backendWarning =
+        backend === 'file'
+          ? '  ⚠  LOCAL-ONLY — not reachable from another machine, see MANAGEMENT.md "Key recovery #3"'
+          : '';
       console.log(`pushed to:         ${backend} (locator saved: ${locatorPath})${backendWarning}`);
       console.log(`recovery kit:      ${kitPath}`);
       console.log('\nNext: print the recovery kit and store it securely, physically away from this machine.');
       if (backup) console.log('Also move the backup identity directory off this machine (encrypted USB, a second');
       if (backup) console.log(`location, a trusted person): ${backup.identityPath.replace(/identity\.age$/, '')}`);
-      console.log('Once the kit is secured, you may delete it from disk yourself — cipher-brain does not do this for you.');
+      console.log(
+        'Once the kit is secured, you may delete it from disk yourself — cipher-brain does not do this for you.',
+      );
     } catch (err) {
       if (pushSucceeded) {
         // Push already happened — see the pushSucceeded declaration above. The
@@ -620,9 +657,10 @@ export async function init(_o: CliOptions): Promise<void> {
         // exists to fix: it would make an already-paid-for, already-permanent snapshot
         // unrecoverable forever. Preserve everything and tell the user exactly what
         // already succeeded and what remains on disk untouched.
-        const permanentNote = pushedBackend === 'arweave' || pushedBackend === 'turbo'
-          ? ' That backend is PAID and PERMANENT — the upload already happened and cannot be undone or refunded.'
-          : '';
+        const permanentNote =
+          pushedBackend === 'arweave' || pushedBackend === 'turbo'
+            ? ' That backend is PAID and PERMANENT — the upload already happened and cannot be undone or refunded.'
+            : '';
         const preserved = [
           `primary identity: ${IDENTITY}`,
           `primary recipient: ${RECIPIENT}`,
@@ -633,16 +671,18 @@ export async function init(_o: CliOptions): Promise<void> {
         // the upload succeeded but --save-locator's own file was never written, so
         // there is no path to print here — printing the literal `null` would read as
         // a bug rather than the "go read the error below" instruction it actually is.
-        const locatorNote = pushedLocatorPath ? `locator saved: ${pushedLocatorPath}` : 'NOT SAVED — see error below for the value to record by hand';
+        const locatorNote = pushedLocatorPath
+          ? `locator saved: ${pushedLocatorPath}`
+          : 'NOT SAVED — see error below for the value to record by hand';
         throw new Error(
           `cipher-brain init: the snapshot was already created and pushed to "${pushedBackend}" successfully ` +
-          `(${locatorNote}).${permanentNote} A LATER step then failed: ` +
-          `${errMsg(err)}\nNothing was rolled back — these files are PRESERVED and must NOT be deleted: ${preserved}. ` +
-          `Fix the cause above, then either construct the recovery kit by hand from those paths (see ` +
-          `MANAGEMENT.md), or re-run "cipher-brain init" once you have moved/backed up the above yourself — it ` +
-          `will refuse immediately because an identity already exists at ${IDENTITY}; that refusal is expected ` +
-          `and correct here, since your snapshot+push already succeeded and these keys must stay exactly where ` +
-          `they are.`,
+            `(${locatorNote}).${permanentNote} A LATER step then failed: ` +
+            `${errMsg(err)}\nNothing was rolled back — these files are PRESERVED and must NOT be deleted: ${preserved}. ` +
+            `Fix the cause above, then either construct the recovery kit by hand from those paths (see ` +
+            `MANAGEMENT.md), or re-run "cipher-brain init" once you have moved/backed up the above yourself — it ` +
+            `will refuse immediately because an identity already exists at ${IDENTITY}; that refusal is expected ` +
+            `and correct here, since your snapshot+push already succeeded and these keys must stay exactly where ` +
+            `they are.`,
         );
       }
       // Roll back exactly what THIS run wrote — the primary identity/recipient this

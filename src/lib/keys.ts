@@ -72,11 +72,15 @@ export async function keygenAt(opts: KeygenAtOpts): Promise<KeygenAtResult> {
   // all — letting whoever can trigger a keygen re-key every FUTURE snapshot a
   // pinned recipient.txt was meant to protect against. Checked identity-first so the
   // (unchanged) identity refusal still wins when BOTH already exist.
-  if (await exists(opts.identityPath) && !opts.force) {
-    throw new Error(`identity already exists at ${opts.identityPath} (refusing to overwrite — losing it = losing the brain). Pass --force only if you are certain.`);
+  if ((await exists(opts.identityPath)) && !opts.force) {
+    throw new Error(
+      `identity already exists at ${opts.identityPath} (refusing to overwrite — losing it = losing the brain). Pass --force only if you are certain.`,
+    );
   }
-  if (await exists(opts.recipientPath) && !opts.force) {
-    throw new Error(`recipient already exists at ${opts.recipientPath} (refusing to overwrite — a silently re-keyed recipient.txt would re-key every FUTURE snapshot). Pass --force only if you are certain.`);
+  if ((await exists(opts.recipientPath)) && !opts.force) {
+    throw new Error(
+      `recipient already exists at ${opts.recipientPath} (refusing to overwrite — a silently re-keyed recipient.txt would re-key every FUTURE snapshot). Pass --force only if you are certain.`,
+    );
   }
   // The key is generated in-process (typage) and — on the passphrase path — wrapped
   // in memory too (#36): unlike the old external `age -p` flow there is no unwrapped
@@ -119,8 +123,9 @@ async function wrapInPlace(identityPath: string): Promise<void> {
   // Either form must be refused here, not treated as plaintext: wrapIdentity() below
   // would otherwise double-wrap the ciphertext/armor text as if it were the real
   // secret key, corrupting it rather than protecting it.
-  const alreadyWrapped = raw.subarray(0, AGE_MAGIC.length).toString('latin1') === AGE_MAGIC
-    || rawText.trimStart().startsWith(AGE_ARMOR_HEADER);
+  const alreadyWrapped =
+    raw.subarray(0, AGE_MAGIC.length).toString('latin1') === AGE_MAGIC ||
+    rawText.trimStart().startsWith(AGE_ARMOR_HEADER);
   if (alreadyWrapped) {
     throw new Error(`${identityPath} is already passphrase-wrapped (age ciphertext) — nothing to do.`);
   }
@@ -136,7 +141,13 @@ async function wrapInPlace(identityPath: string): Promise<void> {
 
 export async function keygen(o: CliOptions): Promise<void> {
   if (o.wrap_in_place) return wrapInPlace(IDENTITY);
-  const { recipient, wrapped } = await keygenAt({ home: HOME, identityPath: IDENTITY, recipientPath: RECIPIENT, passphrase: o.passphrase, force: o.force });
+  const { recipient, wrapped } = await keygenAt({
+    home: HOME,
+    identityPath: IDENTITY,
+    recipientPath: RECIPIENT,
+    passphrase: o.passphrase,
+    force: o.force,
+  });
   console.log(`identity (PRIVATE, keep offline): ${IDENTITY}${wrapped ? ' (passphrase-wrapped)' : ''}`);
   console.log(`recipient (PUBLIC, safe to copy):  ${RECIPIENT}`);
   console.log(`recipient = ${recipient}`);
@@ -157,7 +168,10 @@ export async function keygen(o: CliOptions): Promise<void> {
 export async function recipientEntries(rec: string): Promise<string[]> {
   if (!(await exists(rec))) return [rec.trim()];
   const text = await readFile(rec, 'utf8');
-  return text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
 }
 
 // Resolve CIPHER_BRAIN_PIN_RECIPIENTS to a set of allowed pubkeys. File-first: if the

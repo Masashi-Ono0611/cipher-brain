@@ -45,7 +45,8 @@ function parseArgs(argv: string[]): CliOptions {
     const a = argv[i];
     if (a === '--dir') o.dirs.push(argv[++i]);
     else if (a === '--pg-table') o.tables.push(argv[++i]);
-    else if (a === '--recipient') o.recipients.push(argv[++i]); // repeatable: key recovery
+    else if (a === '--recipient')
+      o.recipients.push(argv[++i]); // repeatable: key recovery
     else if (a.startsWith('--')) {
       const key = a.slice(2).replace(/-/g, '_');
       rec[key] = BOOL_FLAGS.has(key) ? true : argv[++i];
@@ -191,20 +192,40 @@ async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   const o = parseArgs(rest);
   switch (cmd) {
-    case 'init': return init(o);
-    case 'keygen': return keygen(o);
-    case 'snapshot': return snapshot(o);
-    case 'restore': return restore(o);
-    case 'verify': return verify(o);
-    case 'push': return push(o);
-    case 'pull': return pull(o);
-    case 'schedule': return schedule(o);
+    case 'init':
+      return init(o);
+    case 'keygen':
+      return keygen(o);
+    case 'snapshot':
+      return snapshot(o);
+    case 'restore':
+      return restore(o);
+    case 'verify':
+      return verify(o);
+    case 'push':
+      return push(o);
+    case 'pull':
+      return pull(o);
+    case 'schedule':
+      return schedule(o);
     // mascot on stderr (decoration only, EPIPE-safe — see printMascot in
     // ui.ts), HELP text stays on stdout so `cipher-brain --help | grep …`
     // still sees only the HELP text on its stdin.
-    case 'help': case '--help': case '-h': case undefined: printMascot('neutral'); console.log(HELP); return;
-    default: console.error(`unknown command: ${cmd}\n`); console.log(HELP); process.exitCode = 2;
+    case 'help':
+    case '--help':
+    case '-h':
+    case undefined:
+      printMascot('neutral');
+      console.log(HELP);
+      return;
+    default:
+      console.error(`unknown command: ${cmd}\n`);
+      console.log(HELP);
+      process.exitCode = 2;
   }
 }
 
-main().catch((e: unknown) => { console.error(`error: ${errMsg(e)}`); process.exitCode = 1; });
+main().catch((e: unknown) => {
+  console.error(`error: ${errMsg(e)}`);
+  process.exitCode = 1;
+});

@@ -19,8 +19,12 @@ let SIGNAL_GUARD_INSTALLED = false;
 
 // ESM live bindings are read-only from the importing side, so the module that owns a
 // stage / .part (snapshot) or an out-dir (restore) registers them through these setters.
-export const setActiveStage = (v: string | null): void => { ACTIVE_STAGE = v; };
-export const setActiveOutPart = (v: string | null): void => { ACTIVE_OUT_PART = v; };
+export const setActiveStage = (v: string | null): void => {
+  ACTIVE_STAGE = v;
+};
+export const setActiveOutPart = (v: string | null): void => {
+  ACTIVE_OUT_PART = v;
+};
 // restore() calls this right after it creates/confirms --out-dir and before the tar
 // child starts extracting into it, then clears it (v=null) once the extract settles
 // (success, or its own catch-block cleanup already ran) — a LATER signal (e.g. during
@@ -43,13 +47,29 @@ export function installStageSignalGuard(): void {
       // Kill the pipeline children FIRST so a still-writing age/tar can't re-create the
       // stage, .part, or out-dir contents after we remove/flag them (the signal may
       // have hit node alone).
-      for (const c of ACTIVE_CHILDREN) { try { c.kill('SIGKILL'); } catch {} }
+      for (const c of ACTIVE_CHILDREN) {
+        try {
+          c.kill('SIGKILL');
+        } catch {}
+      }
       ACTIVE_CHILDREN.clear();
-      if (ACTIVE_STAGE) { try { rmSync(ACTIVE_STAGE, { recursive: true, force: true }); } catch {} ACTIVE_STAGE = null; }
-      if (ACTIVE_OUT_PART) { try { rmSync(ACTIVE_OUT_PART, { force: true }); } catch {} ACTIVE_OUT_PART = null; }
+      if (ACTIVE_STAGE) {
+        try {
+          rmSync(ACTIVE_STAGE, { recursive: true, force: true });
+        } catch {}
+        ACTIVE_STAGE = null;
+      }
+      if (ACTIVE_OUT_PART) {
+        try {
+          rmSync(ACTIVE_OUT_PART, { force: true });
+        } catch {}
+        ACTIVE_OUT_PART = null;
+      }
       if (ACTIVE_RESTORE_OUT_DIR) {
         if (!ACTIVE_RESTORE_OUT_DIR_PREEXISTED) {
-          try { rmSync(ACTIVE_RESTORE_OUT_DIR, { recursive: true, force: true }); } catch {}
+          try {
+            rmSync(ACTIVE_RESTORE_OUT_DIR, { recursive: true, force: true });
+          } catch {}
         } else {
           // can't safely delete a directory the caller already owned before restore()
           // touched it — drop a durable sentinel instead (a console.error here could be

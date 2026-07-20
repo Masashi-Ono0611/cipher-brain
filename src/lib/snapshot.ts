@@ -235,7 +235,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
       // a ChatGPT export zip) — tar archives both; record which in the manifest.
       const kind = (await stat(abs)).isDirectory() ? 'dir' : 'file';
       const archivePath = join(stage, name);
-      await run('tar', ['-czf', archivePath, '-C', dirname(abs), basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar
+      await run('tar', ['-czf', archivePath, '-C', dirname(abs), '--', basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar; the -- guards a basename that could otherwise be parsed as an option (e.g. a leading '-')
       // content_digest AFTER the tar, computed from the ARCHIVE'S OWN bytes (extract to a
       // throwaway dir and hash THAT with the unchanged contentDigestOfPath) rather than a
       // second, independent read of the live source. Two independent reads (a digest walk,

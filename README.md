@@ -99,11 +99,11 @@ gateway need no extra dependency.
 
 New here? `cipher-brain init` is the recommended starting point: an interactive
 wizard that walks keygen, an offline backup key, passphrase-wrap,
-`CIPHER_BRAIN_PIN_RECIPIENTS`, a `--profile`, and the first snapshot + push in one
-sitting, ending in a printable recovery kit (see MANAGEMENT.md's "Key recovery"
-section for what each step means). The manual flow below is exactly what it wraps —
-useful once you know what you want, or for scripting/automation `init` itself
-refuses (it is interactive only).
+`CIPHER_BRAIN_PIN_RECIPIENTS`, a `--profile`, a `--pg` dump when it detects a local
+gbrain config, and the first snapshot + push in one sitting, ending in a printable
+recovery kit (see MANAGEMENT.md's "Key recovery" section for what each step means).
+The manual flow below is exactly what it wraps — useful once you know what you want,
+or for scripting/automation `init` itself refuses (it is interactive only).
 
 ```sh
 cipher-brain keygen                 # one-time: creates ~/.cipher-brain/{identity.age,recipient.txt}

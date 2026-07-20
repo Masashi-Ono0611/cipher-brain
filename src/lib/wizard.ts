@@ -20,7 +20,7 @@
 import { createInterface } from 'node:readline/promises';
 import { readFile, writeFile, mkdir, rm, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { HOME, IDENTITY, RECIPIENT } from './config.js';
 import { keygen, keygenAt } from './keys.js';
@@ -81,6 +81,46 @@ async function askYesNo(rl: Rl, question: string, def: boolean): Promise<boolean
   return answer === 'y' || answer === 'yes';
 }
 
+// The recovery kit is a long-lived, physically-stored document, and a Postgres
+// connection string can embed a password (unlike the age identity, which the kit's
+// whole job IS to carry off-machine, the DB credential is only shown here for
+// REFERENCE — "this was the source, do not restore into it"). Strip a password before
+// it goes in (Fugu review finding); the username alone is left visible — it is not
+// itself a secret, and this project's own docs already print it in the clear (e.g.
+// README's `postgres://user@localhost:5432/gbrain` examples, and this wizard's own
+// peer-auth-style default a few lines below). Falls back to a conservative regex
+// redact for a non-URL keyword/value DSN (e.g. "host=... password=..."), which --pg
+// accepts just as pg_dump/pg_restore themselves do but the WHATWG URL parser cannot.
+// The two standard libpq keywords that can carry a credential value (the connection
+// password, and the passphrase for an --sslkey client certificate) — checked
+// case-insensitively below since libpq's own keyword matching is (Grok review).
+const PG_SECRET_KEYS = /^(password|sslpassword)$/i;
+
+function redactPgConn(conn: string): string {
+  try {
+    const u = new URL(conn);
+    if (u.password) u.password = '';
+    // libpq connection URIs also accept a credential as an ordinary query parameter
+    // (postgres://user@host/db?password=...) — the user:pass@ authority form above is
+    // not the only place it can hide (Fugu review finding, round 2). Iterate keys
+    // rather than a fixed .has('password') lookup: URLSearchParams keys are
+    // case-sensitive, so a literal check would miss e.g. ?Password= (Grok review).
+    for (const key of [...u.searchParams.keys()]) {
+      if (PG_SECRET_KEYS.test(key)) u.searchParams.set(key, 'REDACTED');
+    }
+    return u.toString();
+  } catch {
+    // Keyword/value DSN form (e.g. "host=... password=..."). A value may be a bare
+    // token, or quoted (single OR double — Grok review noted only single was handled;
+    // libpq's own conninfo grammar only recognizes single quotes, but matching both is
+    // a strictly safer over-match here) optionally containing escaped characters (e.g.
+    // password='a\'b c') — match any of these shapes rather than only \S+, which would
+    // leave a trailing fragment of a quoted, space-containing secret unredacted.
+    const secretVal = `(?:'(?:[^'\\\\]|\\\\.)*'|"(?:[^"\\\\]|\\\\.)*"|\\S+)`;
+    return conn.replace(/:\/\/([^:@/]+):[^@/]*@/, '://$1@').replace(new RegExp(`\\b(password|sslpassword)=${secretVal}`, 'gi'), '$1=REDACTED');
+  }
+}
+
 interface BackupKey {
   identityPath: string;
   recipientPath: string;
@@ -104,6 +144,7 @@ interface KitInputs {
   savedLocatorLine: string;
   profile: string;
   backend: string;
+  pg: string | null; // the --pg connection string used, if a Postgres dump was included (issue #84)
   generatedAt: string;
 }
 
@@ -120,6 +161,7 @@ function buildRecoveryKit(k: KitInputs): string {
   lines.push(`Kit generated: ${k.generatedAt}`);
   lines.push(`Profile used:  ${k.profile}`);
   lines.push(`Backend used:  ${k.backend}`);
+  lines.push(`Postgres dump: ${k.pg ? `included (connection: ${redactPgConn(k.pg)})` : 'not included'}`);
   lines.push('');
   lines.push('--- PRIMARY IDENTITY (already on this machine — not duplicated here) ---');
   lines.push(`Location:  ${k.primaryIdentityPath}`);
@@ -150,6 +192,13 @@ function buildRecoveryKit(k: KitInputs): string {
   lines.push(k.pinRecipientsLine ?? '(skipped during init — see MANAGEMENT.md / "cipher-brain help" for what this does)');
   lines.push('');
   lines.push('--- RECOVERY STEPS (run these on ANY machine with Node >=22.6 and this npm package installed) ---');
+  // Deliberately do NOT auto-append --pg (with the SOURCE connection string) to the
+  // restore commands below: pg_restore --clean --if-exists DROPS/replaces objects in
+  // whatever database --pg names, so blindly reusing the dump's SOURCE as the restore
+  // TARGET on a verbatim copy-paste risks clobbering a live database. MANAGEMENT.md's
+  // own restore runbook is explicit about this ("rebuild into a SCRATCH database, never
+  // straight over a live one") — the Postgres block below points there instead of
+  // encouraging a single dangerous copy-paste command (Fugu review finding).
   if (k.backend === 'file') {
     lines.push('!!! LOCATOR IS LOCAL-ONLY: this backup used the "file" backend, so the save-locator line above');
     lines.push('    points at a path inside a local object store (CIPHER_BRAIN_FILE_DIR) on THIS machine — it');
@@ -194,6 +243,16 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('  * The SAVE-LOCATOR and CIPHER_BRAIN_PIN_RECIPIENTS sections above are still valid, useful');
     lines.push('    information regardless of the above — only "restore using just this kit alone" carries');
     lines.push('    this caveat.');
+  }
+  if (k.pg) {
+    lines.push('');
+    lines.push('!!! THIS BACKUP ALSO INCLUDES A POSTGRES DUMP: the restore command(s) above extract db.dump into');
+    lines.push('    --out-dir but deliberately do NOT pg_restore it (no --pg is included above).');
+    lines.push(`    Its SOURCE connection was: ${redactPgConn(k.pg)}`);
+    lines.push('    Do NOT pg_restore into that same database — "pg_restore --clean --if-exists" DROPS/replaces');
+    lines.push('    objects in whatever database --pg names. Add --pg pointing at a SCRATCH database (never the');
+    lines.push('    source above) to the restore command; see MANAGEMENT.md "Restore runbook" step 4 for the');
+    lines.push('    exact pattern.');
   }
   lines.push('');
   lines.push('--- WHAT TO DO WITH THIS FILE ---');
@@ -404,6 +463,33 @@ export async function init(_o: CliOptions): Promise<void> {
         throw new Error(`unknown profile "${profileChoice}" — valid choices: none, ${PROFILE_NAMES.join(', ')}`);
       }
 
+      // gbrain (this project's headline use case — README/MANAGEMENT.md) keeps its
+      // ACTUAL data (pages, embeddings, timeline, graph) in Postgres — the ~/.gbrain
+      // directory above is only its config/cache. There is no gbrain-specific profile
+      // (PROFILE_NAMES), so the natural-looking answer above ("none" + ~/.gbrain)
+      // silently backs up only the config and never the real data (issue #84). Only
+      // ask when a local gbrain config is actually detected: everyone else's flow is
+      // completely unchanged, and init already documents that anything beyond its
+      // opinionated fast path is driven by hand (see requireTTY's own message above).
+      const gbrainConfigPath = join(homedir(), '.gbrain', 'config.json');
+      if (await exists(gbrainConfigPath)) {
+        console.log(`\nDetected a gbrain config at ${gbrainConfigPath} — gbrain's actual data (pages, embeddings,`);
+        console.log('timeline, graph) lives in Postgres, not in that directory alone. Requires pg_dump/pg_restore');
+        console.log('on PATH — see README "Prerequisites for --pg".');
+        if (await askYesNo(rl, 'Include a Postgres database dump (--pg) for gbrain in this backup?', true)) {
+          // Default to the CURRENT machine's OS user — local Postgres setups commonly use
+          // peer auth keyed to it (matches README's own --pg examples), so this is a real
+          // guess rather than a literal "you" placeholder nobody's account is ever named
+          // (Fugu review finding: a bare-Enter accept should not likely fail pg_dump).
+          let osUser = 'you';
+          try { osUser = userInfo().username; } catch { /* keep the 'you' fallback */ }
+          // percent-encode: a username with '@', ':', '/', or a space would otherwise
+          // corrupt the URI's own authority parsing (Fugu review finding).
+          const defaultPg = `postgres://${encodeURIComponent(osUser)}@localhost:5432/gbrain`;
+          snapshotOpts.pg = await askLine(rl, `Postgres connection string [${defaultPg}]: `, defaultPg);
+        }
+      }
+
       // ---------- 6. initial snapshot + push ----------
       console.log('\n== 6/6: first snapshot + push ==');
       console.log(`Storage backends: ${BACKEND_NAMES.join(', ')}. arweave/turbo are PAID, permanent stores.`);
@@ -421,6 +507,18 @@ export async function init(_o: CliOptions): Promise<void> {
         if (!consent) {
           throw new Error(`aborted before spending — re-run "cipher-brain init" and choose "file" (free) instead, or run keygen/snapshot/push by hand once you are ready to pay; see MANAGEMENT.md.`);
         }
+      } else if (backend === 'file') {
+        // issue #85: "file" is the silent Enter-key default, and it is NOT offsite —
+        // the recovery kit's own "LOCATOR IS LOCAL-ONLY" block (buildRecoveryKit above)
+        // already says so, but until now that warning was invisible unless someone
+        // opened the printed kit. Surface it here, interactively, before the push
+        // happens, and again in the completion summary below.
+        console.log(
+          '\n⚠  "file" stores the pushed ciphertext ONLY on this machine (CIPHER_BRAIN_FILE_DIR) — it is NOT\n' +
+          '   reachable from any other machine. If this machine is lost, this backup cannot be recovered\n' +
+          '   elsewhere. For real offsite recovery, re-run and choose arweave or turbo (paid) instead; see\n' +
+          '   MANAGEMENT.md "Key recovery #3".',
+        );
       }
 
       snapshotOpts.recipients = [RECIPIENT, ...(backup ? [backup.recipientPath] : [])];
@@ -487,6 +585,7 @@ export async function init(_o: CliOptions): Promise<void> {
         savedLocatorLine,
         profile: profileChoice,
         backend,
+        pg: snapshotOpts.pg ?? null,
         generatedAt: new Date().toISOString(),
       });
       // Write-then-chmod (the prior approach) has a real exposure window: if kitPath
@@ -516,7 +615,9 @@ export async function init(_o: CliOptions): Promise<void> {
       console.log(`primary identity:  ${IDENTITY}`);
       if (backup) console.log(`backup identity:   ${backup.identityPath}  (move this OFF this machine)`);
       console.log(`snapshot:          ${outPath}`);
-      console.log(`pushed to:         ${backend} (locator saved: ${locatorPath})`);
+      if (snapshotOpts.pg) console.log('postgres:          included (pg_dump)');
+      const backendWarning = backend === 'file' ? '  ⚠  LOCAL-ONLY — not reachable from another machine, see MANAGEMENT.md "Key recovery #3"' : '';
+      console.log(`pushed to:         ${backend} (locator saved: ${locatorPath})${backendWarning}`);
       console.log(`recovery kit:      ${kitPath}`);
       console.log('\nNext: print the recovery kit and store it securely, physically away from this machine.');
       if (backup) console.log('Also move the backup identity directory off this machine (encrypted USB, a second');

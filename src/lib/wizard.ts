@@ -95,9 +95,19 @@ function redactPgConn(conn: string): string {
   try {
     const u = new URL(conn);
     if (u.password) u.password = '';
+    // libpq connection URIs also accept the password as an ordinary query parameter
+    // (postgres://user@host/db?password=...) — the user:pass@ authority form above is
+    // not the only place it can hide (Fugu review finding, round 2).
+    if (u.searchParams.has('password')) u.searchParams.set('password', 'REDACTED');
     return u.toString();
   } catch {
-    return conn.replace(/:\/\/([^:@/]+):[^@/]*@/, '://$1@').replace(/\bpassword=\S+/gi, 'password=REDACTED');
+    // Keyword/value DSN form (e.g. "host=... password=..."). A value may be a bare
+    // token OR single-quoted (optionally containing escaped characters, e.g.
+    // password='a\'b c') — match either shape rather than only \S+, which would leave
+    // a trailing fragment of a quoted, space-containing password unredacted.
+    return conn
+      .replace(/:\/\/([^:@/]+):[^@/]*@/, '://$1@')
+      .replace(/\bpassword=(?:'(?:[^'\\]|\\.)*'|\S+)/gi, 'password=REDACTED');
   }
 }
 

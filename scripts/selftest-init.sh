@@ -701,11 +701,14 @@ PG_STORE="$TMP/pg-store"
 PG_SRC="$TMP/pg-src"; mkdir -p "$PG_SRC"
 printf 'pg-marker\n' > "$PG_SRC/note.txt"
 PG_KIT_PATH="$PG_HOME/recovery-kit.txt"
-# A password is deliberately included: the kit must redact it (Fugu review finding —
-# see the redacted-form assertions below) while the username stays visible.
-TEST_PG_PASSWORD="s3cr3t-selftest-pw"
-TEST_PG_CONN="postgres://tester:${TEST_PG_PASSWORD}@localhost:5432/gbrain-selftest"
-TEST_PG_CONN_REDACTED="postgres://tester@localhost:5432/gbrain-selftest"
+# Passwords are deliberately included in BOTH places libpq allows one — the userinfo
+# authority (user:pass@) AND an ordinary ?password= query parameter (Fugu review found
+# the query-param form initially survived redaction untouched) — the kit must strip
+# both while the username and other query params (sslmode) stay visible.
+TEST_PG_PASSWORD_AUTH="s3cr3t-auth-pw"
+TEST_PG_PASSWORD_QUERY="s3cr3t-query-pw"
+TEST_PG_CONN="postgres://tester:${TEST_PG_PASSWORD_AUTH}@localhost:5432/gbrain-selftest?password=${TEST_PG_PASSWORD_QUERY}&sslmode=require"
+TEST_PG_CONN_REDACTED="postgres://tester@localhost:5432/gbrain-selftest?password=REDACTED&sslmode=require"
 
 FAKE_PGBIN="$TMP/fake-pgbin-snapshot"; mkdir -p "$FAKE_PGBIN"
 cat > "$FAKE_PGBIN/pg_dump" <<'SHIM'
@@ -761,7 +764,8 @@ grep -qF "Its SOURCE connection was: $TEST_PG_CONN_REDACTED" "$PG_KIT_PATH" || {
 grep -q 'SCRATCH database' "$PG_KIT_PATH" || { echo "[FAIL] pg-restore safety block does not point at a SCRATCH database"; cat "$PG_KIT_PATH"; exit 1; }
 # Fugu review finding: the kit is a long-lived, physically-stored document — it must
 # never contain the raw DB password, only the (already-asserted-above) redacted form.
-if grep -qF "$TEST_PG_PASSWORD" "$PG_KIT_PATH"; then echo "[FAIL] recovery kit leaks the raw Postgres password in plaintext"; cat "$PG_KIT_PATH"; exit 1; fi
+if grep -qF "$TEST_PG_PASSWORD_AUTH" "$PG_KIT_PATH"; then echo "[FAIL] recovery kit leaks the raw Postgres password (userinfo authority form) in plaintext"; cat "$PG_KIT_PATH"; exit 1; fi
+if grep -qF "$TEST_PG_PASSWORD_QUERY" "$PG_KIT_PATH"; then echo "[FAIL] recovery kit leaks the raw Postgres password (?password= query form) in plaintext"; cat "$PG_KIT_PATH"; exit 1; fi
 # Fugu review finding: the printed restore command must NOT auto-embed the SOURCE
 # connection as the restore --pg target — pg_restore --clean would DROP/replace objects
 # in whatever database --pg names, so a verbatim copy-paste could clobber a live DB.

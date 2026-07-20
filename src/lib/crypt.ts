@@ -18,7 +18,7 @@ import { pipeline } from 'node:stream/promises';
 import { Encrypter, Decrypter, generateIdentity, identityToRecipient, armor } from 'age-encryption';
 import { AGE_MAGIC, AGE_ARMOR_HEADER } from './config.js';
 import { ACTIVE_CHILDREN } from './proc.js';
-import { errMsg } from './util.js';
+import { errMsg, warnIfLooseKeyPerms } from './util.js';
 
 // ---------- keys ----------
 
@@ -78,6 +78,7 @@ export function wrapIdentity(text: string, passphrase: string): Promise<Uint8Arr
 // lines", which is why armor text lines fed straight into addIdentity() and blew up
 // with "unrecognized identity type" instead of ever prompting for a passphrase).
 export async function loadIdentities(path: string): Promise<string[]> {
+  await warnIfLooseKeyPerms(path, 'age identity (private key)');
   let raw = await readFile(path);
   const rawText = raw.toString('utf8');
   // trimStart, not a byte-0 match: a copy-pasted-into-a-note identity routinely picks

@@ -231,9 +231,19 @@ export async function snapshot(o: CliOptions): Promise<void> {
       // multiple --dir with the same basename must not overwrite each other in the stage
       for (let n = 1; usedNames.has(name); n++) name = `${basename(abs)}-${n}.tar.gz`;
       usedNames.add(name);
-      // a path can be a directory OR a single file (profiles pass e.g. CLAUDE.md,
-      // a ChatGPT export zip) — tar archives both; record which in the manifest.
-      const kind = (await stat(abs)).isDirectory() ? 'dir' : 'file';
+      // a path can be a directory, a single file (profiles pass e.g. CLAUDE.md,
+      // a ChatGPT export zip), or a top-level symlink — tar archives all three;
+      // record which in the manifest. lstat() (not stat()) so this matches what
+      // the tar -czf call below actually archives: a top-level symlink argument
+      // is NOT dereferenced by GNU tar/bsdtar (same fact contentDigestOfPath's
+      // lstat-based check above already relies on), so a directory-symlink here
+      // must be recorded as 'symlink', never 'dir' — 'dir' would claim the
+      // archive holds the target's tree when it actually holds just the link.
+      // lstat() also does not throw on a DANGLING symlink (stat() would ENOENT
+      // before tar ever ran), so a broken symlink source is now archived (as a
+      // symlink entry) instead of failing snapshot() outright.
+      const topStat = await lstat(abs);
+      const kind = topStat.isSymbolicLink() ? 'symlink' : topStat.isDirectory() ? 'dir' : 'file';
       const archivePath = join(stage, name);
       await run('tar', ['-czf', archivePath, '-C', dirname(abs), '--', basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar; the -- guards a basename that could otherwise be parsed as an option (e.g. a leading '-')
       // content_digest AFTER the tar, computed from the ARCHIVE'S OWN bytes (extract to a

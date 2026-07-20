@@ -64,6 +64,12 @@ export function turboBackend(): StorageBackend {
       let uploadWinc: bigint | null = null;
       try {
         const [{ winc: uploadWincStr }] = await turbo.getUploadCosts({ bytes: [size] });
+        // BigInt('') is 0n (no throw) — a malformed-but-non-throwing winc would otherwise
+        // read as a free upload and slip past the cap below without ever hitting the catch.
+        // Reject anything that isn't a plain non-negative integer string up front instead.
+        if (typeof uploadWincStr !== 'string' || !/^\d+$/.test(uploadWincStr)) {
+          throw new Error(`turbo: getUploadCosts returned a malformed winc value: ${JSON.stringify(uploadWincStr)}`);
+        }
         uploadWinc = BigInt(uploadWincStr);
         process.stderr.write(`turbo: upload cost estimate: ${uploadWinc} winc (~${(Number(uploadWinc) / 1e12).toFixed(8)} AR, ${size} bytes)\n`);
         // Human-readable USD approximation next to the native estimate (#70). arUsdRate
@@ -91,11 +97,17 @@ export function turboBackend(): StorageBackend {
       }
       // The cap check lives OUTSIDE the estimate try/catch above so a failed estimate can
       // never suppress it (the original bug: both lived in the same try, so any exception
-      // — not just the cap guard's own — fell into a catch-all "proceeding" log). uploadWinc
-      // is null only when the cap is unset (fail-open path above already ran), so this is a
-      // no-op in that case.
-      if (AR_MAX_SPEND > 0n && uploadWinc !== null && uploadWinc > AR_MAX_SPEND) {
-        throw new Error(`turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
+      // — not just the cap guard's own — fell into a catch-all "proceeding" log). When a
+      // cap is set, uploadWinc being null here should be unreachable (the catch above always
+      // throws in that case), but check it explicitly anyway: a future edit to that catch
+      // must not be able to silently reopen the fail-open hole this fix closes (#105).
+      if (AR_MAX_SPEND > 0n) {
+        if (uploadWinc === null) {
+          throw new Error('turbo: internal error — CIPHER_BRAIN_MAX_SPEND is set but no upload cost estimate is available; refusing to proceed uncapped');
+        }
+        if (uploadWinc > AR_MAX_SPEND) {
+          throw new Error(`turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`);
+        }
       }
       // paidBy (x-paid-by header): when set, Turbo pays from a Credit Share Approval the
       // named address granted THIS signer, before the signer's own balance. It funds the

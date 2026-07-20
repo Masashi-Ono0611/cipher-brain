@@ -201,8 +201,6 @@ trap 'rc=$?; if [ "$rc" -eq 0 ]; then echo "OK rc=0"; else echo "FAILED rc=$rc";
 
 ${envLines.join('\n')}
 ${spendLines.length ? spendLines.join('\n') + '\n' : ''}
-sha256_of() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d ' ' -f 1; else sha256sum "$1" | cut -d ' ' -f 1; fi; }
-
 echo "== cipher-brain nightly run start: $(date -u +%FT%TZ) =="
 # Retry-safe naming: snapshot.ts refuses to overwrite an existing --out (by design —
 # see src/lib/snapshot.ts), so a name keyed on the date ALONE collides the moment this
@@ -219,13 +217,22 @@ while [ -e "$OUT" ]; do
   OUT="$SNAP_DIR/brain-$STAMP-$n.age"
 done
 ${cb} snapshot ${snapshotArgs.join(' ')} --out "$OUT"
-LOC=$(${cb} push --in "$OUT" --backend ${shq(cfg.backend)} --save-locator ${shq(cfg.save_locator)})
-# The (possibly paid) push above already succeeded — create the index file's parent dir
-# NOW, before appending, so a --index-file under a not-yet-existing directory can't turn
-# a successful push into a FAILED run (which would invite a naive retry to re-upload and
-# pay again for the same snapshot).
+LOC=$(${cb} push --in "$OUT" --backend ${shq(cfg.backend)} --skip-unchanged --save-locator ${shq(cfg.save_locator)})
+# The (possibly paid, possibly SKIPPED) push above already succeeded — create the index
+# file's parent dir NOW, before appending, so a --index-file under a not-yet-existing
+# directory can't turn a successful push into a FAILED run (which would invite a naive
+# retry to re-upload and pay again for the same snapshot).
 mkdir -p ${shq(dirname(cfg.index_file))}
-printf '%s\\t%s\\t%s\\n' "$(date -u +%FT%TZ)" "$LOC" "$(sha256_of "$OUT")" >> ${shq(cfg.index_file)}
+# Read the SHA256 back from the save-locator file's 3rd field rather than re-hashing
+# "$OUT": on a --skip-unchanged SKIP, $LOC is the PREVIOUS run's locator while $OUT is
+# THIS run's freshly re-encrypted (age's ephemeral file key differs every run) and
+# never-uploaded ciphertext — hashing $OUT would pair $LOC with a hash it will never
+# actually produce, breaking any later \`pull --locator ... --sha256 ...\` check against
+# this index row (MANAGEMENT.md "Cadence"). The save-locator file's 3rd field already
+# holds the correct hash for whatever $LOC points to (push writes it on every real push,
+# and leaves it — still correct — untouched on a skip).
+SHA=$(cut -f3 ${shq(cfg.save_locator)})
+printf '%s\\t%s\\t%s\\n' "$(date -u +%FT%TZ)" "$LOC" "$SHA" >> ${shq(cfg.index_file)}
 echo "pushed -> ${cfg.backend}:$LOC"
 `;
 }

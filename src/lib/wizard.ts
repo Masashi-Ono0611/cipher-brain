@@ -91,23 +91,33 @@ async function askYesNo(rl: Rl, question: string, def: boolean): Promise<boolean
 // peer-auth-style default a few lines below). Falls back to a conservative regex
 // redact for a non-URL keyword/value DSN (e.g. "host=... password=..."), which --pg
 // accepts just as pg_dump/pg_restore themselves do but the WHATWG URL parser cannot.
+// The two standard libpq keywords that can carry a credential value (the connection
+// password, and the passphrase for an --sslkey client certificate) — checked
+// case-insensitively below since libpq's own keyword matching is (Grok review).
+const PG_SECRET_KEYS = /^(password|sslpassword)$/i;
+
 function redactPgConn(conn: string): string {
   try {
     const u = new URL(conn);
     if (u.password) u.password = '';
-    // libpq connection URIs also accept the password as an ordinary query parameter
+    // libpq connection URIs also accept a credential as an ordinary query parameter
     // (postgres://user@host/db?password=...) — the user:pass@ authority form above is
-    // not the only place it can hide (Fugu review finding, round 2).
-    if (u.searchParams.has('password')) u.searchParams.set('password', 'REDACTED');
+    // not the only place it can hide (Fugu review finding, round 2). Iterate keys
+    // rather than a fixed .has('password') lookup: URLSearchParams keys are
+    // case-sensitive, so a literal check would miss e.g. ?Password= (Grok review).
+    for (const key of [...u.searchParams.keys()]) {
+      if (PG_SECRET_KEYS.test(key)) u.searchParams.set(key, 'REDACTED');
+    }
     return u.toString();
   } catch {
     // Keyword/value DSN form (e.g. "host=... password=..."). A value may be a bare
-    // token OR single-quoted (optionally containing escaped characters, e.g.
-    // password='a\'b c') — match either shape rather than only \S+, which would leave
-    // a trailing fragment of a quoted, space-containing password unredacted.
-    return conn
-      .replace(/:\/\/([^:@/]+):[^@/]*@/, '://$1@')
-      .replace(/\bpassword=(?:'(?:[^'\\]|\\.)*'|\S+)/gi, 'password=REDACTED');
+    // token, or quoted (single OR double — Grok review noted only single was handled;
+    // libpq's own conninfo grammar only recognizes single quotes, but matching both is
+    // a strictly safer over-match here) optionally containing escaped characters (e.g.
+    // password='a\'b c') — match any of these shapes rather than only \S+, which would
+    // leave a trailing fragment of a quoted, space-containing secret unredacted.
+    const secretVal = `(?:'(?:[^'\\\\]|\\\\.)*'|"(?:[^"\\\\]|\\\\.)*"|\\S+)`;
+    return conn.replace(/:\/\/([^:@/]+):[^@/]*@/, '://$1@').replace(new RegExp(`\\b(password|sslpassword)=${secretVal}`, 'gi'), '$1=REDACTED');
   }
 }
 

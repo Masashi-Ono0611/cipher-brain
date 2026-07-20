@@ -772,5 +772,43 @@ if grep -qF "$TEST_PG_PASSWORD_QUERY" "$PG_KIT_PATH"; then echo "[FAIL] recovery
 if grep -qF -- "--pg \"$TEST_PG_CONN" "$PG_KIT_PATH"; then echo "[FAIL] kit restore command auto-embeds the SOURCE connection as --pg — copy-paste risks clobbering the live database"; cat "$PG_KIT_PATH"; exit 1; fi
 echo "[PASS] the recovery kit records the Postgres connection with its password redacted, never auto-embeds --pg with the source, and warns to restore into a SCRATCH database"
 
+echo "== (m2) declining the gbrain-detected Postgres prompt proceeds without --pg (opt-out works, Grok review coverage gap) =="
+# The auto-detect default is YES ((m) above), but a real user can say no — prove the
+# decline is actually honored end-to-end (no --pg threaded, no db.dump produced), not
+# just that the wizard doesn't crash. Reuses PG_HOME/PG_SRC/FAKE_PGBIN from (m) above —
+# a fresh CIPHER_BRAIN_HOME/store/kit path so this run does not collide with it.
+PG2_CB_HOME="$TMP/pg2-cb-home"
+PG2_STORE="$TMP/pg2-store"
+PG2_KIT_PATH="$PG_HOME/recovery-kit-2.txt"
+
+cat > "$TMP/qa-pg-decline.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$PG_SRC"],
+  ["Include a Postgres database dump", "n"],
+  ["Backend [file/", ""],
+  ["Path to write the recovery kit", "$PG2_KIT_PATH"]
+]
+JSON
+
+CIPHER_BRAIN_HOME="$PG2_CB_HOME" CIPHER_BRAIN_FILE_DIR="$PG2_STORE" HOME="$PG_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN" \
+  with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-pg-decline.json" --out "$TMP/wizard-pg-decline.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] the gbrain-detected pg-DECLINE scripted run did not complete"; cat "$TMP/wizard-pg-decline.log"; exit 1; }
+grep -q 'cipher-brain init: complete' "$TMP/wizard-pg-decline.log" || { echo "[FAIL] pg-decline run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pg-decline.log"; exit 1; }
+grep -qF "Detected a gbrain config at $PG_HOME/.gbrain/config.json" "$TMP/wizard-pg-decline.log" || { echo "[FAIL] pg-decline run: wizard did not detect the gbrain config fixture"; cat "$TMP/wizard-pg-decline.log"; exit 1; }
+if grep -q 'postgres:          included' "$TMP/wizard-pg-decline.log"; then echo "[FAIL] declining the Postgres prompt still reported it as included"; cat "$TMP/wizard-pg-decline.log"; exit 1; fi
+grep -qF 'Postgres dump: not included' "$PG2_KIT_PATH" || { echo "[FAIL] kit does not record the declined Postgres dump as not included"; cat "$PG2_KIT_PATH"; exit 1; }
+PG2_SNAP="$(find "$PG2_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
+[ -n "$PG2_SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found for the pg-decline run"; exit 1; }
+PG2_RESTORE_DIR="$TMP/pg2-restored"
+CIPHER_BRAIN_HOME="$PG2_CB_HOME" cb restore --in "$PG2_SNAP" --out-dir "$PG2_RESTORE_DIR" > "$TMP/pg2-restore.log" 2>&1 \
+  || { echo "[FAIL] restoring the pg-decline run's snapshot failed"; cat "$TMP/pg2-restore.log"; exit 1; }
+if [ -f "$PG2_RESTORE_DIR/db.dump" ]; then echo "[FAIL] declining the Postgres prompt still produced a db.dump component"; exit 1; fi
+echo "[PASS] declining the gbrain-detected Postgres prompt (auto-detect defaults to yes, but a real 'n' is honored) proceeds without --pg — no db.dump, kit says not included"
+
 echo
 echo "INIT SELFTEST PASS"

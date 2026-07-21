@@ -53,6 +53,11 @@ SRC="$TMP/brain-src"; mkdir -p "$SRC"
 echo "a-thought" > "$SRC/note.txt"
 cb keygen > /dev/null 2>&1
 
+echo "== (a0) --help documents the CIPHER_BRAIN_LAUNCHD_DIR escape hatch (#182: it existed in code but was undocumented) =="
+cb --help > "$TMP/help.txt" 2>&1 || { echo "[FAIL] --help exited non-zero"; cat "$TMP/help.txt"; exit 1; }
+grep -q 'CIPHER_BRAIN_LAUNCHD_DIR' "$TMP/help.txt" || { echo "[FAIL] --help Env: block does not mention CIPHER_BRAIN_LAUNCHD_DIR (#182)"; exit 1; }
+echo "[PASS] --help documents CIPHER_BRAIN_LAUNCHD_DIR"
+
 echo "== (a) install --backend file --no-load: runner + trigger artifact, 03:30 default =="
 cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-a.log" 2>&1 \
   || { echo "[FAIL] install (file) exited non-zero"; cat "$TMP/install-a.log"; exit 1; }
@@ -76,10 +81,13 @@ if [ "$OS" = "Darwin" ]; then
   grep -q '<key>Hour</key><integer>3</integer>' "$PLIST" || { echo "[FAIL] plist hour != 3"; exit 1; }
   grep -q '<key>Minute</key><integer>30</integer>' "$PLIST" || { echo "[FAIL] plist minute != 30"; exit 1; }
   grep -q "$RUNNER" "$PLIST" || { echo "[FAIL] plist does not point at the runner"; exit 1; }
+  grep -q -- "$PLIST is a REAL, PERSISTENT file" "$TMP/install-a.log" || { echo "[FAIL] install --no-load did not warn that the plist is a real, persistent file written outside CIPHER_BRAIN_HOME (#182)"; cat "$TMP/install-a.log"; exit 1; }
+  grep -q 'CIPHER_BRAIN_LAUNCHD_DIR' "$TMP/install-a.log" || { echo "[FAIL] install --no-load warning did not mention the CIPHER_BRAIN_LAUNCHD_DIR override (#182)"; exit 1; }
 else
   [ -f "$CRON_ENTRY" ] || { echo "[FAIL] cron entry artifact not written: $CRON_ENTRY"; exit 1; }
   grep -q '^30 3 \* \* \* /bin/bash ' "$CRON_ENTRY" || { echo "[FAIL] cron entry is not 03:30 daily"; exit 1; }
   grep -q '# cipher-brain-nightly' "$CRON_ENTRY" || { echo "[FAIL] cron entry lacks the uninstall marker"; exit 1; }
+  grep -q -- '--no-load: cron entry written' "$TMP/install-a.log" || { echo "[FAIL] install --no-load did not report the cron entry write"; exit 1; }
 fi
 echo "[PASS] install (file): runner + trigger artifact with the expected pipeline, 03:30 default, no spend lines"
 

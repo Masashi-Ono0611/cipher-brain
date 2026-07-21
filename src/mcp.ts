@@ -22,7 +22,7 @@
 
 import { stat, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -153,6 +153,22 @@ function isStrArray(v: unknown): v is string[] {
 }
 function isBool(v: unknown): v is boolean {
   return typeof v === 'boolean';
+}
+
+// wallet_create's `out` lets an MCP caller pick where the new JWK is written, and
+// `force: true` overwrites whatever is already there — same as the CLI's own
+// `wallet create --out --force`, but MCP's threat model is different: a shell-less
+// caller (an AI agent acting on tool descriptions, possibly steered by adversarial
+// input) has no OTHER path to an arbitrary-file-overwrite primitive the way a human
+// with a shell already does. Scope `out` to CIPHER_BRAIN_HOME so this tool can only
+// ever clobber cipher-brain's own key material, never an arbitrary server-writable
+// file (multi-model review finding, PR #180 / issue #174).
+function assertWithinHome(p: string): void {
+  const resolved = resolve(p);
+  const homeResolved = resolve(HOME);
+  if (resolved !== homeResolved && !resolved.startsWith(homeResolved + sep)) {
+    throw new ToolError('ERR_INVALID_INPUT', `out must be inside CIPHER_BRAIN_HOME (${HOME}), got: ${p}`);
+  }
 }
 
 function requireBackend(value: unknown, what: string): asserts value is string {
@@ -383,7 +399,9 @@ const WALLET_CREATE_TOOL: Tool = {
     properties: {
       out: {
         type: 'string',
-        description: 'Output path for the wallet JWK file. Default: <CIPHER_BRAIN_HOME>/wallet.json',
+        description:
+          'Output path for the wallet JWK file — must be inside CIPHER_BRAIN_HOME. Default: ' +
+          '<CIPHER_BRAIN_HOME>/wallet.json',
       },
       force: {
         type: 'boolean',
@@ -780,6 +798,7 @@ async function handleWalletCreate(args: ToolArgs): Promise<CallToolResult> {
   const { out, force } = args;
   if (out !== undefined && !isStr(out)) throw new ToolError('ERR_INVALID_INPUT', 'out must be a string path');
   if (force !== undefined && !isBool(force)) throw new ToolError('ERR_INVALID_INPUT', 'force must be a boolean');
+  if (isStr(out)) assertWithinHome(out);
   const walletOpts: CliOptions = {
     _: 'create',
     dirs: [],

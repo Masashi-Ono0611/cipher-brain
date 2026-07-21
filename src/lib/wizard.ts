@@ -18,7 +18,7 @@
 // non-interactive-safety posture promptHidden already has — rather than hanging or
 // behaving unpredictably under a CI/pipe invocation.
 import { createInterface } from 'node:readline/promises';
-import { readFile, writeFile, mkdir, rm, rename } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rm, rename, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir, userInfo } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -28,6 +28,7 @@ import { askNewPassphrase, wrapIdentity } from './crypt.js';
 import { PROFILE_NAMES } from './profiles.js';
 import { snapshot } from './snapshot.js';
 import { push, PushLocatorWriteError } from './pushpull.js';
+import { estimateCost, formatEstimate } from './estimate.js';
 import { BACKEND_NAMES } from './backends/index.js';
 import { walletConfigured } from './wallet.js';
 import { exists, errMsg, redactPgConn } from './util.js';
@@ -543,13 +544,39 @@ export async function init(_o: CliOptions): Promise<void> {
         );
         return;
       }
+      // #172: build the snapshot BEFORE asking for paid-backend consent, not after.
+      // The prompt below ("this spends real funds, confirm?") used to fire with no
+      // number attached — the actual estimate only appeared later, inside push()
+      // (#160/#169), by which point pushOpts.yes was already forced true from this
+      // wizard's own consent and push()'s re-check never re-surfaced it. Creating the
+      // snapshot first lets us estimate off the REAL ciphertext size and show that
+      // estimate in the same prompt the consent decision is made against, exactly
+      // like push() now does for direct CLI/MCP callers.
+      snapshotOpts.recipients = [RECIPIENT, ...(backup ? [backup.recipientPath] : [])];
+      const dateStamp = new Date().toISOString().slice(0, 10);
+      const outPath = join(HOME, `brain-${dateStamp}.age`);
+      snapshotOpts.out = outPath;
+      await snapshot(snapshotOpts);
+      snapshotOutPath = outPath; // recorded only now — snapshot() has durably written it
+
       if (paid) {
+        // Same estimateCost()/formatEstimate() math push() uses (src/lib/estimate.ts,
+        // #159) — not a second, divergent computation — against the snapshot's actual
+        // on-disk size, so the consent prompt right below is never a blind "--yes".
+        const { size: sizeBytes } = await stat(outPath);
+        const est = await estimateCost(backend, sizeBytes);
+        console.log(`\n${backend}: cost estimate for this snapshot:`);
+        for (const line of formatEstimate(est)) console.log(`  ${line}`);
         const consent = await askYesNo(
           rl,
           `${backend} is a PAID, PERMANENT store — uploading spends real funds and cannot be undone. Proceed?`,
           false,
         );
         if (!consent) {
+          // Declining here throws before push() runs; the catch block below still
+          // rolls back this run's identity/backup key/recipient pin AND (per the
+          // pushSucceeded/snapshotOutPath contract above) removes the snapshot this
+          // step just wrote — correct, since consent was withheld.
           throw new Error(
             `aborted before spending — re-run "cipher-brain init" and choose "file" (free) instead, or run keygen/snapshot/push by hand once you are ready to pay; see MANAGEMENT.md.`,
           );
@@ -567,13 +594,6 @@ export async function init(_o: CliOptions): Promise<void> {
             '   MANAGEMENT.md "Key recovery #3".',
         );
       }
-
-      snapshotOpts.recipients = [RECIPIENT, ...(backup ? [backup.recipientPath] : [])];
-      const dateStamp = new Date().toISOString().slice(0, 10);
-      const outPath = join(HOME, `brain-${dateStamp}.age`);
-      snapshotOpts.out = outPath;
-      await snapshot(snapshotOpts);
-      snapshotOutPath = outPath; // recorded only now — snapshot() has durably written it
 
       const locatorPath = join(HOME, 'latest-locator.tsv');
       const pushOpts: CliOptions = { dirs: [], tables: [], recipients: [] };

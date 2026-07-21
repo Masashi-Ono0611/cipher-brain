@@ -22,7 +22,7 @@
 
 import { stat, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -33,12 +33,14 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { HOME } from './lib/config.js';
+import { HOME, IDENTITY, RECIPIENT } from './lib/config.js';
 import { snapshot } from './lib/snapshot.js';
 import { verify } from './lib/restore.js';
 import { push, pull } from './lib/pushpull.js';
 import { schedule } from './lib/schedule.js';
 import { estimateCost } from './lib/estimate.js';
+import { keygenAt } from './lib/keys.js';
+import { wallet } from './lib/wallet.js';
 import { exists, sha256, errMsg } from './lib/util.js';
 import type { CliOptions } from './lib/types.js';
 
@@ -148,6 +150,25 @@ function isStr(v: unknown): v is string {
 }
 function isStrArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+function isBool(v: unknown): v is boolean {
+  return typeof v === 'boolean';
+}
+
+// wallet_create's `out` lets an MCP caller pick where the new JWK is written, and
+// `force: true` overwrites whatever is already there — same as the CLI's own
+// `wallet create --out --force`, but MCP's threat model is different: a shell-less
+// caller (an AI agent acting on tool descriptions, possibly steered by adversarial
+// input) has no OTHER path to an arbitrary-file-overwrite primitive the way a human
+// with a shell already does. Scope `out` to CIPHER_BRAIN_HOME so this tool can only
+// ever clobber cipher-brain's own key material, never an arbitrary server-writable
+// file (multi-model review finding, PR #180 / issue #174).
+function assertWithinHome(p: string): void {
+  const resolved = resolve(p);
+  const homeResolved = resolve(HOME);
+  if (resolved !== homeResolved && !resolved.startsWith(homeResolved + sep)) {
+    throw new ToolError('ERR_INVALID_INPUT', `out must be inside CIPHER_BRAIN_HOME (${HOME}), got: ${p}`);
+  }
 }
 
 function requireBackend(value: unknown, what: string): asserts value is string {
@@ -332,12 +353,96 @@ const SCHEDULE_STATUS_TOOL: Tool = {
   },
 };
 
+const KEYGEN_TOOL: Tool = {
+  name: 'keygen',
+  description:
+    '⚠ WRITES a new identity/recipient keypair — the FIRST-RUN setup step a shell-less agent otherwise ' +
+    'cannot do (issue #174): snapshot_now/verify_restore need this keypair to already exist, and there ' +
+    'was no MCP tool that could create one. Spends no money, but is destructive the same way a ' +
+    'money-gated call is: it refuses if an identity/recipient already exists at ' +
+    '<CIPHER_BRAIN_HOME>/{identity.age,recipient.txt} UNLESS force=true, and force=true DISCARDS the old ' +
+    'keypair — every snapshot already encrypted to it becomes permanently unrecoverable. ' +
+    'passphrase=true additionally wraps the new identity at rest; since MCP has no interactive TTY this ' +
+    'REQUIRES CIPHER_BRAIN_PASSPHRASE to be set in the server environment (fails closed with a clear ' +
+    'error otherwise — never prompts blindly).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      force: {
+        type: 'boolean',
+        description:
+          'Delete and overwrite an existing identity/recipient. DESTRUCTIVE — the old identity is ' +
+          'discarded, so every snapshot already encrypted to it becomes unrecoverable.',
+      },
+      passphrase: {
+        type: 'boolean',
+        description:
+          'Wrap the new identity with a passphrase (scrypt). Requires CIPHER_BRAIN_PASSPHRASE set in ' +
+          'the server environment (no TTY is available over MCP to prompt for one).',
+      },
+    },
+    additionalProperties: false,
+  },
+};
+
+const WALLET_CREATE_TOOL: Tool = {
+  name: 'wallet_create',
+  description:
+    '⚠ WRITES a new Arweave JWK wallet — the funding half of first-run setup (issue #174): ' +
+    'arweave/turbo pushes need CIPHER_BRAIN_AR_WALLET to point at a JWK file, and there was no MCP tool ' +
+    'that could create one. Spends no money by itself, but is destructive the same way keygen is: it ' +
+    'refuses if a wallet already exists at the target path UNLESS force=true, and force=true DISCARDS ' +
+    'the old JWK — the only credential able to spend any AR/Turbo Credits already sent to its address. ' +
+    'Writes to <CIPHER_BRAIN_HOME>/wallet.json by default (out overrides the path).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      out: {
+        type: 'string',
+        description:
+          'Output path for the wallet JWK file — must be inside CIPHER_BRAIN_HOME. Default: ' +
+          '<CIPHER_BRAIN_HOME>/wallet.json',
+      },
+      force: {
+        type: 'boolean',
+        description:
+          'Delete and overwrite an existing wallet file at the target path. DESTRUCTIVE — discards spend ' +
+          'authority over any AR/Turbo Credits already sent to its address.',
+      },
+    },
+    additionalProperties: false,
+  },
+};
+
+const WALLET_ADDRESS_TOOL: Tool = {
+  name: 'wallet_address',
+  description:
+    'Read-only, spends nothing — derives and shows the Arweave address for a JWK wallet file (the ' +
+    'address to FUND, e.g. via app.ardrive.io / turbo.ar.io, before pushing to arweave/turbo). Defaults ' +
+    'to $CIPHER_BRAIN_AR_WALLET, then <CIPHER_BRAIN_HOME>/wallet.json (the same default wallet_create ' +
+    'writes to) when wallet is omitted.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      wallet: {
+        type: 'string',
+        description:
+          'Path to the JWK wallet file. Default: $CIPHER_BRAIN_AR_WALLET, then <CIPHER_BRAIN_HOME>/wallet.json',
+      },
+    },
+    additionalProperties: false,
+  },
+};
+
 const ALL_TOOLS: Tool[] = [
   SNAPSHOT_NOW_TOOL,
   LAST_SNAPSHOT_STATUS_TOOL,
   VERIFY_RESTORE_TOOL,
   ESTIMATE_COST_TOOL,
   SCHEDULE_STATUS_TOOL,
+  KEYGEN_TOOL,
+  WALLET_CREATE_TOOL,
+  WALLET_ADDRESS_TOOL,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -657,6 +762,74 @@ async function handleScheduleStatus(args: ToolArgs): Promise<CallToolResult> {
   return structuredOk({ report: res.out });
 }
 
+// keygenAt() (src/lib/keys.ts) is the SAME generation logic `cipher-brain keygen`
+// calls (keygen() is a thin wrapper over it for the module's global HOME/IDENTITY/
+// RECIPIENT paths) — used directly here (rather than keygen()) because it RETURNS
+// { recipient, wrapped } instead of only printing them, so this handler returns
+// structured fields instead of re-parsing console.log lines.
+async function handleKeygen(args: ToolArgs): Promise<CallToolResult> {
+  const { force, passphrase } = args;
+  if (force !== undefined && !isBool(force)) throw new ToolError('ERR_INVALID_INPUT', 'force must be a boolean');
+  if (passphrase !== undefined && !isBool(passphrase))
+    throw new ToolError('ERR_INVALID_INPUT', 'passphrase must be a boolean');
+  const res = await captureCall(() =>
+    keygenAt({ home: HOME, identityPath: IDENTITY, recipientPath: RECIPIENT, passphrase, force }),
+  );
+  return structuredOk({
+    identity_path: IDENTITY,
+    recipient_path: RECIPIENT,
+    recipient: res.value.recipient,
+    passphrase_wrapped: res.value.wrapped,
+    log: [...res.out, ...res.err],
+  });
+}
+
+// wallet({_: 'create'|'address'}) (src/lib/wallet.ts) is the SAME dispatch the CLI's
+// `wallet create`/`wallet address` subcommands use — it has no structured return (void,
+// console.log only), so unlike keygen above these two just capture + return its output
+// lines, mirroring handleScheduleStatus's "no re-implemented logic" approach. Each
+// printed line has exactly one trailing token that IS the field of interest (a path or
+// an address, neither of which can contain whitespace), so pulling the last
+// whitespace-separated token is a stable read of a fixed, first-party console.log
+// format — not a parse of arbitrary text.
+const lastToken = (line: string | undefined): string | undefined => line?.trim().split(/\s+/).pop();
+
+async function handleWalletCreate(args: ToolArgs): Promise<CallToolResult> {
+  const { out, force } = args;
+  if (out !== undefined && !isStr(out)) throw new ToolError('ERR_INVALID_INPUT', 'out must be a string path');
+  if (force !== undefined && !isBool(force)) throw new ToolError('ERR_INVALID_INPUT', 'force must be a boolean');
+  if (isStr(out)) assertWithinHome(out);
+  const walletOpts: CliOptions = {
+    _: 'create',
+    dirs: [],
+    tables: [],
+    recipients: [],
+    out: isStr(out) ? out : undefined,
+    force,
+  };
+  const res = await captureCall(() => wallet(walletOpts));
+  return structuredOk({
+    wallet_path: lastToken(res.out[0]),
+    address: lastToken(res.out[1]),
+    log: [...res.out, ...res.err],
+  });
+}
+
+async function handleWalletAddress(args: ToolArgs): Promise<CallToolResult> {
+  const { wallet: walletPath } = args;
+  if (walletPath !== undefined && !isStr(walletPath))
+    throw new ToolError('ERR_INVALID_INPUT', 'wallet must be a string path');
+  const walletOpts: CliOptions = {
+    _: 'address',
+    dirs: [],
+    tables: [],
+    recipients: [],
+    wallet: isStr(walletPath) ? walletPath : undefined,
+  };
+  const res = await captureCall(() => wallet(walletOpts));
+  return structuredOk({ address: lastToken(res.out[0]), log: [...res.out, ...res.err] });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Server bootstrap
 // ─────────────────────────────────────────────────────────────────────────────
@@ -680,6 +853,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
         return await handleEstimateCost(args);
       case 'schedule_status':
         return await handleScheduleStatus(args);
+      case 'keygen':
+        return await handleKeygen(args);
+      case 'wallet_create':
+        return await handleWalletCreate(args);
+      case 'wallet_address':
+        return await handleWalletAddress(args);
       default:
         return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
     }

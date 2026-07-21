@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // MCP smoke test for the bundled build. Spawns `node dist/mcp.mjs` over stdio and:
-//   1. initialize + notifications/initialized + tools/list — asserts the five
+//   1. initialize + notifications/initialized + tools/list — asserts all eight
 //      tool names (snapshot_now, last_snapshot_status, verify_restore,
-//      estimate_cost, schedule_status).
+//      estimate_cost, schedule_status, keygen, wallet_create, wallet_address).
 //   2. a REAL snapshot_now round-trip against the free `file` backend inside a
 //      temp CIPHER_BRAIN_HOME/CIPHER_BRAIN_FILE_DIR (keygen via the existing
 //      lib first), then last_snapshot_status + verify_restore (by bare locator;
@@ -10,10 +10,16 @@
 //      wrong-sha256 negative control that must fail closed with no verdict)
 //      + estimate_cost on the result + schedule_status against a --no-load
 //      schedule installed via the CLI (same schedule.ts state `cipher-brain
-//      schedule status` reads).
-//   3. the spend gate: snapshot_now with backend=turbo and no confirm_paid
-//      must be refused with ERR_CONFIRM_REQUIRED — even with CIPHER_BRAIN_YES
-//      set in the environment (never silently spend).
+//      schedule status` reads); the spend gate: snapshot_now with
+//      backend=turbo and no confirm_paid must be refused with
+//      ERR_CONFIRM_REQUIRED — even with CIPHER_BRAIN_YES set in the
+//      environment (never silently spend); and a keygen call against this
+//      server's ALREADY-KEYED home, which must refuse rather than re-key.
+//   3. runKeygenWalletTests(): a SEPARATE server + a fresh, isolated
+//      CIPHER_BRAIN_HOME proves the issue #174 first-run path end to end —
+//      keygen then wallet_create then wallet_address, each's no-clobber
+//      refusal without --force, and keygen --force actually rotating the
+//      keypair — with real files asserted on disk, not just tool output.
 //
 // Exits 0 on success, 1 on any failure with a descriptive message on stderr.
 
@@ -48,8 +54,145 @@ async function main() {
   const tmp = await mkdtemp(join(tmpdir(), 'cb-mcp-smoke-'));
   try {
     await run(tmp);
+    await runKeygenWalletTests(tmp);
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+// Wires one spawned MCP server's stdout/stderr into the same send()/waitFor(id)
+// JSON-RPC-over-stdio pattern the main flow below uses — pulled out so the isolated
+// keygen/wallet_create/wallet_address round-trip (its own server, its own temp
+// CIPHER_BRAIN_HOME) doesn't hand-roll a second copy of this plumbing.
+function makeRpcClient(child) {
+  let stdoutBuf = '';
+  let stderrBuf = '';
+  child.stdout.on('data', (d) => {
+    stdoutBuf += d.toString('utf8');
+  });
+  child.stderr.on('data', (d) => {
+    stderrBuf += d.toString('utf8');
+  });
+  child.on('error', (err) => {
+    throw err;
+  });
+  const send = (msg) => child.stdin.write(JSON.stringify(msg) + '\n');
+  async function waitFor(id) {
+    const deadline = Date.now() + TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const frame = parseFrames(stdoutBuf).find((f) => f.id === id);
+      if (frame) return frame;
+      await wait(100);
+    }
+    throw new Error(
+      `no response for id=${id} within ${TIMEOUT_MS}ms; stdout=${stdoutBuf.slice(0, 500)} stderr=${stderrBuf.slice(-500)}`,
+    );
+  }
+  return { send, waitFor };
+}
+
+// 3. keygen / wallet_create / wallet_address round-trip (issue #174): a SEPARATE
+// server + a FRESH, isolated CIPHER_BRAIN_HOME (rather than reusing `home` above,
+// which already has an identity from the CLI-driven keygen at the top of run())
+// so the very first keygen/wallet_create call here exercises the real "nothing
+// exists yet" first-run path, not the already-exists refusal.
+async function runKeygenWalletTests(tmp) {
+  const home2 = join(tmp, 'home2');
+  const child2 = spawn(process.execPath, [SERVER_PATH], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, CIPHER_BRAIN_HOME: home2 },
+  });
+  const { send, waitFor } = makeRpcClient(child2);
+  try {
+    send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ci-smoke', version: '0.0.0' } },
+    });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    await wait(100);
+
+    // 3a. keygen on a brand-new home: must succeed and actually write both files.
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'keygen', arguments: {} } });
+    const keygen1 = await waitFor(2);
+    const keygen1Sc = keygen1.result?.structuredContent;
+    if (keygen1.result?.isError) throw new Error(`keygen (fresh) failed: ${JSON.stringify(keygen1Sc).slice(0, 500)}`);
+    if (typeof keygen1Sc?.recipient !== 'string' || !keygen1Sc.recipient.startsWith('age1'))
+      throw new Error(`keygen (fresh) recipient unexpected: ${JSON.stringify(keygen1Sc?.recipient)}`);
+    if (keygen1Sc?.passphrase_wrapped !== false)
+      throw new Error(`keygen (fresh) passphrase_wrapped unexpected: ${JSON.stringify(keygen1Sc?.passphrase_wrapped)}`);
+    const identityPath = keygen1Sc.identity_path;
+    const recipientPath2 = keygen1Sc.recipient_path;
+    if (!existsSync(identityPath)) throw new Error(`keygen (fresh) did not write identity_path: ${identityPath}`);
+    if (!existsSync(recipientPath2)) throw new Error(`keygen (fresh) did not write recipient_path: ${recipientPath2}`);
+
+    // 3b. keygen again, no force: must refuse (no-clobber) rather than silently re-key.
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'keygen', arguments: {} } });
+    const keygen2 = await waitFor(3);
+    if (keygen2.result?.isError !== true)
+      throw new Error(
+        `keygen (no force, already exists) did not refuse: ${JSON.stringify(keygen2.result).slice(0, 300)}`,
+      );
+    if (!/already exists/.test(keygen2.result?.structuredContent?.message ?? ''))
+      throw new Error(
+        `keygen (no force) refused for the wrong reason: ${JSON.stringify(keygen2.result?.structuredContent)}`,
+      );
+
+    // 3c. keygen with force=true: must succeed and actually rotate the recipient.
+    send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'keygen', arguments: { force: true } } });
+    const keygen3 = await waitFor(4);
+    const keygen3Sc = keygen3.result?.structuredContent;
+    if (keygen3.result?.isError) throw new Error(`keygen (force) failed: ${JSON.stringify(keygen3Sc).slice(0, 500)}`);
+    if (keygen3Sc?.recipient === keygen1Sc.recipient)
+      throw new Error('keygen (force) did not generate a new keypair (recipient unchanged)');
+
+    // 3d. wallet_create on a brand-new home: must succeed and actually write the JWK.
+    send({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'wallet_create', arguments: {} } });
+    const wc1 = await waitFor(5);
+    const wc1Sc = wc1.result?.structuredContent;
+    if (wc1.result?.isError) throw new Error(`wallet_create (fresh) failed: ${JSON.stringify(wc1Sc).slice(0, 500)}`);
+    if (typeof wc1Sc?.wallet_path !== 'string' || !existsSync(wc1Sc.wallet_path))
+      throw new Error(`wallet_create (fresh) did not write wallet_path: ${JSON.stringify(wc1Sc?.wallet_path)}`);
+    if (typeof wc1Sc?.address !== 'string' || wc1Sc.address.length < 10)
+      throw new Error(`wallet_create (fresh) address unexpected: ${JSON.stringify(wc1Sc?.address)}`);
+
+    // 3e. wallet_create again, no force: must refuse (no-clobber).
+    send({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'wallet_create', arguments: {} } });
+    const wc2 = await waitFor(6);
+    if (wc2.result?.isError !== true)
+      throw new Error(
+        `wallet_create (no force, already exists) did not refuse: ${JSON.stringify(wc2.result).slice(0, 300)}`,
+      );
+
+    // 3f. wallet_address with no arguments falls back to the SAME default path
+    // wallet_create just wrote to, and must report the SAME address.
+    send({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'wallet_address', arguments: {} } });
+    const addr = await waitFor(7);
+    const addrSc = addr.result?.structuredContent;
+    if (addr.result?.isError)
+      throw new Error(`wallet_address (default path) failed: ${JSON.stringify(addrSc).slice(0, 500)}`);
+    if (addrSc?.address !== wc1Sc.address)
+      throw new Error(
+        `wallet_address mismatch: ${JSON.stringify(addrSc?.address)} != ${JSON.stringify(wc1Sc.address)}`,
+      );
+
+    process.stdout.write(
+      `MCP SMOKE (keygen/wallet): PASS — keygen fresh+no-clobber+force ok, ` +
+        `wallet_create fresh+no-clobber ok, wallet_address matches wallet_create\n`,
+    );
+  } finally {
+    try {
+      child2.stdin.end();
+    } catch {
+      /* ignore */
+    }
+    try {
+      child2.kill();
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -125,30 +268,7 @@ async function run(tmp) {
     },
   });
 
-  let stdoutBuf = '';
-  let stderrBuf = '';
-  child.stdout.on('data', (d) => {
-    stdoutBuf += d.toString('utf8');
-  });
-  child.stderr.on('data', (d) => {
-    stderrBuf += d.toString('utf8');
-  });
-  child.on('error', (err) => {
-    throw err;
-  });
-
-  const send = (msg) => child.stdin.write(JSON.stringify(msg) + '\n');
-  async function waitFor(id) {
-    const deadline = Date.now() + TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      const frame = parseFrames(stdoutBuf).find((f) => f.id === id);
-      if (frame) return frame;
-      await wait(100);
-    }
-    throw new Error(
-      `no response for id=${id} within ${TIMEOUT_MS}ms; stdout=${stdoutBuf.slice(0, 500)} stderr=${stderrBuf.slice(-500)}`,
-    );
-  }
+  const { send, waitFor } = makeRpcClient(child);
 
   try {
     // 1. handshake + tools/list
@@ -168,7 +288,16 @@ async function run(tmp) {
     send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
     const list = await waitFor(2);
     const names = (list.result?.tools ?? []).map((t) => t.name).sort();
-    const expected = ['estimate_cost', 'last_snapshot_status', 'schedule_status', 'snapshot_now', 'verify_restore'];
+    const expected = [
+      'estimate_cost',
+      'keygen',
+      'last_snapshot_status',
+      'schedule_status',
+      'snapshot_now',
+      'verify_restore',
+      'wallet_address',
+      'wallet_create',
+    ];
     if (JSON.stringify(names) !== JSON.stringify(expected)) {
       throw new Error(`tools/list mismatch: expected ${expected.join(', ')} got ${names.join(', ')}`);
     }
@@ -422,12 +551,27 @@ async function run(tmp) {
       );
     }
 
+    // 2j. keygen against THIS server's home — which already has a real identity
+    // (written by the CLI-driven keygen at the top of this run, not by the tool
+    // itself) — must refuse rather than silently re-key a brain snapshots already
+    // depend on. Complements the fresh-home keygen coverage in
+    // runKeygenWalletTests() below by proving the refusal also holds for an
+    // identity that pre-dates the MCP server's own lifetime.
+    send({ jsonrpc: '2.0', id: 14, method: 'tools/call', params: { name: 'keygen', arguments: {} } });
+    const keygenGuard = await waitFor(14);
+    if (keygenGuard.result?.isError !== true)
+      throw new Error(
+        `keygen against a pre-existing identity did not refuse: ${JSON.stringify(keygenGuard.result).slice(0, 300)}`,
+      );
+    if (!/already exists/.test(keygenGuard.result?.structuredContent?.message ?? ''))
+      throw new Error(`keygen refused for the wrong reason: ${JSON.stringify(keygenGuard.result?.structuredContent)}`);
+
     process.stdout.write(
       `MCP SMOKE: PASS — tools=[${names.join(', ')}], spend gate=ERR_CONFIRM_REQUIRED, ` +
         `file round-trip locator=${snapSc.locator.split('/').pop()}, status.age=${latest.age_seconds}s, verify=${verSc.verdict}, ` +
         `verify(locator_file pin)=${verPinnedSc.verdict}, wrong-pin=fail-closed, estimate(file)=0, ` +
         `estimate(size_bytes)=0, estimate(turbo, sdk ${turboSdkInstalled ? 'installed' : 'missing'})=ok, ` +
-        `schedule_status.report.length=${schedSc.report.length}\n`,
+        `schedule_status.report.length=${schedSc.report.length}, keygen(pre-existing)=refused\n`,
     );
   } finally {
     try {

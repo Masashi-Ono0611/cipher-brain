@@ -330,6 +330,9 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
 | `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable. Same computation as `cipher-brain estimate` (`src/lib/estimate.ts`) |
 | `schedule_status` | read-only | the same report as `cipher-brain schedule status`: configured time/backend, trigger registration state, last run log + its final rc line, next scheduled run |
+| `keygen` | **writes a keypair** (no spend) | generate a fresh age identity/recipient keypair at `<CIPHER_BRAIN_HOME>/{identity.age,recipient.txt}` — first-run setup for a shell-less agent. Refuses if one already exists unless `force: true` (destructive — discards the old identity) |
+| `wallet_create` | **writes a wallet** (no spend) | generate a fresh Arweave JWK wallet (default `<CIPHER_BRAIN_HOME>/wallet.json`, `out` overrides). Refuses if one already exists at the target path unless `force: true` (destructive — discards spend authority over any funds already sent to it) |
+| `wallet_address` | read-only | derive and show the Arweave address for a JWK wallet file (the address to fund before pushing to `arweave`/`turbo`) |
 
 Claude Code config (`.mcp.json`):
 
@@ -346,5 +349,7 @@ Claude Code config (`.mcp.json`):
 
 `scripts/mcp-smoke.mjs` (part of `npm run verify`) proves initialize/tools-list,
 a real `snapshot_now` round-trip on the `file` backend, `schedule_status` against a
-`--no-load` schedule installed via the CLI, and that the paid-backend spend gate
-refuses without `confirm_paid`.
+`--no-load` schedule installed via the CLI, that the paid-backend spend gate
+refuses without `confirm_paid`, and a real `keygen` → `wallet_create` → `wallet_address`
+round-trip (plus the no-clobber-unless-`force` refusal) against an isolated
+`CIPHER_BRAIN_HOME`.

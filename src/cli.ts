@@ -216,16 +216,18 @@ Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes
 
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
-  const o = parseArgs(rest);
   // `<subcommand> --help` / `-h` must show help instead of running the
-  // subcommand (issue #171) — checked on the raw args so it applies
-  // uniformly to every subcommand, not just the bare `cipher-brain --help`
-  // handled by the switch below.
+  // subcommand (issue #171) — checked on the raw args, BEFORE parseArgs(),
+  // so it applies uniformly to every subcommand (not just the bare
+  // `cipher-brain --help` handled by the switch below) and keeps working
+  // even if parseArgs() is ever changed to validate/throw on bad input
+  // (multi-model review finding).
   if (rest.includes('--help') || rest.includes('-h')) {
     printMascot('neutral');
     console.log(HELP);
     return;
   }
+  const o = parseArgs(rest);
   switch (cmd) {
     case 'init':
       return init(o);

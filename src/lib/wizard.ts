@@ -623,8 +623,10 @@ export async function init(_o: CliOptions): Promise<void> {
       // ---------- recovery kit ----------
       const primaryRecipient = (await readFile(RECIPIENT, 'utf8')).trim();
       const defaultKitPath = join(homedir(), 'recovery-kit.txt');
+      console.log('\n⚠  The recovery kit written below will contain secret key material in plaintext — once it');
+      console.log('   is written, move it OFF-BOX (encrypted USB, a second location, a trusted person).');
       const kitPath = expandHome(
-        await askLine(rl, `\nPath to write the recovery kit [${defaultKitPath}]: `, defaultKitPath),
+        await askLine(rl, `Path to write the recovery kit [${defaultKitPath}]: `, defaultKitPath),
       );
       const kitText = buildRecoveryKit({
         primaryIdentityPath: IDENTITY,

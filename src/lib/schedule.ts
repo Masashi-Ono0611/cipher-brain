@@ -496,7 +496,13 @@ async function install(o: CliOptions): Promise<void> {
   await writeFile(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
 
   if (o.no_load) {
-    console.error('--no-load: artifacts written, trigger NOT registered (launchctl/crontab untouched)');
+    if (cfg.trigger.type === 'launchd') {
+      console.error(
+        `--no-load: trigger NOT registered (launchctl untouched) — but ${PLIST} is a REAL, PERSISTENT file that was just written. Its default location (~/Library/LaunchAgents) is a real system dir, NOT scoped to CIPHER_BRAIN_HOME (override with CIPHER_BRAIN_LAUNCHD_DIR to sandbox a --no-load preview). Remove it by hand, or with \`cipher-brain schedule uninstall\`, if you do not intend to \`launchctl load\` it or re-run install without --no-load.`,
+      );
+    } else {
+      console.error('--no-load: cron entry written, trigger NOT registered (crontab untouched)');
+    }
     if (isLegacyLaunchdCfg(priorCfg) || (priorCronEntry && isLegacyCronLine(priorCronEntry))) {
       console.error(
         `note: a legacy (pre-CIPHER_BRAIN_HOME-scoped) registration for this home is still live — re-run install WITHOUT --no-load to migrate off it (otherwise both would end up running nightly)`,

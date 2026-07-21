@@ -14,7 +14,8 @@ npx cipher-brain init   # interactive wizard: keygen -> backup key -> first snap
 
 `init` requires stdin to be a TTY and refuses to run non-interactively (e.g. an AI
 agent's shell). For non-interactive/scripted setup, drive the individual commands
-it wraps (keygen, snapshot, push, schedule) by hand — see README.md's "Manual flow".
+it wraps (keygen, snapshot, push) by hand instead — see README.md's "Manual flow"
+(which also covers `schedule install` for ongoing unattended runs).
 
 ## Key concepts
 

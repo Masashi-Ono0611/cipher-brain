@@ -162,21 +162,30 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       bundle. --sha256 also pins the artifact to an expected hash. VERDICT: PASS (exit 0)
       / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not proven, e.g. public-key-only box).
 
-  cipher-brain push --in <file.age> --backend <file|arweave|turbo> [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
+  cipher-brain push --in <file.age> --backend <file|arweave|turbo|rclone> [--remote <name>:<path>] [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
       Upload ciphertext to storage. Prints ONLY the locator to stdout
-      (file: store path; arweave: tx id; turbo: ANS-104 data item id).
+      (file: store path; arweave: tx id; turbo: ANS-104 data item id; rclone: the
+      --remote value itself).
       Storage sees ciphertext only.
       arweave/turbo are paid permanent stores — require --yes or CIPHER_BRAIN_YES=1;
       both print a native-unit cost estimate (winston/winc) plus an approximate USD
       line before uploading. Preview the same estimate beforehand without pushing
       anything via "cipher-brain estimate".
+      --backend rclone --remote <rclone-remote-name>:<path> shells out to the
+      rclone binary (rclone copyto <in> <remote>), delegating auth/protocol for
+      any of rclone's 70+ supported providers to your own rclone config — cipher-
+      brain implements none of them itself. Free (like file); needs rclone on
+      PATH and a remote already set up via 'rclone config' (or a config-less
+      on-the-fly remote, e.g. --remote ":local:/path"). --remote is required.
       --save-locator writes "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t
       <recipients_fingerprint>]]" to a file (rewritten atomically each push, so it
       always holds the LATEST + an integrity pin; legacy 3/4-field files are still
       accepted everywhere). Back this file up off-box next to your identity: it is the
       durable pointer a fresh machine needs to find the most recent snapshot. (For the
-      file backend the locator is a LOCAL store path — only arweave/turbo locators
-      are portable to another machine.)
+      file backend the locator is a LOCAL store path — arweave/turbo locators are
+      always portable to another machine; an rclone locator is portable too, PROVIDED
+      the same remote name is configured there — a config-less ":local:/path" remote
+      is as machine-local as the file backend.)
       --skip-unchanged (requires --save-locator): skips ONLY when BOTH (a) the
       snapshot's PLAINTEXT content digest — read from the "<in>.digest" sidecar
       snapshot writes, or given as --digest <hex> — equals the content_digest recorded
@@ -191,14 +200,17 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       when unchanged. (The digest is plaintext-side by necessity: age's ephemeral file
       key makes identical content encrypt to different ciphertext bytes every run.)
 
-  cipher-brain estimate --in <file.age> --backend <file|arweave|turbo>
+  cipher-brain estimate --in <file.age> --backend <file|arweave|turbo|rclone>
       Read-only preview: print what pushing --in to --backend would cost WITHOUT
       uploading anything. turbo/arweave show the native unit (winc/winston) plus
-      an approximate USD line when a USD/AR rate is fetchable; file is always free.
-      Sizes --in the same way push does (a real byte count off disk). The SAME
-      computation backs the MCP estimate_cost tool, so the two never disagree.
+      an approximate USD line when a USD/AR rate is fetchable; file and rclone are
+      always reported as free (rclone's actual transfer/storage cost, if any, is
+      whatever the operator's own cloud contract for that remote charges — cipher-
+      brain cannot query it). Sizes --in the same way push does (a real byte count
+      off disk). The SAME computation backs the MCP estimate_cost tool, so the two
+      never disagree.
 
-  cipher-brain pull (--locator <id> --backend <…> | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>] [--force]
+  cipher-brain pull (--locator <id> --backend <…> | --remote <name>:<path> --backend rclone | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>] [--force]
       Fetch ciphertext by locator into --out. --from-locator-file reads the locator, its
       backend AND the saved sha256 from a file written by push --save-locator (the recovery
       path: identity + this file are all a fresh machine needs; the saved sha256 is applied
@@ -209,6 +221,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       No-clobber by default: refuses to overwrite an existing --out (the recovery steps
       above reuse a fixed filename, so a second pull could otherwise destroy the first
       one's result) — pass --force to overwrite it anyway.
+      --backend rclone accepts --remote <name>:<path> in place of --locator (the
+      rclone backend's locator IS that string — see push's rclone section above);
+      an explicit --locator still wins if both are given.
 
   cipher-brain schedule install --backend <file|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
                                 [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
@@ -255,6 +270,7 @@ Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_PG_BIN (dir of pg
 Storage: CIPHER_BRAIN_FILE_DIR (file);
          CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT} (arweave; CIPHER_BRAIN_AR_WALLET is a path to a JWK key file — 'cipher-brain wallet create' generates one, 'wallet address' shows what to fund; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none);
          turbo: CIPHER_BRAIN_AR_WALLET (JWK signer) + optional CIPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
+         rclone: CIPHER_BRAIN_RCLONE_BIN (path to the rclone binary; default 'rclone' on PATH) — the remote itself is whatever --remote <name>:<path> names in your own 'rclone config'.
 Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the arweave/turbo cost estimate (winston/winc).
 Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes or CIPHER_BRAIN_YES=1.`;
 

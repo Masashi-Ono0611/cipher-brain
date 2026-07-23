@@ -105,7 +105,7 @@ async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> 
 // be treated as "an upload succeeded".
 export async function push(o: CliOptions): Promise<boolean> {
   if (!o.in) throw new Error('--in <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|arweave|turbo> required'); // no silent default
+  if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone> required'); // no silent default
   if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
   // storage must only ever see ciphertext — refuse to push a non-age artifact
   // (e.g. an accidental plaintext path), which would be the last gate before a
@@ -202,7 +202,10 @@ export async function push(o: CliOptions): Promise<boolean> {
     );
   }
   const backend = await backendFor(o.backend);
-  const locator = await backend.put(o.in, { yes });
+  // `remote` is only meaningful to the rclone backend (its --remote <name>:<path>
+  // destination — types.ts's PutOpts) — every other backend's put() ignores it, same
+  // as `yes` is only meaningful to arweave/turbo.
+  const locator = await backend.put(o.in, { yes, remote: o.remote });
   console.error(`pushed ${o.in} -> ${o.backend}:${locator}`);
   // --save-locator <path>: persist the returned locator so operators can back it up
   // alongside their identity (the two things a fresh machine needs to restore).
@@ -337,9 +340,15 @@ export async function pull(o: CliOptions): Promise<void> {
     // is rejected); an explicit --sha256 still wins if the operator passed one.
     if (!o.sha256 && savedSha) o.sha256 = savedSha;
   }
-  if (!o.locator) throw new Error('--locator <id> required (or --from-locator-file <path>)');
+  // rclone backend (#204): its locator IS the "<remote>:<path>" string (see
+  // backends/rclone.ts) — --remote is accepted here as the same value --locator
+  // would take, so a pull can mirror push's own --remote flag instead of forcing the
+  // operator to know that the two happen to be interchangeable for this backend.
+  // An explicit --locator still wins if both are somehow given.
+  if (o.backend === 'rclone' && !o.locator && o.remote) o.locator = o.remote;
+  if (!o.locator) throw new Error('--locator <id> required (or --from-locator-file <path>, or --remote for rclone)');
   if (!o.out) throw new Error('--out <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|arweave|turbo> required');
+  if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone> required');
   // No-clobber (#107): refuse to overwrite an existing --out by default. wizard.ts's
   // printed recovery command reuses a FIXED path ("~/restored.age"), so a second pull
   // (a different backup, or a re-run of the recovery steps) would otherwise destroy

@@ -321,6 +321,12 @@ async function run(tmp) {
         `paid-backend spend gate is OFF: expected isError + ERR_CONFIRM_REQUIRED, got ${JSON.stringify(guard.result).slice(0, 300)}`,
       );
     }
+    // issue #212: the same "spends real funds" consent-gate wording the CLI's own
+    // push --yes guard uses (pushpull.ts) is recognized here too, so this MCP-level
+    // refusal also carries the stable CB-E007 code.
+    if (guardSc?.cb_code !== 'CB-E007') {
+      throw new Error(`paid-backend spend gate result lacks cb_code=CB-E007: ${JSON.stringify(guardSc).slice(0, 300)}`);
+    }
     const guardLeftArtifact = await stat(outAge).then(
       () => true,
       () => false,
@@ -450,6 +456,15 @@ async function run(tmp) {
     }
     if (verWrongSc?.verdict !== undefined) {
       throw new Error(`wrong-sha256 pin still produced a verdict: ${JSON.stringify(verWrongSc).slice(0, 300)}`);
+    }
+    // issue #212: the structured error carries the stable CB-E001 code both inline in
+    // `message` (same "[CB-E0xx] see MANAGEMENT.md#error-codes" suffix the CLI prints)
+    // AND as its own machine-readable `cb_code` field.
+    if (!/\[CB-E001\]/.test(verWrongSc?.message ?? '')) {
+      throw new Error(`wrong-sha256 pin message lacks the CB-E001 code: ${JSON.stringify(verWrongSc).slice(0, 300)}`);
+    }
+    if (verWrongSc?.cb_code !== 'CB-E001') {
+      throw new Error(`wrong-sha256 pin result lacks cb_code=CB-E001: ${JSON.stringify(verWrongSc).slice(0, 300)}`);
     }
 
     // 2g. estimate_cost on the free file backend (offline + deterministic —

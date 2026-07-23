@@ -35,6 +35,7 @@ import { wallet } from './lib/wallet.js';
 import { estimate } from './lib/estimate.js';
 import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
+import { annotateErrorMessage } from './lib/errors.js';
 import { printMascot } from './lib/ui.js';
 import { printFounderNote, printWisdomQuote } from './lib/wisdom.js';
 import type { CliOptions } from './lib/types.js';
@@ -341,6 +342,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((e: unknown) => {
-  console.error(`error: ${errMsg(e)}`);
+  // issue #212: a stable "[CB-E0xx] see MANAGEMENT.md#error-codes" suffix is appended
+  // HERE (the one place every command's error funnels through) when the message matches
+  // a known failure pattern — never at the individual throw site, so no existing message
+  // body changes; an unmatched error prints exactly as before.
+  console.error(`error: ${annotateErrorMessage(errMsg(e))}`);
   process.exitCode = 1;
 });

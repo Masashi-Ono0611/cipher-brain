@@ -271,6 +271,36 @@ not clobber a prior expansion (same no-clobber posture as the outer extract). Pa
 `--no-expand-components` to skip this and get only the raw `*.tar.gz` files (the pre-#181
 behavior, still there either way as the fallback).
 
+## Error codes
+
+Failures print with a stable `[CB-E0xx]` code and this section's anchor, the same shape
+ngrok uses for its own errors (https://ngrok.com/docs/errors): `error: <existing message>
+[CB-E0xx] see MANAGEMENT.md#error-codes`. The code identifies the FAILURE PATTERN, not
+the exact wording — it never changes even if the surrounding message is reworded later.
+An error with no code just means it hasn't been assigned one yet (issue #212 covers the
+most common ~15 patterns, not every possible failure); the plain message is still the
+full story either way. Over MCP, `verify_restore`/`snapshot_now`/etc.'s error result also
+carries the code as its own `cb_code` field, so an agent can branch on it without parsing
+the message text.
+
+| Code | Cause | Next action |
+|---|---|---|
+| CB-E001 | `pull --sha256` (or a locator-file's saved pin) didn't match the fetched bytes — the storage/gateway served something else. | Retry against a different gateway/backend, or re-check the trusted source (e.g. `index.tsv`) the expected hash came from. Never trust a substituted artifact that still merely opens. |
+| CB-E002 | age decryption itself failed — most often the identity you gave isn't a recipient this ciphertext was encrypted to (wrong `--identity`/wrong keypair), or the artifact is corrupt/truncated. | Confirm you're pointing at the identity that matches one of the snapshot's `--recipient`s. If it should be the right key, re-fetch the artifact and check its size/sha256 for truncation. |
+| CB-E003 | The identity file is passphrase-wrapped (`keygen --passphrase`) and the passphrase given was wrong (or the file is damaged). | Re-enter the correct passphrase (prompted on the TTY, or set `CIPHER_BRAIN_PASSPHRASE` for automation). |
+| CB-E004 | `pull` reached the backend, but the object isn't retrievable yet — a fresh Arweave/Turbo upload typically takes ~5-8 min to propagate to a gateway. | Re-run with `--wait <seconds>` (retries until ready), or simply wait a few minutes and pull again. |
+| CB-E005 | `CIPHER_BRAIN_PIN_RECIPIENTS` is set, and a recipient this snapshot would encrypt to is not on that allowlist (a tampered `recipient.txt`, or an unexpected extra `--recipient`). | Confirm the recipient is one you actually intend to grant access; if so, add it to `CIPHER_BRAIN_PIN_RECIPIENTS`. If not, this is exactly the attack the pin exists to catch — investigate before proceeding. |
+| CB-E006 | The upload's cost estimate exceeds `CIPHER_BRAIN_MAX_SPEND`, or the signing wallet's balance/credits are insufficient. | Raise (or intentionally lower) `CIPHER_BRAIN_MAX_SPEND`, or fund the wallet (Turbo Credits top up at app.ardrive.io; Arweave L1 needs AR in the JWK's own address). |
+| CB-E007 | `push`/`schedule install` targets a paid, permanent backend (arweave/turbo) without consent. | Pass `--yes`, or set `CIPHER_BRAIN_YES=1` (the unattended-cadence escape hatch) to confirm the spend. |
+| CB-E008 | `push --in` points at a file that isn't age ciphertext (its header doesn't match) — storage must only ever see ciphertext. | Pass the `.age` file `cipher-brain snapshot` produced, not a plaintext/other file. |
+| CB-E009 | The command's output path already exists and no-clobber refused to overwrite it (protects a prior snapshot/pull result from silent loss). | Pick a different `--out`/`--save-locator` path, move the existing file aside, or pass `--force` to overwrite it deliberately. |
+| CB-E010 | A `file`-backend locator resolves outside `CIPHER_BRAIN_FILE_DIR`, or doesn't match the `<sha256>.age` shape `push` itself produces — refused as a possible path-traversal/arbitrary-file-read attempt via a tampered locator. | Only pass locators exactly as `push` printed them (or as saved in a `--save-locator`/index file from a trusted, off-box copy); don't hand-construct one. |
+| CB-E011 | The `arweave`/`turbo` backend needs `CIPHER_BRAIN_AR_WALLET` (a JWK signer) and it's unset, or the path isn't readable. | Run `cipher-brain wallet create` to generate one, then set `CIPHER_BRAIN_AR_WALLET` to its path (`wallet address` shows what to fund). |
+| CB-E012 | The optional peer dependency the backend needs (`arweave` or `@ardrive/turbo-sdk`) isn't installed. | Run the `npm install …` command the error itself prints. |
+| CB-E013 | `--backend` was given a value other than `file`, `arweave`, or `turbo`. | Correct the typo — only those three are valid. |
+| CB-E014 | `schedule status`/`uninstall` ran before `schedule install`, or writing the crontab entry failed. | Run `cipher-brain schedule install` first; a crontab-write failure usually means missing cron permissions/availability in this environment. |
+| CB-E015 | `restore`/`verify` can't find the private identity file it needs to decrypt (default or `--identity` path). | Run `cipher-brain keygen` if you haven't yet, or point `--identity` at the correct file. |
+
 ## What's proven vs recommended
 
 | Area | Status |

@@ -323,6 +323,10 @@ model above, so losing one identity never loses the brain.
 the round-trip: [`docs/durability.md`](docs/durability.md) lays out why Arweave's
 pay-once permanence (via `--backend turbo`) is the one recommended path.
 
+**When something fails**, the most common failure patterns print with a stable
+`[CB-E0xx]` code and a pointer to [`MANAGEMENT.md`'s error code table](MANAGEMENT.md#error-codes)
+(cause + next action for each) — the same shape ngrok uses for its own errors.
+
 ## Roadmap
 
 - **#1 Cipher** — encrypt a snapshot client-side, key only yours. ✅

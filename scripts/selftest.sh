@@ -215,10 +215,14 @@ echo "[PASS] a pre-existing symlink at expanded/README.txt is refused (write ski
 echo "== wrong key really cannot restore (defense in depth) =="
 export CIPHER_BRAIN_HOME="$TMP/keys2"
 cb keygen >/dev/null
-if cb restore --in "$TMP/snap.age" --out-dir "$TMP/out-wrong" 2>/dev/null; then
-  echo "FAIL: restored with a different identity"; exit 1
-fi
+set +e
+WRONGKEY_ERR=$(cb restore --in "$TMP/snap.age" --out-dir "$TMP/out-wrong" 2>&1); WRONGKEY_RC=$?
+set -e
+if [ "$WRONGKEY_RC" = "0" ]; then echo "FAIL: restored with a different identity"; exit 1; fi
 echo "[PASS] a different identity cannot restore"
+echo "== issue #212: a wrong-identity restore carries the CB-E002 error code =="
+printf '%s' "$WRONGKEY_ERR" | grep -q '\[CB-E002\]' || { echo "FAIL: wrong-identity restore error lacks the CB-E002 code"; echo "$WRONGKEY_ERR"; exit 1; }
+echo "[PASS] wrong-identity restore error carries [CB-E002]"
 
 echo "== P1 regression: a failed snapshot must not leave staged plaintext =="
 # a recipient file with garbage makes the encrypter setup fail (typage rejects the
@@ -377,12 +381,15 @@ OTHER="$TMP/other-key"; mkdir -p "$OTHER"
 CIPHER_BRAIN_HOME="$OTHER" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
 OTHERPUB=$(cat "$OTHER/recipient.txt")
 set +e
-CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$OTHERPUB" \
-  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-bad.age" >/dev/null 2>&1; RC=$?
+PINBAD_ERR=$(CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$OTHERPUB" \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-bad.age" 2>&1 >/dev/null); RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: snapshot encrypted to a non-allowlisted recipient"; exit 1; fi
 test ! -f "$TMP/pin-bad.age"
 echo "[PASS] snapshot refused a recipient not on the allowlist"
+echo "== issue #212: a recipient-pin refusal carries the CB-E005 error code =="
+printf '%s' "$PINBAD_ERR" | grep -q '\[CB-E005\]' || { echo "FAIL: recipient-pin refusal lacks the CB-E005 code"; echo "$PINBAD_ERR"; exit 1; }
+echo "[PASS] recipient-pin refusal error carries [CB-E005]"
 # (c) a recipients FILE that keeps the allowed age key but ALSO adds an ssh recipient
 # (age -R accepts ssh-ed25519) must be refused — an age1-only scan would miss it.
 SSHMIX="$TMP/recipient-ssh-mix.txt"
@@ -451,6 +458,10 @@ printf '%s' "$OUT_AR" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
 printf '%s' "$OUT_TU" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
   || { echo "[FAIL] push turbo error lacks --yes guidance"; echo "$OUT_TU"; exit 1; }
 echo "[PASS] push arweave/turbo without --yes fails with clear guidance"
+echo "== issue #212: the --yes consent-gate refusal carries the CB-E007 error code =="
+printf '%s' "$OUT_AR" | grep -q '\[CB-E007\]' || { echo "[FAIL] push arweave --yes-gate error lacks the CB-E007 code"; echo "$OUT_AR"; exit 1; }
+printf '%s' "$OUT_TU" | grep -q '\[CB-E007\]' || { echo "[FAIL] push turbo --yes-gate error lacks the CB-E007 code"; echo "$OUT_TU"; exit 1; }
+echo "[PASS] push arweave/turbo --yes-gate error carries [CB-E007]"
 # #160 regression: the cost estimate must appear BEFORE the --yes consent-gate error in
 # the SAME output — not just present somewhere, but ahead of it (line-order check).
 EST_LINE_AR=$(printf '%s\n' "$OUT_AR" | grep -n -i "cost estimate" | head -1 | cut -d: -f1)

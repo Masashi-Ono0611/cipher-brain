@@ -133,6 +133,85 @@ cb restore --in "$TMP/collide.age" --out-dir "$EXP_OUT" >/dev/null
 [ "$(cat "$ALPHA_DIR/note.txt")" = "$SENTINEL_EXP" ] || { echo "FAIL: re-running restore into the same --out-dir clobbered a previously-expanded file"; exit 1; }
 echo "[PASS] re-running restore into an out-dir with an existing expansion does not clobber it"
 
+echo "== #181 hardening: a forged manifest component 'name' containing a path separator is refused, not followed (path-traversal guard) =="
+# age is public-key encryption -- anyone holding a recipient's PUBLIC key can construct
+# ciphertext encrypted to it, so a crafted manifest.json inside otherwise-valid
+# ciphertext is something restore must defend against. Simulate that by hand-building a
+# forged plaintext bundle (manifest.json with a malicious component name, alongside one
+# LEGITIMATE component) and encrypting it with the real `age` binary to this test's own
+# recipient -- restore must refuse only the malicious component, warn about it clearly,
+# still expand the legitimate sibling, and exit 0 (best-effort, not a hard failure).
+if ! command -v age >/dev/null 2>&1; then
+  echo "[SKIP] path-traversal hardening test: no \`age\` binary on PATH (CI installs it; install age locally to exercise this)"
+else
+  FORGE_STAGE="$TMP/forge-stage"; mkdir -p "$FORGE_STAGE"
+  FORGE_LEGIT_SRC="$TMP/forge-legit-src"; mkdir -p "$FORGE_LEGIT_SRC"
+  printf 'legit sibling component content\n' > "$FORGE_LEGIT_SRC/ok.txt"
+  tar -czf "$FORGE_STAGE/legit.tar.gz" -C "$TMP" "forge-legit-src"
+  cat > "$FORGE_STAGE/manifest.json" <<MANIFEST
+{
+  "tool": "cipher-brain",
+  "schema": 1,
+  "host": "forged-test-fixture",
+  "created_at": "2026-01-01T00:00:00.000Z",
+  "content_digest": "0",
+  "recipients_fingerprint": "0",
+  "components": [
+    { "name": "legit.tar.gz", "kind": "dir", "source": "$FORGE_LEGIT_SRC", "content_digest": "0", "captured_at": "2026-01-01T00:00:00.000Z" },
+    { "name": "../forge-traversal-marker.tar.gz", "kind": "dir", "source": "/does/not/matter", "content_digest": "0", "captured_at": "2026-01-01T00:00:00.000Z" }
+  ]
+}
+MANIFEST
+  ( cd "$FORGE_STAGE" && tar -cf - manifest.json legit.tar.gz ) | age -r "$(cat "$TMP/keys/recipient.txt")" -o "$TMP/forge.age"
+  FORGE_OUT="$TMP/forge-restored"
+  set +e
+  FORGE_ERR=$(cb restore --in "$TMP/forge.age" --out-dir "$FORGE_OUT" 2>&1); FORGE_RC=$?
+  set -e
+  [ "$FORGE_RC" = "0" ] || { echo "FAIL: restore of the forged-but-otherwise-valid manifest exited non-zero (expected best-effort: skip only the malicious component)"; echo "$FORGE_ERR"; exit 1; }
+  printf '%s' "$FORGE_ERR" | grep -qi "unsafe manifest name" || { echo "FAIL: no warning about the unsafe manifest component name"; echo "$FORGE_ERR"; exit 1; }
+  test ! -e "$TMP/forge-traversal-marker.tar.gz" || { echo "FAIL: the forged component name resolved outside --out-dir and something was created there"; exit 1; }
+  grep -rq 'legit sibling component content' "$FORGE_OUT/expanded" || { echo "FAIL: the legitimate sibling component in the same forged manifest did not still expand"; find "$FORGE_OUT"; exit 1; }
+  echo "[PASS] a forged component name containing a path separator is refused (warned + skipped) without crashing restore, and a legitimate sibling component in the SAME manifest still expands"
+fi
+
+echo "== #181 hardening: a pre-existing SYMLINK at the expanded component directory path is refused, never followed =="
+# mkdirSync({recursive:true}) FOLLOWS an existing symlink rather than refusing it -- if
+# an attacker (or a prior run) planted one at the predictable expanded/<NNN>-<source>
+# path before expandComponents() ever runs, extracting into it would land OUTSIDE
+# --out-dir entirely. Pre-plant that symlink by hand and prove restore refuses to
+# follow it: warns, leaves the symlink untouched, and writes nothing through it.
+SYM_SRC="$TMP/symlink-guard-src"; mkdir -p "$SYM_SRC"
+printf 'symlink guard test content\n' > "$SYM_SRC/note.txt"
+cb snapshot --dir "$SYM_SRC" --out "$TMP/symguard.age" >/dev/null
+SYM_OUT="$TMP/symguard-out"; mkdir -p "$SYM_OUT/expanded"
+SYM_ESCAPE_TARGET="$TMP/symlink-escape-target"; mkdir -p "$SYM_ESCAPE_TARGET"
+SYM_DIRNAME="001-$(printf '%s' "$SYM_SRC" | sed -E -e 's#^/+##' -e 's#[^A-Za-z0-9._-]+#_#g')"
+ln -s "$SYM_ESCAPE_TARGET" "$SYM_OUT/expanded/$SYM_DIRNAME"
+set +e
+SYM_ERR=$(cb restore --in "$TMP/symguard.age" --out-dir "$SYM_OUT" 2>&1); SYM_RC=$?
+set -e
+[ "$SYM_RC" = "0" ] || { echo "FAIL: restore into an out-dir with a pre-planted expanded-dir symlink exited non-zero"; echo "$SYM_ERR"; exit 1; }
+printf '%s' "$SYM_ERR" | grep -qi "is a symlink" || { echo "FAIL: no symlink-refusal warning was printed"; echo "$SYM_ERR"; exit 1; }
+printf '%s' "$SYM_ERR" | grep -qi "expanded component directory" || { echo "FAIL: the symlink warning does not identify the expanded component directory"; echo "$SYM_ERR"; exit 1; }
+[ "$(readlink "$SYM_OUT/expanded/$SYM_DIRNAME")" = "$SYM_ESCAPE_TARGET" ] || { echo "FAIL: the pre-existing symlink was replaced or removed instead of being left alone"; exit 1; }
+[ "$(find "$SYM_ESCAPE_TARGET" -mindepth 1 | wc -l | tr -d ' ')" = "0" ] || { echo "FAIL: something was written through the symlink into $SYM_ESCAPE_TARGET"; find "$SYM_ESCAPE_TARGET"; exit 1; }
+echo "[PASS] a pre-existing symlink at the expanded component directory path is refused (warned + skipped), left untouched, with nothing written through it"
+
+echo "== #181 hardening: a pre-existing SYMLINK at expanded/README.txt is refused; component expansion still happens =="
+README_OUT="$TMP/symguard-readme-out"; mkdir -p "$README_OUT/expanded"
+README_ESCAPE_TARGET="$TMP/symlink-escape-readme-target.txt"
+printf 'DO-NOT-OVERWRITE\n' > "$README_ESCAPE_TARGET"
+ln -s "$README_ESCAPE_TARGET" "$README_OUT/expanded/README.txt"
+set +e
+README_ERR=$(cb restore --in "$TMP/symguard.age" --out-dir "$README_OUT" 2>&1); README_RC=$?
+set -e
+[ "$README_RC" = "0" ] || { echo "FAIL: restore into an out-dir with a pre-planted README.txt symlink exited non-zero"; echo "$README_ERR"; exit 1; }
+printf '%s' "$README_ERR" | grep -qi "is a symlink" || { echo "FAIL: no symlink-refusal warning was printed for README.txt"; echo "$README_ERR"; exit 1; }
+printf '%s' "$README_ERR" | grep -qi "README.txt" || { echo "FAIL: the symlink warning does not mention README.txt"; echo "$README_ERR"; exit 1; }
+[ "$(cat "$README_ESCAPE_TARGET")" = "DO-NOT-OVERWRITE" ] || { echo "FAIL: the external file the README.txt symlink pointed to was overwritten"; exit 1; }
+grep -rq 'symlink guard test content' "$README_OUT/expanded" || { echo "FAIL: the component itself did not still expand despite the README.txt write being refused"; find "$README_OUT"; exit 1; }
+echo "[PASS] a pre-existing symlink at expanded/README.txt is refused (write skipped, external target untouched), while the component itself still expands"
+
 echo "== wrong key really cannot restore (defense in depth) =="
 export CIPHER_BRAIN_HOME="$TMP/keys2"
 cb keygen >/dev/null

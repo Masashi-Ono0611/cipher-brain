@@ -98,7 +98,12 @@ async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> 
   return { locator, backend, sha, contentDigest, recipientsFingerprint };
 }
 
-export async function push(o: CliOptions): Promise<void> {
+// Returns whether an upload actually happened: false for the --skip-unchanged
+// early return below (nothing was pushed), true once backend.put() has really
+// run. cli.ts uses this (not the raw --backend flag alone) to decide whether a
+// push actually reached a paid backend — issue #195: a SKIPPED push must never
+// be treated as "an upload succeeded".
+export async function push(o: CliOptions): Promise<boolean> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.backend) throw new Error('--backend <file|arweave|turbo> required'); // no silent default
   if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
@@ -154,7 +159,7 @@ export async function push(o: CliOptions): Promise<void> {
           `SKIPPED: content and recipients unchanged (digest ${cur}) — already pushed to ${o.backend} as ${prev.locator} (--force to push anyway)`,
         );
         console.log(prev.locator); // stdout contract unchanged: a script still captures a valid locator
-        return;
+        return false;
       }
     }
   }
@@ -250,6 +255,7 @@ export async function push(o: CliOptions): Promise<void> {
     }
   }
   console.log(locator); // stdout = locator ONLY, so a script can capture it
+  return true;
 }
 
 // Promote a completed pull's temp part to --out, no-clobber (#107). Mirrors

@@ -36,6 +36,7 @@ import { estimate } from './lib/estimate.js';
 import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
 import { printMascot } from './lib/ui.js';
+import { printFounderNote, printWisdomQuote } from './lib/wisdom.js';
 import type { CliOptions } from './lib/types.js';
 
 const BOOL_FLAGS = new Set(['force', 'passphrase', 'wrap_in_place', 'yes', 'force_vault', 'skip_unchanged', 'no_load']); // flags that take no value
@@ -233,7 +234,13 @@ async function main(): Promise<void> {
   const o = parseArgs(rest);
   switch (cmd) {
     case 'init':
-      return init(o);
+      // A note from the person who built this, right after the wizard's own
+      // completion summary above (issue #195) — CLI-only: init has no MCP
+      // tool, so this never touches an agent's machine-readable output.
+      await init(o);
+      printMascot('happy');
+      printFounderNote();
+      return;
     case 'keygen':
       return keygen(o);
     case 'snapshot':
@@ -242,8 +249,20 @@ async function main(): Promise<void> {
       return restore(o);
     case 'verify':
       return verify(o);
-    case 'push':
-      return push(o);
+    case 'push': {
+      // A cited precursor quote after a successful upload to a PAID,
+      // permanent backend only (issue #195) — never the free `file` backend,
+      // and never a --skip-unchanged run that hit its early SKIPPED return
+      // (uploaded === false there — push()'s own doc comment in pushpull.ts).
+      // CLI-only: mcp.ts calls push() directly (not through this dispatch),
+      // so an MCP push never gets this decoration mixed into its result.
+      const uploaded = await push(o);
+      if (uploaded && (o.backend === 'arweave' || o.backend === 'turbo')) {
+        printMascot('happy');
+        printWisdomQuote();
+      }
+      return;
+    }
     case 'pull':
       return pull(o);
     case 'estimate':

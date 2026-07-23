@@ -75,10 +75,19 @@ identity lives — `verify` on a public-key-only box reports **PARTIAL**, never 
 
 Permanence adds a third caveat: **harvest now, decrypt later.** Ciphertext parked
 on a permanent public network can never be recalled — anyone can copy it today and
-wait for the cryptography to fail. age's X25519 recipient scheme is **not
+wait for the cryptography to fail. age's plain X25519 recipient scheme is **not
 post-quantum secure**, and rotating keys cannot protect snapshots already pushed:
 the old ciphertext stays public forever. Weigh what you park against that horizon.
-A post-quantum hybrid recipient (via an age plugin) is on the roadmap.
+
+`keygen --pq` mitigates this: it generates a **post-quantum HYBRID keypair**
+(ML-KEM-768 + X25519, via [typage](https://github.com/FiloSottile/typage)'s
+`generateHybridIdentity()` — no external age plugin needed) instead of plain
+X25519. A hybrid identity/recipient/ciphertext is much bigger than its X25519
+counterpart (recipient ~1.9KB vs ~62 bytes; ciphertext carries a fixed ~1.4KB
+per-recipient overhead), but that's negligible next to a real snapshot. It
+combines normally with the existing multi-recipient mechanism (a hybrid primary +
+an X25519 backup, or vice versa — either identity restores) and with
+`CIPHER_BRAIN_PIN_RECIPIENTS`.
 
 ## Install
 
@@ -154,6 +163,8 @@ into `--save-locator`/stdout or the MCP server's output.
 
 ```sh
 cipher-brain keygen                 # one-time: creates ~/.cipher-brain/{identity.age,recipient.txt}
+# cipher-brain keygen --pq          # or: a post-quantum HYBRID keypair (ML-KEM-768 + X25519) —
+#                                     mitigates harvest-now-decrypt-later, see Threat model above
 
 # encrypt a gbrain snapshot (pg_dump + the ~/.gbrain dir) to your PUBLIC key.
 # Add a second --recipient (an OFFLINE backup public key) so losing one identity
@@ -336,7 +347,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
 | `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable — a direct HTTP call to Turbo's public rate endpoint (#170), so it works with or without `@ardrive/turbo-sdk` installed. Same computation as `cipher-brain estimate` (`src/lib/estimate.ts`) |
 | `schedule_status` | read-only | the same report as `cipher-brain schedule status`: configured time/backend, trigger registration state, last run log + its final rc line, next scheduled run |
-| `keygen` | **writes a keypair** (no spend) | generate a fresh age identity/recipient keypair at `<CIPHER_BRAIN_HOME>/{identity.age,recipient.txt}` — first-run setup for a shell-less agent. Refuses if one already exists unless `force: true` (destructive — discards the old identity) |
+| `keygen` | **writes a keypair** (no spend) | generate a fresh age identity/recipient keypair at `<CIPHER_BRAIN_HOME>/{identity.age,recipient.txt}` — first-run setup for a shell-less agent. `pq: true` generates a post-quantum HYBRID keypair (ML-KEM-768 + X25519) instead of plain X25519. Refuses if one already exists unless `force: true` (destructive — discards the old identity) |
 | `wallet_create` | **writes a wallet** (no spend) | generate a fresh Arweave JWK wallet (default `<CIPHER_BRAIN_HOME>/wallet.json`, `out` overrides). Refuses if one already exists at the target path unless `force: true` (destructive — discards spend authority over any funds already sent to it) |
 | `wallet_address` | read-only | derive and show the Arweave address for a JWK wallet file (the address to fund before pushing to `arweave`/`turbo`) |
 

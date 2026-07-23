@@ -20,6 +20,7 @@ export interface KeygenAtOpts {
   recipientPath: string;
   passphrase?: boolean;
   force?: boolean;
+  pq?: boolean; // post-quantum HYBRID keypair (ML-KEM-768 + X25519, #205) instead of plain X25519
 }
 
 export interface KeygenAtResult {
@@ -94,7 +95,7 @@ export async function keygenAt(opts: KeygenAtOpts): Promise<KeygenAtResult> {
   // The key is generated in-process (typage) and — on the passphrase path — wrapped
   // in memory too (#36): unlike the old external `age -p` flow there is no unwrapped
   // temp file on disk, so nothing can linger even on Ctrl-C at the prompt.
-  const { identity, recipient } = await generateKeypair();
+  const { identity, recipient } = await generateKeypair({ pq: opts.pq });
   const text = identityFileText(identity, recipient); // the standard age-keygen file layout
   let payload: string | Uint8Array = text;
   let wrapped = false;
@@ -156,10 +157,15 @@ export async function keygen(o: CliOptions): Promise<void> {
     recipientPath: RECIPIENT,
     passphrase: o.passphrase,
     force: o.force,
+    pq: o.pq,
   });
   console.log(`identity (PRIVATE, keep offline): ${IDENTITY}${wrapped ? ' (passphrase-wrapped)' : ''}`);
   console.log(`recipient (PUBLIC, safe to copy):  ${RECIPIENT}`);
   console.log(`recipient = ${recipient}`);
+  if (o.pq)
+    console.log(
+      '(post-quantum HYBRID keypair: ML-KEM-768 + X25519 — the recipient/ciphertext are much bigger than plain X25519, see README Threat model)',
+    );
   console.log('\n⚠  Back up the identity file now. If you lose it, the snapshots are unrecoverable.');
 }
 

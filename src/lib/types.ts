@@ -19,6 +19,7 @@ export interface CliOptions {
   force?: boolean;
   passphrase?: boolean;
   wrap_in_place?: boolean;
+  pq?: boolean; // keygen --pq: post-quantum HYBRID keypair (ML-KEM-768 + X25519, #205)
   yes?: boolean;
   force_vault?: boolean;
   skip_unchanged?: boolean;

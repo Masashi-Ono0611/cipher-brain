@@ -33,7 +33,16 @@ export const AGE_ARMOR_HEADER = '-----BEGIN AGE ENCRYPTED FILE-----';
 // Kept as `string | undefined` so the two cases stay distinguishable at the call site,
 // which must fail closed on the explicit-empty-string case.
 export const PIN_RECIPIENTS: string | undefined = process.env.CIPHER_BRAIN_PIN_RECIPIENTS;
-export const AGE_PUBKEY_RE = /age1[0-9a-z]{50,63}/g; // an age X25519 recipient (age1 + bech32); bounded so two unseparated keys can't fuse
+// An age recipient: X25519 (age1 + bech32, bounded 50-63 so two unseparated keys
+// can't fuse) OR a post-quantum HYBRID recipient (#205: `keygen --pq`, ML-KEM-768 +
+// X25519 via typage's generateHybridIdentity()) — `age1pq1` + a MUCH longer bech32
+// body (~1950 chars observed; bounded 1900-2000, still far short of 2x a hybrid
+// recipient so two unseparated hybrid keys can't fuse either). The hybrid
+// alternative is listed FIRST so it wins the leftmost-first alternation match
+// instead of the plain age1 branch truncating it at its own tight bound — without
+// this, resolvePinnedRecipients() (below) would silently mismatch every hybrid
+// recipient against CIPHER_BRAIN_PIN_RECIPIENTS.
+export const AGE_PUBKEY_RE = /age1pq1[0-9a-z]{1900,2000}|age1[0-9a-z]{50,63}/g;
 
 // ---------- storage backend config (pluggable: storage only ever sees ciphertext) ----------
 export const FILE_DIR = process.env.CIPHER_BRAIN_FILE_DIR || join(HOME, 'store'); // file backend object store

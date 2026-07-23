@@ -361,13 +361,18 @@ export async function snapshot(o: CliOptions): Promise<void> {
       try {
         await run('tar', ['-xzf', archivePath, '-C', extractDir, '-p'], { timeoutMs: PIPE_TIMEOUT_MS });
         contentDigest = await contentDigestOfPath(join(extractDir, basename(abs)));
-        // Scan the SAME extracted bytes the digest above just read — the exact plaintext
-        // that is about to be folded into the final tar|age stream — before extractDir is
-        // erased in the finally below. deny throws here, unwinding out through this
-        // function's own try/finally (stage cleanup still runs); warn just logs and falls
-        // through.
+        // Scan the SAME extracted root the digest above just read (join(extractDir,
+        // basename(abs)), NOT extractDir itself — gitleaks looks for "(target
+        // path)/.gitleaks.toml", so passing the actual source root is what lets a
+        // .gitleaks.toml dropped at the top of the scanned source be discovered, matching
+        // the doc'd "drop a .gitleaks.toml into a scanned source" story; scanning the
+        // parent extractDir one level up would look for it in the wrong place, multi-model
+        // review finding) — the exact plaintext about to be folded into the final tar|age
+        // stream, before extractDir is erased in the finally below. deny throws here,
+        // unwinding out through this function's own try/finally (stage cleanup still
+        // runs); warn just logs and falls through.
         if (scanMode) {
-          secretsScan = await scanForSecrets(extractDir);
+          secretsScan = await scanForSecrets(join(extractDir, basename(abs)));
           reportSecretFindings(name, secretsScan, scanMode);
         }
       } finally {

@@ -19,6 +19,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from './proc.js';
+import { errMsg } from './util.js';
 
 export type ScanSecretsMode = 'warn' | 'deny';
 
@@ -78,11 +79,18 @@ export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
       '0',
       dir,
     ]);
+    // A missing/unparsable report must NOT be treated as "no findings" (fail OPEN) — gitleaks
+    // itself exited 0 (only proves the scan ran, not that the report is trustworthy), so a
+    // truncated write / disk-full / permissions hiccup here would otherwise let --scan-secrets
+    // deny silently proceed as if the source were clean. Fail closed: surface it as a real
+    // error instead (multi-model review finding).
     let raw: GitleaksRawFinding[];
     try {
       raw = JSON.parse(await readFile(reportPath, 'utf8')) as GitleaksRawFinding[];
-    } catch {
-      raw = []; // gitleaks writes `[]` for a clean scan; treat a missing/unparsable report as "no findings" rather than crashing an otherwise-successful scan
+    } catch (e) {
+      throw new Error(
+        `gitleaks ran but its report at ${reportPath} could not be read/parsed (${errMsg(e)}) — refusing to treat this as "no findings"`,
+      );
     }
     const counts = new Map<string, number>();
     for (const f of raw) {

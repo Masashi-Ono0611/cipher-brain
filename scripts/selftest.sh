@@ -757,7 +757,7 @@ test ! -e "$TMP/badmode.age" || { echo "[FAIL] --scan-secrets bogus still produc
 echo "[PASS] --scan-secrets rejects anything other than warn/deny, before any --out is created"
 
 if ! command -v gitleaks >/dev/null 2>&1; then
-  echo "[SKIP] --scan-secrets warn/deny tests: no \`gitleaks\` binary on PATH (install it — https://github.com/gitleaks/gitleaks — to exercise this; the CI image installs it via brew)"
+  echo "[SKIP] --scan-secrets warn/deny tests: no \`gitleaks\` binary on PATH (install it — https://github.com/gitleaks/gitleaks — to exercise this; CI installs it via the .github/workflows/ci.yml step, see #215)"
 else
   # A DUMMY, obviously-fake AWS-access-key-SHAPED string (sequential alphabet, never a
   # real credential) — just enough to match gitleaks' default aws-access-token rule so

@@ -29,6 +29,33 @@ jobs:
       - name: install age (macos, interop assertion only)
         if: runner.os == 'macOS'
         run: brew install age
+      # gitleaks is NOT a runtime dependency of the CLI either — it is installed here
+      # solely so the --scan-secrets warn|deny selftest block (#215) actually exercises
+      # the scan/warn/deny paths instead of silently [SKIP]-ing (the CLI itself only
+      # requires gitleaks on PATH when an operator opts in with --scan-secrets). Pinned
+      # to the same v8.30.1 used during local development, with a sha256 check on the
+      # Linux tarball (no public apt/apt-get package exists for gitleaks) so a
+      # compromised/mismatched release asset fails the job instead of silently running.
+      # `-f` makes curl itself fail closed on a non-2xx HTTP response (a 404/500 body
+      # would otherwise be written to gitleaks.tar.gz and only get caught one step
+      # later, less clearly, by the checksum mismatch) — multi-model review suggestion.
+      - name: install gitleaks (ubuntu, --scan-secrets test coverage only)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          rm -f gitleaks.tar.gz gitleaks
+      # Unpinned (no per-version checksum) on macOS via brew, same accepted tradeoff
+      # the "install age (macos, ...)" step above already makes — Homebrew does not
+      # offer a straightforward way to pin+verify an exact historical formula version,
+      # and this is a test-only auxiliary tool, not the shipped CLI (multi-model
+      # review flagged the version-pin asymmetry with Linux; left as-is, matching
+      # existing project precedent rather than introducing a new install mechanism).
+      - name: install gitleaks (macos, --scan-secrets test coverage only)
+        if: runner.os == 'macOS'
+        run: brew install gitleaks
       - name: install deps (arweave + arlocal for the arweave backend test)
         run: bun install --frozen-lockfile
       # A dedicated, early step (not just typecheck's place inside `npm run verify`'s

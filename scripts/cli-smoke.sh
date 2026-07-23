@@ -52,7 +52,7 @@ WALLET_MODE="$(stat -c '%a' "$WALLET_DEFAULT" 2>/dev/null || stat -f '%Lp' "$WAL
 if [ "$WALLET_MODE" != "600" ]; then echo "[FAIL] wallet.json mode is $WALLET_MODE, expected 600"; exit 1; fi
 ADDR1="$(node "$DIST" wallet address --wallet "$WALLET_DEFAULT")" || { echo "[FAIL] dist wallet address exited non-zero"; exit 1; }
 if [ -z "$ADDR1" ]; then echo "[FAIL] wallet address printed nothing"; exit 1; fi
-if ! grep -qF "$ADDR1" "$TMP/wallet-create.log"; then
+if ! grep -qF -- "$ADDR1" "$TMP/wallet-create.log"; then
   echo "[FAIL] wallet create's printed address does not match wallet address's own derivation"; cat "$TMP/wallet-create.log"; exit 1
 fi
 echo "[PASS] dist wallet create: wallet.json (mode 600) at default path; wallet address derives the SAME address create printed"

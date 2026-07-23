@@ -243,7 +243,19 @@ async function main(): Promise<void> {
     case 'verify':
       return verify(o);
     case 'push':
-      return push(o);
+      // push() is shared with the MCP server (src/mcp.ts) and the init wizard
+      // (wizard.ts), both of which capture its console.error output as
+      // machine-readable data — so the mood mascot (issue #194) is printed HERE,
+      // at the CLI-only dispatch site, rather than inside push() itself, where it
+      // would otherwise leak the ASCII art into an MCP tool result's `log` field.
+      // Decoration only, on stderr (see printMascot in ui.ts).
+      return push(o).then(
+        () => printMascot('happy'),
+        (e: unknown) => {
+          printMascot('sad');
+          throw e;
+        },
+      );
     case 'pull':
       return pull(o);
     case 'estimate':

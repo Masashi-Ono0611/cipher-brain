@@ -1,7 +1,7 @@
 # cipher-brain
 
 ```text
-   ,--^--,
+     ,--^--,
   /           \    hi — I encrypt your second brain so only YOUR key opens it.
  | [10]  [01] |    ( sunglasses stay on for verify PASS, slip for FAIL,
  |     -      |      one lens shifts for PARTIAL — see `verify` below )

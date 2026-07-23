@@ -33,7 +33,23 @@ async function tarNoClobberFlag(): Promise<string> {
   }
 }
 
+// restore() itself (unlike push(), which is shared with the MCP server and the
+// init wizard) is called ONLY from cli.ts — no other caller reuses it — so it is
+// safe to print the mood mascot right here rather than at a dispatch call site:
+// happy on a clean return, sad on any thrown failure (issue #194). Decoration
+// only, on stderr (see printMascot in ui.ts), so it never touches the extracted
+// files or any machine-readable output.
 export async function restore(o: CliOptions): Promise<void> {
+  try {
+    await restoreImpl(o);
+    printMascot('happy');
+  } catch (e) {
+    printMascot('sad');
+    throw e;
+  }
+}
+
+async function restoreImpl(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.out_dir) throw new Error('--out-dir <dir> required');
   // pg_restore --clean --if-exists below DROPS and replaces objects in the target

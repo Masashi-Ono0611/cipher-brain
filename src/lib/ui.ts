@@ -40,7 +40,16 @@ const FACES: Record<Mood, { lensL: string; lensR: string; mouth: string }> = {
 export function mascot(mood: Mood = 'neutral'): string[] {
   const f = FACES[mood];
   return [
-    '   ,--^--,',
+    // Hood peak indent: the face rows below (the "|...|"/"/...\ " lines) span
+    // columns 1-14 (issue #197's measured leftEdge/rightEdge), so their visual
+    // center is column 7.5 — matching the lens-pair center computed the same
+    // way ([10]/[01] centers at 4.5/10.5, averaging to 7.5 too). ",--^--,"'s
+    // own "^" sits at its exact middle (index 3 of the 7-char string), so a
+    // 5-space indent lands it at column 8 (closest integer to 7.5, since a
+    // 15-column-wide row has no exact center for a 7-char-wide, odd-length
+    // hood) — re-measured after changing this from the old 3-space indent
+    // (which put "^" at column 6, visibly left of center).
+    '     ,--^--,',
     '  /           \\',
     ` | ${f.lensL}  ${f.lensR} |`,
     ` |     ${f.mouth}      |`,

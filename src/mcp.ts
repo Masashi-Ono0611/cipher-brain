@@ -381,6 +381,13 @@ const KEYGEN_TOOL: Tool = {
           'Wrap the new identity with a passphrase (scrypt). Requires CIPHER_BRAIN_PASSPHRASE set in ' +
           'the server environment (no TTY is available over MCP to prompt for one).',
       },
+      pq: {
+        type: 'boolean',
+        description:
+          'Generate a POST-QUANTUM HYBRID keypair (ML-KEM-768 + X25519, #205) instead of plain X25519 ' +
+          '— mitigates "harvest now, decrypt later" (see README Threat model), at the cost of a much ' +
+          'bigger recipient/identity and per-recipient ciphertext overhead.',
+      },
     },
     additionalProperties: false,
   },
@@ -769,18 +776,20 @@ async function handleScheduleStatus(args: ToolArgs): Promise<CallToolResult> {
 // { recipient, wrapped } instead of only printing them, so this handler returns
 // structured fields instead of re-parsing console.log lines.
 async function handleKeygen(args: ToolArgs): Promise<CallToolResult> {
-  const { force, passphrase } = args;
+  const { force, passphrase, pq } = args;
   if (force !== undefined && !isBool(force)) throw new ToolError('ERR_INVALID_INPUT', 'force must be a boolean');
   if (passphrase !== undefined && !isBool(passphrase))
     throw new ToolError('ERR_INVALID_INPUT', 'passphrase must be a boolean');
+  if (pq !== undefined && !isBool(pq)) throw new ToolError('ERR_INVALID_INPUT', 'pq must be a boolean');
   const res = await captureCall(() =>
-    keygenAt({ home: HOME, identityPath: IDENTITY, recipientPath: RECIPIENT, passphrase, force }),
+    keygenAt({ home: HOME, identityPath: IDENTITY, recipientPath: RECIPIENT, passphrase, force, pq }),
   );
   return structuredOk({
     identity_path: IDENTITY,
     recipient_path: RECIPIENT,
     recipient: res.value.recipient,
     passphrase_wrapped: res.value.wrapped,
+    post_quantum: !!pq,
     log: [...res.out, ...res.err],
   });
 }

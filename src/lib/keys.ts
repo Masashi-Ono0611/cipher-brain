@@ -20,6 +20,7 @@ export interface KeygenAtOpts {
   recipientPath: string;
   passphrase?: boolean;
   force?: boolean;
+  pq?: boolean; // post-quantum HYBRID keypair (ML-KEM-768 + X25519, #205) instead of plain X25519
 }
 
 export interface KeygenAtResult {
@@ -94,7 +95,7 @@ export async function keygenAt(opts: KeygenAtOpts): Promise<KeygenAtResult> {
   // The key is generated in-process (typage) and — on the passphrase path — wrapped
   // in memory too (#36): unlike the old external `age -p` flow there is no unwrapped
   // temp file on disk, so nothing can linger even on Ctrl-C at the prompt.
-  const { identity, recipient } = await generateKeypair();
+  const { identity, recipient } = await generateKeypair({ pq: opts.pq });
   const text = identityFileText(identity, recipient); // the standard age-keygen file layout
   let payload: string | Uint8Array = text;
   let wrapped = false;
@@ -149,17 +150,34 @@ async function wrapInPlace(identityPath: string): Promise<void> {
 }
 
 export async function keygen(o: CliOptions): Promise<void> {
-  if (o.wrap_in_place) return wrapInPlace(IDENTITY);
+  if (o.wrap_in_place) {
+    // --wrap-in-place only re-wraps the EXISTING identity file's text with a
+    // passphrase — it never touches the keypair itself (see wrapInPlace() above).
+    // --pq generates a NEW keypair, which --wrap-in-place explicitly does not do —
+    // so combining them would silently no-op --pq, giving a false impression that
+    // the identity got rotated to post-quantum when nothing changed. Fail loud
+    // instead (reviewer-flagged, #205).
+    if (o.pq)
+      throw new Error(
+        '--pq has no effect with --wrap-in-place (which only passphrase-wraps the EXISTING identity — it does not generate a new keypair). Run a fresh "keygen --pq --force" to rotate to a post-quantum keypair (this makes prior snapshots unrecoverable unless also encrypted to another key).',
+      );
+    return wrapInPlace(IDENTITY);
+  }
   const { recipient, wrapped } = await keygenAt({
     home: HOME,
     identityPath: IDENTITY,
     recipientPath: RECIPIENT,
     passphrase: o.passphrase,
     force: o.force,
+    pq: o.pq,
   });
   console.log(`identity (PRIVATE, keep offline): ${IDENTITY}${wrapped ? ' (passphrase-wrapped)' : ''}`);
   console.log(`recipient (PUBLIC, safe to copy):  ${RECIPIENT}`);
   console.log(`recipient = ${recipient}`);
+  if (o.pq)
+    console.log(
+      '(post-quantum HYBRID keypair: ML-KEM-768 + X25519 — the recipient/ciphertext are much bigger than plain X25519, see README Threat model)',
+    );
   console.log('\n⚠  Back up the identity file now. If you lose it, the snapshots are unrecoverable.');
 }
 

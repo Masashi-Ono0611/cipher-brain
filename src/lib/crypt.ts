@@ -15,7 +15,14 @@ import { readFile } from 'node:fs/promises';
 import { spawn, type StdioNull, type StdioPipe } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { Encrypter, Decrypter, generateIdentity, identityToRecipient, armor } from 'age-encryption';
+import {
+  Encrypter,
+  Decrypter,
+  generateIdentity,
+  generateHybridIdentity,
+  identityToRecipient,
+  armor,
+} from 'age-encryption';
 import { AGE_MAGIC, AGE_ARMOR_HEADER } from './config.js';
 import { ACTIVE_CHILDREN } from './proc.js';
 import { errMsg, warnIfLooseKeyPerms } from './util.js';
@@ -27,8 +34,18 @@ export interface Keypair {
   recipient: string;
 }
 
-export async function generateKeypair(): Promise<Keypair> {
-  const identity = await generateIdentity(); // X25519 (AGE-SECRET-KEY-1…)
+// pq=true (#205) generates a post-quantum HYBRID identity (ML-KEM-768 + X25519,
+// AGE-SECRET-KEY-PQ-1… / age1pq1… recipient) via typage's generateHybridIdentity()
+// instead of plain X25519 — typage's own Encrypter/Decrypter already dispatch on
+// the identity/recipient string's prefix, so every downstream consumer (newEncrypter,
+// newDecrypter, loadIdentities, recipientEntries) needs no hybrid-specific branch;
+// verified by a round-trip in scripts/selftest-pq.sh. Guards against
+// "harvest now, decrypt later" (README Threat model) at the cost of a MUCH bigger
+// identity/recipient/ciphertext (recipient ~1.9KB vs ~62 bytes, a fixed ~1.4KB
+// per-recipient ciphertext overhead vs X25519 — negligible next to a real snapshot,
+// but visible on tiny payloads).
+export async function generateKeypair(opts: { pq?: boolean } = {}): Promise<Keypair> {
+  const identity = opts.pq ? await generateHybridIdentity() : await generateIdentity(); // AGE-SECRET-KEY-PQ-1… or AGE-SECRET-KEY-1…
   const recipient = await identityToRecipient(identity);
   return { identity, recipient };
 }

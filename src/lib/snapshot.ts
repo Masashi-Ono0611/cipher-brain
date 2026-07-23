@@ -151,6 +151,12 @@ interface ManifestComponent {
   kind: string;
   source?: string;
   tables?: string[] | 'all';
+  // --pg-filter / --pg-exclude-table-data (issue #235): recorded verbatim, purely for
+  // manifest transparency (same spirit as `tables` above) — never read back by
+  // cipher-brain itself; a restore-time pg_restore doesn't need to know how the dump
+  // was filtered.
+  filter?: string;
+  exclude_table_data?: string[];
   content_digest: string;
   captured_at: string;
   // Present only when --scan-secrets was passed (#215): gitleaks rule-ID + count for
@@ -299,7 +305,27 @@ export async function snapshot(o: CliOptions): Promise<void> {
     if (o.pg) {
       const dumpPath = join(stage, 'db.dump');
       const tableArgs = o.tables.flatMap((t) => ['-t', t]);
-      await run(pgTool('pg_dump'), ['-Fc', '--no-owner', '--no-privileges', ...tableArgs, '-f', dumpPath, o.pg]);
+      // --pg-filter / --pg-exclude-table-data (issue #235): a LITERAL pass-through to
+      // pg_dump's own standard flags — no cipher-brain-side SQL parsing/filtering. This is
+      // what lets a "minimal recovery profile" run (raw conversation logs / embedding
+      // caches / tool-run logs excluded) sit alongside a normal full snapshot, using
+      // nothing but pg_dump's documented filtering surface:
+      // https://www.postgresql.org/docs/current/app-pgdump.html#PG-DUMP-FILTERING
+      // Both are additive to -t/tableArgs and to each other; omitted (the default), pg_dump
+      // runs exactly as before — a full dump, no filtering.
+      const filterArgs = o.pg_filter ? ['--filter', o.pg_filter] : [];
+      const excludeTableDataArgs = (o.pg_exclude_table_data ?? []).flatMap((t) => ['--exclude-table-data', t]);
+      await run(pgTool('pg_dump'), [
+        '-Fc',
+        '--no-owner',
+        '--no-privileges',
+        ...tableArgs,
+        ...filterArgs,
+        ...excludeTableDataArgs,
+        '-f',
+        dumpPath,
+        o.pg,
+      ]);
       // captured_at right AFTER pg_dump (pg_dump -Fc is internally point-in-time consistent
       // via one REPEATABLE READ txn; only the DB↔file boundary needs aligning — #44).
       // content_digest = sha256 of the dump bytes. Honest note: pg_dump output may not
@@ -310,6 +336,8 @@ export async function snapshot(o: CliOptions): Promise<void> {
         name: 'db.dump',
         kind: 'pg_dump:custom',
         tables: o.tables.length ? o.tables : 'all',
+        ...(o.pg_filter ? { filter: o.pg_filter } : {}),
+        ...(o.pg_exclude_table_data?.length ? { exclude_table_data: o.pg_exclude_table_data } : {}),
         content_digest: await sha256(dumpPath),
         captured_at: new Date().toISOString(),
       });

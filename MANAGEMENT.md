@@ -223,6 +223,44 @@ now records a top-level `created_at` and a per-component `captured_at` (echoed b
 is itself point-in-time consistent via one REPEATABLE READ txn — only the DB↔file
 boundary needs aligning.)
 
+## Minimal recovery profile (`--pg-filter` / `--pg-exclude-table-data`)
+
+A full `--pg` snapshot dumps the whole database — every table, including large or
+low-value-for-disaster-recovery ones like raw conversation logs, tool-run logs, or an
+embedding cache. `snapshot` can also produce a smaller, lower-risk **minimal** artifact
+alongside the normal full one, using nothing but `pg_dump`'s own standard filtering
+flags — cipher-brain does **no SQL parsing or filtering of its own**; these two flags
+are a literal pass-through to `pg_dump`, which runs exactly as it would if you invoked
+it by hand with the same arguments.
+
+- **`--pg-filter <file>`** → `pg_dump --filter <file>` (requires `pg_dump` ≥ 17). The
+  file holds one `{include|exclude} {table|schema} PATTERN` line per entry. Full syntax:
+  [PostgreSQL docs — Filtering](https://www.postgresql.org/docs/current/app-pgdump.html#PG-DUMP-FILTERING).
+  Example filter file:
+  ```
+  include table conversation_summaries
+  exclude table conversation_logs
+  exclude table embedding_cache
+  ```
+- **`--pg-exclude-table-data <table>`** (repeatable) → `pg_dump --exclude-table-data <table>`:
+  keeps the table's *schema* in the dump but drops its *rows* — useful for a cache table
+  you'd rather restore empty than have missing entirely.
+
+Both are additive to `--pg-table` and to each other, and are ONLY applied when passed —
+omit them and `--pg` behaves exactly as before (a full, unfiltered dump). A typical setup
+runs `schedule install`/a cron job for the full backup (disaster recovery) and a second,
+separate `snapshot --pg-filter ...` for the minimal one (long-term/off-site/lower-risk
+storage):
+
+```sh
+cipher-brain snapshot --pg "$PG" --pg-filter ./minimal-profile.txt \
+  --recipient ~/.cipher-brain/recipient.txt --out "minimal-$(date +%F).age"
+```
+
+The manifest records what was passed (`filter`/`exclude_table_data` alongside the
+existing `tables` field) purely for transparency — restore never reads it back; a
+`pg_restore` of a minimal dump just restores whatever pg_dump actually put in it.
+
 ## Versioning
 
 Each snapshot is immutable: `push` returns a **locator** whose form depends on the

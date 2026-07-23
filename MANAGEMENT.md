@@ -276,12 +276,14 @@ behavior, still there either way as the fallback).
 Failures print with a stable `[CB-E0xx]` code and this section's anchor, the same shape
 ngrok uses for its own errors (https://ngrok.com/docs/errors): `error: <existing message>
 [CB-E0xx] see MANAGEMENT.md#error-codes`. The code identifies the FAILURE PATTERN, not
-the exact wording — it never changes even if the surrounding message is reworded later.
-An error with no code just means it hasn't been assigned one yet (issue #212 covers the
-most common ~15 patterns, not every possible failure); the plain message is still the
-full story either way. Over MCP, `verify_restore`/`snapshot_now`/etc.'s error result also
-carries the code as its own `cb_code` field, so an agent can branch on it without parsing
-the message text.
+the exact wording — it's meant to stay stable across a future rewording of the surrounding
+message (`src/lib/errors.ts`'s registry matches text, so keeping that promise in practice
+means the registry entry is updated in the SAME change that reworks its message — see that
+file's `source` field on each entry). An error with no code just means it hasn't been
+assigned one yet (issue #212 covers the most common ~15 patterns, not every possible
+failure); the plain message is still the full story either way. Over MCP,
+`verify_restore`/`snapshot_now`/etc.'s error result also carries the code as its own
+`cb_code` field, so an agent can branch on it without parsing the message text.
 
 | Code | Cause | Next action |
 |---|---|---|

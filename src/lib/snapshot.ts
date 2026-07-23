@@ -475,11 +475,30 @@ export async function snapshot(o: CliOptions): Promise<void> {
         // what keeps a pruned excluded subtree (never named here) out of the archive
         // that a plain recursive `tar -czf ... basename(abs)` would otherwise re-add
         // the instant it saw the parent directory named.
+        //
+        // NUL-separated (--null), never newline-separated (Codex multi-model review,
+        // Critical): both GNU tar and bsdtar give a -T list's lines SPECIAL,
+        // non-literal handling unless --null is passed. Only the FIRST list line (the
+        // bare `base` below) can ever start with "-" — every other line is prefixed
+        // "<base>/<rel>" and so can never itself look like an option — but `base` is
+        // exactly the --dir argument's OWN basename, which an operator backing up an
+        // externally-named tree (an extracted archive, a cloned repo, an untrusted
+        // download) does not fully control. Verified by hand: with a --dir literally
+        // named "-C", the newline-only (pre-fix) list made tar consume the NEXT list
+        // line as a "-C <dir>" directive's argument and every line after that as a
+        // path relative to THAT directory instead of the intended root — silently
+        // wrong (or, with a directory an attacker fully controls the naming of,
+        // steerable) archive contents. --null makes every list entry a plain byte
+        // string (NUL cannot appear in a filename), eliminating the
+        // option-reinterpretation entirely — the fix, not just a mitigation. The
+        // plain (no ignore file) branch below has always guarded this same class of
+        // issue for its OWN positional `basename(abs)` argument via `--`; this is the
+        // equivalent guard for the -T list's first line, which `--` does not reach.
         const listFile = join(stage, `.tarlist-${name}`);
         const base = basename(abs);
-        await writeFile(listFile, [base, ...tarEntries.map((r) => `${base}/${r}`)].join('\n') + '\n');
+        await writeFile(listFile, [base, ...tarEntries.map((r) => `${base}/${r}`)].join('\0') + '\0');
         try {
-          await run('tar', ['-czf', archivePath, '-C', dirname(abs), '--no-recursion', '-T', listFile], {
+          await run('tar', ['-czf', archivePath, '-C', dirname(abs), '--no-recursion', '--null', '-T', listFile], {
             timeoutMs: PIPE_TIMEOUT_MS,
           });
         } finally {

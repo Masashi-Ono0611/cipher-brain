@@ -119,5 +119,32 @@ OUT=$(cb snapshot --dir "$LINKDIR" --dry-run 2>&1)
 printf '%s' "$OUT" | grep -q "symlink source" || { echo "[FAIL] symlink --dry-run missing symlink note"; echo "$OUT"; exit 1; }
 echo "[PASS] --dry-run handles a symlink --dir source without error"
 
+echo "== security: a --dir whose OWN basename looks like a tar option (e.g. '-C') cannot hijack the tar -T list =="
+# Multi-model review (Codex) finding: the tar -T list file MUST be NUL-separated
+# (--null), or its FIRST line (the bare --dir basename — every OTHER line is
+# prefixed "<base>/<rel>" and so can never itself start with "-") is honored by
+# tar as an option rather than a literal directory name. Verified by hand: with
+# a --dir literally named "-C", the newline-only (pre-fix) list made tar consume
+# the well-formed 2nd/3rd list lines as a "-C <dir>" directive's argument and
+# then a path relative to THAT dir, producing "Cannot stat ...: No such file or
+# directory" (rc=1) instead of a correct archive — a concrete, reproducible
+# corruption/DoS from this exact injection class, not just a theoretical one.
+# This exercises the real code path (a --dir WITH a .cipherbrainignore, so
+# scanDir's -T/--null branch runs) with a --dir directory literally named "-C".
+INJ="$TMP/-C"
+mkdir -p "$INJ/sub"
+printf 'keep\n' > "$INJ/sub/f.txt"
+printf 'irrelevant\n' > "$INJ/.cipherbrainignore"     # any ignore file triggers the -T/--null branch
+set +e
+INJOUT=$(cb snapshot --dir "$INJ" --out "$TMP/inj.age" 2>&1); INJRC=$?
+set -e
+[ "$INJRC" = "0" ] || { echo "[FAIL][SECURITY] snapshot of a --dir named '-C' failed (tar -T option-injection via the bare basename line)"; echo "$INJOUT"; exit 1; }
+cb restore --in "$TMP/inj.age" --out-dir "$TMP/inj-out" --no-expand-components >/dev/null
+tar -tzf "$TMP/inj-out/-C.tar.gz" | sort > "$TMP/inj-list.txt"
+grep -qx -- '-C/sub/f.txt' "$TMP/inj-list.txt" || { echo "[FAIL][SECURITY] a --dir literally named '-C' did not archive correctly (tar -T list injection via the bare basename line)"; cat "$TMP/inj-list.txt"; exit 1; }
+tar -xzf "$TMP/inj-out/-C.tar.gz" -C "$TMP/inj-out"
+[ "$(cat "$TMP/inj-out/-C/sub/f.txt")" = "keep" ] || { echo "[FAIL] content corrupted for a --dir named '-C'"; exit 1; }
+echo "[PASS] a --dir literally named '-C' archives correctly — no tar -T option-injection via the bare basename line"
+
 echo ""
 echo "CIPHERBRAINIGNORE SELFTEST PASS"

@@ -300,7 +300,28 @@ async function expandComponents(outDir: string): Promise<void> {
   for (const r of rows) console.log(`  ${r.dir}  <-  ${r.source}`);
 }
 
+// restore() itself (unlike push(), which is shared with the MCP server and the
+// init wizard) is called ONLY from cli.ts — no other caller reuses it — so it is
+// safe to print the mood mascot right here rather than at a dispatch call site:
+// happy on a clean return, sad on any thrown failure (issue #194). Decoration
+// only, on stderr (see printMascot in ui.ts), so it never touches the extracted
+// files or any machine-readable output.
 export async function restore(o: CliOptions): Promise<void> {
+  try {
+    await restoreImpl(o);
+  } catch (e) {
+    printMascot('sad');
+    throw e;
+  }
+  // Deliberately OUTSIDE the try: printMascot('happy') itself throwing (e.g. some
+  // unforeseen console.error failure) must never be misreported as restoreImpl
+  // failing — if it were still inside the try, that throw would land in the catch
+  // above and print 'sad' + rethrow over a restore that actually already
+  // succeeded (multi-model review finding on PR #200).
+  printMascot('happy');
+}
+
+async function restoreImpl(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.out_dir) throw new Error('--out-dir <dir> required');
   // pg_restore --clean --if-exists below DROPS and replaces objects in the target

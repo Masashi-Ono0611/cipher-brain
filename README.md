@@ -1,7 +1,7 @@
 # cipher-brain
 
 ```text
-   ,--^--,
+     ,--^--,
   /           \    hi — I encrypt your second brain so only YOUR key opens it.
  | [10]  [01] |    ( sunglasses stay on for verify PASS, slip for FAIL,
  |     -      |      one lens shifts for PARTIAL — see `verify` below )
@@ -143,6 +143,12 @@ cipher-brain init
 That's it. The manual flow below is exactly what it wraps — useful once you know
 what you want, or for scripting/automation `init` itself refuses (it is
 interactive only).
+
+`init` finishing, and each successful paid `push` to arweave/turbo (never a
+`--skip-unchanged` no-op, and never the free `file` backend), print a short
+STDERR-only note (a note from the person who built this, or a cited quote from an
+encryption/privacy precursor) alongside the mascot — decoration only, never mixed
+into `--save-locator`/stdout or the MCP server's output.
 
 ### Manual flow
 
@@ -335,7 +341,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP) |
 | `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
-| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable. Same computation as `cipher-brain estimate` (`src/lib/estimate.ts`) |
+| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable — a direct HTTP call to Turbo's public rate endpoint (#170), so it works with or without `@ardrive/turbo-sdk` installed. Same computation as `cipher-brain estimate` (`src/lib/estimate.ts`) |
 | `schedule_status` | read-only | the same report as `cipher-brain schedule status`: configured time/backend, trigger registration state, last run log + its final rc line, next scheduled run |
 | `keygen` | **writes a keypair** (no spend) | generate a fresh age identity/recipient keypair at `<CIPHER_BRAIN_HOME>/{identity.age,recipient.txt}` — first-run setup for a shell-less agent. Refuses if one already exists unless `force: true` (destructive — discards the old identity) |
 | `wallet_create` | **writes a wallet** (no spend) | generate a fresh Arweave JWK wallet (default `<CIPHER_BRAIN_HOME>/wallet.json`, `out` overrides). Refuses if one already exists at the target path unless `force: true` (destructive — discards spend authority over any funds already sent to it) |

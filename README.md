@@ -10,6 +10,17 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Masashi-Ono0611/cipher-brain/ci.yml?branch=main&label=CI&logo=github)](https://github.com/Masashi-Ono0611/cipher-brain/actions/workflows/ci.yml)
 
+> **OpenSSF Best Practices:** the technical prerequisites (SECURITY.md,
+> private vulnerability reporting, branch protection, dependency updates —
+> see [#149](https://github.com/Masashi-Ono0611/cipher-brain/issues/149),
+> [#184](https://github.com/Masashi-Ono0611/cipher-brain/issues/184),
+> [#185](https://github.com/Masashi-Ono0611/cipher-brain/issues/185),
+> [#186](https://github.com/Masashi-Ono0611/cipher-brain/issues/186)) are in
+> place. Registration on [bestpractices.dev](https://www.bestpractices.dev/)
+> itself (creating an account, filling out the self-assessment) is a manual
+> step still pending for the maintainer — this line will become the actual
+> badge once that's done.
+
 > **For AI agents:** see [`llms.txt`](llms.txt) for a quick, machine-friendly orientation.
 
 Encrypt your growing second brain — the AI memory, conversation history, and
@@ -391,3 +402,15 @@ a real `snapshot_now` round-trip on the `file` backend, `schedule_status` agains
 refuses without `confirm_paid`, and a real `keygen` → `wallet_create` → `wallet_address`
 round-trip (plus the no-clobber-unless-`force` refusal) against an isolated
 `CIPHER_BRAIN_HOME`.
+
+## Project continuity
+
+`cipher-brain` is currently maintained by a single person
+([@Masashi-Ono0611](https://github.com/Masashi-Ono0611)). There is no formal
+succession plan or pre-granted collaborator/npm-publish access at this time.
+
+If you need to reach the maintainer about something urgent — a security
+issue, or the project appearing unmaintained for an extended period — use
+GitHub's private vulnerability reporting (see [`SECURITY.md`](SECURITY.md))
+for security matters, or open a public issue otherwise. There is no other
+published contact channel.

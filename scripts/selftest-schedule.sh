@@ -195,6 +195,92 @@ CIPHER_BRAIN_PG_BIN="$EXPLICIT_PGBIN" cb schedule install --backend file --pg "p
 grep -qF "export CIPHER_BRAIN_PG_BIN='$EXPLICIT_PGBIN'" "$RUNNER" || { echo "[FAIL] runner did not preserve an explicit CIPHER_BRAIN_PG_BIN unchanged"; cat "$RUNNER"; exit 1; }
 echo "[PASS] an explicit CIPHER_BRAIN_PG_BIN is respected as-is, no auto-resolution overrides it"
 
+echo "== (a5) --ping-url: dead man's switch pings baked into the runner + real end-to-end curl hits (issue #202) =="
+# A local-only, OS-assigned-port HTTP request logger (scripts/ping-echo-server.mjs) plays
+# the role of a healthchecks.io-style monitor — no real network request ever leaves this
+# machine. Started here (before any of the sub-checks below) so (a5.4)'s real runner
+# invocations have somewhere to curl.
+PING_LOG="$TMP/ping-hits.log"; : > "$PING_LOG"
+PING_SERVER_OUT="$TMP/ping-server.out"
+node "$ROOT/scripts/ping-echo-server.mjs" "$PING_LOG" > "$PING_SERVER_OUT" 2>&1 &
+PING_SERVER_PID=$!
+PING_PORT=""
+for _ in $(seq 1 50); do
+  if [ -s "$PING_SERVER_OUT" ]; then
+    PING_PORT="$(sed -n 's/^READY:\([0-9]*\)$/\1/p' "$PING_SERVER_OUT" | head -n1)"
+    [ -n "$PING_PORT" ] && break
+  fi
+  sleep 0.1
+done
+[ -n "$PING_PORT" ] || { echo "[FAIL] local ping-echo-server.mjs never reported READY"; cat "$PING_SERVER_OUT"; kill "$PING_SERVER_PID" 2>/dev/null; exit 1; }
+cleanup_ping_server() { kill "$PING_SERVER_PID" 2>/dev/null || true; }
+trap 'cleanup_ping_server; rm -rf "$TMP"' EXIT
+PING_BASE="http://127.0.0.1:$PING_PORT/hc/abc123"
+
+echo "-- (a5.0) --ping-url-fail without --ping-url is refused --"
+if cb schedule install --backend file --dir "$SRC" --ping-url-fail "$PING_BASE/custom-fail" --no-load > "$TMP/ping-fail-only.log" 2>&1; then
+  echo "[FAIL] install --ping-url-fail without --ping-url was accepted"; exit 1
+fi
+grep -q -- '--ping-url-fail requires --ping-url' "$TMP/ping-fail-only.log" || { echo "[FAIL] refusal does not explain --ping-url-fail requires --ping-url"; cat "$TMP/ping-fail-only.log"; exit 1; }
+echo "[PASS] --ping-url-fail without --ping-url refused with a clear message"
+
+echo "-- (a5.1) --ping-url alone: runner bakes PING_URL + default \${url}/fail, the trap curl's both, install + status report it --"
+cb schedule install --backend file --dir "$SRC" --ping-url "$PING_BASE" --no-load > "$TMP/ping-install.log" 2>&1 \
+  || { echo "[FAIL] install (--ping-url) exited non-zero"; cat "$TMP/ping-install.log"; exit 1; }
+grep -qF "PING_URL='$PING_BASE'" "$RUNNER" || { echo "[FAIL] runner does not bake PING_URL"; cat "$RUNNER"; exit 1; }
+grep -qF "PING_URL_FAIL='$PING_BASE/fail'" "$RUNNER" || { echo "[FAIL] runner does not default PING_URL_FAIL to \${ping_url}/fail"; cat "$RUNNER"; exit 1; }
+grep -qF 'curl -fsS -m 10 "$PING_URL" >/dev/null 2>&1 || true' "$RUNNER" || { echo "[FAIL] runner trap lacks the success ping curl"; cat "$RUNNER"; exit 1; }
+grep -qF 'curl -fsS -m 10 "$PING_URL_FAIL" >/dev/null 2>&1 || true' "$RUNNER" || { echo "[FAIL] runner trap lacks the failure ping curl"; cat "$RUNNER"; exit 1; }
+grep -qF "dead man's switch enabled: success -> $PING_BASE, failure -> $PING_BASE/fail" "$TMP/ping-install.log" || { echo "[FAIL] install did not report the ping config"; cat "$TMP/ping-install.log"; exit 1; }
+cb schedule status > "$TMP/ping-status.log" 2>&1 || { echo "[FAIL] status exited non-zero"; cat "$TMP/ping-status.log"; exit 1; }
+grep -qF "ping: $PING_BASE (fail: $PING_BASE/fail)" "$TMP/ping-status.log" || { echo "[FAIL] status does not report the configured ping url"; cat "$TMP/ping-status.log"; exit 1; }
+echo "[PASS] --ping-url alone: PING_URL/PING_URL_FAIL baked in with the default /fail suffix, curl calls present in the trap, install + status report it"
+
+echo "-- (a5.2) --ping-url-fail overrides the default \${url}/fail suffix --"
+cb schedule install --backend file --dir "$SRC" --ping-url "$PING_BASE" --ping-url-fail "http://127.0.0.1:$PING_PORT/hc/custom-fail" --no-load > "$TMP/ping-override.log" 2>&1 \
+  || { echo "[FAIL] install (--ping-url + --ping-url-fail override) exited non-zero"; cat "$TMP/ping-override.log"; exit 1; }
+grep -qF "PING_URL_FAIL='http://127.0.0.1:$PING_PORT/hc/custom-fail'" "$RUNNER" || { echo "[FAIL] runner did not use the explicit --ping-url-fail override"; cat "$RUNNER"; exit 1; }
+if grep -qF "PING_URL_FAIL='$PING_BASE/fail'" "$RUNNER"; then echo "[FAIL] runner still carries the default /fail suffix even though --ping-url-fail was given"; exit 1; fi
+echo "[PASS] --ping-url-fail overrides the default /fail suffix"
+
+echo "-- (a5.3) a schedule installed WITHOUT --ping-url never references PING_URL/curl (no regression) --"
+cb schedule install --backend file --dir "$SRC" --no-load > /dev/null 2>&1 || { echo "[FAIL] install (no ping) exited non-zero"; exit 1; }
+if grep -q 'PING_URL' "$RUNNER"; then echo "[FAIL] runner without --ping-url still references PING_URL"; cat "$RUNNER"; exit 1; fi
+if grep -q 'curl' "$RUNNER"; then echo "[FAIL] runner without --ping-url still calls curl"; cat "$RUNNER"; exit 1; fi
+echo "[PASS] omitting --ping-url leaves the runner untouched (no PING_URL/curl)"
+
+echo "-- (a5.4) end-to-end: a REAL successful run curls the success URL exactly once; a REAL failing run curls \${url}/fail exactly once --"
+# Fully isolated schedule dir + file-backend store + save-locator (distinct from the
+# shared ones the rest of this script uses) so these real runs never perturb the
+# skip-unchanged / index.tsv / snapshot-count assertions later sections make against
+# the shared fixtures.
+PING_SCHED_OK="$TMP/sched-ping-ok"
+CIPHER_BRAIN_SCHEDULE_DIR="$PING_SCHED_OK" CIPHER_BRAIN_FILE_DIR="$TMP/ping-store" \
+  cb schedule install --backend file --dir "$SRC" --ping-url "$PING_BASE" --save-locator "$TMP/ping-locator.tsv" --no-load > "$TMP/ping-e2e-ok-install.log" 2>&1 \
+  || { echo "[FAIL] install (ping e2e, success fixture) exited non-zero"; cat "$TMP/ping-e2e-ok-install.log"; exit 1; }
+TODAY_PING="$(date +%F)"
+: > "$PING_LOG"
+bash "$PING_SCHED_OK/nightly.sh" || { echo "[FAIL] successful run (ping e2e) exited non-zero"; cat "$PING_SCHED_OK/logs/nightly-$TODAY_PING.log" 2>/dev/null; exit 1; }
+for _ in $(seq 1 30); do grep -qx "GET /hc/abc123" "$PING_LOG" 2>/dev/null && break; sleep 0.1; done
+grep -qx "GET /hc/abc123" "$PING_LOG" || { echo "[FAIL] successful run did not curl the success ping URL"; cat "$PING_LOG"; exit 1; }
+if grep -qx "GET /hc/abc123/fail" "$PING_LOG"; then echo "[FAIL] successful run also (wrongly) curled the failure ping URL"; exit 1; fi
+[ "$(wc -l < "$PING_LOG" | tr -d ' ')" = "1" ] || { echo "[FAIL] expected exactly 1 ping hit after the successful run"; cat "$PING_LOG"; exit 1; }
+
+PING_SCHED_FAIL="$TMP/sched-ping-fail"
+CIPHER_BRAIN_SCHEDULE_DIR="$PING_SCHED_FAIL" CIPHER_BRAIN_FILE_DIR="$TMP/ping-store-2" \
+  cb schedule install --backend file --dir "$TMP/does-not-exist-ping" --ping-url "$PING_BASE" --save-locator "$TMP/ping-locator-2.tsv" --no-load > "$TMP/ping-e2e-fail-install.log" 2>&1 \
+  || { echo "[FAIL] install (ping e2e, failure fixture) exited non-zero"; cat "$TMP/ping-e2e-fail-install.log"; exit 1; }
+: > "$PING_LOG"
+if bash "$PING_SCHED_FAIL/nightly.sh"; then echo "[FAIL] runner with a missing --dir (ping e2e) unexpectedly succeeded"; exit 1; fi
+for _ in $(seq 1 30); do grep -qx "GET /hc/abc123/fail" "$PING_LOG" 2>/dev/null && break; sleep 0.1; done
+grep -qx "GET /hc/abc123/fail" "$PING_LOG" || { echo "[FAIL] failing run did not curl the failure ping URL"; cat "$PING_LOG"; exit 1; }
+if grep -qx "GET /hc/abc123" "$PING_LOG"; then echo "[FAIL] failing run also (wrongly) curled the success ping URL"; exit 1; fi
+[ "$(wc -l < "$PING_LOG" | tr -d ' ')" = "1" ] || { echo "[FAIL] expected exactly 1 ping hit after the failing run"; cat "$PING_LOG"; exit 1; }
+echo "[PASS] end-to-end: a successful run curls only the success URL, a failing run curls only \${url}/fail, both exactly once — the ping never changes the run's own OK/FAILED outcome"
+
+cleanup_ping_server
+trap 'rm -rf "$TMP"' EXIT
+
 echo "== (b) paid backend: refused without --max-spend, spend lines written with it =="
 if cb schedule install --backend turbo --dir "$SRC" --no-load > "$TMP/turbo-refuse.log" 2>&1; then
   echo "[FAIL] install --backend turbo WITHOUT --max-spend was accepted"; exit 1

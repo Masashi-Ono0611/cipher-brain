@@ -13,8 +13,14 @@
 // Every generated file is DETERMINISTIC for a given set of inputs (no embedded
 // timestamps) — dates appear only where the RUNNER computes them at run time.
 // The runner logs each run to <schedule>/logs/nightly-YYYY-MM-DD.log and always
-// leaves a final "OK rc=0" / "FAILED rc=N" line, so a later heartbeat feature
-// (and `schedule status` today) can tail the newest log for the outcome.
+// leaves a final "OK rc=0" / "FAILED rc=N" line, so `schedule status` can tail
+// the newest log for the outcome — but that is a PULL: nothing surfaces a run
+// that silently stopped happening at all (launchd/cron itself wedged, the box
+// was off). --ping-url (issue #202) adds the PUSH half: a healthchecks.io-style
+// dead man's switch the runner curl's on every run's outcome (success URL /
+// `${url}/fail` on failure, both best-effort — see the EXIT trap in
+// runnerBody()), so an unattended schedule that stops running gets noticed
+// even if nobody ever runs `schedule status`.
 //
 // Testability: CIPHER_BRAIN_SCHEDULE_DIR overrides the schedule dir and
 // CIPHER_BRAIN_LAUNCHD_DIR the plist dir, and --no-load writes the artifacts
@@ -157,6 +163,12 @@ interface ScheduleConfig {
   trigger: { type: 'launchd'; path: string } | { type: 'cron'; entry_file: string };
   env: Record<string, string>;
   tmpdir: string | null;
+  // Dead man's switch (issue #202): a healthchecks.io-style URL the runner curl's on
+  // success; ping_url_fail (default: `${ping_url}/fail`, healthchecks.io's own convention)
+  // is hit on failure instead. Both are best-effort — see the trap in runnerBody, which
+  // never lets a curl failure change the run's own OK/FAILED outcome.
+  ping_url?: string;
+  ping_url_fail?: string;
 }
 
 function runnerBody(cfg: ScheduleConfig): string {
@@ -200,6 +212,15 @@ function runnerBody(cfg: ScheduleConfig): string {
       );
     }
   }
+  // Dead man's switch pings (issue #202): only emitted when --ping-url was given at
+  // install time. PING_URL/PING_URL_FAIL are plain shell variables (not exported — the
+  // runner's own trap is the only reader) set BEFORE the trap so the trap's single-quoted
+  // command body can reference them by name; bash re-parses a trap's command string at
+  // fire time (not at `trap ...` set time), so $PING_URL there resolves to whatever this
+  // script set it to earlier, not to an empty/unset value.
+  const pingLines = cfg.ping_url ? [`PING_URL=${shq(cfg.ping_url)}`, `PING_URL_FAIL=${shq(cfg.ping_url_fail)}`] : [];
+  const pingOkCmd = cfg.ping_url ? 'curl -fsS -m 10 "$PING_URL" >/dev/null 2>&1 || true; ' : '';
+  const pingFailCmd = cfg.ping_url ? 'curl -fsS -m 10 "$PING_URL_FAIL" >/dev/null 2>&1 || true; ' : '';
   const snapshotArgs: string[] = [];
   if (cfg.profile) snapshotArgs.push('--profile', shq(cfg.profile));
   if (cfg.vault) snapshotArgs.push('--vault', shq(cfg.vault));
@@ -222,9 +243,19 @@ SNAP_DIR="$SCHEDULE_DIR/snapshots"
 mkdir -p "$LOG_DIR" "$SNAP_DIR"
 LOG="$LOG_DIR/nightly-$(date +%F).log"
 exec >>"$LOG" 2>&1
+${pingLines.length ? pingLines.join('\n') + '\n' : ''}
 # Every run ends with a machine-readable status line a heartbeat monitor can tail:
 # "OK rc=0" on success, "FAILED rc=N" on any failure (set -e exits at the first error).
-trap 'rc=$?; if [ "$rc" -eq 0 ]; then echo "OK rc=0"; else echo "FAILED rc=$rc"; fi' EXIT
+${
+  cfg.ping_url
+    ? `# This install also configured --ping-url (issue #202): the SAME trap pushes a dead
+# man's switch ping — PING_URL on success, PING_URL_FAIL on any failure — a best-effort
+# curl (10s timeout, "|| true") that can never turn a successful/failed run into the
+# other, nor mask the run's own outcome if the ping itself fails (no network
+# reachability, the monitor being down, etc.).
+`
+    : ''
+}trap 'rc=$?; if [ "$rc" -eq 0 ]; then echo "OK rc=0"; ${pingOkCmd}else echo "FAILED rc=$rc"; ${pingFailCmd}fi' EXIT
 
 ${envLines.join('\n')}
 ${spendLines.length ? spendLines.join('\n') + '\n' : ''}
@@ -427,6 +458,12 @@ async function install(o: CliOptions): Promise<void> {
   } else if (o.max_spend) {
     throw new Error(`--max-spend only applies to the paid backends (arweave|turbo); --backend ${o.backend} is free`);
   }
+  // --ping-url-fail (issue #202) only makes sense as an override of the success URL's
+  // implied /fail sibling — refuse it standalone rather than silently pinging a failure
+  // URL that was never paired with a configured success URL.
+  if (o.ping_url_fail && !o.ping_url) {
+    throw new Error('--ping-url-fail requires --ping-url (the success URL) to also be set');
+  }
 
   // Read any PRE-EXISTING artifacts now, before anything below overwrites them — used only
   // to detect (and, unless --no-load, migrate off) a legacy pre-#114 registration for THIS
@@ -477,6 +514,17 @@ async function install(o: CliOptions): Promise<void> {
     // files/dirs when launchd/cron invoke it later from a different cwd and bare env.
     env: await captureEnv(),
     tmpdir: process.env.TMPDIR ? resolve(process.env.TMPDIR) : null,
+    // Dead man's switch (issue #202): --ping-url is a bare value (a URL, not a path) —
+    // nothing to resolve() against cwd, unlike --vault/--zip/--recipient above. When only
+    // --ping-url is given, ping_url_fail defaults to the healthchecks.io convention of
+    // appending "/fail" to the success URL — a plain, deliberately unparsed string
+    // concatenation (multi-model review flagged this: a --ping-url with a query string
+    // or a trailing slash produces a "/fail" appended after the query string, or a
+    // double slash, respectively). healthchecks.io-style URLs are bare paths with no
+    // query/fragment in practice, so this is left as-is rather than adding URL parsing —
+    // pass --ping-url-fail explicitly to override the default for any URL shape where
+    // the naive append isn't what you want.
+    ...(o.ping_url ? { ping_url: o.ping_url, ping_url_fail: o.ping_url_fail || `${o.ping_url}/fail` } : {}),
   };
 
   await mkdir(LOGS_DIR, { recursive: true });
@@ -551,6 +599,11 @@ async function install(o: CliOptions): Promise<void> {
   console.error(
     `runs log to ${LOGS_DIR}/nightly-YYYY-MM-DD.log (final line: "OK rc=0" or "FAILED rc=N"); check with: cipher-brain schedule status`,
   );
+  if (cfg.ping_url) {
+    console.error(
+      `dead man's switch enabled: success -> ${cfg.ping_url}, failure -> ${cfg.ping_url_fail} (best-effort — a ping failure never changes the run's own OK/FAILED outcome)`,
+    );
+  }
 }
 
 async function readConfig(): Promise<ScheduleConfig> {
@@ -588,6 +641,7 @@ async function status(): Promise<void> {
   const cfg = await readConfig();
   console.log(`configured: daily at ${cfg.at}, backend ${cfg.backend}`);
   console.log(`runner: ${cfg.runner}`);
+  console.log(cfg.ping_url ? `ping: ${cfg.ping_url} (fail: ${cfg.ping_url_fail})` : 'ping: not configured');
   if (cfg.trigger.type === 'launchd') {
     // A legacy (pre-#114) schedule.json literally stored the unscoped plist path — trust
     // THAT ground truth over re-deriving from the current (scoped) LABEL constant, so a

@@ -254,7 +254,7 @@ alongside the native unit. Preview that same estimate WITHOUT pushing anything v
 `cipher-brain estimate --in <file.age> --backend <backend>` (also exposed as the
 `estimate_cost` MCP tool — see below); `push --skip-unchanged` skips a paid
 re-upload when the snapshot's plaintext content digest (the `<out>.digest`
-sidecar `snapshot` writes) matches the previous push. Three backends ship, but
+sidecar `snapshot` writes) matches the previous push. Four backends ship, but
 they are not peers:
 
 - **`turbo` — the recommended mainline.** Uploads the ciphertext to the Arweave
@@ -268,10 +268,22 @@ they are not peers:
   small artifacts only (a ~10 MiB guard redirects anything larger to `turbo`).
 - **`file`** — a local content-addressed store (no daemon, no network); used by
   CI and for local drills.
+- **`rclone`** — a thin subprocess wrapper around the `rclone` binary
+  (`push --backend rclone --remote <rclone-remote-name>:<path>`), the same
+  "delegate to rclone" pattern restic/kopia use to reach 70+ cloud providers
+  (S3, GCS, B2, Azure Blob, Dropbox, SFTP, …) without cipher-brain implementing
+  any of their APIs itself — auth/protocol/retries are entirely rclone's own
+  configured remote (`rclone config`). Free like `file` (`estimate` always
+  reports cost `0` — any real transfer/storage cost is whatever your own cloud
+  contract for that remote charges); the locator IS the `<remote>:<path>`
+  string. A cheap way to add an offsite copy (the "1" in 3-2-1 backup) next to
+  `turbo`'s permanent store, reusing an rclone config you may already have from
+  restic/kopia. Needs the `rclone` binary on PATH.
 
 The backend abstraction is what makes the same `snapshot → push … pull → restore`
-pipeline work across all three — a content-addressed (`file`) and
-post-assigned-id (`arweave`/`turbo`) locators alike.
+pipeline work across all four — locators known before upload (`file`'s content
+hash, `rclone`'s caller-chosen `--remote`) and post-assigned-id ones
+(`arweave`/`turbo`) alike.
 
 ## Validation
 

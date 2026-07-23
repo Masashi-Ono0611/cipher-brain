@@ -46,6 +46,10 @@ export const AGE_PUBKEY_RE = /age1pq1[0-9a-z]{1900,2000}|age1[0-9a-z]{50,63}/g;
 
 // ---------- storage backend config (pluggable: storage only ever sees ciphertext) ----------
 export const FILE_DIR = process.env.CIPHER_BRAIN_FILE_DIR || join(HOME, 'store'); // file backend object store
+// rclone backend (#204): the `rclone` binary name/path, same PATH-or-override
+// pattern as PG_BIN above — most machines just need `rclone` on PATH; override
+// for a non-standard install location.
+export const RCLONE_BIN = process.env.CIPHER_BRAIN_RCLONE_BIN || 'rclone';
 export const AR_HOST = process.env.CIPHER_BRAIN_AR_HOST || 'arweave.net';
 export const AR_PORT = Number(process.env.CIPHER_BRAIN_AR_PORT || 443);
 export const AR_PROTOCOL = process.env.CIPHER_BRAIN_AR_PROTOCOL || 'https';
@@ -72,8 +76,9 @@ export const AR_MAX_SPEND = process.env.CIPHER_BRAIN_MAX_SPEND ? BigInt(process.
 // (which streams + ANS-104-bundles). Override for a deliberate large L1 post.
 export const AR_L1_MAX_BYTES = Number(process.env.CIPHER_BRAIN_AR_L1_MAX || 10 * 1024 * 1024);
 // Overall wall-clock cap for the tar|age / age|tar streaming pipelines, the pre-stage
-// tar, and pg_restore, so a wedged binary (or a FIFO/special file under --dir) can't
-// hang the CLI forever. Generous default (1h) — a real ~850 MB brain streams in
-// seconds, so this only ever trips on a genuine hang. Override with
-// CIPHER_BRAIN_PIPE_TIMEOUT (ms) for very large brains / restores.
+// tar, pg_restore, AND the rclone backend's copyto subprocess, so a wedged binary (or
+// a FIFO/special file under --dir, or a stalled remote transfer) can't hang the CLI
+// forever. Generous default (1h) — a real ~850 MB brain streams in seconds, so this
+// only ever trips on a genuine hang. Override with CIPHER_BRAIN_PIPE_TIMEOUT (ms) for
+// very large brains / restores / slow remotes.
 export const PIPE_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_PIPE_TIMEOUT || 60 * 60 * 1000);

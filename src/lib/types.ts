@@ -38,6 +38,7 @@ export interface CliOptions {
   identity?: string;
   sha256?: string;
   backend?: string;
+  remote?: string; // rclone backend: "<rclone-remote-name>:<path>" (also usable as pull's --locator, since that IS the rclone backend's locator)
   digest?: string;
   save_locator?: string;
   locator?: string;
@@ -57,6 +58,7 @@ export interface CliOptions {
 // arweave (assigned AFTER upload) — the interface assumes neither.
 export interface PutOpts {
   yes?: boolean;
+  remote?: string; // rclone backend only: the "<remote>:<path>" destination (put() throws without it)
 }
 
 export interface StorageBackend {

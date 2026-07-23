@@ -103,6 +103,14 @@ fi
 grep -qi "not found on PATH" "$TMP/missingbin.err" || { echo "[FAIL] missing-binary error is not actionable"; cat "$TMP/missingbin.err"; exit 1; }
 echo "[PASS] a missing rclone binary (CIPHER_BRAIN_RCLONE_BIN override) produces an actionable error"
 
+echo "== --remote containing a tab is rejected (would corrupt the tab-delimited save-locator file) =="
+BAD_REMOTE="$(printf ':local:%s\tevil' "$STORE")"
+if cb push --in "$TMP/got.age" --backend rclone --remote "$BAD_REMOTE" 2>"$TMP/badremote.err"; then
+  echo "[FAIL] push accepted a --remote containing a tab"; exit 1
+fi
+grep -qi "tab or newline" "$TMP/badremote.err" || { echo "[FAIL] tab-in-remote error does not mention 'tab or newline'"; cat "$TMP/badremote.err"; exit 1; }
+echo "[PASS] a --remote containing a tab is rejected with an actionable error"
+
 echo "== estimate --backend rclone: free (cost: 0), notes the transfer cost is the operator's own remote/contract =="
 EST_OUT=$(cb estimate --in "$TMP/got.age" --backend rclone)
 echo "$EST_OUT" | grep -q "^cost: 0$" || { echo "[FAIL] estimate --backend rclone did not report cost: 0"; echo "$EST_OUT"; exit 1; }

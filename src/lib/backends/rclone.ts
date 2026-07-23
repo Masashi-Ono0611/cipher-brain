@@ -34,6 +34,22 @@ async function runRclone(args: string[]): Promise<void> {
   }
 }
 
+// push --save-locator writes "<locator>\t<backend>\t<sha256>[...]" (one line, tab-
+// delimited — pushpull.ts's readSavedLocatorLine()); a locator containing a tab or
+// newline would shift/corrupt that file's fields, and (per file.ts's own comment) a
+// locator may itself arrive over an UNTRUSTED channel (a tampered --save-locator
+// file feeding pull's --from-locator-file). Reject those bytes outright rather than
+// silently mangling recovery — arweave/file don't need this check because their
+// locator shapes (a 43-char base64url id / <sha256>.age) structurally can't contain
+// either; rclone's is a free-form string, so it must be checked explicitly here.
+function assertSafeRemote(value: string, what: string): void {
+  if (/[\t\r\n]/.test(value)) {
+    throw new Error(
+      `rclone backend: ${what} must not contain a tab or newline (breaks the tab-delimited save-locator file): ${JSON.stringify(value)}`,
+    );
+  }
+}
+
 // The locator IS the "<remote>:<path>" string itself — the same idea as the file
 // backend using a local filesystem path as its locator (types.ts's StorageBackend
 // doc comment). push --save-locator records it verbatim; pull hands it straight
@@ -44,12 +60,18 @@ export function rcloneBackend(): StorageBackend {
     async put(file: string, opts: PutOpts = {}): Promise<string> {
       const remote = opts.remote;
       if (!remote) throw new Error('rclone backend: --remote <rclone-remote-name>:<path> required');
-      await runRclone(['copyto', resolve(file), remote]);
+      assertSafeRemote(remote, '--remote');
+      // `--` ends option parsing (rclone's cobra/pflag CLI, same convention as GNU
+      // getopt) so a --remote value that happens to start with `-` (accidentally, or
+      // via a tampered save-locator file feeding pull's locator back in here) is
+      // always treated as the positional source/destination, never as an rclone flag.
+      await runRclone(['copyto', '--', resolve(file), remote]);
       return remote;
     },
     async get(locator: string, out: string): Promise<void> {
+      assertSafeRemote(locator, 'locator');
       await mkdir(dirname(resolve(out)), { recursive: true });
-      await runRclone(['copyto', locator, resolve(out)]);
+      await runRclone(['copyto', '--', locator, resolve(out)]);
     },
   };
 }

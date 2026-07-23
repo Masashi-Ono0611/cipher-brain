@@ -106,7 +106,8 @@ over each `--dir`/`--profile` source's staged plaintext *before* it is
 archived+encrypted, and `deny` refuses the whole snapshot if a component has
 findings. Because Arweave/Turbo are write-once, un-deletable backends, an
 accidentally-committed API key/token/password can never be scrubbed out after
-the fact — encrypted or not, once it's pushed it's permanent.
+the fact — the ciphertext sealing it stays parked there permanently, exposed
+to whatever might compromise the identity down the line.
 
 ## Install
 

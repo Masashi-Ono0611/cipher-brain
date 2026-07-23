@@ -28,7 +28,9 @@ it wraps (keygen, snapshot, push) by hand instead — see README.md's "Manual fl
 - **backend** — pluggable `push`/`pull` storage behind one interface: `file`
   (local, dev/CI), `turbo` (recommended — Arweave via a bundler, ETH/USDC),
   `arweave` (raw L1, small artifacts only), `rclone` (delegates to the `rclone`
-  binary and its own configured remote — 70+ providers, free like `file`).
+  binary and its own configured remote — 70+ providers; cipher-brain's own
+  part is free like `file`, the remote's real transfer/storage cost is
+  whatever your own cloud contract charges).
 - **recovery kit** — the printable artifact `init` produces: the backup identity
   (raw, not passphrase-wrapped — keep the kit itself physically secure), the
   latest locator, and restore steps. Kit-only recovery on a fresh machine needs

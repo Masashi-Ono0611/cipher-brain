@@ -20,6 +20,29 @@ as-is and are not being retroactively translated. Do not use them as a
 template for language; write new ones in English regardless of what nearby
 history looks like.
 
+## Keep docs in sync with behavior changes
+
+If your PR adds or changes a CLI flag, subcommand, MCP tool, or any behavior
+that README.md, MANAGEMENT.md, or llms.txt describes, update those docs in
+**the same PR** — not a follow-up.
+
+- New `--flag` or subcommand: update the relevant `--help` text (already
+  required, that's code) AND check whether README.md's Usage section or
+  MANAGEMENT.md need a matching update.
+- Security- or threat-model-relevant change (new key type, new backend, new
+  safety gate, etc.): check README.md's "Threat model" section for claims
+  that are now stale — e.g. "X is not currently possible" when your change
+  just made X possible.
+- New or changed MCP tool: check llms.txt for whether it lists MCP tools and
+  needs updating.
+- Before opening the PR, self-check: does anything in README.md,
+  MANAGEMENT.md, or llms.txt now describe old behavior as current, or fail
+  to mention what you just added? If yes, fix it in the same PR.
+
+Issue #227 tracks an automated CI check for `--help`/README drift. Until
+that lands, this is manual discipline, not a replacement for it once it
+exists.
+
 ## Everything else
 
 For CLI usage, architecture, and the quality bar PRs must meet, see

@@ -149,6 +149,8 @@ interface ScheduleConfig {
   force_vault?: boolean;
   pg?: string;
   tables: string[];
+  pg_filter?: string; // resolved absolute path, same reasoning as vault/zip below (issue #235)
+  pg_exclude_table_data?: string[];
   dirs: string[];
   recipients: string[];
   save_locator: string;
@@ -228,6 +230,8 @@ function runnerBody(cfg: ScheduleConfig): string {
   if (cfg.force_vault) snapshotArgs.push('--force-vault');
   if (cfg.pg) snapshotArgs.push('--pg', shq(cfg.pg));
   for (const t of cfg.tables) snapshotArgs.push('--pg-table', shq(t));
+  if (cfg.pg_filter) snapshotArgs.push('--pg-filter', shq(cfg.pg_filter));
+  for (const t of cfg.pg_exclude_table_data ?? []) snapshotArgs.push('--pg-exclude-table-data', shq(t));
   for (const d of cfg.dirs) snapshotArgs.push('--dir', shq(d));
   for (const r of cfg.recipients) snapshotArgs.push('--recipient', shq(r));
   return `#!/usr/bin/env bash
@@ -491,6 +495,12 @@ async function install(o: CliOptions): Promise<void> {
     ...(o.force_vault ? { force_vault: true } : {}),
     ...(o.pg ? { pg: o.pg } : {}),
     tables: o.tables,
+    // --pg-filter is always a filesystem path (a filter file) — resolve NOW, against the
+    // cwd `schedule install` is run from, same reasoning as --vault/--zip above: launchd/cron
+    // invoke the generated runner from a different cwd, so a relative path baked in verbatim
+    // would resolve to a different file (or nothing) at scheduled-run time.
+    ...(o.pg_filter ? { pg_filter: resolve(o.pg_filter) } : {}),
+    ...(o.pg_exclude_table_data?.length ? { pg_exclude_table_data: o.pg_exclude_table_data } : {}),
     dirs: o.dirs.map((d) => resolve(d)),
     // --recipient is EITHER an inline age1... public key (leave verbatim — it is not a
     // path) OR a path to a recipients file (resolve it, same reasoning as --vault/--zip

@@ -38,6 +38,12 @@ RECLEN=$(wc -c <"$PQ/recipient.txt")
 [ "$RECLEN" -gt 500 ] && echo "[PASS] hybrid recipient is much bigger than a plain X25519 one ($RECLEN bytes)" \
   || { echo "[FAIL] hybrid recipient suspiciously small ($RECLEN bytes)"; exit 1; }
 
+echo "== keygen --wrap-in-place --pq is rejected (--pq has nothing to act on there) =="
+if cb "$PQ" keygen --wrap-in-place --pq 2>/dev/null; then
+  echo "[FAIL] --wrap-in-place --pq was accepted (should refuse — --pq would silently no-op)"; exit 1
+fi
+echo "[PASS] --wrap-in-place --pq is refused"
+
 echo "== keygen --pq --passphrase: the passphrase-wrap path is agnostic to identity type =="
 cb "$X25519" keygen >/dev/null # plain X25519, used as the backup key below
 PQWRAP="$TMP/keys-pq-wrapped"

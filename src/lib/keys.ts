@@ -150,7 +150,19 @@ async function wrapInPlace(identityPath: string): Promise<void> {
 }
 
 export async function keygen(o: CliOptions): Promise<void> {
-  if (o.wrap_in_place) return wrapInPlace(IDENTITY);
+  if (o.wrap_in_place) {
+    // --wrap-in-place only re-wraps the EXISTING identity file's text with a
+    // passphrase — it never touches the keypair itself (see wrapInPlace() above).
+    // --pq generates a NEW keypair, which --wrap-in-place explicitly does not do —
+    // so combining them would silently no-op --pq, giving a false impression that
+    // the identity got rotated to post-quantum when nothing changed. Fail loud
+    // instead (reviewer-flagged, #205).
+    if (o.pq)
+      throw new Error(
+        '--pq has no effect with --wrap-in-place (which only passphrase-wraps the EXISTING identity — it does not generate a new keypair). Run a fresh "keygen --pq --force" to rotate to a post-quantum keypair (this makes prior snapshots unrecoverable unless also encrypted to another key).',
+      );
+    return wrapInPlace(IDENTITY);
+  }
   const { recipient, wrapped } = await keygenAt({
     home: HOME,
     identityPath: IDENTITY,

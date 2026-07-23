@@ -133,6 +133,13 @@ state ("Avoid the write window", below). Each run appends to
 machine-readable `OK rc=0` / `FAILED rc=N` line, so `schedule status` (or any monitor)
 can tail the newest log for the outcome.
 
+That, though, is a *pull*: it tells you the outcome only when you go check. Add
+`--ping-url <url>` for the *push* half — a `healthchecks.io`-style dead man's switch —
+and every run also `curl`s that URL on success, or `<url>/fail` on failure (override
+with `--ping-url-fail`), so a schedule that silently stops running at all gets noticed
+even if nobody runs `schedule status`. Both are best-effort (10s timeout, never affects
+the run's own outcome).
+
 **Paid backends must be capped.** For `turbo`/`arweave` the generated runner sets
 `CIPHER_BRAIN_YES=1` — the unattended equivalent of `--yes` — which is exactly why
 `schedule install` *refuses* those backends without `--max-spend <n>`: an unattended

@@ -183,6 +183,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
   cipher-brain schedule install --backend <file|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
                                 [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
                                 [--vault <path>] [--zip <path>] [--save-locator <path>] [--index-file <path>]
+                                [--ping-url <url>] [--ping-url-fail <url>]
       Make the nightly snapshot+push unattended. Writes a runner script
       ($CIPHER_BRAIN_HOME/schedule/nightly.sh) composing the snapshot/push pipeline from
       the SAME flags those commands take — dated outputs, --save-locator, an index.tsv
@@ -195,10 +196,17 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       unattended spender is refused. --no-load writes the artifacts without registering.
       Each run logs to $CIPHER_BRAIN_HOME/schedule/logs/nightly-YYYY-MM-DD.log, ending
       "OK rc=0" or "FAILED rc=N".
+      --ping-url <url> adds a healthchecks.io-style dead man's switch: the runner curl's
+      <url> (best-effort, 10s timeout, never affects the run's own outcome) on every
+      successful run, and <url>/fail on every failed run — so a schedule that silently
+      stops running (a wedged launchd/cron, a box left off) gets noticed even without
+      anyone running 'schedule status'. --ping-url-fail overrides the failure URL
+      (default: <url>/fail); it requires --ping-url to also be set.
 
   cipher-brain schedule status
-      Report the configured time + backend, the trigger load state, the last run log and
-      its final rc line, and the next scheduled run.
+      Report the configured time + backend, whether a dead man's switch ping-url is
+      configured, the trigger load state, the last run log and its final rc line, and the
+      next scheduled run.
 
   cipher-brain schedule uninstall
       Unregister the trigger and remove the generated runner/plist/cron entry (idempotent;

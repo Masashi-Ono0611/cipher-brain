@@ -225,6 +225,13 @@ cipher-brain snapshot --profile obsidian --vault ~/Vaults/main --out vault.age
 cipher-brain snapshot --profile chatgpt-export --zip ~/Downloads/chatgpt-export.zip --out chatgpt.age
 ```
 
+Restoring one of these is the same `cipher-brain restore --in <file.age> --out-dir <dir>`
+as any other snapshot — no `--pg` needed. `restore` auto-expands every component into
+`<out-dir>/expanded/<NNN>-<encoded source path>/`, keyed to its original absolute source
+path, so many same-basename sources (e.g. dozens of claude-code project `memory/` dirs)
+land in separate, clearly-labeled directories instead of an undifferentiated pile of
+`memory.tar.gz` / `memory-1.tar.gz` / etc — see MANAGEMENT.md's Restore runbook.
+
 ### Staging & env vars
 
 Each component (the `pg_dump`, each `--dir` archive) is staged into a private

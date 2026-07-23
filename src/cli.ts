@@ -47,6 +47,7 @@ const BOOL_FLAGS = new Set([
   'force_vault',
   'skip_unchanged',
   'no_load',
+  'no_expand_components',
   'pq',
 ]); // flags that take no value
 
@@ -132,15 +133,28 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
         chatgpt-export --zip <path>  the official ChatGPT export zip, archived as-is
                                      (never extracted)
 
-  cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>] [--yes]
+  cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>] [--yes] [--no-expand-components]
       Decrypt with the PRIVATE identity. Extraction never clobbers a file already
       present in --out-dir (--keep-old-files: an existing file is left untouched,
       the rest of the archive still extracts around it).
-      --pg additionally pg_restore's the db.dump into that connection. pg_restore
-      --clean --if-exists DROPS and replaces objects in the target database — an
-      irreversible operation — so it requires --yes or CIPHER_BRAIN_YES=1 to confirm,
-      same as push's paid-backend guard below. Bounded by the same pipe timeout as
-      the decrypt/extract step (CIPHER_BRAIN_PIPE_TIMEOUT).
+      Every --dir/--profile component's staged tarball is then auto-expanded into
+      "<out-dir>/expanded/<NNN>-<encoded source path>/", keyed to the component's
+      ORIGINAL absolute source path (from manifest.json) rather than its on-disk name —
+      so components with a colliding basename (e.g. many claude-code project memory/
+      dirs) land in separate, clearly-labeled directories instead of an undifferentiated
+      pile of memory.tar.gz / memory-1.tar.gz / etc. A "expanded/README.txt" (and the
+      same mapping on stdout) records which expanded directory came from which source
+      path. Nothing is ever written back to that original absolute path — this only ever
+      creates NEW directories under --out-dir. Re-running restore into the same
+      --out-dir does not clobber a prior expansion (same no-clobber posture as the outer
+      extract). --no-expand-components skips this step, leaving only the raw *.tar.gz
+      files (the pre-#181 behavior).
+      --pg additionally pg_restore's the db.dump into that connection, independently of
+      the expand step above (pg_dump's component has no "source" field, so the two never
+      touch the same thing). pg_restore --clean --if-exists DROPS and replaces objects
+      in the target database — an irreversible operation — so it requires --yes or
+      CIPHER_BRAIN_YES=1 to confirm, same as push's paid-backend guard below. Bounded by
+      the same pipe timeout as the decrypt/extract step (CIPHER_BRAIN_PIPE_TIMEOUT).
 
   cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>]
       Assert it is real age ciphertext, a wrong key cannot open it, AND (when the

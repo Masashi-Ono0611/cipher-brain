@@ -257,8 +257,19 @@ cipher-brain restore --in restored.age --out-dir ./restored \
 # 5. sanity-check row counts / content, then cut over deliberately
 ```
 
-If you only need the files (not a live DB), drop `--pg` and untar the components
-under `./restored` yourself.
+If you only need the files (not a live DB), drop `--pg` — every `--dir`/`--profile`
+component is auto-expanded into `./restored/expanded/<NNN>-<encoded source path>/`,
+keyed to the component's ORIGINAL absolute source path (from `manifest.json`), not its
+on-disk name. This is what makes many same-basename sources (e.g. dozens of claude-code
+project `memory/` dirs under `--profile claude-code`) land in separate, clearly-labeled
+directories instead of an undifferentiated pile of `memory.tar.gz` / `memory-1.tar.gz` /
+etc that only `manifest.json` could disambiguate (#181). `./restored/expanded/README.txt`
+(and restore's own stdout) records which expanded directory came from which source path.
+Nothing is ever written back to that original absolute path — expansion only ever creates
+NEW directories under `--out-dir`, and re-running restore into the same `--out-dir` does
+not clobber a prior expansion (same no-clobber posture as the outer extract). Pass
+`--no-expand-components` to skip this and get only the raw `*.tar.gz` files (the pre-#181
+behavior, still there either way as the fallback).
 
 ## What's proven vs recommended
 

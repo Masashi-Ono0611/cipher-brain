@@ -32,7 +32,6 @@ import { estimateCost, formatEstimate } from './estimate.js';
 import { BACKEND_NAMES } from './backends/index.js';
 import { walletConfigured } from './wallet.js';
 import { exists, errMsg, redactPgConn } from './util.js';
-import { printMascot } from './ui.js';
 import type { CliOptions } from './types.js';
 
 type Rl = ReturnType<typeof createInterface>;
@@ -700,10 +699,10 @@ export async function init(_o: CliOptions): Promise<void> {
       console.log(
         'Once the kit is secured, you may delete it from disk yourself — cipher-brain does not do this for you.',
       );
-      // Decoration only, on stderr (see printMascot in ui.ts) — a one-off "setup is
-      // done" beat after the full six-step wizard (issue #194). init is CLI-only (no
-      // MCP caller), so there is no machine-readable output here to pollute.
-      printMascot('happy');
+      // The happy mood mascot (issue #194) is printed by cli.ts's `init` dispatch
+      // case, right after this function returns (immediately followed by the
+      // founder's note, issue #195/#199) — not here, so a successful run only
+      // ever gets ONE happy mascot instead of one from each layer.
     } catch (err) {
       if (pushSucceeded) {
         // Push already happened — see the pushSucceeded declaration above. The

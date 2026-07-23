@@ -144,6 +144,12 @@ That's it. The manual flow below is exactly what it wraps — useful once you kn
 what you want, or for scripting/automation `init` itself refuses (it is
 interactive only).
 
+`init` finishing, and each successful paid `push` to arweave/turbo (never a
+`--skip-unchanged` no-op, and never the free `file` backend), print a short
+STDERR-only note (a note from the person who built this, or a cited quote from an
+encryption/privacy precursor) alongside the mascot — decoration only, never mixed
+into `--save-locator`/stdout or the MCP server's output.
+
 ### Manual flow
 
 ```sh

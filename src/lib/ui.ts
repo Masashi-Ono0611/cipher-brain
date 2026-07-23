@@ -73,7 +73,10 @@ export function moodForVerdict(verdict: 'PASS' | 'FAIL' | 'PARTIAL'): Mood {
 // crypt.ts's `cons.stdin?.on('error', () => {})` for the age|tar pipeline.
 // Installed lazily (only once printMascot is actually used) and only once.
 let epipeGuardInstalled = false;
-function installEpipeGuard(): void {
+/** Exported so other decoration-only, STDERR-only modules (wisdom.ts's
+ *  founder's note / precursor quotes, issue #195) can install the same
+ *  EPIPE guard without duplicating it. */
+export function installEpipeGuard(): void {
   if (epipeGuardInstalled) return;
   epipeGuardInstalled = true;
   process.stderr.on('error', (e: NodeJS.ErrnoException) => {

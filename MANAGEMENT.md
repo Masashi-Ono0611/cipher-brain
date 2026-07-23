@@ -299,7 +299,7 @@ failure); the plain message is still the full story either way. Over MCP,
 | CB-E010 | A `file`-backend locator resolves outside `CIPHER_BRAIN_FILE_DIR`, or doesn't match the `<sha256>.age` shape `push` itself produces — refused as a possible path-traversal/arbitrary-file-read attempt via a tampered locator. | Only pass locators exactly as `push` printed them (or as saved in a `--save-locator`/index file from a trusted, off-box copy); don't hand-construct one. |
 | CB-E011 | The `arweave`/`turbo` backend needs `CIPHER_BRAIN_AR_WALLET` (a JWK signer) and it's unset, or the path isn't readable. | Run `cipher-brain wallet create` to generate one, then set `CIPHER_BRAIN_AR_WALLET` to its path (`wallet address` shows what to fund). |
 | CB-E012 | The optional peer dependency the backend needs (`arweave` or `@ardrive/turbo-sdk`) isn't installed. | Run the `npm install …` command the error itself prints. |
-| CB-E013 | `--backend` was given a value other than `file`, `arweave`, or `turbo`. | Correct the typo — only those three are valid. |
+| CB-E013 | `--backend` was given a value other than `file`, `arweave`, `turbo`, or `rclone`. | Correct the typo — only those four are valid. |
 | CB-E014 | `schedule status`/`uninstall` ran before `schedule install`, or writing the crontab entry failed. | Run `cipher-brain schedule install` first; a crontab-write failure usually means missing cron permissions/availability in this environment. |
 | CB-E015 | `restore`/`verify` can't find the private identity file it needs to decrypt (default or `--identity` path). | Run `cipher-brain keygen` if you haven't yet, or point `--identity` at the correct file. |
 
@@ -311,6 +311,7 @@ failure); the plain message is still the full story either way. Over MCP,
 | `file` backend store/fetch | **proven** — `selftest:storage` (CI) |
 | `arweave` backend round-trip | **proven** — `selftest:arweave` (CI, against arlocal); real-network gateway pull confirmed operator-run |
 | `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |
+| `rclone` backend (delegates to the `rclone` binary and its own configured remote) | **proven** — `selftest:rclone` (CI) |
 | Identity at rest (passphrase-wrap via `keygen --passphrase`; FDE on the identity host) | **available / recommended** — `--passphrase` ships; FDE is operator config, not enforced by code |
 | Post-quantum hybrid keypair (`keygen --pq`, ML-KEM-768 + X25519 — mitigates harvest-now-decrypt-later, see README Threat model) | **available** — `selftest:pq` (CI); combines with a plain-X25519 backup key and `CIPHER_BRAIN_PIN_RECIPIENTS`, but the recipient/ciphertext are much bigger than plain X25519 |
 | Nightly cadence (`schedule install / status / uninstall`: generated runner + launchd/cron trigger, paid backends refused without a spend cap, end-to-end run of the generated runner) | **proven** — `selftest:schedule` (CI) |

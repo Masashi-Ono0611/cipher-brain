@@ -15,3 +15,6 @@ recipient.txt
 dist/
 _baseline-logs/
 _newlayout-logs/
+
+# personal Claude Code settings + ephemeral agent worktree containers (not shipped code)
+.claude/

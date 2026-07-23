@@ -318,8 +318,9 @@ const ESTIMATE_COST_TOOL: Tool = {
     '(<100KB is free; a clear note is returned when that optional dependency is not installed); ' +
     'arweave → network price in winston from the gateway /price endpoint; file → free ' +
     '(local disk), returned with a zero-cost note. For turbo/arweave an ' +
-    'approximate usd_estimate field is included when a USD/AR rate is fetchable (omitted on any ' +
-    'rate failure — the native estimate never fails because of it).',
+    'approximate usd_estimate field is included when a USD/AR rate is fetchable — a direct HTTP ' +
+    'call to the public Turbo rate endpoint, so it works with or without @ardrive/turbo-sdk ' +
+    'installed (omitted on any rate failure — the native estimate never fails because of it).',
   inputSchema: {
     type: 'object',
     properties: {

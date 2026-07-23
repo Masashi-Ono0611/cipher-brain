@@ -20,12 +20,17 @@ it wraps (keygen, snapshot, push) by hand instead — see README.md's "Manual fl
 ## Key concepts
 
 - **identity** (private key) — the only thing that can decrypt. Lives off the
-  always-on machine; lose it and the snapshots are unrecoverable.
+  always-on machine; lose it and the snapshots are unrecoverable. `keygen --pq`
+  generates a post-quantum HYBRID identity (ML-KEM-768 + X25519) instead of
+  plain X25519 — see README.md's Threat model.
 - **recipient** (public key) — all the snapshotting machine needs. Safe to keep
   on the box that runs gbrain.
 - **backend** — pluggable `push`/`pull` storage behind one interface: `file`
   (local, dev/CI), `turbo` (recommended — Arweave via a bundler, ETH/USDC),
-  `arweave` (raw L1, small artifacts only).
+  `arweave` (raw L1, small artifacts only), `rclone` (delegates to the `rclone`
+  binary and its own configured remote — 70+ providers; cipher-brain's own
+  part is free like `file`, the remote's real transfer/storage cost is
+  whatever your own cloud contract charges).
 - **recovery kit** — the printable artifact `init` produces: the backup identity
   (raw, not passphrase-wrapped — keep the kit itself physically secure), the
   latest locator, and restore steps. Kit-only recovery on a fresh machine needs

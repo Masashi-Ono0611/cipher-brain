@@ -517,7 +517,13 @@ async function install(o: CliOptions): Promise<void> {
     // Dead man's switch (issue #202): --ping-url is a bare value (a URL, not a path) —
     // nothing to resolve() against cwd, unlike --vault/--zip/--recipient above. When only
     // --ping-url is given, ping_url_fail defaults to the healthchecks.io convention of
-    // appending "/fail" to the success URL.
+    // appending "/fail" to the success URL — a plain, deliberately unparsed string
+    // concatenation (multi-model review flagged this: a --ping-url with a query string
+    // or a trailing slash produces a "/fail" appended after the query string, or a
+    // double slash, respectively). healthchecks.io-style URLs are bare paths with no
+    // query/fragment in practice, so this is left as-is rather than adding URL parsing —
+    // pass --ping-url-fail explicitly to override the default for any URL shape where
+    // the naive append isn't what you want.
     ...(o.ping_url ? { ping_url: o.ping_url, ping_url_fail: o.ping_url_fail || `${o.ping_url}/fail` } : {}),
   };
 

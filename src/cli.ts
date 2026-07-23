@@ -201,7 +201,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       successful run, and <url>/fail on every failed run — so a schedule that silently
       stops running (a wedged launchd/cron, a box left off) gets noticed even without
       anyone running 'schedule status'. --ping-url-fail overrides the failure URL
-      (default: <url>/fail); it requires --ping-url to also be set.
+      (default: <url>/fail — a plain string append, not URL-aware: pass --ping-url-fail
+      explicitly if your ping URL has a query string or a trailing slash); it requires
+      --ping-url to also be set.
 
   cipher-brain schedule status
       Report the configured time + backend, whether a dead man's switch ping-url is

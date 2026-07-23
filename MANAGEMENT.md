@@ -233,7 +233,7 @@ flags — cipher-brain does **no SQL parsing or filtering of its own**; these tw
 are a literal pass-through to `pg_dump`, which runs exactly as it would if you invoked
 it by hand with the same arguments.
 
-- **`--pg-filter <file>`** → `pg_dump --filter <file>` (requires `pg_dump` ≥ 16). The
+- **`--pg-filter <file>`** → `pg_dump --filter <file>` (requires `pg_dump` ≥ 17). The
   file holds one `{include|exclude} {table|schema} PATTERN` line per entry. Full syntax:
   [PostgreSQL docs — Filtering](https://www.postgresql.org/docs/current/app-pgdump.html#PG-DUMP-FILTERING).
   Example filter file:

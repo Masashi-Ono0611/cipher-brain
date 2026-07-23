@@ -10,6 +10,17 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Masashi-Ono0611/cipher-brain/ci.yml?branch=main&label=CI&logo=github)](https://github.com/Masashi-Ono0611/cipher-brain/actions/workflows/ci.yml)
 
+> **OpenSSF Best Practices:** the technical prerequisites (SECURITY.md,
+> private vulnerability reporting, branch protection, dependency updates —
+> see [#149](https://github.com/Masashi-Ono0611/cipher-brain/issues/149),
+> [#184](https://github.com/Masashi-Ono0611/cipher-brain/issues/184),
+> [#185](https://github.com/Masashi-Ono0611/cipher-brain/issues/185),
+> [#186](https://github.com/Masashi-Ono0611/cipher-brain/issues/186)) are in
+> place. Registration on [bestpractices.dev](https://www.bestpractices.dev/)
+> itself (creating an account, filling out the self-assessment) is a manual
+> step still pending for the maintainer — this line will become the actual
+> badge once that's done.
+
 > **For AI agents:** see [`llms.txt`](llms.txt) for a quick, machine-friendly orientation.
 
 Encrypt your growing second brain — the AI memory, conversation history, and
@@ -254,7 +265,7 @@ alongside the native unit. Preview that same estimate WITHOUT pushing anything v
 `cipher-brain estimate --in <file.age> --backend <backend>` (also exposed as the
 `estimate_cost` MCP tool — see below); `push --skip-unchanged` skips a paid
 re-upload when the snapshot's plaintext content digest (the `<out>.digest`
-sidecar `snapshot` writes) matches the previous push. Three backends ship, but
+sidecar `snapshot` writes) matches the previous push. Four backends ship, but
 they are not peers:
 
 - **`turbo` — the recommended mainline.** Uploads the ciphertext to the Arweave
@@ -268,10 +279,22 @@ they are not peers:
   small artifacts only (a ~10 MiB guard redirects anything larger to `turbo`).
 - **`file`** — a local content-addressed store (no daemon, no network); used by
   CI and for local drills.
+- **`rclone`** — a thin subprocess wrapper around the `rclone` binary
+  (`push --backend rclone --remote <rclone-remote-name>:<path>`), the same
+  "delegate to rclone" pattern restic/kopia use to reach 70+ cloud providers
+  (S3, GCS, B2, Azure Blob, Dropbox, SFTP, …) without cipher-brain implementing
+  any of their APIs itself — auth/protocol/retries are entirely rclone's own
+  configured remote (`rclone config`). Free like `file` (`estimate` always
+  reports cost `0` — any real transfer/storage cost is whatever your own cloud
+  contract for that remote charges); the locator IS the `<remote>:<path>`
+  string. A cheap way to add an offsite copy (the "1" in 3-2-1 backup) next to
+  `turbo`'s permanent store, reusing an rclone config you may already have from
+  restic/kopia. Needs the `rclone` binary on PATH.
 
 The backend abstraction is what makes the same `snapshot → push … pull → restore`
-pipeline work across all three — a content-addressed (`file`) and
-post-assigned-id (`arweave`/`turbo`) locators alike.
+pipeline work across all four — locators known before upload (`file`'s content
+hash, `rclone`'s caller-chosen `--remote`) and post-assigned-id ones
+(`arweave`/`turbo`) alike.
 
 ## Validation
 
@@ -379,3 +402,15 @@ a real `snapshot_now` round-trip on the `file` backend, `schedule_status` agains
 refuses without `confirm_paid`, and a real `keygen` → `wallet_create` → `wallet_address`
 round-trip (plus the no-clobber-unless-`force` refusal) against an isolated
 `CIPHER_BRAIN_HOME`.
+
+## Project continuity
+
+`cipher-brain` is currently maintained by a single person
+([@Masashi-Ono0611](https://github.com/Masashi-Ono0611)). There is no formal
+succession plan or pre-granted collaborator/npm-publish access at this time.
+
+If you need to reach the maintainer about something urgent — a security
+issue, or the project appearing unmaintained for an extended period — use
+GitHub's private vulnerability reporting (see [`SECURITY.md`](SECURITY.md))
+for security matters, or open a public issue otherwise. There is no other
+published contact channel.

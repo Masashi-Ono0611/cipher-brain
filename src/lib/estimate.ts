@@ -46,8 +46,8 @@ export const usdApprox = (nativeAmount: bigint | number, rate: number): string =
 };
 
 // Estimate what pushing `sizeBytes` to `backend` would cost, WITHOUT uploading
-// anything (price queries only). `backend` must be one of file|arweave|turbo — any
-// other value is a caller bug (mcp.ts validates via requireBackend before calling
+// anything (price queries only). `backend` must be one of file|arweave|turbo|rclone —
+// any other value is a caller bug (mcp.ts validates via requireBackend before calling
 // this; the CLI estimate() below validates too), so it is rejected explicitly
 // rather than silently falling through to the arweave branch.
 export async function estimateCost(backend: string, sizeBytes: number): Promise<CostEstimate> {
@@ -57,6 +57,18 @@ export async function estimateCost(backend: string, sizeBytes: number): Promise<
       size_bytes: sizeBytes,
       cost: '0',
       note: 'file backend is a local content-addressed store — no upload cost (disk space only).',
+    };
+  }
+
+  if (backend === 'rclone') {
+    return {
+      backend,
+      size_bytes: sizeBytes,
+      cost: '0',
+      note:
+        'rclone backend delegates the transfer to the rclone binary and the configured remote (#204) — ' +
+        'cipher-brain has no visibility into that remote pricing, so unlike arweave/turbo this is not a ' +
+        'real cost query. Any transfer/storage cost is whatever the cloud contract for that remote charges.',
     };
   }
 
@@ -153,7 +165,7 @@ export async function estimateCost(backend: string, sizeBytes: number): Promise<
     }
   }
 
-  throw new Error(`unknown backend: ${backend} — use file|arweave|turbo`);
+  throw new Error(`unknown backend: ${backend} — use file|arweave|turbo|rclone`);
 }
 
 // Render a CostEstimate as human-readable lines — SHARED by the CLI `estimate` command
@@ -182,13 +194,18 @@ export function formatEstimate(e: CostEstimate): string[] {
 // estimate_cost tool returns, as a human-readable report — WITHOUT uploading
 // anything. `size_bytes` (the MCP tool's alternative to `file`) has no CLI
 // equivalent — --in is always a real file on disk here.
+// --json (#211) prints the SAME CostEstimate object estimateCost() returned, as one
+// JSON line on stdout, instead of formatEstimate()'s human-readable lines — never a
+// re-implementation, so it can never disagree with either the human-readable report
+// or the MCP estimate_cost tool.
 export async function estimate(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|arweave|turbo> required');
+  if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone> required');
   if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
   const st = await stat(o.in);
   if (!st.isFile())
     throw new Error(`${o.in} is not a regular file (cannot size a directory/special file for an estimate)`);
   const result = await estimateCost(o.backend, st.size);
-  for (const line of formatEstimate(result)) console.log(line);
+  if (o.json) console.log(JSON.stringify(result));
+  else for (const line of formatEstimate(result)) console.log(line);
 }

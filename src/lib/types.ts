@@ -25,6 +25,7 @@ export interface CliOptions {
   skip_unchanged?: boolean;
   no_load?: boolean;
   no_expand_components?: boolean;
+  dry_run?: boolean; // snapshot --dry-run: preview .cipherbrainignore include/exclude without writing anything (#216)
 
   // value flags — always a string when passed (argv is untyped text)
   out?: string;

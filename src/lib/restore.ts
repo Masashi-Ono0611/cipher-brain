@@ -1,11 +1,12 @@
 // restore + verify — the decrypt half and its falsifiable proof.
-import { rm, stat, readFile } from 'node:fs/promises';
+import { rm, stat, readFile, writeFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
+import { createHash } from 'node:crypto';
 import { AGE_MAGIC, CIPHER_YES, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.js';
 import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
-import { exists, sha256, readHead, fmtBytes, redactPgConn } from './util.js';
+import { exists, sha256, readHead, fmtBytes, redactPgConn, errMsg } from './util.js';
 import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
 import { moodForVerdict, printMascot } from './ui.js';
 import type { CliOptions } from './types.js';
@@ -31,6 +32,138 @@ async function tarNoClobberFlag(): Promise<string> {
   } catch {
     return '--keep-old-files'; // conservative default if `tar --version` itself fails to run
   }
+}
+
+// One row of the mapping restore's auto-expand step prints/writes: the ORIGINAL absolute
+// source path a component was captured from (manifest.components[].source), alongside
+// where its extracted content ended up under --out-dir/expanded/.
+interface ExpandedRow {
+  dir: string; // the expanded directory's path, relative to --out-dir (for display)
+  name: string; // the component's *.tar.gz filename inside --out-dir
+  source: string; // the original absolute path this component was captured from
+}
+
+// The subset of snapshot.ts's ManifestComponent this file actually reads off
+// already-written JSON — kept local (not imported from snapshot.ts) since restore only
+// cares about a couple of fields, not the writer's exact shape, and JSON.parse's output
+// is `any` regardless.
+interface RestoreManifestComponent {
+  name?: unknown;
+  kind?: unknown;
+  source?: unknown;
+}
+
+// Cap on the human-legible part of an encoded directory name (see encodeSourcePath) —
+// keeps `<index>-<encoded>` comfortably under common 255-byte filename limits even for a
+// deeply nested source path, before any truncation suffix is appended.
+const PATH_ENCODE_MAX = 160;
+
+// Encode an absolute source path into a filesystem-safe directory-name fragment: drop the
+// leading separator(s), then replace anything that is not an ASCII alnum/dot/dash/
+// underscore with '_'. Deliberately NOT collision-proof by itself (two different paths
+// could in principle encode to the same string) — expandComponents() below always
+// prefixes the directory name with the component's own 1-based sequence number, which
+// alone guarantees no two components ever land in the same directory (manifest
+// component order is stable per snapshot). This function only needs to stay human-
+// legible enough to recognize the source at a glance.
+function encodeSourcePath(abs: string): string {
+  const flat = abs.replace(/^[/\\]+/, '').replace(/[^A-Za-z0-9._-]+/g, '_');
+  if (flat.length <= PATH_ENCODE_MAX) return flat;
+  // A very long/deeply-nested path could otherwise blow past a filesystem's per-component
+  // name limit once the numeric prefix is added. Truncate, then append a short digest of
+  // the FULL original path — purely so a human skimming expanded/ can still tell two
+  // long, similarly-prefixed paths apart (the numeric prefix already makes the directory
+  // itself unique regardless of this hash).
+  const digest = createHash('sha256').update(abs).digest('hex').slice(0, 8);
+  return `${flat.slice(0, PATH_ENCODE_MAX)}-${digest}`;
+}
+
+// Auto-expand every --dir/--profile component's staged tarball under
+// <out-dir>/expanded/<NNN>-<encoded source path>/, keyed to the component's ORIGINAL
+// absolute source path (manifest.components[].source) rather than its on-disk name — see
+// #181: multiple --dir sources sharing a basename (e.g. many `~/.claude/projects/*/
+// memory/` dirs under --profile claude-code) all restore to opaque, indistinguishable
+// names like memory.tar.gz / memory-1.tar.gz / memory-2.tar.gz, and manually cross-
+// referencing the manifest to untar each one correctly does not scale past a handful of
+// components.
+//
+// A component with a `source` field is exactly a --dir/--profile component: pg_dump's
+// component (kind 'pg_dump:custom') never has one, so filtering on `source` alone already
+// excludes it — restore's --pg flow (pg_restore into a live connection) and this
+// filesystem-only expansion never touch the same component, and neither needs the other
+// to run first.
+//
+// Best-effort throughout: this is a convenience layer on top of an ALREADY-successful
+// restore (the outer tar extraction above has already landed every component's raw
+// *.tar.gz in --out-dir) — a problem here (a malformed manifest, one corrupt archive) is
+// reported on stderr and skipped rather than failing the whole restore; the raw tarballs
+// restore already extracted remain there as the fallback either way.
+async function expandComponents(outDir: string): Promise<void> {
+  const manifestPath = join(outDir, 'manifest.json');
+  if (!(await exists(manifestPath))) return; // nothing to key expansion off of
+  let components: RestoreManifestComponent[];
+  try {
+    const parsed: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const raw = (parsed as { components?: unknown })?.components;
+    components = Array.isArray(raw) ? raw : [];
+  } catch (e) {
+    console.error(`warning: could not parse ${manifestPath} — skipping component auto-expand (${errMsg(e)})`);
+    return;
+  }
+  const expandable = components.filter(
+    (c): c is { name: string; source: string } =>
+      typeof c.source === 'string' && typeof c.name === 'string' && c.name.endsWith('.tar.gz'),
+  );
+  if (expandable.length === 0) return;
+
+  const expandedRoot = join(outDir, 'expanded');
+  mkdirSync(expandedRoot, { recursive: true });
+  const noClobberFlag = await tarNoClobberFlag();
+  const rows: ExpandedRow[] = [];
+  for (let i = 0; i < expandable.length; i++) {
+    const c = expandable[i];
+    const archivePath = join(outDir, c.name);
+    // Absent when the outer extract's own no-clobber skip left it out (a pre-existing
+    // --out-dir already held a same-named file) — nothing to expand in that case.
+    if (!(await exists(archivePath))) continue;
+    const dirName = `${String(i + 1).padStart(3, '0')}-${encodeSourcePath(c.source)}`;
+    const targetDir = join(expandedRoot, dirName);
+    mkdirSync(targetDir, { recursive: true });
+    try {
+      // Same no-clobber posture as the outer extract in restore() below: re-running
+      // restore into an --out-dir that already holds a prior expansion of this exact
+      // component must not silently overwrite what's there.
+      await run(
+        'tar',
+        ['-xzf', archivePath, '--no-same-owner', '--no-same-permissions', noClobberFlag, '-C', targetDir],
+        { timeoutMs: PIPE_TIMEOUT_MS },
+      );
+    } catch (e) {
+      console.error(
+        `warning: could not expand ${c.name} into ${targetDir} (${errMsg(e)}) — the raw ${c.name} is still in ${outDir}`,
+      );
+      continue;
+    }
+    rows.push({ dir: relative(outDir, targetDir), name: c.name, source: c.source });
+  }
+  if (rows.length === 0) return;
+
+  const readme =
+    [
+      '# cipher-brain restore: expanded components',
+      '',
+      'Each row maps a directory under expanded/ back to the ABSOLUTE path it was',
+      'captured from. Nothing was written back to that original path — restore never',
+      'writes over a live location automatically; review the contents and copy them back',
+      'yourself if that is what you want.',
+      '',
+      '<expanded dir>\t<-\t<original source path>\t(<component file>)',
+      ...rows.map((r) => `${r.dir}\t<-\t${r.source}\t(${r.name})`),
+    ].join('\n') + '\n';
+  await writeFile(join(expandedRoot, 'README.txt'), readme);
+
+  console.log(`expanded ${rows.length} component(s) into ${expandedRoot} (see expanded/README.txt):`);
+  for (const r of rows) console.log(`  ${r.dir}  <-  ${r.source}`);
 }
 
 export async function restore(o: CliOptions): Promise<void> {
@@ -110,6 +243,12 @@ export async function restore(o: CliOptions): Promise<void> {
   console.log(`restored components into ${o.out_dir}`);
   const manifestPath = join(o.out_dir, 'manifest.json');
   if (await exists(manifestPath)) console.log(await readFile(manifestPath, 'utf8'));
+  // Auto-expand --dir/--profile components (#181) — independent of --pg below: it only
+  // ever touches components that carry a `source`, which pg_dump's never does, so the two
+  // flows never race or duplicate work, and neither has to run before the other. --no-
+  // expand-components is the opt-out for anyone who wants exactly the pre-#181 behavior
+  // (raw *.tar.gz files only, manual untar).
+  if (!o.no_expand_components) await expandComponents(o.out_dir);
   if (o.pg) {
     const dump = join(o.out_dir, 'db.dump');
     if (!(await exists(dump))) throw new Error(`--pg given but no db.dump in snapshot`);

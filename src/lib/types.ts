@@ -23,6 +23,7 @@ export interface CliOptions {
   force_vault?: boolean;
   skip_unchanged?: boolean;
   no_load?: boolean;
+  no_expand_components?: boolean;
 
   // value flags — always a string when passed (argv is untyped text)
   out?: string;

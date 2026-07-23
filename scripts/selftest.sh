@@ -81,6 +81,58 @@ tar -xzf "$TMP/out/brain-src.tar.gz" -C "$TMP/out"
 diff -r "$SRC" "$TMP/out/brain-src"
 echo "[PASS] restored tree is byte-identical to source"
 
+echo "== #181: restore auto-expands the component into out-dir/expanded/, keyed to its source path =="
+# tar archives a --dir source as "-C $(dirname abs) -- $(basename abs)", so the expanded
+# dir contains a basename(abs)-named subdirectory holding the actual tree (same shape as
+# the manual `tar -xzf brain-src.tar.gz -C "$TMP/out"` two lines above, which is why THAT
+# diff compares against "$TMP/out/brain-src", not "$TMP/out" itself).
+EXPANDED_SRC_DIR="$TMP/out/expanded/001-$(printf '%s' "$SRC" | sed -E -e 's#^/+##' -e 's#[^A-Za-z0-9._-]+#_#g')"
+diff -r "$SRC" "$EXPANDED_SRC_DIR/$(basename "$SRC")" || { echo "FAIL: expanded/ tree differs from source"; ls -la "$TMP/out/expanded"; exit 1; }
+test -f "$TMP/out/expanded/README.txt" || { echo "FAIL: expanded/README.txt was not written"; exit 1; }
+grep -q "$SRC" "$TMP/out/expanded/README.txt" || { echo "FAIL: expanded/README.txt does not reference the source path"; cat "$TMP/out/expanded/README.txt"; exit 1; }
+echo "[PASS] restore auto-expanded the single component under expanded/<001-source>/, with a README mapping it back to the source path"
+
+echo "== #181 regression: colliding-basename --dir sources expand into SEPARATE, correctly-keyed directories =="
+# The motivating repro from issue #181: multiple --dir sources sharing a basename (e.g.
+# many claude-code project memory/ dirs) restore to opaque names (memory.tar.gz,
+# memory-1.tar.gz, ...) that alone don't say which project is which. Two directories
+# literally both named "memory" (different parents) reproduce this exactly.
+COLLIDE_A="$TMP/collide-project-a/memory"; mkdir -p "$COLLIDE_A"
+COLLIDE_B="$TMP/collide-project-b/memory"; mkdir -p "$COLLIDE_B"
+printf 'alpha project memory content\n' > "$COLLIDE_A/note.txt"
+printf 'beta project memory content\n' > "$COLLIDE_B/note.txt"
+cb snapshot --dir "$COLLIDE_A" --dir "$COLLIDE_B" --out "$TMP/collide.age" >/dev/null
+EXP_OUT="$TMP/collide-restore"
+cb restore --in "$TMP/collide.age" --out-dir "$EXP_OUT" > "$TMP/collide-restore.log"
+test -f "$EXP_OUT/memory.tar.gz" || { echo "FAIL: expected raw memory.tar.gz in --out-dir"; ls "$EXP_OUT"; exit 1; }
+test -f "$EXP_OUT/memory-1.tar.gz" || { echo "FAIL: expected raw memory-1.tar.gz (colliding basename) in --out-dir"; ls "$EXP_OUT"; exit 1; }
+test -f "$EXP_OUT/expanded/README.txt" || { echo "FAIL: expected expanded/README.txt"; exit 1; }
+EXPANDED_DIR_COUNT=$(find "$EXP_OUT/expanded" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+[ "$EXPANDED_DIR_COUNT" = "2" ] || { echo "FAIL: expected 2 expanded component dirs, got $EXPANDED_DIR_COUNT"; ls "$EXP_OUT/expanded"; exit 1; }
+grep -rq 'alpha project memory content' "$EXP_OUT/expanded" || { echo "FAIL: alpha content missing from expanded/"; exit 1; }
+grep -rq 'beta project memory content' "$EXP_OUT/expanded" || { echo "FAIL: beta content missing from expanded/"; exit 1; }
+ALPHA_DIR=$(dirname "$(grep -rl 'alpha project memory content' "$EXP_OUT/expanded" | head -1)")
+BETA_DIR=$(dirname "$(grep -rl 'beta project memory content' "$EXP_OUT/expanded" | head -1)")
+[ "$ALPHA_DIR" != "$BETA_DIR" ] || { echo "FAIL: alpha and beta content ended up in the SAME expanded dir"; exit 1; }
+grep -q "collide-project-a" "$EXP_OUT/expanded/README.txt" || { echo "FAIL: README.txt does not reference collide-project-a's source path"; cat "$EXP_OUT/expanded/README.txt"; exit 1; }
+grep -q "collide-project-b" "$EXP_OUT/expanded/README.txt" || { echo "FAIL: README.txt does not reference collide-project-b's source path"; cat "$EXP_OUT/expanded/README.txt"; exit 1; }
+grep -q "expanded" "$TMP/collide-restore.log" || { echo "FAIL: restore's own stdout did not summarize the expand step"; cat "$TMP/collide-restore.log"; exit 1; }
+echo "[PASS] two colliding-basename --dir sources restore into separate expanded/<NNN>-<source>/ dirs with the right content in each"
+
+echo "== #181: --no-expand-components opts out, leaving only the raw *.tar.gz files =="
+cb restore --in "$TMP/collide.age" --out-dir "$TMP/collide-noexpand" --no-expand-components >/dev/null
+test ! -d "$TMP/collide-noexpand/expanded" || { echo "FAIL: --no-expand-components still created expanded/"; exit 1; }
+test -f "$TMP/collide-noexpand/memory.tar.gz" && test -f "$TMP/collide-noexpand/memory-1.tar.gz" \
+  || { echo "FAIL: --no-expand-components should still leave the raw component tarballs"; exit 1; }
+echo "[PASS] --no-expand-components opts out of auto-expansion, leaving only the raw component tarballs"
+
+echo "== #181: re-running restore into an out-dir with an existing expansion does not clobber it =="
+SENTINEL_EXP="ALREADY-EXPANDED-DO-NOT-CLOBBER-$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')"
+printf '%s\n' "$SENTINEL_EXP" > "$ALPHA_DIR/note.txt"
+cb restore --in "$TMP/collide.age" --out-dir "$EXP_OUT" >/dev/null
+[ "$(cat "$ALPHA_DIR/note.txt")" = "$SENTINEL_EXP" ] || { echo "FAIL: re-running restore into the same --out-dir clobbered a previously-expanded file"; exit 1; }
+echo "[PASS] re-running restore into an out-dir with an existing expansion does not clobber it"
+
 echo "== wrong key really cannot restore (defense in depth) =="
 export CIPHER_BRAIN_HOME="$TMP/keys2"
 cb keygen >/dev/null

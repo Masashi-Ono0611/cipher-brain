@@ -356,6 +356,23 @@ grep -q "nightly-$TODAY.log — OK rc=0" "$TMP/status.log" || { echo "[FAIL] sta
 grep -q 'next run: ' "$TMP/status.log" || { echo "[FAIL] status lacks the next scheduled run"; exit 1; }
 echo "[PASS] status: configured time + backend + last rc + next run"
 
+echo "== issue #211: status --json prints the SAME state as one JSON line, human output unchanged =="
+SJOUT=$(cb schedule status --json)
+LINES=$(printf '%s\n' "$SJOUT" | wc -l | tr -d ' ')
+[ "$LINES" = "1" ] || { echo "FAIL: schedule status --json printed $LINES stdout line(s), expected exactly 1"; echo "$SJOUT"; exit 1; }
+node -e "
+const j = JSON.parse(process.argv[1]);
+if (j.configured.at !== '03:30') throw new Error('expected configured.at 03:30, got ' + j.configured.at);
+if (j.configured.backend !== 'file') throw new Error('expected configured.backend file, got ' + j.configured.backend);
+if (typeof j.runner !== 'string' || j.runner.length === 0) throw new Error('expected a non-empty runner path');
+if (!j.last_run || !/^nightly-.*\.log$/.test(j.last_run.log)) throw new Error('expected last_run.log to name a nightly log, got ' + JSON.stringify(j.last_run));
+if (j.last_run.rc_line !== 'OK rc=0') throw new Error('expected last_run.rc_line OK rc=0, got ' + j.last_run.rc_line);
+if (typeof j.next_run !== 'string' || j.next_run.length === 0) throw new Error('expected a non-empty next_run');
+if (!j.trigger || typeof j.trigger.loaded !== 'string') throw new Error('expected trigger.loaded to be a string');
+if (j.trigger.legacy !== false) throw new Error('expected trigger.legacy false for a freshly-installed schedule');
+" "$SJOUT"
+echo "[PASS] status --json: one JSON line; configured/runner/last_run/next_run/trigger all correct"
+
 echo "== (c2) a failing run leaves a trailing FAILED rc=N line (heartbeat contract) =="
 CIPHER_BRAIN_SCHEDULE_DIR="$TMP/sched-fail" cb schedule install --backend file --dir "$TMP/does-not-exist" --no-load > /dev/null 2>&1 \
   || { echo "[FAIL] install (failure fixture) exited non-zero"; exit 1; }

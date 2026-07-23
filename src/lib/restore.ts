@@ -430,24 +430,30 @@ export async function verify(o: CliOptions): Promise<void> {
   const sz = (await stat(o.in)).size;
   const head = await readHead(o.in, 64);
   const isAge = head.startsWith(AGE_MAGIC);
-  console.log(`file: ${o.in} (${fmtBytes(sz)})`);
-  console.log(`[${isAge ? 'PASS' : 'FAIL'}] age ciphertext header present`);
+  if (!o.json) {
+    console.log(`file: ${o.in} (${fmtBytes(sz)})`);
+    console.log(`[${isAge ? 'PASS' : 'FAIL'}] age ciphertext header present`);
+  }
 
   // optional integrity pin: --sha256 binds the artifact to a hash known out-of-band
   // (e.g. from a trusted off-box index.tsv), catching a rolled-back/substituted
-  // ciphertext that age would still decrypt. A mismatch is a hard FAIL.
-  let hashOk = true;
+  // ciphertext that age would still decrypt. A mismatch is a hard FAIL. `hashOk` stays
+  // `null` (not checked, not a pass/fail) when --sha256 was not given at all.
+  let hashOk: boolean | null = null;
+  let gotHash: string | undefined;
   if (o.sha256) {
-    const got = await sha256(o.in);
-    hashOk = got.toLowerCase() === String(o.sha256).toLowerCase();
-    console.log(
-      `[${hashOk ? 'PASS' : 'FAIL'}] sha256 matches the expected hash${hashOk ? '' : ` (expected ${o.sha256}, got ${got})`}`,
-    );
+    gotHash = await sha256(o.in);
+    hashOk = gotHash.toLowerCase() === String(o.sha256).toLowerCase();
+    if (!o.json) {
+      console.log(
+        `[${hashOk ? 'PASS' : 'FAIL'}] sha256 matches the expected hash${hashOk ? '' : ` (expected ${o.sha256}, got ${gotHash})`}`,
+      );
+    }
   }
 
   // negative control: a throwaway key must NOT decrypt (header-only check — fast on any size)
   const wrongKeyRejected = await wrongKeyRejects(o.in);
-  console.log(`[${wrongKeyRejected ? 'PASS' : 'FAIL'}] a wrong key is rejected`);
+  if (!o.json) console.log(`[${wrongKeyRejected ? 'PASS' : 'FAIL'}] a wrong key is rejected`);
 
   // positive control: your identity decrypts the whole thing into a well-formed
   // bundle. Streamed (decrypt | tar -t) so it never buffers a multi-GB plaintext.
@@ -458,14 +464,15 @@ export async function verify(o: CliOptions): Promise<void> {
     try {
       const decrypter = newDecrypter(await loadIdentities(identity)); // prompts if passphrase-wrapped
       await decryptToChild(decrypter, o.in, 'tar', ['-tf', '-'], { consStdout: 'ignore', timeoutMs: PIPE_TIMEOUT_MS });
-      console.log('[PASS] your identity decrypts the artifact into a well-formed bundle');
+      if (!o.json) console.log('[PASS] your identity decrypts the artifact into a well-formed bundle');
     } catch {
       positiveOk = false;
-      console.log('[FAIL] your identity could not decrypt the artifact (corrupt/truncated, or not encrypted to you)');
+      if (!o.json)
+        console.log('[FAIL] your identity could not decrypt the artifact (corrupt/truncated, or not encrypted to you)');
     }
   } else {
     positiveSkipped = true;
-    console.log('[SKIP] positive control — no private identity on this machine (public-key-only box)');
+    if (!o.json) console.log('[SKIP] positive control — no private identity on this machine (public-key-only box)');
   }
 
   // Three verdicts, not two. The header + wrong-key checks alone do NOT prove the
@@ -473,22 +480,48 @@ export async function verify(o: CliOptions): Promise<void> {
   // skipped) we must NOT print PASS / exit 0 — a cron/log reading "PASS" would be
   // false-green and could mask a month of snapshots encrypted to a wrong/lost key.
   let verdict: 'PASS' | 'FAIL' | 'PARTIAL';
-  if (!isAge || !wrongKeyRejected || !positiveOk || !hashOk) {
+  if (!isAge || !wrongKeyRejected || !positiveOk || hashOk === false) {
     verdict = 'FAIL';
-    console.log('\nVERDICT: FAIL');
+    if (!o.json) console.log('\nVERDICT: FAIL');
     process.exitCode = 1;
   } else if (positiveSkipped) {
     verdict = 'PARTIAL';
-    console.log(
-      '\nVERDICT: PARTIAL — header + wrong-key checks passed, but decryptability was NOT proven on this box (no private identity here). Run verify where the identity lives to prove it is restorable by you.',
-    );
+    if (!o.json) {
+      console.log(
+        '\nVERDICT: PARTIAL — header + wrong-key checks passed, but decryptability was NOT proven on this box (no private identity here). Run verify where the identity lives to prove it is restorable by you.',
+      );
+    }
     process.exitCode = 2; // distinct from PASS(0) and FAIL(1) so automation can tell them apart
   } else {
     verdict = 'PASS';
-    console.log('\nVERDICT: PASS');
+    if (!o.json) console.log('\nVERDICT: PASS');
   }
-  // Human-facing decoration only (mascot faced for the verdict) — see
-  // printMascot in ui.ts for why this is EPIPE-safe against a caller piping/
-  // grepping verify's output for the VERDICT line.
-  printMascot(moodForVerdict(verdict));
+
+  // --json: the SAME checks/verdict computed above, as one machine-readable line on
+  // stdout instead of the human-readable report — never a re-implementation, so this
+  // can never disagree with either the human-readable report above or the MCP
+  // verify_restore tool (#211).
+  if (o.json) {
+    console.log(
+      JSON.stringify({
+        file: o.in,
+        size_bytes: sz,
+        checks: {
+          age_header: isAge,
+          sha256_match: hashOk, // null when --sha256 was not passed (check skipped, not failed)
+          wrong_key_rejected: wrongKeyRejected,
+          positive_control: positiveSkipped ? 'skip' : positiveOk ? 'pass' : 'fail',
+        },
+        verdict,
+        exit_code: process.exitCode ?? 0,
+      }),
+    );
+  }
+  // Human-facing decoration only (mascot faced for the verdict) — see printMascot in
+  // ui.ts for why this is EPIPE-safe against a caller piping/grepping verify's output
+  // for the VERDICT line. Never printed on --json (ui.ts: "nothing here should be
+  // called on a --json / piped path") — it writes to stderr only, so it would never
+  // corrupt the JSON on stdout, but a --json caller asked for machine-readable output
+  // only, not ASCII-art decoration alongside it.
+  if (!o.json) printMascot(moodForVerdict(verdict));
 }

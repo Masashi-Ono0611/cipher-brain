@@ -199,9 +199,11 @@ cipher-brain restore \
 
 # make it nightly + unattended: generates the runner and the launchd/cron trigger
 # (paid backends require --max-spend so an unattended run can never spend uncapped)
+# --ping-url adds a healthchecks.io-style dead man's switch: the runner pings it on
+# success, <url>/fail on failure, so a silently-stopped schedule gets noticed.
 cipher-brain schedule install --backend turbo --pg "postgres://user@localhost:5432/gbrain" \
-  --dir ~/.gbrain --max-spend 500000000
-cipher-brain schedule status   # last run + rc, next scheduled run
+  --dir ~/.gbrain --max-spend 500000000 --ping-url https://hc-ping.com/<uuid>
+cipher-brain schedule status   # last run + rc, next scheduled run, ping-url config
 ```
 
 ### Profiles

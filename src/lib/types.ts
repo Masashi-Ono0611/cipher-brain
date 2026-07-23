@@ -45,6 +45,8 @@ export interface CliOptions {
   max_spend?: string;
   index_file?: string;
   wallet?: string; // wallet address --wallet <path> (defaults to CIPHER_BRAIN_AR_WALLET)
+  ping_url?: string; // schedule install: dead man's switch success ping (healthchecks.io-style)
+  ping_url_fail?: string; // schedule install: failure ping override (defaults to `${ping_url}/fail`)
 }
 
 // A StorageBackend is { put(file) -> locator, get(locator, outFile) }. Storage

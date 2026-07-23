@@ -11,6 +11,13 @@ import { exists, fmtBytes, sha256, errMsg } from './util.js';
 import { recipientEntries, resolvePinnedRecipients } from './keys.js';
 import { resolveProfilePaths } from './profiles.js';
 import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.js';
+import {
+  assertGitleaksAvailable,
+  scanForSecrets,
+  reportSecretFindings,
+  type ScanSecretsMode,
+  type SecretFinding,
+} from './secrets-scan.js';
 import type { CliOptions } from './types.js';
 
 // Promote a finished .part to its final --out, no-clobber. Prefer link(): it is atomic
@@ -146,6 +153,9 @@ interface ManifestComponent {
   tables?: string[] | 'all';
   content_digest: string;
   captured_at: string;
+  // Present only when --scan-secrets was passed (#215): gitleaks rule-ID + count for
+  // this component, NEVER the matched secret/file path/line (see secrets-scan.ts).
+  secrets_scan?: SecretFinding[];
 }
 
 export async function snapshot(o: CliOptions): Promise<void> {
@@ -156,6 +166,17 @@ export async function snapshot(o: CliOptions): Promise<void> {
   if (o.profile) o.dirs = [...(await resolveProfilePaths(o)), ...o.dirs];
   if (!o.pg && o.dirs.length === 0)
     throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
+  // --scan-secrets warn|deny (#215): gitleaks over each --dir/--profile source's staged
+  // plaintext before it is archived+encrypted. Validated AND gitleaks-availability-checked
+  // here, before any pg_dump/tar/staging work below — the same fail-fast posture the
+  // --out parent dir / recipient checks below already follow.
+  let scanMode: ScanSecretsMode | undefined;
+  if (o.scan_secrets !== undefined) {
+    if (o.scan_secrets !== 'warn' && o.scan_secrets !== 'deny')
+      throw new Error(`--scan-secrets must be "warn" or "deny" (got ${JSON.stringify(o.scan_secrets)})`);
+    scanMode = o.scan_secrets;
+    await assertGitleaksAvailable();
+  }
   // No-clobber: refuse to overwrite an existing snapshot (this is a backup tool — a
   // silent overwrite could destroy a prior, possibly only, copy of the brain). The old
   // `age -o o.out` write left this to age's version-dependent overwrite policy; the
@@ -336,9 +357,24 @@ export async function snapshot(o: CliOptions): Promise<void> {
       const extractDir = join(stage, `.extract-${name}`);
       await mkdir(extractDir);
       let contentDigest: string;
+      let secretsScan: SecretFinding[] | undefined;
       try {
         await run('tar', ['-xzf', archivePath, '-C', extractDir, '-p'], { timeoutMs: PIPE_TIMEOUT_MS });
         contentDigest = await contentDigestOfPath(join(extractDir, basename(abs)));
+        // Scan the SAME extracted root the digest above just read (join(extractDir,
+        // basename(abs)), NOT extractDir itself — gitleaks looks for "(target
+        // path)/.gitleaks.toml", so passing the actual source root is what lets a
+        // .gitleaks.toml dropped at the top of the scanned source be discovered, matching
+        // the doc'd "drop a .gitleaks.toml into a scanned source" story; scanning the
+        // parent extractDir one level up would look for it in the wrong place, multi-model
+        // review finding) — the exact plaintext about to be folded into the final tar|age
+        // stream, before extractDir is erased in the finally below. deny throws here,
+        // unwinding out through this function's own try/finally (stage cleanup still
+        // runs); warn just logs and falls through.
+        if (scanMode) {
+          secretsScan = await scanForSecrets(join(extractDir, basename(abs)));
+          reportSecretFindings(name, secretsScan, scanMode);
+        }
       } finally {
         // must not leak into the snapshot: the final encryptToFile below tars stage/. whole
         await rm(extractDir, { recursive: true, force: true });
@@ -349,6 +385,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
         source: abs,
         content_digest: contentDigest,
         captured_at: new Date().toISOString(),
+        ...(scanMode ? { secrets_scan: secretsScan ?? [] } : {}),
       }); // skew vs the DB is now detectable on restore
     }
     // Combined content digest = sha256 over each component's (declared identity, kind,
@@ -382,6 +419,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
           content_digest: contentDigest,
           recipients_fingerprint: recipientsFingerprint,
           ...(o.profile ? { profile: o.profile } : {}),
+          ...(scanMode ? { scan_secrets_mode: scanMode } : {}),
           components,
         },
         null,

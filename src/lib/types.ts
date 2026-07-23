@@ -41,6 +41,7 @@ export interface CliOptions {
   digest?: string;
   save_locator?: string;
   locator?: string;
+  scan_secrets?: string; // snapshot --scan-secrets warn|deny (gitleaks, #215) — validated in snapshot.ts, not here (parseArgs can't know the enum)
   from_locator_file?: string;
   wait?: string;
   at?: string;

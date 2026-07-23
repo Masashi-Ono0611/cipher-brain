@@ -112,7 +112,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       this to confirm you are funding the SAME wallet cipher-brain will sign uploads
       with.
 
-  cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
+  cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]... [--scan-secrets warn|deny]
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
       Also records a deterministic PLAINTEXT content digest (mtime-independent) in the
       manifest and in a "<out>.digest" sidecar, PLUS a recipients fingerprint (the
@@ -132,6 +132,15 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
                                      --force-vault to snapshot a vault-less dir anyway)
         chatgpt-export --zip <path>  the official ChatGPT export zip, archived as-is
                                      (never extracted)
+      --scan-secrets warn|deny (#215) runs gitleaks (must be on PATH — install via
+      https://github.com/gitleaks/gitleaks) over each --dir/--profile source's staged
+      plaintext BEFORE it is archived+encrypted — Arweave/Turbo are write-once,
+      un-deletable backends, so an accidentally-committed API key/token/password can
+      never be scrubbed after the fact. Default (flag omitted): no scan, unchanged
+      behavior. warn: log any findings (rule ID + count only — never the matched
+      secret, file path, or line) and proceed. deny: refuse the whole snapshot if
+      any component has findings. Drop a .gitleaks.toml into a scanned source to
+      customize/allowlist rules, same as you would for a git repo.
 
   cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>] [--yes] [--no-expand-components]
       Decrypt with the PRIVATE identity. Extraction never clobbers a file already

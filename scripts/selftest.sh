@@ -740,5 +740,96 @@ printf '%s' "$TERR" | grep -qi "timed out" || { echo "[FAIL] no timeout error su
 [ "$ELAPSED" -lt 15 ] || { echo "[FAIL] pg_restore took ${ELAPSED}s — timeoutMs did not bound it (< the 30s stub sleep)"; exit 1; }
 echo "[PASS] a wedged pg_restore is killed by the timeout in ${ELAPSED}s instead of hanging the CLI"
 
+echo "== #215: --scan-secrets warn|deny (gitleaks) =="
+# This whole section is deliberately explicit about CIPHER_BRAIN_HOME="$TMP/keys" on
+# EVERY invocation (snapshot AND restore) rather than relying on the ambient exported
+# default — the export was repointed to "$TMP/keys2" earlier in this script (line ~216),
+# so a bare `cb` call and an explicit "$TMP/keys" override would silently use TWO
+# DIFFERENT identities/recipients (a snapshot's ciphertext would then not decrypt with
+# the identity a paired restore call explicitly names).
+echo "== #215: --scan-secrets is validated up front (bad value refused before any work) =="
+set +e
+BADMODE_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/badmode.age" --scan-secrets bogus 2>&1); BADMODE_RC=$?
+set -e
+[ "$BADMODE_RC" != "0" ] || { echo "[FAIL] --scan-secrets bogus was accepted"; exit 1; }
+printf '%s' "$BADMODE_ERR" | grep -q 'must be "warn" or "deny"' || { echo "[FAIL] wrong error for --scan-secrets bogus"; echo "$BADMODE_ERR"; exit 1; }
+test ! -e "$TMP/badmode.age" || { echo "[FAIL] --scan-secrets bogus still produced an output file"; exit 1; }
+echo "[PASS] --scan-secrets rejects anything other than warn/deny, before any --out is created"
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "[SKIP] --scan-secrets warn/deny tests: no \`gitleaks\` binary on PATH (install it — https://github.com/gitleaks/gitleaks — to exercise this; CI installs it via the .github/workflows/ci.yml step, see #215)"
+else
+  # A DUMMY, obviously-fake AWS-access-key-SHAPED string (sequential alphabet, never a
+  # real credential) — just enough to match gitleaks' default aws-access-token rule so
+  # this proves the wiring, not gitleaks' own detection accuracy.
+  SECRETS_SRC="$TMP/secrets-src"; mkdir -p "$SECRETS_SRC"
+  printf 'AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n' > "$SECRETS_SRC/config.env"
+  CLEAN_SRC="$TMP/clean-secrets-src"; mkdir -p "$CLEAN_SRC"
+  printf 'nothing secret here\n' > "$CLEAN_SRC/note.txt"
+
+  echo "== #215: default (no --scan-secrets) is unchanged — a snapshot with a secret still succeeds silently =="
+  CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/nosca.age" >/dev/null
+  test -f "$TMP/nosca.age" || { echo "[FAIL] default (no --scan-secrets) snapshot did not produce an output file"; exit 1; }
+  echo "[PASS] omitting --scan-secrets leaves existing behavior unchanged (no scan, no refusal)"
+
+  echo "== #215: --scan-secrets warn proceeds despite a finding, and records rule ID + count (never the secret) in the manifest =="
+  WARN_SNAP="$TMP/warn.age"
+  WARN_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$WARN_SNAP" --scan-secrets warn 2>&1)
+  test -f "$WARN_SNAP" || { echo "[FAIL] --scan-secrets warn refused to produce a snapshot despite being warn-mode"; echo "$WARN_ERR"; exit 1; }
+  printf '%s' "$WARN_ERR" | grep -qi "gitleaks found" || { echo "[FAIL] --scan-secrets warn did not report the finding"; echo "$WARN_ERR"; exit 1; }
+  printf '%s' "$WARN_ERR" | grep -q "AKIAABCDEFGHIJKLMNOP" && { echo "[FAIL] the actual dummy secret value leaked into --scan-secrets warn output"; echo "$WARN_ERR"; exit 1; }
+  WARN_OUT="$TMP/warn-restored"
+  CIPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$WARN_SNAP" --out-dir "$WARN_OUT" >/dev/null
+  WARN_MANIFEST="$WARN_OUT/manifest.json"
+  test -f "$WARN_MANIFEST" || { echo "[FAIL] restore did not extract manifest.json"; exit 1; }
+  node -e "
+    const m = JSON.parse(require('node:fs').readFileSync('$WARN_MANIFEST', 'utf8'));
+    if (m.scan_secrets_mode !== 'warn') { console.error('manifest scan_secrets_mode = ' + JSON.stringify(m.scan_secrets_mode) + ', expected \"warn\"'); process.exit(1); }
+    const c = m.components.find((x) => /^secrets-src/.test(x.name));
+    if (!c) { console.error('no secrets-src component in manifest'); process.exit(1); }
+    if (!Array.isArray(c.secrets_scan) || c.secrets_scan.length === 0) { console.error('component.secrets_scan missing/empty: ' + JSON.stringify(c.secrets_scan)); process.exit(1); }
+    const f = c.secrets_scan.find((x) => x.rule_id === 'aws-access-token');
+    if (!f || f.count < 1) { console.error('expected an aws-access-token finding with count >= 1, got: ' + JSON.stringify(c.secrets_scan)); process.exit(1); }
+    const raw = JSON.stringify(m);
+    if (raw.includes('AKIAABCDEFGHIJKLMNOP')) { console.error('the dummy secret VALUE leaked into manifest.json'); process.exit(1); }
+  " || { echo "[FAIL] manifest.json did not record rule ID + count for the --scan-secrets warn finding (or leaked the secret value)"; cat "$WARN_MANIFEST"; exit 1; }
+  echo "[PASS] --scan-secrets warn proceeds, logs the finding, and records only rule ID + count in the manifest — never the secret value"
+
+  echo "== #215: --scan-secrets deny refuses the whole snapshot when a finding exists (no --out produced) =="
+  DENY_SNAP="$TMP/deny.age"
+  set +e
+  DENY_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$DENY_SNAP" --scan-secrets deny 2>&1); DENY_RC=$?
+  set -e
+  [ "$DENY_RC" != "0" ] || { echo "[FAIL] --scan-secrets deny exited 0 despite a finding"; exit 1; }
+  printf '%s' "$DENY_ERR" | grep -qi "refusing to snapshot" || { echo "[FAIL] --scan-secrets deny did not explain the refusal"; echo "$DENY_ERR"; exit 1; }
+  printf '%s' "$DENY_ERR" | grep -q "AKIAABCDEFGHIJKLMNOP" && { echo "[FAIL] the actual dummy secret value leaked into --scan-secrets deny output"; echo "$DENY_ERR"; exit 1; }
+  test ! -e "$DENY_SNAP" || { echo "[FAIL] --scan-secrets deny still produced an output file"; exit 1; }
+  test ! -e "$DENY_SNAP.part" || { echo "[FAIL] --scan-secrets deny left a .part file behind"; exit 1; }
+  echo "[PASS] --scan-secrets deny aborts the snapshot before any ciphertext is written, without leaking the secret value"
+
+  echo "== #215: --scan-secrets deny still succeeds on a source with no findings =="
+  CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$CLEAN_SRC" --out "$TMP/deny-clean.age" --scan-secrets deny >/dev/null
+  test -f "$TMP/deny-clean.age" || { echo "[FAIL] --scan-secrets deny refused a clean source"; exit 1; }
+  echo "[PASS] --scan-secrets deny only refuses when gitleaks actually finds something"
+
+  echo "== #215: --scan-secrets refuses clearly (naming gitleaks) when the binary can't be resolved, regardless of the real host's PATH =="
+  # Same isolated-PATH technique selftest-schedule.sh uses for pg_dump: build a PATH
+  # containing ONLY the one binary this check itself shells out to (a POSIX shell, to run
+  # `command -v gitleaks` — see gitleaksAvailable() in src/lib/secrets-scan.ts), so
+  # gitleaks is guaranteed unresolvable no matter what the real host has installed. node
+  # is invoked via its absolute path so it needs no PATH entry of its own.
+  NODE_BIN_215="$(command -v node)"
+  ISOLATED_PATH_215="$TMP/isolated-path-215"; mkdir -p "$ISOLATED_PATH_215"
+  ln -s "$(command -v sh)" "$ISOLATED_PATH_215/sh"
+  set +e
+  MISS_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" PATH="$ISOLATED_PATH_215" "$NODE_BIN_215" "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$CLEAN_SRC" --out "$TMP/miss.age" --scan-secrets warn 2>&1); MISS_RC=$?
+  set -e
+  [ "$MISS_RC" != "0" ] || { echo "[FAIL] --scan-secrets warn (isolated PATH, no gitleaks) was accepted"; exit 1; }
+  printf '%s' "$MISS_ERR" | grep -qi "gitleaks" || { echo "[FAIL] the missing-gitleaks error does not name gitleaks"; echo "$MISS_ERR"; exit 1; }
+  printf '%s' "$MISS_ERR" | grep -qi "brew install gitleaks" || { echo "[FAIL] the missing-gitleaks error does not suggest an install command"; echo "$MISS_ERR"; exit 1; }
+  test ! -e "$TMP/miss.age" || { echo "[FAIL] a snapshot was produced despite gitleaks being unresolvable"; exit 1; }
+  echo "[PASS] --scan-secrets fails fast (before any pg_dump/tar work) with an actionable error when gitleaks cannot be resolved"
+fi
+
 echo
 echo "SELFTEST PASS"

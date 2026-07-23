@@ -49,11 +49,17 @@ echo "== pull --sha256: correct hash passes, wrong hash fail-closes (deletes --o
 cb pull --locator "$LOC" --backend file --out "$TMP/got-ok.age" --sha256 "$ORIG"
 [ "$(sha "$TMP/got-ok.age")" = "$ORIG" ] && echo "[PASS] pull --sha256 (correct) kept the bytes" || { echo "[FAIL] correct --sha256 rejected"; exit 1; }
 WRONG="0000000000000000000000000000000000000000000000000000000000000000"
-if cb pull --locator "$LOC" --backend file --out "$TMP/got-bad.age" --sha256 "$WRONG" 2>/dev/null; then
-  echo "[FAIL] pull --sha256 accepted a mismatching hash"; exit 1
-fi
+set +e
+SHA_ERR=$(cb pull --locator "$LOC" --backend file --out "$TMP/got-bad.age" --sha256 "$WRONG" 2>&1); SHA_RC=$?
+set -e
+if [ "$SHA_RC" = "0" ]; then echo "[FAIL] pull --sha256 accepted a mismatching hash"; exit 1; fi
 test ! -f "$TMP/got-bad.age"   # fail-closed: the bad artifact must not be left at --out
 echo "[PASS] pull --sha256 (wrong) errored and deleted --out"
+
+echo "== issue #212: a --sha256 mismatch carries the CB-E001 error code + doc reference =="
+printf '%s' "$SHA_ERR" | grep -q '\[CB-E001\]' || { echo "[FAIL] sha256 mismatch error lacks the CB-E001 code"; echo "$SHA_ERR"; exit 1; }
+printf '%s' "$SHA_ERR" | grep -q 'MANAGEMENT.md#error-codes' || { echo "[FAIL] sha256 mismatch error lacks the doc reference"; echo "$SHA_ERR"; exit 1; }
+echo "[PASS] sha256 mismatch error carries [CB-E001] + MANAGEMENT.md#error-codes"
 
 echo "== issue #107: pull refuses to overwrite an existing --out by default =="
 printf 'pre-existing bytes, must survive the refusal\n' > "$TMP/collide.age"
@@ -64,6 +70,8 @@ fi
 grep -q "already exists" "$TMP/collide.err" || { echo "[FAIL] no-clobber error message missing 'already exists'"; cat "$TMP/collide.err"; exit 1; }
 [ "$(sha "$TMP/collide.age")" = "$COLLIDE_BEFORE" ] || { echo "[FAIL] the pre-existing --out was modified despite the no-clobber refusal"; exit 1; }
 echo "[PASS] pull refuses to overwrite an existing --out, which survives byte-identical"
+grep -q '\[CB-E009\]' "$TMP/collide.err" || { echo "[FAIL] no-clobber error lacks the CB-E009 code"; cat "$TMP/collide.err"; exit 1; }
+echo "[PASS] no-clobber error carries [CB-E009]"
 
 echo "== issue #107: pull --force overwrites an existing --out =="
 cb pull --locator "$LOC" --backend file --out "$TMP/collide.age" --force
@@ -93,11 +101,14 @@ echo "[PASS] absent locator errors"
 
 echo "== issue #93: a locator outside FILE_DIR must be rejected (path traversal / arbitrary local file read) =="
 touch "$TMP/outside.age"
-if cb pull --locator "$TMP/outside.age" --backend file --out "$TMP/leak1.age" 2>/dev/null; then
-  echo "[FAIL] locator outside FILE_DIR was read"; exit 1
-fi
+set +e
+TRAVERSAL_ERR=$(cb pull --locator "$TMP/outside.age" --backend file --out "$TMP/leak1.age" 2>&1); TRAVERSAL_RC=$?
+set -e
+if [ "$TRAVERSAL_RC" = "0" ]; then echo "[FAIL] locator outside FILE_DIR was read"; exit 1; fi
 test ! -f "$TMP/leak1.age"
 echo "[PASS] locator outside FILE_DIR is rejected"
+printf '%s' "$TRAVERSAL_ERR" | grep -q '\[CB-E010\]' || { echo "[FAIL] path-traversal error lacks the CB-E010 code"; echo "$TRAVERSAL_ERR"; exit 1; }
+echo "[PASS] path-traversal error carries [CB-E010]"
 
 if cb pull --locator "$CIPHER_BRAIN_FILE_DIR/../outside.age" --backend file --out "$TMP/leak2.age" 2>/dev/null; then
   echo "[FAIL] relative traversal out of FILE_DIR was read"; exit 1
@@ -411,6 +422,24 @@ if cb push --in "$TMP/s2.age" --backend file --skip-unchanged 2>/dev/null; then
   echo "[FAIL] --skip-unchanged ran without --save-locator"; exit 1
 fi
 echo "[PASS] --skip-unchanged without --save-locator is rejected"
+
+echo "== issue #212: push refuses non-ciphertext with the CB-E008 error code =="
+printf 'plainly not age ciphertext\n' > "$TMP/plaintext.age"
+set +e
+NONCT_ERR=$(cb push --in "$TMP/plaintext.age" --backend file 2>&1); NONCT_RC=$?
+set -e
+if [ "$NONCT_RC" = "0" ]; then echo "[FAIL] push accepted a non-ciphertext --in"; exit 1; fi
+printf '%s' "$NONCT_ERR" | grep -q "not age ciphertext" || { echo "[FAIL] push did not report the non-ciphertext refusal"; echo "$NONCT_ERR"; exit 1; }
+printf '%s' "$NONCT_ERR" | grep -q '\[CB-E008\]' || { echo "[FAIL] non-ciphertext push error lacks the CB-E008 code"; echo "$NONCT_ERR"; exit 1; }
+echo "[PASS] push refuses non-ciphertext, error carries [CB-E008]"
+
+echo "== issue #212: unknown --backend name carries the CB-E013 error code =="
+set +e
+BADBACKEND_ERR=$(cb push --in "$TMP/s2.age" --backend bogus 2>&1); BADBACKEND_RC=$?
+set -e
+if [ "$BADBACKEND_RC" = "0" ]; then echo "[FAIL] push accepted an unknown --backend"; exit 1; fi
+printf '%s' "$BADBACKEND_ERR" | grep -q '\[CB-E013\]' || { echo "[FAIL] unknown-backend error lacks the CB-E013 code"; echo "$BADBACKEND_ERR"; exit 1; }
+echo "[PASS] unknown --backend error carries [CB-E013]"
 
 echo
 echo "STORAGE SELFTEST (file backend) PASS"

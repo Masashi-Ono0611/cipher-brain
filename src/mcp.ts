@@ -42,6 +42,7 @@ import { estimateCost } from './lib/estimate.js';
 import { keygenAt } from './lib/keys.js';
 import { wallet } from './lib/wallet.js';
 import { exists, sha256, errMsg } from './lib/util.js';
+import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
 import type { CliOptions } from './lib/types.js';
 
 const SERVER_NAME = 'cipher-brain-mcp';
@@ -134,9 +135,17 @@ function structuredOk(payload: Record<string, unknown>): CallToolResult {
 }
 
 function structuredErr(errObj: unknown): CallToolResult {
+  const rawMessage = errObj instanceof Error ? errObj.message : String(errObj);
+  // issue #212: same stable "[CB-E0xx] see MANAGEMENT.md#error-codes" suffix the CLI
+  // appends (cli.ts's main().catch) — applied HERE, the one place every tool call's
+  // error funnels through, never at an individual throw site (no existing message body
+  // changes). `cb_code` additionally surfaces the bare code as its own field — an AI
+  // agent driving these tools can branch on it directly instead of regexing `message`.
+  const cbCode = matchErrorCode(rawMessage)?.code;
   const payload = {
     code: errObj instanceof ToolError ? errObj.code : 'ERR_INTERNAL',
-    message: errObj instanceof Error ? errObj.message : String(errObj),
+    message: annotateErrorMessage(rawMessage),
+    ...(cbCode ? { cb_code: cbCode } : {}),
   };
   return {
     content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],

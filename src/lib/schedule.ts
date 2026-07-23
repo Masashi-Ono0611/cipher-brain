@@ -637,46 +637,85 @@ function nextRunAt(hour: number, minute: number): string {
   return `${next.getFullYear()}-${p(next.getMonth() + 1)}-${p(next.getDate())} ${p(next.getHours())}:${p(next.getMinutes())}`;
 }
 
-async function status(): Promise<void> {
+// The legacy-migration note text, shared by the human-readable report and --json's
+// trigger.legacy_note field below — one string, never re-worded twice.
+const legacyLaunchdNote = () =>
+  `this schedule is still registered under the legacy unscoped launchd label (${LEGACY_LABEL}) from before CIPHER_BRAIN_HOME-scoped labels — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`;
+const legacyCronNote = () =>
+  `this schedule is still registered under the legacy unscoped crontab marker (${LEGACY_CRON_MARKER}) from before CIPHER_BRAIN_HOME-scoped markers — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`;
+
+async function status(o: CliOptions): Promise<void> {
   const cfg = await readConfig();
-  console.log(`configured: daily at ${cfg.at}, backend ${cfg.backend}`);
-  console.log(`runner: ${cfg.runner}`);
-  console.log(cfg.ping_url ? `ping: ${cfg.ping_url} (fail: ${cfg.ping_url_fail})` : 'ping: not configured');
+
+  let triggerPath: string | undefined;
+  let triggerEntry: string | undefined;
+  let loadedYesNo: 'yes' | 'no' | 'unknown';
+  let legacy: boolean;
+  let legacyNote: string | undefined;
+
   if (cfg.trigger.type === 'launchd') {
     // A legacy (pre-#114) schedule.json literally stored the unscoped plist path — trust
     // THAT ground truth over re-deriving from the current (scoped) LABEL constant, so a
     // legacy job that IS actually loaded is reported as loaded, not wrongly "no".
-    const legacy = isLegacyLaunchdCfg(cfg);
+    legacy = isLegacyLaunchdCfg(cfg);
     const label = legacy ? LEGACY_LABEL : LABEL;
     const r = sh('launchctl', ['print', `gui/${process.getuid?.()}/${label}`]);
-    const loaded = !r.error && r.status === 0;
-    console.log(`trigger: launchd ${cfg.trigger.path} (loaded: ${loaded ? 'yes' : 'no'})`);
-    if (legacy) {
-      console.log(
-        `note: this schedule is still registered under the legacy unscoped launchd label (${LEGACY_LABEL}) from before CIPHER_BRAIN_HOME-scoped labels — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`,
-      );
-    }
+    loadedYesNo = !r.error && r.status === 0 ? 'yes' : 'no';
+    triggerPath = cfg.trigger.path;
+    if (legacy) legacyNote = legacyLaunchdNote();
   } else {
     // Same reasoning as the launchd branch: read back the EXACT line install last wrote
     // (whatever marker scheme was in effect then) instead of re-deriving one from the
     // current cfg + the current (scoped) CRON_MARKER constant, which would misreport a
     // still-legacy registration as unregistered.
     const entryLine = (await readOwnCronEntry()) ?? cronLine(cfg);
-    const legacy = isLegacyCronLine(entryLine);
+    legacy = isLegacyCronLine(entryLine);
     const marker = legacy ? LEGACY_CRON_MARKER : CRON_MARKER;
-    let loaded = 'unknown';
+    loadedYesNo = 'unknown';
     const r = sh('crontab', ['-l']);
-    if (!r.error) loaded = r.status === 0 && r.stdout.includes(marker) ? 'yes' : 'no';
-    console.log(`trigger: cron "${entryLine}" (registered: ${loaded})`);
-    if (legacy) {
-      console.log(
-        `note: this schedule is still registered under the legacy unscoped crontab marker (${LEGACY_CRON_MARKER}) from before CIPHER_BRAIN_HOME-scoped markers — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`,
-      );
-    }
+    if (!r.error) loadedYesNo = r.status === 0 && r.stdout.includes(marker) ? 'yes' : 'no';
+    triggerEntry = entryLine;
+    if (legacy) legacyNote = legacyCronNote();
   }
   const last = await lastLog();
+  const nextRun = nextRunAt(cfg.hour, cfg.minute);
+
+  if (o.json) {
+    // --json (#211): the SAME state read above, as one machine-readable line on
+    // stdout instead of the human-readable report below — never a re-implementation,
+    // so this can never disagree with either the human-readable report or the MCP
+    // schedule_status tool.
+    console.log(
+      JSON.stringify({
+        configured: { at: cfg.at, backend: cfg.backend },
+        runner: cfg.runner,
+        ping: cfg.ping_url ? { url: cfg.ping_url, fail_url: cfg.ping_url_fail } : null,
+        trigger: {
+          type: cfg.trigger.type,
+          ...(triggerPath !== undefined ? { path: triggerPath } : {}),
+          ...(triggerEntry !== undefined ? { entry: triggerEntry } : {}),
+          loaded: loadedYesNo,
+          legacy,
+          ...(legacyNote !== undefined ? { legacy_note: legacyNote } : {}),
+        },
+        last_run: last ? { log: last.name, rc_line: last.rcLine } : null,
+        next_run: nextRun,
+      }),
+    );
+    return;
+  }
+
+  console.log(`configured: daily at ${cfg.at}, backend ${cfg.backend}`);
+  console.log(`runner: ${cfg.runner}`);
+  console.log(cfg.ping_url ? `ping: ${cfg.ping_url} (fail: ${cfg.ping_url_fail})` : 'ping: not configured');
+  if (cfg.trigger.type === 'launchd') {
+    console.log(`trigger: launchd ${triggerPath} (loaded: ${loadedYesNo})`);
+  } else {
+    console.log(`trigger: cron "${triggerEntry}" (registered: ${loadedYesNo})`);
+  }
+  if (legacyNote) console.log(`note: ${legacyNote}`);
   console.log(last ? `last run: ${last.name} — ${last.rcLine}` : 'last run: none yet');
-  console.log(`next run: ${nextRunAt(cfg.hour, cfg.minute)} (local)`);
+  console.log(`next run: ${nextRun} (local)`);
 }
 
 async function uninstall(o: CliOptions): Promise<void> {
@@ -772,7 +811,7 @@ export async function schedule(o: CliOptions): Promise<void> {
     case 'install':
       return install(o);
     case 'status':
-      return status();
+      return status(o);
     case 'uninstall':
       return uninstall(o);
     default:

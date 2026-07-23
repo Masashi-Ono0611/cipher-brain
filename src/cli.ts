@@ -35,6 +35,7 @@ import { wallet } from './lib/wallet.js';
 import { estimate } from './lib/estimate.js';
 import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
+import { annotateErrorMessage } from './lib/errors.js';
 import { printMascot } from './lib/ui.js';
 import { printFounderNote, printWisdomQuote } from './lib/wisdom.js';
 import type { CliOptions } from './lib/types.js';
@@ -50,6 +51,7 @@ const BOOL_FLAGS = new Set([
   'no_expand_components',
   'pq',
   'dry_run',
+  'json',
 ]); // flags that take no value
 
 function parseArgs(argv: string[]): CliOptions {
@@ -113,7 +115,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       this to confirm you are funding the SAME wallet cipher-brain will sign uploads
       with.
 
-  cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]... [--dry-run]
+  cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]... [--dry-run] [--scan-secrets warn|deny]
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
       A ".cipherbrainignore" file (gitignore-compatible syntax; the "ignore" npm package
       does the matching, not a hand-rolled glob) at the ROOT of a --dir (or a --profile-
@@ -144,6 +146,15 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
                                      --force-vault to snapshot a vault-less dir anyway)
         chatgpt-export --zip <path>  the official ChatGPT export zip, archived as-is
                                      (never extracted)
+      --scan-secrets warn|deny (#215) runs gitleaks (must be on PATH — install via
+      https://github.com/gitleaks/gitleaks) over each --dir/--profile source's staged
+      plaintext BEFORE it is archived+encrypted — Arweave/Turbo are write-once,
+      un-deletable backends, so an accidentally-committed API key/token/password can
+      never be scrubbed after the fact. Default (flag omitted): no scan, unchanged
+      behavior. warn: log any findings (rule ID + count only — never the matched
+      secret, file path, or line) and proceed. deny: refuse the whole snapshot if
+      any component has findings. Drop a .gitleaks.toml into a scanned source to
+      customize/allowlist rules, same as you would for a git repo.
 
   cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>] [--yes] [--no-expand-components]
       Decrypt with the PRIVATE identity. Extraction never clobbers a file already
@@ -168,11 +179,16 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       CIPHER_BRAIN_YES=1 to confirm, same as push's paid-backend guard below. Bounded by
       the same pipe timeout as the decrypt/extract step (CIPHER_BRAIN_PIPE_TIMEOUT).
 
-  cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>]
+  cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>] [--json]
       Assert it is real age ciphertext, a wrong key cannot open it, AND (when the
       private identity is on this box) that YOUR key decrypts it into a well-formed
       bundle. --sha256 also pins the artifact to an expected hash. VERDICT: PASS (exit 0)
       / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not proven, e.g. public-key-only box).
+      --json prints one JSON object to stdout instead of the human-readable report
+      (file, size_bytes, checks: {age_header, sha256_match, wrong_key_rejected,
+      positive_control}, verdict, exit_code) — the SAME checks computed above, so it
+      never disagrees with the human-readable report or the MCP verify_restore tool.
+      The exit code is unchanged either way.
 
   cipher-brain push --in <file.age> --backend <file|arweave|turbo|rclone> [--remote <name>:<path>] [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
       Upload ciphertext to storage. Prints ONLY the locator to stdout
@@ -212,7 +228,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       when unchanged. (The digest is plaintext-side by necessity: age's ephemeral file
       key makes identical content encrypt to different ciphertext bytes every run.)
 
-  cipher-brain estimate --in <file.age> --backend <file|arweave|turbo|rclone>
+  cipher-brain estimate --in <file.age> --backend <file|arweave|turbo|rclone> [--json]
       Read-only preview: print what pushing --in to --backend would cost WITHOUT
       uploading anything. turbo/arweave show the native unit (winc/winston) plus
       an approximate USD line when a USD/AR rate is fetchable; file and rclone are
@@ -221,6 +237,10 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       brain cannot query it). Sizes --in the same way push does (a real byte count
       off disk). The SAME computation backs the MCP estimate_cost tool, so the two
       never disagree.
+      --json prints the same CostEstimate object as one JSON line on stdout
+      (backend, size_bytes, cost, unit, approx_ar, usd_estimate, note) instead of
+      the human-readable report — field-for-field identical to what estimate_cost
+      returns.
 
   cipher-brain pull (--locator <id> --backend <…> | --remote <name>:<path> --backend rclone | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>] [--force]
       Fetch ciphertext by locator into --out. --from-locator-file reads the locator, its
@@ -262,10 +282,14 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       explicitly if your ping URL has a query string or a trailing slash); it requires
       --ping-url to also be set.
 
-  cipher-brain schedule status
+  cipher-brain schedule status [--json]
       Report the configured time + backend, whether a dead man's switch ping-url is
       configured, the trigger load state, the last run log and its final rc line, and the
       next scheduled run.
+      --json prints one JSON object to stdout instead of the human-readable report
+      (configured, runner, ping, trigger: {type, loaded, legacy, ...}, last_run,
+      next_run) — the SAME state read above, so it never disagrees with the
+      human-readable report or the MCP schedule_status tool.
 
   cipher-brain schedule uninstall
       Unregister the trigger and remove the generated runner/plist/cron entry (idempotent;
@@ -369,6 +393,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((e: unknown) => {
-  console.error(`error: ${errMsg(e)}`);
+  // issue #212: a stable "[CB-E0xx] see MANAGEMENT.md#error-codes" suffix is appended
+  // HERE (the one place every command's error funnels through) when the message matches
+  // a known failure pattern — never at the individual throw site, so no existing message
+  // body changes; an unmatched error prints exactly as before.
+  console.error(`error: ${annotateErrorMessage(errMsg(e))}`);
   process.exitCode = 1;
 });

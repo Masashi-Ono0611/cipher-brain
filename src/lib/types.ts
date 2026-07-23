@@ -26,6 +26,7 @@ export interface CliOptions {
   no_load?: boolean;
   no_expand_components?: boolean;
   dry_run?: boolean; // snapshot --dry-run: preview .cipherbrainignore include/exclude without writing anything (#216)
+  json?: boolean; // verify/estimate/schedule status: machine-readable JSON on stdout instead of the human-readable report (issue #211)
 
   // value flags — always a string when passed (argv is untyped text)
   out?: string;
@@ -42,6 +43,7 @@ export interface CliOptions {
   digest?: string;
   save_locator?: string;
   locator?: string;
+  scan_secrets?: string; // snapshot --scan-secrets warn|deny (gitleaks, #215) — validated in snapshot.ts, not here (parseArgs can't know the enum)
   from_locator_file?: string;
   wait?: string;
   at?: string;

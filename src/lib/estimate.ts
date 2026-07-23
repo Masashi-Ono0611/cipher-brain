@@ -194,6 +194,10 @@ export function formatEstimate(e: CostEstimate): string[] {
 // estimate_cost tool returns, as a human-readable report — WITHOUT uploading
 // anything. `size_bytes` (the MCP tool's alternative to `file`) has no CLI
 // equivalent — --in is always a real file on disk here.
+// --json (#211) prints the SAME CostEstimate object estimateCost() returned, as one
+// JSON line on stdout, instead of formatEstimate()'s human-readable lines — never a
+// re-implementation, so it can never disagree with either the human-readable report
+// or the MCP estimate_cost tool.
 export async function estimate(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone> required');
@@ -202,5 +206,6 @@ export async function estimate(o: CliOptions): Promise<void> {
   if (!st.isFile())
     throw new Error(`${o.in} is not a regular file (cannot size a directory/special file for an estimate)`);
   const result = await estimateCost(o.backend, st.size);
-  for (const line of formatEstimate(result)) console.log(line);
+  if (o.json) console.log(JSON.stringify(result));
+  else for (const line of formatEstimate(result)) console.log(line);
 }

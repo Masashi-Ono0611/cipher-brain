@@ -49,6 +49,7 @@ const BOOL_FLAGS = new Set([
   'no_load',
   'no_expand_components',
   'pq',
+  'json',
 ]); // flags that take no value
 
 function parseArgs(argv: string[]): CliOptions {
@@ -156,11 +157,16 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       CIPHER_BRAIN_YES=1 to confirm, same as push's paid-backend guard below. Bounded by
       the same pipe timeout as the decrypt/extract step (CIPHER_BRAIN_PIPE_TIMEOUT).
 
-  cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>]
+  cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>] [--json]
       Assert it is real age ciphertext, a wrong key cannot open it, AND (when the
       private identity is on this box) that YOUR key decrypts it into a well-formed
       bundle. --sha256 also pins the artifact to an expected hash. VERDICT: PASS (exit 0)
       / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not proven, e.g. public-key-only box).
+      --json prints one JSON object to stdout instead of the human-readable report
+      (file, size_bytes, checks: {age_header, sha256_match, wrong_key_rejected,
+      positive_control}, verdict, exit_code) — the SAME checks computed above, so it
+      never disagrees with the human-readable report or the MCP verify_restore tool.
+      The exit code is unchanged either way.
 
   cipher-brain push --in <file.age> --backend <file|arweave|turbo> [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
       Upload ciphertext to storage. Prints ONLY the locator to stdout
@@ -191,12 +197,16 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       when unchanged. (The digest is plaintext-side by necessity: age's ephemeral file
       key makes identical content encrypt to different ciphertext bytes every run.)
 
-  cipher-brain estimate --in <file.age> --backend <file|arweave|turbo>
+  cipher-brain estimate --in <file.age> --backend <file|arweave|turbo> [--json]
       Read-only preview: print what pushing --in to --backend would cost WITHOUT
       uploading anything. turbo/arweave show the native unit (winc/winston) plus
       an approximate USD line when a USD/AR rate is fetchable; file is always free.
       Sizes --in the same way push does (a real byte count off disk). The SAME
       computation backs the MCP estimate_cost tool, so the two never disagree.
+      --json prints the same CostEstimate object as one JSON line on stdout
+      (backend, size_bytes, cost, unit, approx_ar, usd_estimate, note) instead of
+      the human-readable report — field-for-field identical to what estimate_cost
+      returns.
 
   cipher-brain pull (--locator <id> --backend <…> | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>] [--force]
       Fetch ciphertext by locator into --out. --from-locator-file reads the locator, its
@@ -235,10 +245,14 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       explicitly if your ping URL has a query string or a trailing slash); it requires
       --ping-url to also be set.
 
-  cipher-brain schedule status
+  cipher-brain schedule status [--json]
       Report the configured time + backend, whether a dead man's switch ping-url is
       configured, the trigger load state, the last run log and its final rc line, and the
       next scheduled run.
+      --json prints one JSON object to stdout instead of the human-readable report
+      (configured, runner, ping, trigger: {type, loaded, legacy, ...}, last_run,
+      next_run) — the SAME state read above, so it never disagrees with the
+      human-readable report or the MCP schedule_status tool.
 
   cipher-brain schedule uninstall
       Unregister the trigger and remove the generated runner/plist/cron entry (idempotent;

@@ -45,6 +45,36 @@ if [ "$RC" = "0" ]; then echo "FAIL: verify --sha256 (wrong) exited 0"; echo "$O
 printf '%s' "$OUT" | grep -q "VERDICT: FAIL" || { echo "FAIL: wrong --sha256 not VERDICT FAIL"; echo "$OUT"; exit 1; }
 echo "[PASS] verify --sha256 (wrong) is FAIL/non-zero"
 
+echo "== issue #211: verify --json prints one machine-readable line, the SAME checks/verdict as the human report =="
+JOUT=$(cb verify --in "$TMP/snap.age" --json); RC=$?
+[ "$RC" = "0" ] || { echo "FAIL: verify --json (PASS case) exited $RC"; echo "$JOUT"; exit 1; }
+LINES=$(printf '%s\n' "$JOUT" | wc -l | tr -d ' ')
+[ "$LINES" = "1" ] || { echo "FAIL: verify --json printed $LINES stdout line(s), expected exactly 1 (no mascot/decoration mixed into stdout)"; echo "$JOUT"; exit 1; }
+node -e "
+const j = JSON.parse(process.argv[1]);
+if (j.verdict !== 'PASS') throw new Error('expected verdict PASS, got ' + j.verdict);
+if (j.exit_code !== 0) throw new Error('expected exit_code 0, got ' + j.exit_code);
+if (j.checks.age_header !== true) throw new Error('expected checks.age_header true');
+if (j.checks.sha256_match !== null) throw new Error('expected checks.sha256_match null (no --sha256 passed), got ' + j.checks.sha256_match);
+if (j.checks.wrong_key_rejected !== true) throw new Error('expected checks.wrong_key_rejected true');
+if (j.checks.positive_control !== 'pass') throw new Error('expected checks.positive_control pass, got ' + j.checks.positive_control);
+if (j.file !== process.argv[2]) throw new Error('expected file field to echo --in');
+if (typeof j.size_bytes !== 'number' || j.size_bytes <= 0) throw new Error('expected a positive size_bytes');
+" "$JOUT" "$TMP/snap.age"
+echo "[PASS] verify --json (PASS case): exactly one JSON line; verdict/exit_code/checks all correct"
+
+set +e
+JOUT_BAD=$(cb verify --in "$TMP/snap.age" --sha256 "deadbeef" --json); RC=$?
+set -e
+[ "$RC" = "1" ] || { echo "FAIL: verify --json (wrong --sha256) exited $RC, expected 1"; echo "$JOUT_BAD"; exit 1; }
+node -e "
+const j = JSON.parse(process.argv[1]);
+if (j.verdict !== 'FAIL') throw new Error('expected verdict FAIL, got ' + j.verdict);
+if (j.exit_code !== 1) throw new Error('expected exit_code 1, got ' + j.exit_code);
+if (j.checks.sha256_match !== false) throw new Error('expected checks.sha256_match false, got ' + j.checks.sha256_match);
+" "$JOUT_BAD"
+echo "[PASS] verify --json (wrong --sha256): verdict FAIL / exit_code 1 / sha256_match false"
+
 echo "== ciphertext must not leak plaintext =="
 if LC_ALL=C grep -a -q "$MARKER" "$TMP/snap.age"; then
   echo "FAIL: plaintext marker found in ciphertext"; exit 1
@@ -365,6 +395,18 @@ if ! printf '%s' "$OUT" | grep -q "VERDICT: PARTIAL"; then echo "FAIL: expected 
 if printf '%s' "$OUT" | grep -q "VERDICT: PASS"; then echo "FAIL: public-key-only verify falsely printed PASS"; exit 1; fi
 echo "[PASS] public-key-only verify is PARTIAL/exit 2"
 
+set +e
+JOUT_PARTIAL=$(CIPHER_BRAIN_HOME="$PUBONLY" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/snap.age" --json); RC=$?
+set -e
+[ "$RC" = "2" ] || { echo "FAIL: public-key-only verify --json exited $RC, expected 2"; echo "$JOUT_PARTIAL"; exit 1; }
+node -e "
+const j = JSON.parse(process.argv[1]);
+if (j.verdict !== 'PARTIAL') throw new Error('expected verdict PARTIAL, got ' + j.verdict);
+if (j.exit_code !== 2) throw new Error('expected exit_code 2, got ' + j.exit_code);
+if (j.checks.positive_control !== 'skip') throw new Error('expected checks.positive_control skip, got ' + j.checks.positive_control);
+" "$JOUT_PARTIAL"
+echo "[PASS] public-key-only verify --json: verdict PARTIAL / exit_code 2 / positive_control skip (never a false-green PASS)"
+
 echo "== recipient pin: snapshot refuses an out-of-allowlist recipient =="
 PINHOME="$TMP/keys"   # the original keypair from the top of this test
 MYPUB=$(cat "$PINHOME/recipient.txt")
@@ -475,6 +517,27 @@ set -e
 printf '%s' "$OUT2" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
   && { echo "[FAIL] CIPHER_BRAIN_YES=1 still hitting the --yes gate"; echo "$OUT2"; exit 1; } || true
 echo "[PASS] push arweave with CIPHER_BRAIN_YES=1 passes the --yes guard (fails further in: wallet/SDK)"
+
+echo "== issue #211: estimate --json prints the SAME CostEstimate object as one JSON line, human output unchanged =="
+# Capture the full output first (command substitution reads to EOF) rather than
+# piping the live process into `grep -q`, which can close its end of the pipe the
+# instant it matches an early line — EPIPE-killing the still-writing producer (none
+# of estimate's lines is guarded the way printMascot's stderr writes are, see ui.ts).
+EOUT=$(cb estimate --in "$TMP/snap.age" --backend file)
+printf '%s\n' "$EOUT" | grep -q "^backend: file$" \
+  || { echo "[FAIL] estimate --backend file human output regressed"; echo "$EOUT"; exit 1; }
+EXPECT_SIZE=$(stat -f%z "$TMP/snap.age" 2>/dev/null || stat -c%s "$TMP/snap.age")
+EJOUT=$(cb estimate --in "$TMP/snap.age" --backend file --json)
+LINES=$(printf '%s\n' "$EJOUT" | wc -l | tr -d ' ')
+[ "$LINES" = "1" ] || { echo "FAIL: estimate --json printed $LINES stdout line(s), expected exactly 1"; echo "$EJOUT"; exit 1; }
+node -e "
+const j = JSON.parse(process.argv[1]);
+if (j.backend !== 'file') throw new Error('expected backend file, got ' + j.backend);
+if (j.cost !== '0') throw new Error('expected cost 0 for file backend, got ' + j.cost);
+if (j.size_bytes !== Number(process.argv[2])) throw new Error('expected size_bytes ' + process.argv[2] + ', got ' + j.size_bytes);
+if (typeof j.note !== 'string' || j.note.length === 0) throw new Error('expected a non-empty note');
+" "$EJOUT" "$EXPECT_SIZE"
+echo "[PASS] estimate --json (file backend): one JSON line, field-for-field matching the human report's underlying CostEstimate"
 
 echo "== pipeline timeout: a wedged, SIGTERM-IGNORING tar can't hang the CLI (#38) =="
 # TAR_STUB_MODE=wedge swaps the pipeline tar for a node stub that IGNORES SIGTERM and

@@ -250,15 +250,27 @@ async function main(): Promise<void> {
     case 'verify':
       return verify(o);
     case 'push': {
+      // push() is shared with the MCP server (src/mcp.ts) and the init wizard
+      // (wizard.ts), both of which capture its console.error output as
+      // machine-readable data — so the mood mascot (issue #194) is printed HERE,
+      // at the CLI-only dispatch site, rather than inside push() itself, where it
+      // would otherwise leak the ASCII art into an MCP tool result's `log` field.
+      // Decoration only, on stderr (see printMascot in ui.ts).
+      let uploaded: boolean;
+      try {
+        uploaded = await push(o);
+      } catch (e) {
+        printMascot('sad');
+        throw e;
+      }
+      printMascot('happy');
       // A cited precursor quote after a successful upload to a PAID,
       // permanent backend only (issue #195) — never the free `file` backend,
       // and never a --skip-unchanged run that hit its early SKIPPED return
       // (uploaded === false there — push()'s own doc comment in pushpull.ts).
       // CLI-only: mcp.ts calls push() directly (not through this dispatch),
       // so an MCP push never gets this decoration mixed into its result.
-      const uploaded = await push(o);
       if (uploaded && (o.backend === 'arweave' || o.backend === 'turbo')) {
-        printMascot('happy');
         printWisdomQuote();
       }
       return;

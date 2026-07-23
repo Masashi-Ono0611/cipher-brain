@@ -699,6 +699,10 @@ export async function init(_o: CliOptions): Promise<void> {
       console.log(
         'Once the kit is secured, you may delete it from disk yourself — cipher-brain does not do this for you.',
       );
+      // The happy mood mascot (issue #194) is printed by cli.ts's `init` dispatch
+      // case, right after this function returns (immediately followed by the
+      // founder's note, issue #195/#199) — not here, so a successful run only
+      // ever gets ONE happy mascot instead of one from each layer.
     } catch (err) {
       if (pushSucceeded) {
         // Push already happened — see the pushSucceeded declaration above. The

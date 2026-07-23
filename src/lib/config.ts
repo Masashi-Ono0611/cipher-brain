@@ -44,6 +44,11 @@ export const AR_WALLET = process.env.CIPHER_BRAIN_AR_WALLET || ''; // path to a 
 export const AR_PAID_BY = process.env.CIPHER_BRAIN_AR_PAID_BY || ''; // optional (turbo): an address that shared (delegated) Turbo Credits to the signer — passed as `paidBy` so the upload draws from that approval before the signer's own balance (the path for credits bought on a wallet we can't sign with, e.g. MetaMask, then shared to this JWK)
 export const AR_DEFAULT_EXTRA_GATEWAYS = ['https://permagate.io']; // public mirror(s) tried after the primary (override the whole list with CIPHER_BRAIN_AR_GATEWAYS)
 export const AR_HTTP_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_AR_HTTP_TIMEOUT || 60000); // bound the gateway read so a stall falls through to the L1 chunk fallback
+// Public, unauthenticated USD/AR rate endpoint (ArDrive Turbo's payment service) — a
+// plain JSON GET, no SDK or auth required (#170). arUsdRate() (src/lib/estimate.ts)
+// fetches this directly instead of going through @ardrive/turbo-sdk, so the USD line
+// works even when that optional peerDependency isn't installed.
+export const AR_USD_RATE_URL = process.env.CIPHER_BRAIN_AR_USD_RATE_URL || 'https://payment.ardrive.io/v1/rates/usd';
 // Spend guard: arweave/turbo uploads are irreversible and cost real funds. Require an
 // explicit opt-in so an unattended nightly loop doesn't silently accumulate charges.
 //   CIPHER_BRAIN_YES=1  — set in the nightly runner (`schedule install` writes it for paid backends) to suppress the --yes prompt

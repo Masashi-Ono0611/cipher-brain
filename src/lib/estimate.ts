@@ -3,7 +3,7 @@
 // own pre-flight cost estimate (src/lib/backends/{arweave,turbo}.ts, via arUsdRate/
 // usdApprox) — one home so this math is never re-implemented per surface (#159).
 import { stat } from 'node:fs/promises';
-import { AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS } from './config.js';
+import { AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS, AR_USD_RATE_URL } from './config.js';
 import { exists, errMsg, fmtBytes } from './util.js';
 import type { CliOptions } from './types.js';
 
@@ -17,20 +17,21 @@ export interface CostEstimate {
   note: string;
 }
 
-// Current USD price of 1 AR via the Turbo pricing endpoint the SDK exposes (winc is
-// pegged 1:1 to winston; 1 AR = 1e12 of either, so one rate converts both). Returns a
-// positive number or null on ANY failure — SDK not installed, offline, odd response —
-// and is raced against AR_HTTP_TIMEOUT_MS: the USD line is a courtesy estimate that
-// must never block, fail, or stall a push (or an estimate).
+// Current USD price of 1 AR via a plain, unauthenticated GET against Turbo's public
+// rate endpoint (AR_USD_RATE_URL — no @ardrive/turbo-sdk involved, #170: that SDK is an
+// optional peerDependency most installs don't have, and this is just one public JSON
+// endpoint under it). winc is pegged 1:1 to winston; 1 AR = 1e12 of either, so one rate
+// converts both. Returns a positive number or null on ANY failure — non-200, malformed
+// JSON, non-finite/non-positive rate, network error, timeout — and is raced against
+// AR_HTTP_TIMEOUT_MS: the USD line is a courtesy estimate that must never block, fail,
+// or stall a push (or an estimate).
 export async function arUsdRate(): Promise<number | null> {
   try {
-    const { TurboFactory } = await import('@ardrive/turbo-sdk');
-    const timeout = new Promise<null>((resolve) => {
-      const t = setTimeout(() => resolve(null), AR_HTTP_TIMEOUT_MS);
-      if (typeof t.unref === 'function') t.unref(); // don't keep the process alive for a lost race
-    });
-    const res = await Promise.race([TurboFactory.unauthenticated().getFiatToAR({ currency: 'usd' }), timeout]);
-    const rate = Number(res?.rate);
+    const ctl = AbortSignal.timeout(AR_HTTP_TIMEOUT_MS);
+    const res = await fetch(AR_USD_RATE_URL, { signal: ctl });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    const rate = Number((body as { rate?: unknown } | null)?.rate);
     return Number.isFinite(rate) && rate > 0 ? rate : null;
   } catch {
     return null;

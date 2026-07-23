@@ -42,11 +42,16 @@ async function tarNoClobberFlag(): Promise<string> {
 export async function restore(o: CliOptions): Promise<void> {
   try {
     await restoreImpl(o);
-    printMascot('happy');
   } catch (e) {
     printMascot('sad');
     throw e;
   }
+  // Deliberately OUTSIDE the try: printMascot('happy') itself throwing (e.g. some
+  // unforeseen console.error failure) must never be misreported as restoreImpl
+  // failing — if it were still inside the try, that throw would land in the catch
+  // above and print 'sad' + rethrow over a restore that actually already
+  // succeeded (multi-model review finding on PR #200).
+  printMascot('happy');
 }
 
 async function restoreImpl(o: CliOptions): Promise<void> {

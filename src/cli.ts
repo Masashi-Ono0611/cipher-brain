@@ -39,7 +39,16 @@ import { printMascot } from './lib/ui.js';
 import { printFounderNote, printWisdomQuote } from './lib/wisdom.js';
 import type { CliOptions } from './lib/types.js';
 
-const BOOL_FLAGS = new Set(['force', 'passphrase', 'wrap_in_place', 'yes', 'force_vault', 'skip_unchanged', 'no_load']); // flags that take no value
+const BOOL_FLAGS = new Set([
+  'force',
+  'passphrase',
+  'wrap_in_place',
+  'yes',
+  'force_vault',
+  'skip_unchanged',
+  'no_load',
+  'pq',
+]); // flags that take no value
 
 function parseArgs(argv: string[]): CliOptions {
   const o: CliOptions = { dirs: [], tables: [], recipients: [] };
@@ -70,10 +79,17 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       --force, or drive the commands below by hand, to redo it) and requires a TTY
       on stdin (it is interactive, not automatable).
 
-  cipher-brain keygen [--passphrase] [--force] | keygen --wrap-in-place
+  cipher-brain keygen [--passphrase] [--force] [--pq] | keygen --wrap-in-place
       Create your age keypair: identity (PRIVATE) + recipient (PUBLIC).
       --passphrase wraps the identity at rest with a scrypt passphrase (prompted on the
       TTY); restore/verify then prompt for it. Identity = ${IDENTITY}
+      --pq generates a POST-QUANTUM HYBRID keypair (ML-KEM-768 + X25519, via typage's
+      generateHybridIdentity()) instead of plain X25519 — mitigates "harvest now,
+      decrypt later" against a future quantum computer (see README Threat model), at
+      the cost of a MUCH bigger recipient/identity and per-recipient ciphertext
+      overhead (recipient ~1.9KB vs ~62 bytes for X25519; negligible next to a real
+      snapshot). Combines normally with --recipient (a hybrid primary + an X25519
+      backup, or vice versa, both work — pick whichever identity "restore" is called with).
       --wrap-in-place passphrase-protects the EXISTING identity WITHOUT generating a new
       keypair (unlike --force, which always creates a brand-new one and makes every prior
       snapshot unrecoverable) — use this if you skipped the passphrase step during "init"

@@ -45,6 +45,11 @@ USB in a drawer, a second location, a trusted person. If the primary box dies, t
 backup identity restores everything. (Proven in `selftest-recovery.sh`: the backup
 key restores with the primary identity absent; an unrelated key cannot.)
 
+Either `keygen` call above can add `--pq` for a post-quantum HYBRID keypair
+(ML-KEM-768 + X25519) instead of plain X25519 — the primary and backup don't need
+to match (a hybrid primary + an X25519 backup, or vice versa, both restore). See
+README Threat model for why this matters against harvest-now-decrypt-later.
+
 ### 2. Back up the identity file itself
 
 The identity is a short text file — copy it somewhere durable and private:
@@ -256,5 +261,6 @@ under `./restored` yourself.
 | `arweave` backend round-trip | **proven** — `selftest:arweave` (CI, against arlocal); real-network gateway pull confirmed operator-run |
 | `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |
 | Identity at rest (passphrase-wrap via `keygen --passphrase`; FDE on the identity host) | **available / recommended** — `--passphrase` ships; FDE is operator config, not enforced by code |
+| Post-quantum hybrid keypair (`keygen --pq`, ML-KEM-768 + X25519 — mitigates harvest-now-decrypt-later, see README Threat model) | **available** — `selftest:pq` (CI); combines with a plain-X25519 backup key and `CIPHER_BRAIN_PIN_RECIPIENTS`, but the recipient/ciphertext are much bigger than plain X25519 |
 | Nightly cadence (`schedule install / status / uninstall`: generated runner + launchd/cron trigger, paid backends refused without a spend cap, end-to-end run of the generated runner) | **proven** — `selftest:schedule` (CI) |
 | Identity off-box backup, Shamir M-of-N | **recommended practice / future** — not enforced by code |

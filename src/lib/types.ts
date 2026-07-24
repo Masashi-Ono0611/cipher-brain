@@ -26,6 +26,7 @@ export interface CliOptions {
   skip_unchanged?: boolean;
   no_load?: boolean;
   no_expand_components?: boolean;
+  dry_run?: boolean; // snapshot --dry-run: preview .cipherbrainignore include/exclude without writing anything (#216)
   json?: boolean; // verify/estimate/schedule status: machine-readable JSON on stdout instead of the human-readable report (issue #211)
 
   // value flags — always a string when passed (argv is untyped text)

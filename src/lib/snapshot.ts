@@ -1,13 +1,14 @@
 // snapshot — stage components (pg_dump / dirs / manifest.json), then stream tar|age.
-import { mkdir, writeFile, rm, stat, lstat, rename, link, readdir, readlink } from 'node:fs/promises';
+import { mkdir, writeFile, rm, stat, lstat, rename, link, readdir, readlink, readFile } from 'node:fs/promises';
 import { mkdtempSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join, basename, dirname, resolve, relative, sep } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
+import ignore, { type Ignore } from 'ignore';
 import { RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, pgTool } from './config.js';
 import { run } from './proc.js';
 import { newEncrypter, encryptToFile } from './crypt.js';
-import { exists, fmtBytes, sha256, errMsg } from './util.js';
+import { exists, fmtBytes, sha256, errMsg, redactPgConn } from './util.js';
 import { recipientEntries, resolvePinnedRecipients } from './keys.js';
 import { resolveProfilePaths } from './profiles.js';
 import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.js';
@@ -144,6 +145,132 @@ async function contentDigestOfPath(abs: string): Promise<string> {
   return hexOf(lines.join('\n') + '\n');
 }
 
+// #216: ".cipherbrainignore" (gitignore-compatible syntax) at the ROOT of a --dir (or a
+// --profile-resolved directory) filters what gets archived from THAT directory —
+// node_modules/, caches, credential files etc no longer have to be tar'd, encrypted and
+// (on a paid backend) permanently stored just because they happened to live under a
+// backed-up tree. Matching is delegated entirely to the `ignore` npm package (the same
+// gitignore-semantics implementation widely used by eslint/gitbook/etc) rather than a
+// hand-rolled glob — no wheel reinvented, and the syntax an operator already knows from
+// .gitignore works here unchanged.
+const IGNORE_FILE_NAME = '.cipherbrainignore';
+
+// Read a --dir root's own ignore file. Returns null when absent — the ONLY
+// behavior-preserving path: every call site below falls back to the exact pre-#216 tar
+// invocation when this is null, so a --dir with no ignore file is archived byte-for-byte
+// as it always was. Root-only lookup (not a cascading per-subdirectory .gitignore
+// stack): the issue asks for one ignore file per --dir/--profile root, and reimplementing
+// git's full nested-.gitignore precedence rules is unneeded complexity this tool never
+// asked for.
+async function loadIgnoreFile(dirAbs: string): Promise<Ignore | null> {
+  const p = join(dirAbs, IGNORE_FILE_NAME);
+  if (!(await exists(p))) return null;
+  return ignore().add(await readFile(p, 'utf8'));
+}
+
+// One LEAF (file/symlink/special) entry a --dir scan classified as included or excluded.
+// `rel` is POSIX-relative to the --dir root — the SAME root scanDir() below walks, never
+// the root's parent (a caller staging into a tar archive prefixes this with the root's
+// own basename; --dry-run prints it as-is). `size` is meaningful only for kind 'file'
+// (0 for a symlink/special, whose "size" doesn't describe archived content) and for a
+// pruned excluded 'dir' entry, where it is the aggregate byte total of everything under
+// that subtree (see dirByteSize) — an ignored node_modules/ is reported as ONE excluded
+// 'dir' line with its whole-tree size, never as thousands of individual excluded file
+// lines, which would make --dry-run's output useless for exactly the large, ignorable
+// trees this feature exists to filter.
+interface ScanEntry {
+  rel: string;
+  kind: 'file' | 'symlink' | 'dir' | 'other';
+  size: number;
+}
+
+// Aggregate regular-file bytes under an (already-known-ignored) subtree — used only to
+// give --dry-run's excluded-directory entries an approximate size. Best-effort: a file
+// that vanishes mid-walk (a real, if narrow, race against a live tree) is just skipped
+// rather than failing the scan — this is a read-only reporting path, not the archive
+// itself, so an approximate total is fine (the CLI help calls it exactly that: "an
+// approximate byte total").
+async function dirByteSize(abs: string): Promise<number> {
+  let total = 0;
+  for (const d of await readdir(abs, { recursive: true, withFileTypes: true })) {
+    if (!d.isFile()) continue;
+    try {
+      total += (await stat(join(d.parentPath, d.name))).size;
+    } catch {
+      /* vanished mid-walk — best-effort size, never fatal */
+    }
+  }
+  return total;
+}
+
+// Walk a --dir root, applying `ig` (null = no filtering, every entry included) to decide
+// what tar should actually archive. Returns:
+//   - tarEntries: POSIX paths relative to the root, PARENT-BEFORE-CHILD, for every
+//     INCLUDED dir/file/symlink/special — fed to `tar --no-recursion -T` (snapshot()
+//     below) in place of tar's own recursion. An ignored directory is never even
+//     descended into (pruned at the directory itself, ig.ignores() tested BEFORE
+//     recursing), which is both what makes a large ignored node_modules/ cheap to skip
+//     AND what matches real gitignore semantics: once a parent directory is excluded,
+//     nothing under it can be un-excluded by a nested pattern (same rule git itself
+//     applies — this walker enforces it structurally rather than by re-implementing
+//     precedence).
+//   - included / excluded: LEAF entries only (never bare directories, except a pruned
+//     excluded subtree — see ScanEntry above), for --dry-run's file lists and byte
+//     totals.
+// `withSizes` gates the two costs that only --dry-run's reporting needs and the real
+// snapshot's archive-building does not: dirByteSize's extra recursive walk per pruned
+// directory, and a stat() per included file. snapshot() below calls this with
+// `withSizes: false` when actually building the tar entry list (only `tarEntries` is
+// read there) so filtering a real --dir with a large ignored node_modules/ does not pay
+// to size the very subtree it just skipped; dryRun() calls it with the (default) true.
+async function scanDir(
+  root: string,
+  ig: Ignore | null,
+  opts: { withSizes: boolean } = { withSizes: true },
+): Promise<{ tarEntries: string[]; included: ScanEntry[]; excluded: ScanEntry[] }> {
+  const tarEntries: string[] = [];
+  const included: ScanEntry[] = [];
+  const excluded: ScanEntry[] = [];
+  async function walk(rel: string): Promise<void> {
+    const abs = rel ? join(root, rel) : root;
+    const entries = await readdir(abs, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name)); // deterministic tar entry order
+    for (const e of entries) {
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      const childAbs = join(abs, e.name);
+      const isDir = e.isDirectory();
+      // A trailing slash on the tested pathname is the `ignore` package's documented
+      // convention for matching gitignore's dir-only patterns (e.g. "node_modules/")
+      // — there is no separate "is this a directory" flag on .ignores().
+      const ignored = ig ? ig.ignores(isDir ? `${childRel}/` : childRel) : false;
+      if (isDir) {
+        if (ignored) {
+          excluded.push({ rel: childRel, kind: 'dir', size: opts.withSizes ? await dirByteSize(childAbs) : 0 });
+        } else {
+          tarEntries.push(childRel);
+          await walk(childRel);
+        }
+        continue;
+      }
+      const kind: ScanEntry['kind'] = e.isSymbolicLink() ? 'symlink' : e.isFile() ? 'file' : 'other';
+      const size =
+        opts.withSizes && kind === 'file'
+          ? await stat(childAbs).then(
+              (s) => s.size,
+              () => 0,
+            )
+          : 0;
+      if (ignored) excluded.push({ rel: childRel, kind, size });
+      else {
+        tarEntries.push(childRel);
+        included.push({ rel: childRel, kind, size });
+      }
+    }
+  }
+  await walk('');
+  return { tarEntries, included, excluded };
+}
+
 // One entry in the manifest's `components` array — either the pg_dump (kind
 // 'pg_dump:custom', no `source`) or one staged --dir/--profile path (kind 'dir'/'file').
 interface ManifestComponent {
@@ -159,19 +286,33 @@ interface ManifestComponent {
   exclude_table_data?: string[];
   content_digest: string;
   captured_at: string;
+  // #216: present (true) only when a .cipherbrainignore at this component's root
+  // filtered what got archived; excluded_count is the number of top-level excluded
+  // paths (individually-excluded files + pruned ignored subtrees, each subtree counted
+  // once regardless of how many files it contained). Absent entirely (not `false`)
+  // when no ignore file applied, so old manifests and new unfiltered ones look
+  // identical — this is purely additive provenance, never a behavior signal restore
+  // reads.
+  cipherbrainignore?: boolean;
+  excluded_count?: number;
   // Present only when --scan-secrets was passed (#215): gitleaks rule-ID + count for
   // this component, NEVER the matched secret/file path/line (see secrets-scan.ts).
   secrets_scan?: SecretFinding[];
 }
 
 export async function snapshot(o: CliOptions): Promise<void> {
-  if (!o.out) throw new Error('--out <file.age> required');
   // --profile is a thin veneer over --dir: it resolves to concrete source paths
   // (see profiles.ts) staged exactly like explicit --dir flags. Profile paths
   // come first; any extra --dir flags the user passed are appended after them.
   if (o.profile) o.dirs = [...(await resolveProfilePaths(o)), ...o.dirs];
   if (!o.pg && o.dirs.length === 0)
     throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
+  // #216: --dry-run previews --dir/--profile .cipherbrainignore filtering WITHOUT
+  // staging, encrypting or writing anything — checked HERE, before the --out
+  // requirement AND the --scan-secrets validation below, since a preview has no
+  // output file (no --out needed) and never stages plaintext for gitleaks to scan.
+  if (o.dry_run) return dryRun(o);
+  if (!o.out) throw new Error('--out <file.age> required');
   // --scan-secrets warn|deny (#215): gitleaks over each --dir/--profile source's staged
   // plaintext before it is archived+encrypted. Validated AND gitleaks-availability-checked
   // here, before any pg_dump/tar/staging work below — the same fail-fast posture the
@@ -363,7 +504,61 @@ export async function snapshot(o: CliOptions): Promise<void> {
       const topStat = await lstat(abs);
       const kind = topStat.isSymbolicLink() ? 'symlink' : topStat.isDirectory() ? 'dir' : 'file';
       const archivePath = join(stage, name);
-      await run('tar', ['-czf', archivePath, '-C', dirname(abs), '--', basename(abs)], { timeoutMs: PIPE_TIMEOUT_MS }); // a FIFO/special file under --dir can't hang the pre-stage tar; the -- guards a basename that could otherwise be parsed as an option (e.g. a leading '-')
+      // #216: a directory --dir source may carry its OWN ".cipherbrainignore" at its
+      // root — a single-file/symlink source (kind !== 'dir') has no tree to filter, so
+      // this is null there and the plain tar call below is unchanged. null also when a
+      // directory source simply has no such file: the ONLY behavior-preserving path,
+      // so every pre-#216 --dir (no ignore file yet) archives byte-for-byte as before.
+      const ig = kind === 'dir' ? await loadIgnoreFile(abs) : null;
+      let excludedCount: number | undefined;
+      if (ig) {
+        // withSizes: false — building the real archive only needs WHICH paths to
+        // include (tarEntries), never their byte sizes (that's --dry-run's job, via
+        // dryRun() below) — skipping stat()/dirByteSize() here keeps filtering a
+        // --dir with a large ignored node_modules/ fast rather than paying to size
+        // the very subtree it just pruned.
+        const { tarEntries, excluded } = await scanDir(abs, ig, { withSizes: false });
+        excludedCount = excluded.length;
+        // tar --no-recursion -T <listFile>: named directory entries are archived as
+        // bare directory nodes (no auto-descend), so listing EVERY included dir/file/
+        // symlink explicitly — parent before child, exactly what scanDir returns — is
+        // what keeps a pruned excluded subtree (never named here) out of the archive
+        // that a plain recursive `tar -czf ... basename(abs)` would otherwise re-add
+        // the instant it saw the parent directory named.
+        //
+        // NUL-separated (--null), never newline-separated (Codex multi-model review,
+        // Critical): both GNU tar and bsdtar give a -T list's lines SPECIAL,
+        // non-literal handling unless --null is passed. Only the FIRST list line (the
+        // bare `base` below) can ever start with "-" — every other line is prefixed
+        // "<base>/<rel>" and so can never itself look like an option — but `base` is
+        // exactly the --dir argument's OWN basename, which an operator backing up an
+        // externally-named tree (an extracted archive, a cloned repo, an untrusted
+        // download) does not fully control. Verified by hand: with a --dir literally
+        // named "-C", the newline-only (pre-fix) list made tar consume the NEXT list
+        // line as a "-C <dir>" directive's argument and every line after that as a
+        // path relative to THAT directory instead of the intended root — silently
+        // wrong (or, with a directory an attacker fully controls the naming of,
+        // steerable) archive contents. --null makes every list entry a plain byte
+        // string (NUL cannot appear in a filename), eliminating the
+        // option-reinterpretation entirely — the fix, not just a mitigation. The
+        // plain (no ignore file) branch below has always guarded this same class of
+        // issue for its OWN positional `basename(abs)` argument via `--`; this is the
+        // equivalent guard for the -T list's first line, which `--` does not reach.
+        const listFile = join(stage, `.tarlist-${name}`);
+        const base = basename(abs);
+        await writeFile(listFile, [base, ...tarEntries.map((r) => `${base}/${r}`)].join('\0') + '\0');
+        try {
+          await run('tar', ['-czf', archivePath, '-C', dirname(abs), '--no-recursion', '--null', '-T', listFile], {
+            timeoutMs: PIPE_TIMEOUT_MS,
+          });
+        } finally {
+          await rm(listFile, { force: true }); // list file is scratch, never part of the snapshot
+        }
+      } else {
+        await run('tar', ['-czf', archivePath, '-C', dirname(abs), '--', basename(abs)], {
+          timeoutMs: PIPE_TIMEOUT_MS,
+        }); // a FIFO/special file under --dir can't hang the pre-stage tar; the -- guards a basename that could otherwise be parsed as an option (e.g. a leading '-')
+      }
       // content_digest AFTER the tar, computed from the ARCHIVE'S OWN bytes (extract to a
       // throwaway dir and hash THAT with the unchanged contentDigestOfPath) rather than a
       // second, independent read of the live source. Two independent reads (a digest walk,
@@ -413,6 +608,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
         source: abs,
         content_digest: contentDigest,
         captured_at: new Date().toISOString(),
+        ...(ig ? { cipherbrainignore: true, excluded_count: excludedCount } : {}),
         ...(scanMode ? { secrets_scan: secretsScan ?? [] } : {}),
       }); // skew vs the DB is now detectable on restore
     }
@@ -509,4 +705,56 @@ export async function snapshot(o: CliOptions): Promise<void> {
     await rm(stage, { recursive: true, force: true });
     setActiveStage(null);
   }
+}
+
+// #216: `snapshot --dry-run` — preview --dir/--profile .cipherbrainignore filtering
+// WITHOUT staging, encrypting or writing anything (no --out, no temp stage dir, no
+// recipient resolution: none of that machinery is exercised here, on purpose — this is
+// a read-only report). Uses the SAME scanDir() the real snapshot() call above feeds
+// tar with, so the preview can never diverge from what an actual run would archive.
+async function dryRun(o: CliOptions): Promise<void> {
+  console.log('DRY RUN — previewing .cipherbrainignore filtering; nothing will be staged, encrypted, or written.');
+  if (o.pg) {
+    // pg_dump is never executed for a preview (it would mutate nothing, but it can
+    // take real time against a live DB, and its size is unknowable before it runs) —
+    // just note the source is present; the byte totals below cover --dir/--profile only.
+    console.log(`\npg: ${redactPgConn(o.pg)} (not dumped in --dry-run; size is unknown until snapshot runs)`);
+  }
+  let totalIncluded = 0;
+  let totalExcluded = 0;
+  for (const d of o.dirs) {
+    const abs = resolve(d);
+    const top = await lstat(abs);
+    console.log(`\n-- ${abs} --`);
+    if (top.isSymbolicLink()) {
+      console.log('  symlink source — archived as-is (not filterable by .cipherbrainignore)');
+      continue;
+    }
+    if (!top.isDirectory()) {
+      const sz = (await stat(abs)).size;
+      console.log(`  file source, ${fmtBytes(sz)} (single file — not filterable by .cipherbrainignore)`);
+      totalIncluded += sz;
+      continue;
+    }
+    const ig = await loadIgnoreFile(abs);
+    const { included, excluded } = await scanDir(abs, ig);
+    const incBytes = included.reduce((s, e) => s + e.size, 0);
+    const excBytes = excluded.reduce((s, e) => s + e.size, 0);
+    totalIncluded += incBytes;
+    totalExcluded += excBytes;
+    if (!ig) {
+      console.log(`  no ${IGNORE_FILE_NAME} — all ${included.length} file(s) included (${fmtBytes(incBytes)})`);
+      continue;
+    }
+    console.log(
+      `  ${IGNORE_FILE_NAME} found — ${included.length} file(s) included (${fmtBytes(incBytes)}), ${excluded.length} path(s) excluded (${fmtBytes(excBytes)})`,
+    );
+    console.log('  include:');
+    for (const e of included) console.log(`    ${e.rel}`);
+    console.log('  exclude:');
+    for (const e of excluded) console.log(`    ${e.rel}${e.kind === 'dir' ? '/' : ''} (${fmtBytes(e.size)})`);
+  }
+  console.log(
+    `\ntotal: ${fmtBytes(totalIncluded)} would be included; ${fmtBytes(totalExcluded)} excluded by ${IGNORE_FILE_NAME} rules (approximate — actual archive size differs due to compression/tar overhead)`,
+  );
 }

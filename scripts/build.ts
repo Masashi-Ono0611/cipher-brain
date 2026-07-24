@@ -20,6 +20,12 @@
 //     dist/cli.mjs so the shipped CLI runs with zero runtime deps (#64).
 //   - `@modelcontextprotocol/sdk` is inlined so dist/mcp.mjs runs on a fresh
 //     machine with no node_modules at all (#65).
+//   - `ignore` (the .cipherbrainignore matcher, #216) is a small, dependency-free,
+//     always-needed part of `snapshot`'s normal path (not a lazily-imported optional
+//     backend like arweave/turbo below) — it must land inside dist/cli.mjs for the
+//     same #64 reason age-encryption does, or the shipped CLI would need node_modules
+//     just to run `snapshot` on a fresh machine (selftest-arweave-nodeps.mjs's
+//     isolated-dir copy of dist/cli.mjs has none, and would fail to even start).
 //   - the lazily-imported optional backends — `arweave` and `@ardrive/turbo-sdk`
 //     — stay external: bundling them would break the documented "a gateway pull
 //     needs no npm dependency" recovery property (and the selftest that proves it).
@@ -36,7 +42,7 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
   peerDependencies?: Record<string, string>;
 };
 
-const INLINE = new Set(['age-encryption', '@modelcontextprotocol/sdk']);
+const INLINE = new Set(['age-encryption', '@modelcontextprotocol/sdk', 'ignore']);
 
 const external = [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.peerDependencies ?? {})].filter(
   (d) => !INLINE.has(d),

@@ -223,6 +223,44 @@ now records a top-level `created_at` and a per-component `captured_at` (echoed b
 is itself point-in-time consistent via one REPEATABLE READ txn — only the DB↔file
 boundary needs aligning.)
 
+## Minimal recovery profile (`--pg-filter` / `--pg-exclude-table-data`)
+
+A full `--pg` snapshot dumps the whole database — every table, including large or
+low-value-for-disaster-recovery ones like raw conversation logs, tool-run logs, or an
+embedding cache. `snapshot` can also produce a smaller, lower-risk **minimal** artifact
+alongside the normal full one, using nothing but `pg_dump`'s own standard filtering
+flags — cipher-brain does **no SQL parsing or filtering of its own**; these two flags
+are a literal pass-through to `pg_dump`, which runs exactly as it would if you invoked
+it by hand with the same arguments.
+
+- **`--pg-filter <file>`** → `pg_dump --filter <file>` (requires `pg_dump` ≥ 17). The
+  file holds one `{include|exclude} {table|schema} PATTERN` line per entry. Full syntax:
+  [PostgreSQL docs — Filtering](https://www.postgresql.org/docs/current/app-pgdump.html#PG-DUMP-FILTERING).
+  Example filter file:
+  ```
+  include table conversation_summaries
+  exclude table conversation_logs
+  exclude table embedding_cache
+  ```
+- **`--pg-exclude-table-data <table>`** (repeatable) → `pg_dump --exclude-table-data <table>`:
+  keeps the table's *schema* in the dump but drops its *rows* — useful for a cache table
+  you'd rather restore empty than have missing entirely.
+
+Both are additive to `--pg-table` and to each other, and are ONLY applied when passed —
+omit them and `--pg` behaves exactly as before (a full, unfiltered dump). A typical setup
+runs `schedule install`/a cron job for the full backup (disaster recovery) and a second,
+separate `snapshot --pg-filter ...` for the minimal one (long-term/off-site/lower-risk
+storage):
+
+```sh
+cipher-brain snapshot --pg "$PG" --pg-filter ./minimal-profile.txt \
+  --recipient ~/.cipher-brain/recipient.txt --out "minimal-$(date +%F).age"
+```
+
+The manifest records what was passed (`filter`/`exclude_table_data` alongside the
+existing `tables` field) purely for transparency — restore never reads it back; a
+`pg_restore` of a minimal dump just restores whatever pg_dump actually put in it.
+
 ## Versioning
 
 Each snapshot is immutable: `push` returns a **locator** whose form depends on the
@@ -299,7 +337,7 @@ failure); the plain message is still the full story either way. Over MCP,
 | CB-E010 | A `file`-backend locator resolves outside `CIPHER_BRAIN_FILE_DIR`, or doesn't match the `<sha256>.age` shape `push` itself produces — refused as a possible path-traversal/arbitrary-file-read attempt via a tampered locator. | Only pass locators exactly as `push` printed them (or as saved in a `--save-locator`/index file from a trusted, off-box copy); don't hand-construct one. |
 | CB-E011 | The `arweave`/`turbo` backend needs `CIPHER_BRAIN_AR_WALLET` (a JWK signer) and it's unset, or the path isn't readable. | Run `cipher-brain wallet create` to generate one, then set `CIPHER_BRAIN_AR_WALLET` to its path (`wallet address` shows what to fund). |
 | CB-E012 | The optional peer dependency the backend needs (`arweave` or `@ardrive/turbo-sdk`) isn't installed. | Run the `npm install …` command the error itself prints. |
-| CB-E013 | `--backend` was given a value other than `file`, `arweave`, or `turbo`. | Correct the typo — only those three are valid. |
+| CB-E013 | `--backend` was given a value other than `file`, `arweave`, `turbo`, or `rclone`. | Correct the typo — only those four are valid. |
 | CB-E014 | `schedule status`/`uninstall` ran before `schedule install`, or writing the crontab entry failed. | Run `cipher-brain schedule install` first; a crontab-write failure usually means missing cron permissions/availability in this environment. |
 | CB-E015 | `restore`/`verify` can't find the private identity file it needs to decrypt (default or `--identity` path). | Run `cipher-brain keygen` if you haven't yet, or point `--identity` at the correct file. |
 
@@ -311,6 +349,7 @@ failure); the plain message is still the full story either way. Over MCP,
 | `file` backend store/fetch | **proven** — `selftest:storage` (CI) |
 | `arweave` backend round-trip | **proven** — `selftest:arweave` (CI, against arlocal); real-network gateway pull confirmed operator-run |
 | `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |
+| `rclone` backend (delegates to the `rclone` binary and its own configured remote) | **proven** — `selftest:rclone` (CI) |
 | Identity at rest (passphrase-wrap via `keygen --passphrase`; FDE on the identity host) | **available / recommended** — `--passphrase` ships; FDE is operator config, not enforced by code |
 | Post-quantum hybrid keypair (`keygen --pq`, ML-KEM-768 + X25519 — mitigates harvest-now-decrypt-later, see README Threat model) | **available** — `selftest:pq` (CI); combines with a plain-X25519 backup key and `CIPHER_BRAIN_PIN_RECIPIENTS`, but the recipient/ciphertext are much bigger than plain X25519 |
 | Nightly cadence (`schedule install / status / uninstall`: generated runner + launchd/cron trigger, paid backends refused without a spend cap, end-to-end run of the generated runner) | **proven** — `selftest:schedule` (CI) |

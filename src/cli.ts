@@ -61,7 +61,10 @@ function parseArgs(argv: string[]): CliOptions {
     const a = argv[i];
     if (a === '--dir') o.dirs.push(argv[++i]);
     else if (a === '--pg-table') o.tables.push(argv[++i]);
-    else if (a === '--recipient')
+    else if (a === '--pg-exclude-table-data') {
+      if (!o.pg_exclude_table_data) o.pg_exclude_table_data = [];
+      o.pg_exclude_table_data.push(argv[++i]);
+    } else if (a === '--recipient')
       o.recipients.push(argv[++i]); // repeatable: key recovery
     else if (a.startsWith('--')) {
       const key = a.slice(2).replace(/-/g, '_');
@@ -115,7 +118,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       this to confirm you are funding the SAME wallet cipher-brain will sign uploads
       with.
 
-  cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]... [--dry-run] [--scan-secrets warn|deny]
+  cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]...
+                         [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...
+                         [--recipient <pubkey|file>]... [--dry-run] [--scan-secrets warn|deny]
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
       A ".cipherbrainignore" file (gitignore-compatible syntax; the "ignore" npm package
       does the matching, not a hand-rolled glob) at the ROOT of a --dir (or a --profile-
@@ -146,6 +151,26 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
                                      --force-vault to snapshot a vault-less dir anyway)
         chatgpt-export --zip <path>  the official ChatGPT export zip, archived as-is
                                      (never extracted)
+      --pg-filter <file> and --pg-exclude-table-data <table> are a thin, literal pass-through
+      to pg_dump's OWN standard flags (--filter / --exclude-table-data) — cipher-brain does
+      no SQL parsing or filtering of its own; pg_dump does exactly what it would if you ran
+      it by hand with the same flags. Use them to build a "minimal recovery profile" snapshot
+      alongside your normal full one: exclude large/low-value tables (raw conversation logs,
+      embedding caches, tool-run logs) while keeping table structure and everything else.
+      --pg-filter <file>            pg_dump --filter <file>: a file of one
+                                     "{include|exclude} {table|schema} PATTERN" line per
+                                     entry (repeatable in --pg-table); requires pg_dump >= 17.
+                                     Docs: https://www.postgresql.org/docs/current/app-pgdump.html#PG-DUMP-FILTERING
+                                     Example file:
+                                       include table conversation_summaries
+                                       exclude table conversation_logs
+                                       exclude table embedding_cache
+      --pg-exclude-table-data <t>   pg_dump --exclude-table-data <t> (repeatable): keep the
+                                     table's SCHEMA in the dump but drop its ROWS — e.g. a
+                                     large cache table you want restorable-empty rather than
+                                     absent entirely.
+      Both are additive to --pg-table and to each other; omit them and --pg behaves exactly
+      as before (a full pg_dump, no filtering).
       --scan-secrets warn|deny (#215) runs gitleaks (must be on PATH — install via
       https://github.com/gitleaks/gitleaks) over each --dir/--profile source's staged
       plaintext BEFORE it is archived+encrypted — Arweave/Turbo are write-once,
@@ -258,8 +283,10 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       an explicit --locator still wins if both are given.
 
   cipher-brain schedule install --backend <file|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
-                                [--profile <name>] [--pg <conn>] [--pg-table <t>]... [--dir <path>]... [--recipient <pubkey|file>]...
-                                [--vault <path>] [--zip <path>] [--save-locator <path>] [--index-file <path>]
+                                [--profile <name>] [--pg <conn>] [--pg-table <t>]...
+                                [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...
+                                [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>]
+                                [--save-locator <path>] [--index-file <path>]
                                 [--ping-url <url>] [--ping-url-fail <url>]
       Make the nightly snapshot+push unattended. Writes a runner script
       ($CIPHER_BRAIN_HOME/schedule/nightly.sh) composing the snapshot/push pipeline from

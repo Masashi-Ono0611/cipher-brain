@@ -814,6 +814,74 @@ printf '%s' "$TERR" | grep -qi "timed out" || { echo "[FAIL] no timeout error su
 [ "$ELAPSED" -lt 15 ] || { echo "[FAIL] pg_restore took ${ELAPSED}s — timeoutMs did not bound it (< the 30s stub sleep)"; exit 1; }
 echo "[PASS] a wedged pg_restore is killed by the timeout in ${ELAPSED}s instead of hanging the CLI"
 
+echo "== #235: --pg-filter / --pg-exclude-table-data are a literal pass-through to pg_dump's OWN flags =="
+# A fake pg_dump that ALSO records its exact argv (via an env-provided log path, NOT a
+# stage-relative one — the real stage dir is rm'd in snapshot()'s finally block before we'd
+# get a chance to read anything left inside it) so we can assert precisely what cipher-brain
+# invoked pg_dump with, without needing a real Postgres instance (same shim pattern as the
+# #106 test above — cipher-brain does no SQL parsing/filtering of its own, so proving the
+# flags reach pg_dump's argv unchanged is the whole test).
+FAKE_PGBIN_F="$TMP/fake-pgbin-filter"; mkdir -p "$FAKE_PGBIN_F"
+cat > "$FAKE_PGBIN_F/pg_dump" <<'SHIM'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do
+  if [ "$prev" = "-f" ]; then out="$a"; fi
+  prev="$a"
+done
+printf 'fake-pg-dump-content\n' > "$out"
+: "${PG_DUMP_ARGV_LOG:?PG_DUMP_ARGV_LOG not set}"
+printf '%s\n' "$@" > "$PG_DUMP_ARGV_LOG"
+SHIM
+chmod +x "$FAKE_PGBIN_F/pg_dump"
+
+FILTER_FILE="$TMP/pg-filter.txt"
+cat > "$FILTER_FILE" <<'EOF'
+include table conversation_summaries
+exclude table conversation_logs
+exclude table embedding_cache
+EOF
+
+# (a) flags given -> --filter/--exclude-table-data reach pg_dump's argv verbatim.
+FILTER_ARGV="$TMP/pg-dump-argv-filter.txt"
+FILTER_SNAP="$TMP/pg-filter-snap.age"
+CIPHER_BRAIN_HOME="$TMP/keys" CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN_F" PG_DUMP_ARGV_LOG="$FILTER_ARGV" \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --pg "postgres://fake/conn" \
+    --pg-filter "$FILTER_FILE" \
+    --pg-exclude-table-data tool_logs --pg-exclude-table-data embedding_cache \
+    --out "$FILTER_SNAP" >/dev/null
+test -f "$FILTER_ARGV" || { echo "[FAIL] fake pg_dump never ran (no argv log)"; exit 1; }
+GOT_FILTER=$(awk '/^--filter$/{getline v; print v}' "$FILTER_ARGV")
+[ "$GOT_FILTER" = "$FILTER_FILE" ] \
+  || { echo "[FAIL] pg_dump argv --filter value = '$GOT_FILTER', expected '$FILTER_FILE'"; cat "$FILTER_ARGV"; exit 1; }
+GOT_EXCLUDE=$(awk '/^--exclude-table-data$/{getline v; print v}' "$FILTER_ARGV")
+EXPECT_EXCLUDE="$(printf 'tool_logs\nembedding_cache')"
+[ "$GOT_EXCLUDE" = "$EXPECT_EXCLUDE" ] \
+  || { echo "[FAIL] pg_dump argv --exclude-table-data values = '$GOT_EXCLUDE', expected '$EXPECT_EXCLUDE'"; cat "$FILTER_ARGV"; exit 1; }
+echo "[PASS] --pg-filter <file> and --pg-exclude-table-data <t> (repeated) reach pg_dump's argv unchanged"
+
+# (b) the manifest records what was passed (transparency, same spirit as --pg-table's `tables`).
+FILTER_OUT="$TMP/pg-filter-restore-out"
+CIPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$FILTER_SNAP" --out-dir "$FILTER_OUT" \
+  --no-expand-components >/dev/null
+grep -qF "\"filter\": \"$FILTER_FILE\"" "$FILTER_OUT/manifest.json" \
+  || { echo "[FAIL] manifest.json does not record the --pg-filter file path"; cat "$FILTER_OUT/manifest.json"; exit 1; }
+grep -q '"exclude_table_data"' "$FILTER_OUT/manifest.json" || { echo "[FAIL] manifest.json missing exclude_table_data"; exit 1; }
+grep -q 'tool_logs' "$FILTER_OUT/manifest.json" || { echo "[FAIL] manifest.json missing excluded table tool_logs"; exit 1; }
+grep -q 'embedding_cache' "$FILTER_OUT/manifest.json" || { echo "[FAIL] manifest.json missing excluded table embedding_cache"; exit 1; }
+echo "[PASS] manifest.json records the --pg-filter path and --pg-exclude-table-data tables"
+
+# (c) unspecified (the default) -> pg_dump's argv carries NEITHER flag (identical to pre-#235
+# behavior: a full, unfiltered dump).
+PLAIN_ARGV="$TMP/pg-dump-argv-plain.txt"
+CIPHER_BRAIN_HOME="$TMP/keys" CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN_F" PG_DUMP_ARGV_LOG="$PLAIN_ARGV" \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --pg "postgres://fake/conn" --out "$TMP/pg-plain-snap.age" >/dev/null
+if grep -q -- '--filter\|--exclude-table-data' "$PLAIN_ARGV"; then
+  echo "[FAIL] pg_dump argv carries --filter/--exclude-table-data even though neither flag was passed"
+  cat "$PLAIN_ARGV"; exit 1
+fi
+echo "[PASS] omitting --pg-filter/--pg-exclude-table-data leaves pg_dump's argv exactly as before (no filtering)"
+
 echo "== #215: --scan-secrets warn|deny (gitleaks) =="
 # This whole section is deliberately explicit about CIPHER_BRAIN_HOME="$TMP/keys" on
 # EVERY invocation (snapshot AND restore) rather than relying on the ambient exported

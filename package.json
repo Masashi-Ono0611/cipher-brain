@@ -42,7 +42,7 @@
     "lint": "biome check --error-on-warnings .",
     "format": "biome format --write .",
     "check:help-docs": "node scripts/check-help-docs.mjs",
-    "verify": "npm run build && npm run typecheck && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:pq && npm run selftest:minisign && npm run selftest:schedule && npm run selftest:init && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
+    "verify": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:pq && npm run selftest:minisign && npm run selftest:schedule && npm run selftest:init && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
     "selftest": "bash scripts/selftest.sh",
     "selftest:profiles": "bash scripts/selftest-profiles.sh",
     "selftest:cipherbrainignore": "bash scripts/selftest-cipherbrainignore.sh",

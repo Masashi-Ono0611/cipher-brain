@@ -1,4 +1,4 @@
-// cipher-brain-mcp — MCP server so an AI agent can snapshot/verify its own brain.
+// cipher-brain-mcp — MCP server so an AI agent can snapshot/verify/restore its own brain.
 //
 // Second entry point next to src/cli.ts (a CLI + MCP two-face design). Every
 // tool is a thin wrapper over the SAME src/lib functions the CLI dispatches
@@ -35,7 +35,7 @@ import {
 
 import { HOME, IDENTITY, RECIPIENT } from './lib/config.js';
 import { snapshot } from './lib/snapshot.js';
-import { verify } from './lib/restore.js';
+import { restore, verify } from './lib/restore.js';
 import { push, pull } from './lib/pushpull.js';
 import { schedule } from './lib/schedule.js';
 import { estimateCost } from './lib/estimate.js';
@@ -345,6 +345,87 @@ const VERIFY_RESTORE_TOOL: Tool = {
   },
 };
 
+const RESTORE_NOW_TOOL: Tool = {
+  name: 'restore_now',
+  description:
+    '⚠ WRITES decrypted files to disk, and can irreversibly clobber a database. The actual disaster-' +
+    'recovery step verify_restore stops short of (issue #183): verify_restore only PROVES a snapshot is ' +
+    'restorable, this tool actually restores it. Pull the ciphertext by locator, or restore a local file, ' +
+    'or pass locator_file (a push --save-locator file) which supplies the locator, its backend AND the ' +
+    'sha256 integrity pin in one — the SAME dual-mode input as verify_restore (exactly one of ' +
+    'locator/file/locator_file). Decrypts with the PRIVATE identity and extracts into out_dir; extraction ' +
+    'never clobbers a file already present there (tar --keep-old-files/--skip-old-files, same as the CLI). ' +
+    'REQUIRES confirm_write=true before ANY work happens (pull/decrypt/extract): confirms writing decrypted ' +
+    'files into out_dir, and — when pg is given — that pg_restore --clean --if-exists will ALSO DROP and ' +
+    'replace objects in that database, an irreversible operation (the MCP equivalent of the CLI --yes/' +
+    'CIPHER_BRAIN_YES guard on restore --pg; the CIPHER_BRAIN_YES env escape hatch is NOT honored here, so ' +
+    'nothing can be restored/clobbered without an explicit confirm_write in the call).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      locator: {
+        type: 'string',
+        description: 'Storage locator to pull first (requires backend). Exactly one of locator/file/locator_file.',
+      },
+      file: {
+        type: 'string',
+        description: 'Local .age file to restore directly. Exactly one of locator/file/locator_file.',
+      },
+      locator_file: {
+        type: 'string',
+        description:
+          'Path to a push --save-locator file ("<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]"; legacy 3/4-field lines accepted): pull using its recorded locator + backend, with its saved sha256 applied as the integrity pin (the CLI --from-locator-file recovery path). Exactly one of locator/file/locator_file; do not also pass backend.',
+      },
+      backend: {
+        type: 'string',
+        enum: BACKENDS,
+        description:
+          'Backend to pull the locator from (required with locator; not allowed with locator_file — the file records it).',
+      },
+      sha256: {
+        type: 'string',
+        description:
+          'Optional integrity pin: 64-hex sha256 of the expected ciphertext, sourced from a TRUSTED off-box record (index.tsv / a backed-up save-locator file). A pulled artifact that does not match is deleted and the call fails closed (no restore happens); with file the mismatch refuses before any decrypt/extract work. Overrides the pin recorded in locator_file.',
+      },
+      out_dir: {
+        type: 'string',
+        description:
+          'Directory to extract the decrypted snapshot into (created if missing). Existing files already there are never clobbered.',
+      },
+      identity: {
+        type: 'string',
+        description: 'Private identity file to decrypt with. Default: <CIPHER_BRAIN_HOME>/identity.age',
+      },
+      pg: {
+        type: 'string',
+        description:
+          "Postgres connection string to pg_restore the snapshot's db.dump into. pg_restore --clean --if-exists " +
+          'DROPS and replaces objects in that database — irreversible — so this ALSO requires confirm_write=true ' +
+          '(the MCP equivalent of the CLI --yes/CIPHER_BRAIN_YES guard on restore --pg).',
+      },
+      confirm_write: {
+        type: 'boolean',
+        description:
+          'REQUIRED true to execute the restore. Confirms you accept decrypted files being written into out_dir, ' +
+          'and — when pg is given — objects in that database being DROPPED and replaced via pg_restore --clean --if-exists.',
+      },
+    },
+    required: ['out_dir'],
+    additionalProperties: false,
+  },
+  annotations: {
+    // The file extraction itself is no-clobber (like snapshot_now's --out), but
+    // when pg is given, pg_restore --clean --if-exists DROPS and replaces
+    // existing objects in that database — genuinely destructive, unlike
+    // snapshot_now which never destroys existing state. Pulls from a storage
+    // backend over the network.
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  },
+};
+
 const ESTIMATE_COST_TOOL: Tool = {
   name: 'estimate_cost',
   description:
@@ -528,6 +609,7 @@ const ALL_TOOLS: Tool[] = [
   SNAPSHOT_NOW_TOOL,
   LAST_SNAPSHOT_STATUS_TOOL,
   VERIFY_RESTORE_TOOL,
+  RESTORE_NOW_TOOL,
   ESTIMATE_COST_TOOL,
   SCHEDULE_STATUS_TOOL,
   KEYGEN_TOOL,
@@ -811,6 +893,145 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
   }
 }
 
+// restore_now shares its dual-mode locator/file/locator_file input resolution with
+// verify_restore above (pull into a scratch tmpdir, or use a local file directly),
+// then hands the resolved .age path to restore() (src/lib/restore.ts) — the SAME
+// function the CLI's `restore` subcommand dispatches to — instead of re-implementing
+// the decrypt+extract(+pg_restore) logic here.
+async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
+  const {
+    locator,
+    file,
+    locator_file: locatorFile,
+    backend,
+    sha256: pin,
+    out_dir: outDir,
+    identity,
+    pg,
+    confirm_write: confirmWrite,
+  } = args;
+
+  const given = [locator, file, locatorFile].filter((v) => v !== undefined).length;
+  if (given !== 1) {
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      'pass exactly one of locator (pull first), file (restore a local .age), or locator_file (a push --save-locator file: locator + backend + sha256 pin in one)',
+    );
+  }
+  if (locatorFile !== undefined) {
+    if (!isStr(locatorFile)) throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
+    if (backend !== undefined)
+      throw new ToolError(
+        'ERR_INVALID_INPUT',
+        'backend cannot be combined with locator_file — the file records the backend itself',
+      );
+  }
+  if (pin !== undefined && !(isStr(pin) && SHA256_HEX.test(pin))) {
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      'sha256 must be a 64-char hex string (the expected ciphertext digest, from a trusted off-box record)',
+    );
+  }
+  if (!isStr(outDir)) throw new ToolError('ERR_INVALID_INPUT', 'out_dir (string path) is required');
+  if (identity !== undefined && !isStr(identity))
+    throw new ToolError('ERR_INVALID_INPUT', 'identity must be a string path');
+  if (pg !== undefined && !isStr(pg)) throw new ToolError('ERR_INVALID_INPUT', 'pg must be a string connection URI');
+  if (confirmWrite !== undefined && !isBool(confirmWrite))
+    throw new ToolError('ERR_INVALID_INPUT', 'confirm_write must be a boolean');
+
+  // Consequential-action gate FIRST — before any pull/decrypt/extract work happens,
+  // same "check before work" discipline as snapshot_now's confirm_paid gate above.
+  // Restoring writes decrypted files into out_dir, and when pg is given ALSO runs
+  // pg_restore --clean --if-exists (DROPS and replaces objects in that database).
+  // The CLI accepts CIPHER_BRAIN_YES=1 for unattended runs, but via MCP the consent
+  // must be in the call itself — the env escape hatch is deliberately NOT honored here.
+  if (confirmWrite !== true) {
+    throw new ToolError(
+      'ERR_CONFIRM_REQUIRED',
+      'restore_now writes decrypted files into out_dir' +
+        (pg
+          ? ', and pg is given so pg_restore --clean --if-exists will DROP and replace objects in that database'
+          : '') +
+        ' — re-call restore_now with confirm_write=true to consent (the MCP equivalent of the CLI --yes guard). ' +
+        'The CIPHER_BRAIN_YES environment escape hatch is not honored over MCP, so no call can restore/clobber ' +
+        'without this flag.',
+    );
+  }
+
+  let target: string | undefined = isStr(file) ? file : undefined;
+  let effectivePin: string | undefined = isStr(pin) ? pin : undefined;
+  let tdir: string | null = null;
+  let pulled: Record<string, unknown> | undefined;
+  try {
+    if (file === undefined) {
+      if (locator !== undefined) {
+        if (!isStr(locator)) throw new ToolError('ERR_INVALID_INPUT', 'locator must be a string');
+        requireBackend(backend, 'backend (required with locator)');
+      }
+      tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-mcp-'));
+      target = join(tdir, 'pulled.age');
+      // pull() natively understands from_locator_file and applies the sha256 pin
+      // (explicit or read from the locator file) BEFORE the fetched bytes are
+      // promoted to `target` — a mismatch deletes the temp fetch and throws, so
+      // nothing here is ever decrypted/extracted from an unpinned/substituted artifact.
+      const pullOpts: CliOptions = {
+        locator: isStr(locator) ? locator : undefined,
+        backend: isStr(backend) ? backend : undefined,
+        out: target,
+        sha256: effectivePin,
+        from_locator_file: isStr(locatorFile) ? locatorFile : undefined,
+        dirs: [],
+        tables: [],
+        recipients: [],
+      };
+      await captureCall(() => pull(pullOpts));
+      effectivePin = pullOpts.sha256;
+      pulled = {
+        backend: pullOpts.backend,
+        locator: pullOpts.locator,
+        sha256_pin: effectivePin ?? null,
+        ...(locatorFile !== undefined ? { locator_file: locatorFile } : {}),
+      };
+    } else if (!isStr(file)) {
+      throw new ToolError('ERR_INVALID_INPUT', 'file must be a string path');
+    }
+    if (!target) throw new ToolError('ERR_INTERNAL', 'no target file resolved for restore');
+    // Unlike a pulled artifact (pinned above by pull() itself), a directly-given
+    // `file` never passes through that check — apply the SAME pin here so file and
+    // locator/locator_file inputs get identical integrity guarantees before any
+    // decrypt/extract work runs (restore(), unlike verify(), does not check sha256 itself).
+    if (effectivePin) {
+      const got = await sha256(target);
+      if (got.toLowerCase() !== effectivePin.toLowerCase()) {
+        throw new ToolError(
+          'ERR_INVALID_INPUT',
+          `sha256 mismatch: ${target} has ${got}, expected ${effectivePin} — refusing to restore an unverified artifact`,
+        );
+      }
+    }
+
+    const restoreOpts: CliOptions = {
+      in: target,
+      out_dir: outDir,
+      identity: isStr(identity) ? identity : undefined,
+      pg: isStr(pg) ? pg : undefined,
+      yes: true, // already gated above by confirm_write; restore()'s own --pg guard needs this to proceed
+      dirs: [],
+      tables: [],
+      recipients: [],
+    };
+    const res = await captureCall(() => restore(restoreOpts));
+    return structuredOk({
+      out_dir: outDir,
+      ...(pulled ? { pulled } : {}),
+      pg_restored: Boolean(pg),
+      log: [...res.out, ...res.err],
+    });
+  } finally {
+    if (tdir) await rm(tdir, { recursive: true, force: true });
+  }
+}
+
 async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
   const { file, size_bytes: sizeBytes, backend } = args;
   requireBackend(backend, 'backend');
@@ -941,6 +1162,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
         return await handleLastSnapshotStatus(args);
       case 'verify_restore':
         return await handleVerifyRestore(args);
+      case 'restore_now':
+        return await handleRestoreNow(args);
       case 'estimate_cost':
         return await handleEstimateCost(args);
       case 'schedule_status':

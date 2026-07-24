@@ -39,9 +39,14 @@ that README.md, MANAGEMENT.md, or llms.txt describes, update those docs in
   MANAGEMENT.md, or llms.txt now describe old behavior as current, or fail
   to mention what you just added? If yes, fix it in the same PR.
 
-Issue #227 tracks an automated CI check for `--help`/README drift. Until
-that lands, this is manual discipline, not a replacement for it once it
-exists.
+Issue #227's automated CI check (`scripts/check-help-docs.mjs`, run in CI —
+see `.github/workflows/ci.yml`) now enforces this for README.md's "CLI
+reference" section, which must be byte-identical to `cipher-brain --help`'s
+current output (`node scripts/check-help-docs.mjs --write` regenerates it).
+That only covers the literal `--help` text, though — MANAGEMENT.md, llms.txt,
+and everything else the bullets above mention (Threat model claims, prose
+Usage sections, MCP tool listings) is still manual discipline; keep applying
+this section's checklist to those.
 
 ## Everything else
 

@@ -657,6 +657,31 @@ async function run(tmp) {
     if (existsSync(launchdDir)) {
       throw new Error('schedule_install confirm_install gate fired but launchdDir was still created');
     }
+    if (existsSync(join(home, 'schedule'))) {
+      throw new Error('schedule_install confirm_install gate fired but the runner/config dir was still created');
+    }
+
+    // 2j-ii. a paid backend without max_spend must refuse (install()'s own validation,
+    // delegated to unchanged — proves the confirm_install gate does not shadow it, and
+    // that this refusal fires before max_spend's absence would otherwise matter).
+    send({
+      jsonrpc: '2.0',
+      id: 20,
+      method: 'tools/call',
+      params: {
+        name: 'schedule_install',
+        arguments: { backend: 'turbo', dirs: [data], no_load: true, confirm_install: true },
+      },
+    });
+    const schedInstallNoSpend = await waitFor(20);
+    if (!schedInstallNoSpend.result?.isError || !/max-spend|max_spend/i.test(schedInstallNoSpend.result?.structuredContent?.message ?? '')) {
+      throw new Error(
+        `schedule_install (backend=turbo, no max_spend) did not refuse for the expected reason: ${JSON.stringify(schedInstallNoSpend.result).slice(0, 300)}`,
+      );
+    }
+    if (existsSync(join(home, 'schedule'))) {
+      throw new Error('schedule_install (backend=turbo, no max_spend) still wrote the runner/config dir before refusing');
+    }
 
     // 2k. schedule_install REAL --no-load install (issue #174 follow-up): registers
     // NOTHING with the real launchctl/crontab (no_load: true — this env's

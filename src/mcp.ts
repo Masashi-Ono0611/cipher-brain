@@ -1153,7 +1153,30 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
 // captured log verbatim plus an echo of the args that were actually consented
 // to, rather than re-parsing/re-deriving the written config (same "no
 // re-implemented logic" approach as handleScheduleStatus below).
+const SCHEDULE_INSTALL_KEYS = new Set([
+  'backend',
+  'dirs',
+  'pg',
+  'recipients',
+  'at',
+  'max_spend',
+  'no_load',
+  'ping_url',
+  'ping_url_fail',
+  'confirm_install',
+]);
+
 async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
+  // Unlike most handlers here, a stray/misspelled key is not just a wasted call —
+  // this tool's whole safety story rests on no_load/confirm_install being read
+  // correctly (a `no_laod: true` typo would otherwise silently register a REAL
+  // trigger where the caller intended a preview). The advertised inputSchema's
+  // additionalProperties: false is NOT enforced by the low-level Server at
+  // runtime, so check explicitly (same discipline as handleScheduleStatus below).
+  const unexpected = Object.keys(args).filter((k) => !SCHEDULE_INSTALL_KEYS.has(k));
+  if (unexpected.length > 0) {
+    throw new ToolError('ERR_INVALID_INPUT', `schedule_install got unrecognized argument(s): ${unexpected.join(', ')}`);
+  }
   const {
     backend,
     dirs = [],

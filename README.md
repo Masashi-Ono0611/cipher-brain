@@ -367,8 +367,19 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
 
   cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]...
                          [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...
-                         [--recipient <pubkey|file>]... [--scan-secrets warn|deny]
+                         [--recipient <pubkey|file>]... [--dry-run] [--scan-secrets warn|deny]
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
+      A ".cipherbrainignore" file (gitignore-compatible syntax; the "ignore" npm package
+      does the matching, not a hand-rolled glob) at the ROOT of a --dir (or a --profile-
+      resolved directory) filters what gets archived from that directory — node_modules,
+      caches, credential files etc. never need to be tar'd, encrypted or paid for. No file
+      -> unchanged behavior (every path is archived, exactly as before #216). A single-file
+      --dir source (a --profile file/zip) is archived as-is; it has no tree to filter.
+      --dry-run previews --dir/--profile filtering WITHOUT writing, staging or encrypting
+      anything (--out is not required): prints, per --dir, whether a .cipherbrainignore was
+      found and the include/exclude file list with an approximate byte total for each side
+      — the "capacity difference" a --recipient/--pg pipeline never touches until you drop
+      --dry-run and actually run the snapshot.
       Also records a deterministic PLAINTEXT content digest (mtime-independent) in the
       manifest and in a "<out>.digest" sidecar, PLUS a recipients fingerprint (the
       effective age1… recipient set actually encrypted to) in a

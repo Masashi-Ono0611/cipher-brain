@@ -231,7 +231,7 @@ const SNAPSHOT_NOW_TOOL: Tool = {
       locator_file: {
         type: 'string',
         description:
-          'Path for push --save-locator: writes "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]" (the durable recovery pointer; back it up off-box).',
+          'Path for push --save-locator: writes "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>[\\t<sig_locator>[\\t<sign_key_id>]]]]" (the durable recovery pointer; back it up off-box).',
       },
       confirm_paid: {
         type: 'boolean',
@@ -258,8 +258,8 @@ const LAST_SNAPSHOT_STATUS_TOOL: Tool = {
   description:
     'Read-only, spends nothing. Report the most recent snapshot push: locator, backend, sha256, ' +
     'timestamp and age, read from the save-locator file (written by snapshot_now/push ' +
-    'locator_file — "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]", ' +
-    'legacy 3/4-field lines accepted, timestamped by file mtime) and/or an ' +
+    'locator_file — "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>[\\t<sig_locator>[\\t<sign_key_id>]]]]", ' +
+    'legacy 3/4/5/6-field lines accepted, timestamped by file mtime) and/or an ' +
     'append-only index.tsv ("<timestamp>\\t<locator>\\t<sha256>" per line, newest last). With no ' +
     'arguments it tries the default save-locator path $CIPHER_BRAIN_HOME/latest-locator.tsv.',
   inputSchema: {
@@ -314,7 +314,7 @@ const VERIFY_RESTORE_TOOL: Tool = {
       locator_file: {
         type: 'string',
         description:
-          'Path to a push --save-locator file ("<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]"; legacy 3/4-field lines accepted): pull using its recorded locator + backend, with its saved sha256 applied as the integrity pin (the CLI --from-locator-file recovery path). Exactly one of locator/file/locator_file; do not also pass backend.',
+          'Path to a push --save-locator file ("<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>[\\t<sig_locator>[\\t<sign_key_id>]]]]"; legacy 3/4/5/6-field lines accepted): pull using its recorded locator + backend, with its saved sha256 applied as the integrity pin (the CLI --from-locator-file recovery path). Exactly one of locator/file/locator_file; do not also pass backend.',
       },
       backend: {
         type: 'string',
@@ -374,7 +374,7 @@ const RESTORE_NOW_TOOL: Tool = {
       locator_file: {
         type: 'string',
         description:
-          'Path to a push --save-locator file ("<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]"; legacy 3/4-field lines accepted): pull using its recorded locator + backend, with its saved sha256 applied as the integrity pin (the CLI --from-locator-file recovery path). Exactly one of locator/file/locator_file; do not also pass backend.',
+          'Path to a push --save-locator file ("<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>[\\t<sig_locator>[\\t<sign_key_id>]]]]"; legacy 3/4/5/6-field lines accepted): pull using its recorded locator + backend, with its saved sha256 applied as the integrity pin (the CLI --from-locator-file recovery path). Exactly one of locator/file/locator_file; do not also pass backend.',
       },
       backend: {
         type: 'string',
@@ -782,10 +782,12 @@ interface LocatorSource {
 }
 
 // Parse one save-locator file ("<locator>\t<backend>\t<sha256>[\t<content_digest>[\t
-// <recipients_fingerprint>]]", latest only; timestamp = file mtime since push does not
-// record one in it). Legacy 3-field lines (pre-#70, no content_digest) and 4-field
-// lines (no recipients_fingerprint) parse identically — never break the recovery of
-// an existing file.
+// <recipients_fingerprint>[\t<sig_locator>[\t<sign_key_id>]]]]", latest only; timestamp
+// = file mtime since push does not record one in it). Legacy 3-field lines (pre-#70, no
+// content_digest) and 4-field lines (no recipients_fingerprint) parse identically —
+// never break the recovery of an existing file. Only the first four fields are read
+// here; the later ones are push-side bookkeeping for --skip-unchanged (#214/#250) and
+// are ignored on this path, which is why a longer line needs no change here.
 async function readLocatorFile(path: string): Promise<LocatorSource> {
   const text = await readFile(path, 'utf8');
   const line = text
@@ -797,7 +799,7 @@ async function readLocatorFile(path: string): Promise<LocatorSource> {
   if (!locator || !backend)
     throw new ToolError(
       'ERR_INVALID_INPUT',
-      `locator file ${path} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]]" — got: ${JSON.stringify(line)}`,
+      `locator file ${path} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>[\\t<sig_locator>[\\t<sign_key_id>]]]]]" — got: ${JSON.stringify(line)}`,
     );
   const { mtime } = await stat(path);
   return {

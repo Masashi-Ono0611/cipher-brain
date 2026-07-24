@@ -16,6 +16,10 @@
 #     never FAIL) — the whole feature is additive
 #   - push (file backend) uploads the .minisig sidecar alongside the ciphertext, and
 #     pull --from-locator-file fetches it back automatically (the 6th --save-locator field)
+#   - push --skip-unchanged re-evaluates SIGNING state, not just content + recipients
+#     (#250): enabling signing or rotating the signing key over otherwise-unchanged
+#     content forces a re-push, an unsigned or same-key setup still skips, and a
+#     pre-#250 6-field line counts as unknown (push) rather than unchanged (skip)
 #
 # PLUS, only when the reference `minisign` binary is on PATH (SKIPs otherwise, same
 # posture as scripts/selftest-interop.sh's `age` binary check):
@@ -209,8 +213,15 @@ echo "== push (file backend) uploads the .minisig sidecar; pull fetches it back 
 rm -f "$TMP/loc.tsv"
 cb push --in "$TMP/snap.age" --backend file --save-locator "$TMP/loc.tsv" >/dev/null
 LOC_FIELDS=$(head -n1 "$TMP/loc.tsv" | awk -F'\t' '{print NF}')
-[ "$LOC_FIELDS" -ge 6 ] && echo "[PASS] save-locator recorded a 6th (sig_locator) field" \
-  || { echo "[FAIL] save-locator has only $LOC_FIELDS field(s), expected >= 6"; cat "$TMP/loc.tsv"; exit 1; }
+[ "$LOC_FIELDS" -ge 7 ] && echo "[PASS] save-locator recorded the 6th (sig_locator) + 7th (sign_key_id) fields" \
+  || { echo "[FAIL] save-locator has only $LOC_FIELDS field(s), expected >= 7"; cat "$TMP/loc.tsv"; exit 1; }
+# the 7th field must be the key id from the .minisig itself (#250) — the same 8 bytes
+# the signing identity file records as its "# key id: <hex>" comment.
+LOC_KEY_ID=$(head -n1 "$TMP/loc.tsv" | awk -F'\t' '{print $7}')
+IDENTITY_KEY_ID=$(grep -m1 '^# key id: ' "$HOME_DIR/sign-identity.key" | sed 's/^# key id: //')
+[ -n "$LOC_KEY_ID" ] && [ "$LOC_KEY_ID" = "$IDENTITY_KEY_ID" ] \
+  && echo "[PASS] the recorded sign_key_id is the signing identity's own key id ($LOC_KEY_ID)" \
+  || { echo "[FAIL] sign_key_id '$LOC_KEY_ID' does not match the signing identity's '$IDENTITY_KEY_ID'"; exit 1; }
 rm -f "$TMP/pulled.age" "$TMP/pulled.age.minisig"
 cb pull --from-locator-file "$TMP/loc.tsv" --out "$TMP/pulled.age" >/dev/null 2>&1
 test -f "$TMP/pulled.age.minisig" && echo "[PASS] pull fetched the .minisig sidecar automatically" \
@@ -251,6 +262,74 @@ cb pull --from-locator-file "$TMP/loc3.tsv" --out "$TMP/pulled.age" --force >/de
 cb verify --in "$TMP/pulled.age" | grep -q 'VERDICT: PASS' \
   && echo "[PASS] the force-repulled unsigned artifact verifies end-to-end (SKIPs the signature check, not a false FAIL)" \
   || { echo "[FAIL] the force-repulled unsigned artifact did not VERIFY: PASS"; exit 1; }
+
+echo "== #250: push --skip-unchanged re-evaluates SIGNING state, not just content+recipients =="
+# A fresh, isolated home so this block controls the signing state from scratch: the
+# scenario is specifically "unchanged plaintext, unchanged recipients, CHANGED signing".
+SK_HOME="$TMP/keys-skip"
+SK_SRC="$TMP/src-skip"
+mkdir -p "$SK_HOME" "$SK_SRC"
+printf 'skip-unchanged fixture\n' >"$SK_SRC/note.txt"
+sk() { CIPHER_BRAIN_HOME="$SK_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+sk keygen >/dev/null 2>&1
+
+# (1) unsigned baseline: push, then re-push identical content — must still SKIP. The
+# pre-#214 majority has no signing key at all, and #250 must not cost them their skip.
+sk snapshot --dir "$SK_SRC" --out "$TMP/sk1.age" >/dev/null
+sk push --in "$TMP/sk1.age" --backend file --save-locator "$TMP/sk-loc.tsv" >/dev/null
+SK_FIELDS=$(head -n1 "$TMP/sk-loc.tsv" | awk -F'\t' '{print NF}')
+[ "$SK_FIELDS" = "5" ] \
+  && echo "[PASS] an unsigned push still writes exactly the 5-field line (no empty trailing columns)" \
+  || { echo "[FAIL] unsigned push wrote $SK_FIELDS fields, expected 5"; cat "$TMP/sk-loc.tsv"; exit 1; }
+sk snapshot --dir "$SK_SRC" --out "$TMP/sk2.age" >/dev/null
+sk push --in "$TMP/sk2.age" --backend file --save-locator "$TMP/sk-loc.tsv" --skip-unchanged >"$TMP/sk2.out" 2>&1
+grep -q 'SKIPPED' "$TMP/sk2.out" \
+  && echo "[PASS] unsigned + unchanged still skips (no regression for setups with no signing key)" \
+  || { echo "[FAIL] an unsigned, unchanged re-push did not skip"; cat "$TMP/sk2.out"; exit 1; }
+
+# (2) signing newly ENABLED over unchanged content — must NOT skip, or the remote copy
+# silently stays unsigned (the first half of #250).
+sk keygen --sign >/dev/null 2>&1
+sk snapshot --dir "$SK_SRC" --out "$TMP/sk3.age" >/dev/null
+sk push --in "$TMP/sk3.age" --backend file --save-locator "$TMP/sk-loc.tsv" --skip-unchanged >"$TMP/sk3.out" 2>&1
+grep -q 'SKIPPED' "$TMP/sk3.out" \
+  && { echo "[FAIL] newly-enabled signing was skipped — the remote copy stays unsigned (#250)"; cat "$TMP/sk3.out"; exit 1; }
+echo "[PASS] newly-enabled signing forces a re-push even though content + recipients are unchanged"
+SK_KEY_1=$(head -n1 "$TMP/sk-loc.tsv" | awk -F'\t' '{print $7}')
+[ -n "$SK_KEY_1" ] || { echo "[FAIL] the re-push did not record a sign_key_id"; cat "$TMP/sk-loc.tsv"; exit 1; }
+
+# (3) signed, SAME key, unchanged content — must skip again (the optimization still works
+# once the new state is recorded; #250 must not turn every signed push into a re-push).
+sk snapshot --dir "$SK_SRC" --out "$TMP/sk4.age" >/dev/null
+sk push --in "$TMP/sk4.age" --backend file --save-locator "$TMP/sk-loc.tsv" --skip-unchanged >"$TMP/sk4.out" 2>&1
+grep -q 'SKIPPED' "$TMP/sk4.out" \
+  && echo "[PASS] signed by the SAME key + unchanged content skips as before" \
+  || { echo "[FAIL] an unchanged, same-key signed re-push did not skip"; cat "$TMP/sk4.out"; exit 1; }
+
+# (4) signing key ROTATED over unchanged content — must NOT skip, or the remote copy stays
+# signed with the OLD key and a verifier trusting only the NEW one sees it as unverifiable
+# (the second half of #250).
+sk keygen --sign --force >/dev/null 2>&1
+sk snapshot --dir "$SK_SRC" --out "$TMP/sk5.age" >/dev/null
+sk push --in "$TMP/sk5.age" --backend file --save-locator "$TMP/sk-loc.tsv" --skip-unchanged >"$TMP/sk5.out" 2>&1
+grep -q 'SKIPPED' "$TMP/sk5.out" \
+  && { echo "[FAIL] a rotated signing key was skipped — the remote copy stays signed with the OLD key (#250)"; cat "$TMP/sk5.out"; exit 1; }
+SK_KEY_2=$(head -n1 "$TMP/sk-loc.tsv" | awk -F'\t' '{print $7}')
+[ -n "$SK_KEY_2" ] && [ "$SK_KEY_2" != "$SK_KEY_1" ] \
+  && echo "[PASS] a rotated signing key forces a re-push and records the NEW key id" \
+  || { echo "[FAIL] sign_key_id did not change after rotation ('$SK_KEY_1' -> '$SK_KEY_2')"; exit 1; }
+
+# (5) a signed previous push recorded BEFORE #250 (a 6-field line, no sign_key_id) is
+# genuinely unknown, not "unchanged" — it must push rather than skip, and the re-push
+# then records the 7th field so the next run compares normally.
+cut -f1-6 "$TMP/sk-loc.tsv" >"$TMP/sk-loc-legacy.tsv"
+sk snapshot --dir "$SK_SRC" --out "$TMP/sk6.age" >/dev/null
+sk push --in "$TMP/sk6.age" --backend file --save-locator "$TMP/sk-loc-legacy.tsv" --skip-unchanged >"$TMP/sk6.out" 2>&1
+grep -q 'SKIPPED' "$TMP/sk6.out" \
+  && { echo "[FAIL] a 6-field (pre-#250) signed line was treated as 'signing unchanged'"; cat "$TMP/sk6.out"; exit 1; }
+[ "$(head -n1 "$TMP/sk-loc-legacy.tsv" | awk -F'\t' '{print NF}')" = "7" ] \
+  && echo "[PASS] a legacy 6-field signed line pushes (unknown != unchanged) and is upgraded to 7 fields" \
+  || { echo "[FAIL] the re-push did not upgrade the legacy line to 7 fields"; cat "$TMP/sk-loc-legacy.tsv"; exit 1; }
 
 if ! command -v minisign >/dev/null 2>&1; then
   echo "[SKIP] real \`minisign\` binary interop: no \`minisign\` on PATH — install it (brew/apt) to exercise CLI<->binary wire-format interop"

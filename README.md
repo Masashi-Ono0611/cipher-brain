@@ -533,11 +533,12 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       PATH and a remote already set up via 'rclone config' (or a config-less
       on-the-fly remote, e.g. --remote ":local:/path"). --remote is required.
       --save-locator writes "<locator>\t<backend>\t<sha256>[\t<content_digest>[\t
-      <recipients_fingerprint>[\t<sig_locator>]]]" to a file (rewritten atomically each
-      push, so it always holds the LATEST + an integrity pin; legacy 3/4/5-field files
-      are still accepted everywhere). Back this file up off-box next to your identity: it
-      is the durable pointer a fresh machine needs to find the most recent snapshot. (For
-      the file backend the locator is a LOCAL store path — arweave/turbo locators are
+      <recipients_fingerprint>[\t<sig_locator>[\t<sign_key_id>]]]]" to a file (rewritten
+      atomically each push, so it always holds the LATEST + an integrity pin; legacy
+      3/4/5/6-field files are still accepted everywhere). Back this file up off-box next
+      to your identity: it is the durable pointer a fresh machine needs to find the most
+      recent snapshot. (For the file backend the locator is a LOCAL store path —
+      arweave/turbo locators are
       always portable to another machine; an rclone locator is portable too, PROVIDED
       the same remote name is configured there — a config-less ":local:/path" remote
       is as machine-local as the file backend.)
@@ -545,17 +546,24 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       when a signing identity is present — see "snapshot" above), it is ALSO uploaded to
       the SAME backend right after the ciphertext, under the SAME already-granted
       consent — its own locator becomes the 6th --save-locator field above, so pull can
-      fetch it back automatically. Unchanged behavior when no sidecar exists.
-      --skip-unchanged (requires --save-locator): skips ONLY when BOTH (a) the
+      fetch it back automatically, and the signing key id inside it becomes the 7th
+      (#250, see --skip-unchanged below). Unchanged behavior when no sidecar exists.
+      --skip-unchanged (requires --save-locator): skips ONLY when ALL THREE of (a) the
       snapshot's PLAINTEXT content digest — read from the "<in>.digest" sidecar
       snapshot writes, or given as --digest <hex> — equals the content_digest recorded
-      in the save-locator file for the same backend, AND (b) the recipients
+      in the save-locator file for the same backend, (b) the recipients
       fingerprint — read from the "<in>.recipients-fingerprint" sidecar — equals the
-      recipients_fingerprint recorded there too. Requiring both means a re-snapshot of
-      unchanged plaintext under a CHANGED --recipient set (a newly added recovery key,
-      a removed/revoked key) is never skipped. When both match: print SKIPPED + the
-      previous locator and exit 0 WITHOUT contacting storage or spending. Any missing
-      piece on EITHER side (no sidecar, a legacy 3/4-field file, a different backend)
+      recipients_fingerprint recorded there too, AND (c) the SIGNING state matches:
+      an unsigned artifact where the last push was unsigned too, or a "<in>.minisig"
+      whose signing key id equals the sign_key_id recorded there. Requiring (b) means a
+      re-snapshot of unchanged plaintext under a CHANGED --recipient set (a newly added
+      recovery key, a removed/revoked key) is never skipped; requiring (c) means turning
+      signing ON ("keygen --sign") or ROTATING the signing key is never skipped either —
+      otherwise the store would keep an unsigned, or stale-key-signed, copy of content
+      you now expect to be signed with the current key. When all three match: print
+      SKIPPED + the previous locator and exit 0 WITHOUT contacting storage or spending.
+      Any missing piece on EITHER side (no sidecar, a legacy 3/4-field file, a signed
+      push recorded before #250 added the 7th field, a different backend)
       just pushes normally: skip is an optimization, never a gate. --force uploads even
       when unchanged. (The digest is plaintext-side by necessity: age's ephemeral file
       key makes identical content encrypt to different ciphertext bytes every run.)

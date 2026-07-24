@@ -143,7 +143,7 @@ echo "[PASS] signing identity + public key written (#214)"
 
 LOCFILE="$WIZ_CB_HOME/latest-locator.tsv"
 [ -f "$LOCFILE" ] || { echo "[FAIL] --save-locator file not written by the wizard's push"; exit 1; }
-[ "$(awk -F'\t' '{print NF; exit}' "$LOCFILE")" = "6" ] || { echo "[FAIL] locator file is not 6 tab-separated fields (signing was enabled, so a sig_locator field is expected, #214)"; cat "$LOCFILE"; exit 1; }
+[ "$(awk -F'\t' '{print NF; exit}' "$LOCFILE")" = "7" ] || { echo "[FAIL] locator file is not 7 tab-separated fields (signing was enabled, so a sig_locator field (#214) and a sign_key_id field (#250) are both expected)"; cat "$LOCFILE"; exit 1; }
 [ "$(awk -F'\t' '{print $2; exit}' "$LOCFILE")" = "file" ] || { echo "[FAIL] locator file backend != file"; exit 1; }
 echo "[PASS] push wrote a 6-field --save-locator file (ciphertext + signature locator) for the file backend"
 

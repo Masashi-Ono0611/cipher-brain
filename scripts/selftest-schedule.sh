@@ -315,7 +315,7 @@ STORE_COUNT_2="$(find "$CIPHER_BRAIN_FILE_DIR" -maxdepth 1 -name '*.age' 2>/dev/
 
 [ -f "$LOG" ] || { echo "[FAIL] dated log not produced: $LOG"; exit 1; }
 tail -n 1 "$LOG" | grep -q '^OK rc=0$' || { echo "[FAIL] log does not end with OK rc=0 after the second run"; tail -n 3 "$LOG"; exit 1; }
-grep -q 'SKIPPED: content and recipients unchanged' "$LOG" || { echo "[FAIL] #100: second same-day run (identical \$SRC content) did not SKIP the re-upload — the runner's --skip-unchanged is not wired in / not working"; tail -n 20 "$LOG"; exit 1; }
+grep -q 'SKIPPED: content, recipients and signing unchanged' "$LOG" || { echo "[FAIL] #100: second same-day run (identical \$SRC content) did not SKIP the re-upload — the runner's --skip-unchanged is not wired in / not working"; tail -n 20 "$LOG"; exit 1; }
 [ "$STORE_COUNT_2" = "$STORE_COUNT_1" ] || { echo "[FAIL] #100: the file backend store gained a new object on the second (unchanged-content) run — expected $STORE_COUNT_1, got $STORE_COUNT_2 (skip-unchanged did not prevent the re-upload)"; exit 1; }
 SNAP_COUNT="$(find "$SNAP_DIR" -maxdepth 1 -name "brain-$TODAY_COMPACT*.age" | wc -l | tr -d ' ')"
 [ "$SNAP_COUNT" = "2" ] || { echo "[FAIL] expected 2 distinct dated snapshots after 2 same-day runs, got $SNAP_COUNT"; find "$SNAP_DIR" -maxdepth 1 -name "brain-$TODAY_COMPACT*.age"; exit 1; }

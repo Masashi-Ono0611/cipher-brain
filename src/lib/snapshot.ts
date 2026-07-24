@@ -325,6 +325,16 @@ export async function snapshot(o: CliOptions): Promise<void> {
     scanMode = o.scan_secrets;
     await assertGitleaksAvailable();
   }
+  // #252: an EXPLICITLY-named --sign-identity that doesn't exist is a configuration
+  // error (see the signing block far below) — checked HERE, fail-fast, before any
+  // staging/ciphertext work, not after the ciphertext + digest/fingerprint sidecars
+  // are already durably written. Checking it only at signing time (right before the
+  // final "wrote <out>" line) meant the "refusing to write an unsigned snapshot"
+  // error was untrue: an unsigned *.age (plus its sidecars) was already sitting at
+  // --out by the time that throw fired, orphaned and easy to miss in a cron log.
+  if (!o.no_sign && o.sign_identity && !(await exists(o.sign_identity))) {
+    throw new Error(`--sign-identity ${o.sign_identity} does not exist — refusing to write an unsigned snapshot`);
+  }
   // No-clobber: refuse to overwrite an existing snapshot (this is a backup tool — a
   // silent overwrite could destroy a prior, possibly only, copy of the brain). The old
   // `age -o o.out` write left this to age's version-dependent overwrite policy; the
@@ -717,12 +727,16 @@ export async function snapshot(o: CliOptions): Promise<void> {
         await writeFile(`${o.out}.minisig`, minisig);
         console.log(`signed: ${o.out}.minisig (minisign-compatible detached signature, key: ${signIdentityPath})`);
       } else if (o.sign_identity) {
-        // An EXPLICITLY-named --sign-identity that doesn't exist is a configuration
-        // error, not "signing isn't set up yet" — silently producing an unsigned
-        // snapshot here would look identical to a successful signed one except for
-        // the missing console line, easy to miss in a cron log. Only the DEFAULT
-        // path (no --sign-identity given at all) silently means "not opted in yet".
-        throw new Error(`--sign-identity ${signIdentityPath} does not exist — refusing to write an unsigned snapshot`);
+        // The #252 fail-fast check above already refuses an explicitly-named
+        // --sign-identity that's missing BEFORE any ciphertext is written, so this
+        // only fires if the path existed at that check and was removed during the
+        // (possibly minutes-long, for a large brain) staging/encrypt work above — a
+        // narrow TOCTOU window, not the common case. o.out (+ its sidecars) is
+        // already durably written at this point, so — unlike the early check —
+        // this can't truthfully say "refusing to write."
+        throw new Error(
+          `--sign-identity ${signIdentityPath} no longer exists — ${o.out} was already written UNSIGNED (the identity existed when this run started but vanished before signing; there is no standalone "sign an existing snapshot" command, so treat ${o.out} as unsigned and re-run snapshot once the identity is back)`,
+        );
       }
     }
     const sz = (await stat(o.out)).size;

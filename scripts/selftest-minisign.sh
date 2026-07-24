@@ -72,18 +72,20 @@ MARKER="minisign-selftest-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
 printf '%s\n' "$MARKER" >"$SRC/note.txt"
 
 echo "== snapshot --sign-identity naming a NONEXISTENT path fails loudly, not silently unsigned =="
-# The ciphertext itself is already durable at this point (encryption succeeds before
-# the signing step runs — same "sidecar is best-effort, the artifact itself is not
-# thrown away" precedent as the digest/recipients-fingerprint sidecars), but the
-# command must still exit non-zero and must NOT write a .minisig it never made.
+# #252: this is checked fail-fast, BEFORE any staging/ciphertext work — so a bad
+# --sign-identity must leave NOTHING behind at --out (no ciphertext, no .digest/
+# .recipients-fingerprint sidecars, no .minisig), not just skip the .minisig. The old
+# behavior wrote the ciphertext + sidecars durably and only refused at the very end,
+# leaving an orphaned unsigned snapshot despite the "refusing to write" error text.
 if cb snapshot --dir "$SRC" --out "$TMP/badsignid.age" --sign-identity "$TMP/no-such-sign-identity.key" >"$TMP/badsignid.out" 2>&1; then
   echo "[FAIL] snapshot with a nonexistent --sign-identity exited 0"; cat "$TMP/badsignid.out"; exit 1
 fi
 grep -q -- '--sign-identity .* does not exist' "$TMP/badsignid.out" \
   && echo "[PASS] snapshot refuses loudly when an explicit --sign-identity does not exist" \
   || { echo "[FAIL] snapshot's error did not name the missing --sign-identity"; cat "$TMP/badsignid.out"; exit 1; }
-[ ! -f "$TMP/badsignid.age.minisig" ] && echo "[PASS] no .minisig was written for the failed signing attempt" \
-  || { echo "[FAIL] a .minisig was written despite the signing identity being missing"; exit 1; }
+[ ! -f "$TMP/badsignid.age" ] && [ ! -f "$TMP/badsignid.age.digest" ] && [ ! -f "$TMP/badsignid.age.recipients-fingerprint" ] && [ ! -f "$TMP/badsignid.age.minisig" ] \
+  && echo "[PASS] a nonexistent --sign-identity leaves NOTHING at --out — no orphaned unsigned ciphertext or sidecars" \
+  || { echo "[FAIL] snapshot left an orphaned ciphertext/sidecar/.minisig behind despite refusing to write"; ls -la "$TMP"/badsignid.age* 2>&1; exit 1; }
 
 echo "== snapshot auto-signs whenever a signing identity is present =="
 cb snapshot --dir "$SRC" --out "$TMP/snap.age" >"$TMP/snap.out" 2>&1

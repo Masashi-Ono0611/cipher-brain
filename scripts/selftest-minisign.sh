@@ -60,6 +60,12 @@ if cb keygen --sign --wrap-in-place 2>/dev/null; then
 fi
 echo "[PASS] --sign --wrap-in-place refused"
 
+echo "== keygen --sign --pq is refused (the signing keypair is always Ed25519, #214) =="
+if cb keygen --sign --pq --force 2>/dev/null; then
+  echo "[FAIL] --sign --pq was accepted (should refuse)"; exit 1
+fi
+echo "[PASS] --sign --pq refused"
+
 SRC="$TMP/brain-src"
 mkdir -p "$SRC"
 MARKER="minisign-selftest-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
@@ -134,6 +140,10 @@ grep -q '\[FAIL\] minisign authenticity signature verified' "$TMP/verify-tampere
   || { echo "[FAIL] verify did not report a FAIL signature check"; cat "$TMP/verify-tampered.out"; exit 1; }
 grep -q 'VERDICT: FAIL' "$TMP/verify-tampered.out" && echo "[PASS] verify VERDICT: FAIL" \
   || { echo "[FAIL] verify did not reach VERDICT: FAIL"; cat "$TMP/verify-tampered.out"; exit 1; }
+cb verify --in "$TMP/snap.age" --json >"$TMP/verify-tampered.json" 2>/dev/null || true
+grep -q '"wrong_key_rejected":"skip"' "$TMP/verify-tampered.json" \
+  && echo "[PASS] verify --json reports wrong_key_rejected: skip (not a false 'true') once the signature already failed" \
+  || { echo "[FAIL] verify --json did not report wrong_key_rejected: skip on a tampered signature"; cat "$TMP/verify-tampered.json"; exit 1; }
 rm -rf "$TMP/restored-tampered"
 if cb restore --in "$TMP/snap.age" --out-dir "$TMP/restored-tampered" >"$TMP/restore-tampered.out" 2>&1; then
   echo "[FAIL] restore exited 0 against a tampered .minisig"; cat "$TMP/restore-tampered.out"; exit 1
@@ -224,6 +234,21 @@ diff "$TMP/snap2.age.minisig" "$TMP/pulled.age.minisig" >/dev/null \
 cb verify --in "$TMP/pulled.age" | grep -q 'VERDICT: PASS' \
   && echo "[PASS] the force-repulled artifact verifies end-to-end" \
   || { echo "[FAIL] the force-repulled artifact did not VERIFY: PASS (stale-signature mismatch?)"; exit 1; }
+
+echo "== pull --force with NO known signature removes a stale .minisig rather than leaving it orphaned =="
+cb snapshot --dir "$SRC" --out "$TMP/snap3.age" --no-sign >/dev/null
+rm -f "$TMP/loc3.tsv"
+cb push --in "$TMP/snap3.age" --backend file --save-locator "$TMP/loc3.tsv" >/dev/null
+# "$TMP/pulled.age.minisig" still holds the SECOND snapshot's signature from above;
+# this pull has none (snap3 was --no-sign), so --force must remove it rather than
+# leave it mismatched against the third snapshot's bytes.
+cb pull --from-locator-file "$TMP/loc3.tsv" --out "$TMP/pulled.age" --force >/dev/null 2>&1
+[ ! -f "$TMP/pulled.age.minisig" ] \
+  && echo "[PASS] pull --force removed the stale .minisig when the new artifact has no signature of its own" \
+  || { echo "[FAIL] a stale .minisig was left behind after a --force pull of an unsigned artifact"; exit 1; }
+cb verify --in "$TMP/pulled.age" | grep -q 'VERDICT: PASS' \
+  && echo "[PASS] the force-repulled unsigned artifact verifies end-to-end (SKIPs the signature check, not a false FAIL)" \
+  || { echo "[FAIL] the force-repulled unsigned artifact did not VERIFY: PASS"; exit 1; }
 
 if ! command -v minisign >/dev/null 2>&1; then
   echo "[SKIP] real \`minisign\` binary interop: no \`minisign\` on PATH — install it (brew/apt) to exercise CLI<->binary wire-format interop"

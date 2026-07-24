@@ -87,14 +87,21 @@ identity lives — `verify` on a public-key-only box reports **PARTIAL**, never 
 **authenticity**: a recipient's public key is not a secret — by design, it can be
 shared for key recovery (see "Key recovery" in `MANAGEMENT.md`) — so anyone who
 obtains it can forge ciphertext that decrypts cleanly with your identity, claiming to
-be a real snapshot. `keygen --sign` closes this gap: it generates a separate,
-[minisign](https://jedisct1.github.io/minisign/)-compatible Ed25519 signing keypair;
-`snapshot` then writes a detached `*.minisig` signature over each ciphertext it
-produces, and `restore`/`verify` check that signature **before decrypting**, refusing
-outright on a tampered/forged one. Optional and additive — a snapshot with no
-`*.minisig` (a pre-existing backup, or `snapshot --no-sign`) restores exactly as
-before; only an operator who runs `keygen --sign` opts into the extra check. See the
-CLI reference's `keygen`/`snapshot`/`restore`/`verify` entries below for the flags.
+be a real snapshot. `keygen --sign` addresses the **forged-ciphertext** half of this
+gap: it generates a separate, [minisign](https://jedisct1.github.io/minisign/)-compatible
+Ed25519 signing keypair; `snapshot` then writes a detached `*.minisig` signature over
+each ciphertext it produces, and `restore`/`verify` check that signature **before
+decrypting**, refusing outright on a tampered/forged one. By default this is optional
+and additive — a snapshot with no `*.minisig` (a pre-existing backup, or `snapshot
+--no-sign`) restores exactly as before, so `keygen --sign` alone does NOT close the
+**stripped-signature** half: an attacker who can substitute your ciphertext can also
+just delete the `*.minisig` sidecar instead of forging one, and by default that looks
+identical to a legitimate unsigned/pre-`keygen --sign` backup (both WARN and proceed).
+Add `--require-signature` to `restore`/`verify` once you have run `keygen --sign` and
+expect every artifact to carry a valid signature, to turn a missing/unverifiable
+signature into a hard failure too — that is the recipe that actually closes the full
+gap. See the CLI reference's `keygen`/`snapshot`/`restore`/`verify` entries below for
+the flags.
 
 Permanence adds a fourth caveat: **harvest now, decrypt later.** Ciphertext parked
 on a permanent public network can never be recalled — anyone can copy it today and

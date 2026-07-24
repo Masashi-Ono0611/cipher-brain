@@ -196,6 +196,15 @@ export async function keygen(o: CliOptions): Promise<void> {
       throw new Error(
         '--sign has no effect with --wrap-in-place (which only re-wraps the age identity). Run "keygen --sign" on its own.',
       );
+    // --pq generates a post-quantum HYBRID AGE identity — meaningless for a minisign
+    // signing keypair, which is Ed25519 only (there is no post-quantum minisign mode).
+    // Same "fail loud instead of silently no-op-ing" discipline as --wrap-in-place
+    // above: silently ignoring --pq here would leave the operator believing they got
+    // a post-quantum signing key when they did not.
+    if (o.pq)
+      throw new Error(
+        '--pq has no effect with --sign (the signing keypair is always Ed25519). Run "keygen --sign" on its own.',
+      );
     return keygenSign(o);
   }
   if (o.wrap_in_place) {

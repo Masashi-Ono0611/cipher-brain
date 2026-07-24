@@ -461,8 +461,8 @@ export async function pull(o: CliOptions): Promise<void> {
   // (non-essential, additive) signature must only warn, never undo or fail the pull —
   // restore/verify's own "no signature -> WARN, not FAIL" contract (#214) already
   // covers a missing sidecar gracefully.
+  const sigOut = `${o.out}.minisig`;
   if (o.sig_locator) {
-    const sigOut = `${o.out}.minisig`;
     // Mirror --out's own --force gate above: --force already replaced --out with a
     // NEW ciphertext, so leaving a STALE .minisig sidecar next to it would make the
     // freshly-pulled artifact fail verification against a signature over the OLD
@@ -479,5 +479,14 @@ export async function pull(o: CliOptions): Promise<void> {
         );
       }
     }
+  } else if (o.force && (await exists(sigOut))) {
+    // --force with NO sig_locator for THIS pull (the artifact being pulled has no
+    // known signature) still just replaced --out's ciphertext — a stale .minisig
+    // from a PRIOR pull into the same path would otherwise be silently signed over
+    // the OLD bytes, and restore/verify would report a confusing "invalid signature"
+    // for content that is simply unsigned. Removing it here is a straight loss of
+    // (already-stale) information, never a loss of anything about THIS artifact.
+    await rm(sigOut, { force: true });
+    console.error(`removed stale ${sigOut} (this pull has no known signature to replace it with)`);
   }
 }

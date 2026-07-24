@@ -428,12 +428,28 @@ export async function init(_o: CliOptions): Promise<void> {
           'minisign-compatible Ed25519 signing keypair closes this gap — snapshot signs each *.age it writes,\n' +
           'and restore/verify check that signature BEFORE decrypting. See README "Threat model".',
       );
-      if (await askYesNo(rl, 'Generate a signing keypair now?', true)) {
+      if ((await exists(SIGN_IDENTITY)) && (await exists(SIGN_RECIPIENT))) {
+        // A signing keypair already exists (an earlier, independent "keygen --sign"
+        // run, or a previous "init" that generated one) — reuse it rather than
+        // asking. Answering "yes" below would just hit keygenSignAt's own
+        // no-clobber guard and abort the ENTIRE wizard run over a step that was
+        // never going to change anything; answering "no" would leave `signing`
+        // null even though snapshot auto-signs with the pre-existing key
+        // regardless of this wizard run, so the recovery kit would falsely omit
+        // the signing public key a restore on another machine actually needs.
+        console.log(`Authenticity signing keypair already exists (${SIGN_RECIPIENT}) — reusing it.`);
+        signing = {
+          identityPath: SIGN_IDENTITY,
+          recipientPath: SIGN_RECIPIENT,
+          pubkeyText: await readFile(SIGN_RECIPIENT, 'utf8'),
+        };
+      } else if (await askYesNo(rl, 'Generate a signing keypair now?', true)) {
         // Same partial-write hazard/rollback shape as the backup keypair above: check
-        // pre-existence BEFORE calling keygenSignAt (never assume these paths are
-        // absent — SIGN_IDENTITY/SIGN_RECIPIENT could already exist from an earlier,
-        // independent "keygen --sign" run), and only remove what THIS call itself
-        // created if it throws partway through.
+        // pre-existence BEFORE calling keygenSignAt (this branch only runs when
+        // NEITHER path existed a moment ago, but keygenSignAt's own precondition
+        // check is still the authority — belt and suspenders, same idiom as the
+        // backup keypair section), and only remove what THIS call itself created
+        // if it throws partway through.
         const signIdentityPreExisted = await exists(SIGN_IDENTITY);
         const signRecipientPreExisted = await exists(SIGN_RECIPIENT);
         let pubkeyText: string;

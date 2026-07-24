@@ -514,7 +514,9 @@ export async function verify(o: CliOptions): Promise<void> {
   // never happens once authenticity fails (#214), and this is itself a decrypt attempt
   // (with a throwaway key, but still one), so it must not run either.
   let wrongKeyRejected = true;
+  let wrongKeyCheckSkipped = false;
   if (sigOk === false) {
+    wrongKeyCheckSkipped = true;
     if (!o.json) console.log('[SKIP] a wrong key is rejected — skipped (the authenticity signature above failed)');
   } else {
     wrongKeyRejected = await wrongKeyRejects(o.in);
@@ -583,7 +585,7 @@ export async function verify(o: CliOptions): Promise<void> {
           age_header: isAge,
           sha256_match: hashOk, // null when --sha256 was not passed (check skipped, not failed)
           signature: sigOk === null ? 'skip' : sigOk ? 'pass' : 'fail', // #214: 'skip' when unsigned or no signing pubkey on this box
-          wrong_key_rejected: wrongKeyRejected,
+          wrong_key_rejected: wrongKeyCheckSkipped ? 'skip' : wrongKeyRejected, // #214: 'skip' when the authenticity signature above already failed
           positive_control: positiveSkipped ? 'skip' : positiveOk ? 'pass' : 'fail',
         },
         verdict,

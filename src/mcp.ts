@@ -461,6 +461,93 @@ const ESTIMATE_COST_TOOL: Tool = {
   },
 };
 
+const SCHEDULE_INSTALL_TOOL: Tool = {
+  name: 'schedule_install',
+  description:
+    '⚠ WRITES a REAL, PERSISTENT system file (a launchd plist under ~/Library/LaunchAgents on ' +
+    'macOS, or a crontab entry on Linux) and, unless no_load is set, REGISTERS it so the nightly ' +
+    'snapshot+push runs unattended from now on (issue #174 follow-up — the MCP equivalent of the ' +
+    "CLI's `schedule install`). A PAID backend (arweave/turbo) gets CIPHER_BRAIN_YES=1 baked into " +
+    'the generated runner for unattended consent, so it ALSO REQUIRES max_spend (a positive integer ' +
+    'cap in native units — winston for arweave, winc for turbo): an uncapped unattended spender is ' +
+    'refused, same as the CLI. Requires confirm_install=true before ANY work happens — the MCP ' +
+    'equivalent of consenting to both the real-system-file write and (for a paid backend) the ' +
+    'ongoing capped spend risk every future unattended run carries; there is no environment escape ' +
+    'hatch honored here. Only ONE schedule can be installed at a time; re-calling replaces the prior ' +
+    'configuration (same as re-running the CLI command). Uses `cipher-brain schedule status` to ' +
+    'read this back, and `schedule uninstall` — not exposed as a tool — to remove it by hand.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      backend: {
+        type: 'string',
+        enum: BACKENDS,
+        description: 'Where the nightly push goes: file (free) or arweave|turbo (PAID — requires max_spend).',
+      },
+      dirs: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Directories to include in every nightly snapshot. At least one of dirs/pg is required.',
+      },
+      pg: { type: 'string', description: 'Postgres connection string to pg_dump into every nightly snapshot.' },
+      recipients: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'age recipients (age1… pubkey or a recipients file path) to encrypt every nightly snapshot to. ' +
+          "Defaults to the keypair's own recipient when omitted (same as the CLI's snapshot/schedule install).",
+      },
+      at: {
+        type: 'string',
+        description: 'Local time "HH:MM" to run nightly. Default 03:30 (after the source re-settles overnight).',
+      },
+      max_spend: {
+        type: 'string',
+        description:
+          'REQUIRED for backend arweave|turbo: a positive integer cap (native units — winston/winc) on ' +
+          "EVERY unattended run's spend. Not allowed for backend file (nothing to cap).",
+      },
+      no_load: {
+        type: 'boolean',
+        description:
+          'Write the runner + plist/cron entry WITHOUT registering the trigger (launchctl/crontab left ' +
+          'untouched) — a preview. The written file(s) still persist on disk; see the tool description.',
+      },
+      ping_url: {
+        type: 'string',
+        description:
+          "Optional healthchecks.io-style dead man's switch: the runner curl's this URL (best-effort, " +
+          "never affects the run's own outcome) on every successful run.",
+      },
+      ping_url_fail: {
+        type: 'string',
+        description: 'Failure-ping URL override (default: ping_url + "/fail"). Requires ping_url to also be set.',
+      },
+      confirm_install: {
+        type: 'boolean',
+        description:
+          'REQUIRED true to install. Confirms accepting a real, persistent system-file write and — for a ' +
+          'paid backend — the ongoing capped spend risk every future unattended run carries.',
+      },
+    },
+    required: ['backend'],
+    additionalProperties: false,
+  },
+  annotations: {
+    // Writes a real system file (plist/crontab) OUTSIDE CIPHER_BRAIN_HOME and,
+    // unless no_load, registers it with launchd/cron — genuinely destructive in
+    // the sense that re-installing replaces the prior configuration, and for a
+    // paid backend it commits to an ongoing (capped) unattended spend. Not
+    // idempotent: re-calling with different args produces a different runner/
+    // trigger. Talks to launchctl/crontab (and, at run time, storage backends),
+    // not just the local filesystem.
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  },
+};
+
 const SCHEDULE_STATUS_TOOL: Tool = {
   name: 'schedule_status',
   description:
@@ -469,8 +556,7 @@ const SCHEDULE_STATUS_TOOL: Tool = {
     'trigger is actually registered, the last run\'s log filename and its final "OK rc=0"/"FAILED ' +
     'rc=N" line, and the next scheduled run — the SAME report `cipher-brain schedule status` prints ' +
     'on the CLI, verbatim (one string per line). No arguments. Fails with ERR_INTERNAL if no ' +
-    'schedule is installed yet (run `cipher-brain schedule install` first — not exposed here, a ' +
-    'human-driven operation by design).',
+    'schedule is installed yet — call schedule_install first.',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -611,6 +697,7 @@ const ALL_TOOLS: Tool[] = [
   VERIFY_RESTORE_TOOL,
   RESTORE_NOW_TOOL,
   ESTIMATE_COST_TOOL,
+  SCHEDULE_INSTALL_TOOL,
   SCHEDULE_STATUS_TOOL,
   KEYGEN_TOOL,
   WALLET_CREATE_TOOL,
@@ -1060,6 +1147,98 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
   return structuredOk({ ...(await estimateCost(backend, size)) });
 }
 
+// schedule({_: 'install', ...}) is the SAME function + dispatch branch the CLI's
+// `schedule install` subcommand uses — install() itself returns void (progress
+// only via console.error, no console.log data lines), so this returns the
+// captured log verbatim plus an echo of the args that were actually consented
+// to, rather than re-parsing/re-deriving the written config (same "no
+// re-implemented logic" approach as handleScheduleStatus below).
+const SCHEDULE_INSTALL_KEYS = new Set([
+  'backend',
+  'dirs',
+  'pg',
+  'recipients',
+  'at',
+  'max_spend',
+  'no_load',
+  'ping_url',
+  'ping_url_fail',
+  'confirm_install',
+]);
+
+async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
+  // Unlike most handlers here, a stray/misspelled key is not just a wasted call —
+  // this tool's whole safety story rests on no_load/confirm_install being read
+  // correctly (a `no_laod: true` typo would otherwise silently register a REAL
+  // trigger where the caller intended a preview). The advertised inputSchema's
+  // additionalProperties: false is NOT enforced by the low-level Server at
+  // runtime, so check explicitly (same discipline as handleScheduleStatus below).
+  const unexpected = Object.keys(args).filter((k) => !SCHEDULE_INSTALL_KEYS.has(k));
+  if (unexpected.length > 0) {
+    throw new ToolError('ERR_INVALID_INPUT', `schedule_install got unrecognized argument(s): ${unexpected.join(', ')}`);
+  }
+  const {
+    backend,
+    dirs = [],
+    pg,
+    recipients = [],
+    at,
+    max_spend: maxSpend,
+    no_load: noLoad,
+    ping_url: pingUrl,
+    ping_url_fail: pingUrlFail,
+    confirm_install: confirmInstall,
+  } = args;
+  requireBackend(backend, 'backend');
+  if (!isStrArray(dirs)) throw new ToolError('ERR_INVALID_INPUT', 'dirs must be an array of strings');
+  if (pg !== undefined && !isStr(pg)) throw new ToolError('ERR_INVALID_INPUT', 'pg must be a string connection URI');
+  if (!isStrArray(recipients)) throw new ToolError('ERR_INVALID_INPUT', 'recipients must be an array of strings');
+  if (at !== undefined && !isStr(at)) throw new ToolError('ERR_INVALID_INPUT', 'at must be a string "HH:MM"');
+  if (maxSpend !== undefined && !isStr(maxSpend))
+    throw new ToolError('ERR_INVALID_INPUT', 'max_spend must be a string (a positive integer in native units)');
+  if (noLoad !== undefined && !isBool(noLoad)) throw new ToolError('ERR_INVALID_INPUT', 'no_load must be a boolean');
+  if (pingUrl !== undefined && !isStr(pingUrl)) throw new ToolError('ERR_INVALID_INPUT', 'ping_url must be a string');
+  if (pingUrlFail !== undefined && !isStr(pingUrlFail))
+    throw new ToolError('ERR_INVALID_INPUT', 'ping_url_fail must be a string');
+
+  // Consequential-action gate FIRST — before any file write happens, same
+  // discipline as every other mutating tool in this server. Covers BOTH the
+  // real-system-file write and, for a paid backend, the ongoing capped spend
+  // every future unattended run carries — there is no env escape hatch here.
+  if (confirmInstall !== true) {
+    throw new ToolError(
+      'ERR_CONFIRM_REQUIRED',
+      'schedule_install writes a real, persistent system file (a launchd plist or crontab entry)' +
+        (PAID_BACKENDS.has(backend)
+          ? ` and, since backend "${backend}" is paid, commits to an ongoing spend capped at max_spend on every future unattended run`
+          : '') +
+        ' — re-call schedule_install with confirm_install=true to consent. There is no environment escape hatch honored over MCP.',
+    );
+  }
+
+  const installOpts: CliOptions = {
+    _: 'install',
+    backend,
+    dirs,
+    pg,
+    recipients,
+    at,
+    max_spend: maxSpend,
+    no_load: noLoad,
+    ping_url: pingUrl,
+    ping_url_fail: pingUrlFail,
+    tables: [],
+  };
+  const res = await captureCall(() => schedule(installOpts));
+  return structuredOk({
+    backend,
+    at: at || '03:30',
+    no_load: Boolean(noLoad),
+    ...(maxSpend ? { max_spend: maxSpend } : {}),
+    log: [...res.out, ...res.err],
+  });
+}
+
 // schedule() (src/lib/schedule.ts, the SAME function the CLI's `schedule status`
 // subcommand dispatches to via `case 'schedule': return schedule(o)`) has no
 // return value — its report is entirely console.log lines. Re-parsing that text
@@ -1172,6 +1351,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
         return await handleRestoreNow(args);
       case 'estimate_cost':
         return await handleEstimateCost(args);
+      case 'schedule_install':
+        return await handleScheduleInstall(args);
       case 'schedule_status':
         return await handleScheduleStatus(args);
       case 'keygen':

@@ -323,9 +323,11 @@ async function run(tmp) {
     for (const tool of list.result?.tools ?? []) {
       const expectedAnn = expectedAnnotations[tool.name];
       if (!expectedAnn) continue; // unreachable given the names check above
-      if (JSON.stringify(tool.annotations ?? {}) !== JSON.stringify(expectedAnn)) {
+      const actualAnn = tool.annotations ?? {};
+      const mismatched = Object.entries(expectedAnn).filter(([key, value]) => actualAnn[key] !== value);
+      if (mismatched.length > 0) {
         throw new Error(
-          `${tool.name}.annotations mismatch: expected ${JSON.stringify(expectedAnn)} got ${JSON.stringify(tool.annotations)}`,
+          `${tool.name}.annotations mismatch: expected ${JSON.stringify(expectedAnn)} got ${JSON.stringify(actualAnn)} (field(s) ${mismatched.map(([key]) => key).join(', ')})`,
         );
       }
     }

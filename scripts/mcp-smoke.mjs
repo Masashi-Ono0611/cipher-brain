@@ -674,13 +674,18 @@ async function run(tmp) {
       },
     });
     const schedInstallNoSpend = await waitFor(20);
-    if (!schedInstallNoSpend.result?.isError || !/max-spend|max_spend/i.test(schedInstallNoSpend.result?.structuredContent?.message ?? '')) {
+    if (
+      !schedInstallNoSpend.result?.isError ||
+      !/max-spend|max_spend/i.test(schedInstallNoSpend.result?.structuredContent?.message ?? '')
+    ) {
       throw new Error(
         `schedule_install (backend=turbo, no max_spend) did not refuse for the expected reason: ${JSON.stringify(schedInstallNoSpend.result).slice(0, 300)}`,
       );
     }
     if (existsSync(join(home, 'schedule'))) {
-      throw new Error('schedule_install (backend=turbo, no max_spend) still wrote the runner/config dir before refusing');
+      throw new Error(
+        'schedule_install (backend=turbo, no max_spend) still wrote the runner/config dir before refusing',
+      );
     }
 
     // 2k. schedule_install REAL --no-load install (issue #174 follow-up): registers
@@ -699,7 +704,8 @@ async function run(tmp) {
     });
     const schedInstall = await waitFor(19);
     const schedInstallSc = schedInstall.result?.structuredContent;
-    if (schedInstall.result?.isError) throw new Error(`schedule_install failed: ${JSON.stringify(schedInstallSc).slice(0, 500)}`);
+    if (schedInstall.result?.isError)
+      throw new Error(`schedule_install failed: ${JSON.stringify(schedInstallSc).slice(0, 500)}`);
     if (schedInstallSc?.backend !== 'file' || schedInstallSc?.at !== '03:30' || schedInstallSc?.no_load !== true) {
       throw new Error(`schedule_install result unexpected: ${JSON.stringify(schedInstallSc).slice(0, 300)}`);
     }

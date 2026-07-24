@@ -495,7 +495,7 @@ const SCHEDULE_INSTALL_TOOL: Tool = {
         items: { type: 'string' },
         description:
           'age recipients (age1… pubkey or a recipients file path) to encrypt every nightly snapshot to. ' +
-          'Defaults to the keypair\'s own recipient when omitted (same as the CLI\'s snapshot/schedule install).',
+          "Defaults to the keypair's own recipient when omitted (same as the CLI's snapshot/schedule install).",
       },
       at: {
         type: 'string',
@@ -505,7 +505,7 @@ const SCHEDULE_INSTALL_TOOL: Tool = {
         type: 'string',
         description:
           'REQUIRED for backend arweave|turbo: a positive integer cap (native units — winston/winc) on ' +
-          'EVERY unattended run\'s spend. Not allowed for backend file (nothing to cap).',
+          "EVERY unattended run's spend. Not allowed for backend file (nothing to cap).",
       },
       no_load: {
         type: 'boolean',
@@ -516,7 +516,7 @@ const SCHEDULE_INSTALL_TOOL: Tool = {
       ping_url: {
         type: 'string',
         description:
-          'Optional healthchecks.io-style dead man\'s switch: the runner curl\'s this URL (best-effort, ' +
+          "Optional healthchecks.io-style dead man's switch: the runner curl's this URL (best-effort, " +
           "never affects the run's own outcome) on every successful run.",
       },
       ping_url_fail: {
@@ -1197,8 +1197,7 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
   if (maxSpend !== undefined && !isStr(maxSpend))
     throw new ToolError('ERR_INVALID_INPUT', 'max_spend must be a string (a positive integer in native units)');
   if (noLoad !== undefined && !isBool(noLoad)) throw new ToolError('ERR_INVALID_INPUT', 'no_load must be a boolean');
-  if (pingUrl !== undefined && !isStr(pingUrl))
-    throw new ToolError('ERR_INVALID_INPUT', 'ping_url must be a string');
+  if (pingUrl !== undefined && !isStr(pingUrl)) throw new ToolError('ERR_INVALID_INPUT', 'ping_url must be a string');
   if (pingUrlFail !== undefined && !isStr(pingUrlFail))
     throw new ToolError('ERR_INVALID_INPUT', 'ping_url_fail must be a string');
 

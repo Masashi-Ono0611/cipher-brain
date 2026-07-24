@@ -136,6 +136,7 @@ bundled, nothing else to install):
 ```sh
 npx cipher-brain --help            # zero-install, one-off
 npm install -g cipher-brain        # or on PATH permanently: `cipher-brain`, `cipher-brain-mcp`
+cipher-brain --version             # which build you ended up with (bare version on stdout)
 ```
 
 The packaged bins are the bundled `dist/` artifacts — self-contained single
@@ -341,6 +342,16 @@ node scripts/check-help-docs.mjs --write
 
 ```text
 cipher-brain — encrypt a gbrain snapshot so only you can read it
+
+  cipher-brain --version
+      Print the version this build was packaged with (the "version" field of the
+      installed package.json) on stdout and exit 0 — nothing else, so it can be
+      captured straight into a variable. "-V" is the same thing.
+
+  cipher-brain <command> --help
+      Print just that command's section of this reference (plus the Env/Storage/
+      Spend/Consent block below, which applies to every command). Plain
+      "cipher-brain --help" prints the whole thing, as it does here.
 
   cipher-brain init
       Recommended for a FRESH setup: an interactive wizard that walks keygen -> an

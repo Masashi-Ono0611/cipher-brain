@@ -37,6 +37,14 @@ it wraps (keygen, snapshot, push) by hand instead — see README.md's "Manual fl
   both the backup key (`init` defaults to generating one, but it can be
   declined) and a portable backend (`turbo`/`arweave` — `file` locators are
   machine-local).
+- **signing keypair** (optional, `keygen --sign`) — age gives confidentiality +
+  tamper detection but not *authenticity* (a recipient's public key is not a
+  secret, so anyone holding it can forge decryptable ciphertext). A separate
+  minisign-compatible Ed25519 signing key closes that gap: `snapshot` writes a
+  detached `*.minisig` alongside the ciphertext whenever a signing identity is
+  present, and `restore`/`verify` check it BEFORE decrypting — see README.md's
+  Threat model. Unsigned artifacts (no signing key configured) restore exactly
+  as before, unaffected.
 
 ## Everyday commands
 

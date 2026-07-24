@@ -80,6 +80,7 @@ NODIR_HOME="$TMP/nodir-home"
 cat > "$TMP/qa-nodir.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -106,11 +107,13 @@ KIT_PATH="$WIZ_HOME/recovery-kit.txt"
 BACKUP_HOME="${WIZ_CB_HOME}-backup"               # the default sibling path the wizard suggests for the backup key
 
 # The realistic path from the issue: file backend, no profile, backup key YES,
+# signing key YES (#214 — proves the wizard's own signing step + kit inclusion),
 # passphrase NO, pin-recipients SKIP.
 cat > "$TMP/qa.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "y"],
   ["Path for the backup keypair", ""],
+  ["Generate a signing keypair now?", "y"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -125,7 +128,7 @@ CIPHER_BRAIN_HOME="$WIZ_CB_HOME" CIPHER_BRAIN_FILE_DIR="$WIZ_STORE" HOME="$WIZ_H
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the scripted end-to-end wizard run did not complete"; cat "$TMP/wizard.log"; exit 1; }
 grep -q 'cipher-brain init: complete' "$TMP/wizard.log" || { echo "[FAIL] wizard log lacks its own completion marker"; cat "$TMP/wizard.log"; exit 1; }
-echo "[PASS] scripted stdin sequence drove init end-to-end: keygen -> backup key(yes) -> passphrase(skip) -> pin(skip) -> profile(none) -> snapshot -> push"
+echo "[PASS] scripted stdin sequence drove init end-to-end: keygen -> backup key(yes) -> signing key(yes) -> passphrase(skip) -> pin(skip) -> profile(none) -> snapshot -> push"
 
 [ -f "$WIZ_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity was not written"; exit 1; }
 [ -f "$WIZ_CB_HOME/recipient.txt" ] || { echo "[FAIL] primary recipient was not written"; exit 1; }
@@ -134,11 +137,15 @@ grep -q '^AGE-SECRET-KEY-1' "$WIZ_CB_HOME/identity.age" || { echo "[FAIL] primar
 [ -f "$BACKUP_HOME/recipient.txt" ] || { echo "[FAIL] backup recipient was not written"; exit 1; }
 echo "[PASS] primary + backup identities/recipients written; primary is unwrapped as scripted"
 
+[ -f "$WIZ_CB_HOME/sign-identity.key" ] || { echo "[FAIL] signing identity was not written (#214)"; exit 1; }
+[ -f "$WIZ_CB_HOME/sign-recipient.pub" ] || { echo "[FAIL] signing public key was not written (#214)"; exit 1; }
+echo "[PASS] signing identity + public key written (#214)"
+
 LOCFILE="$WIZ_CB_HOME/latest-locator.tsv"
 [ -f "$LOCFILE" ] || { echo "[FAIL] --save-locator file not written by the wizard's push"; exit 1; }
-[ "$(awk -F'\t' '{print NF; exit}' "$LOCFILE")" = "5" ] || { echo "[FAIL] locator file is not 5 tab-separated fields"; cat "$LOCFILE"; exit 1; }
+[ "$(awk -F'\t' '{print NF; exit}' "$LOCFILE")" = "6" ] || { echo "[FAIL] locator file is not 6 tab-separated fields (signing was enabled, so a sig_locator field is expected, #214)"; cat "$LOCFILE"; exit 1; }
 [ "$(awk -F'\t' '{print $2; exit}' "$LOCFILE")" = "file" ] || { echo "[FAIL] locator file backend != file"; exit 1; }
-echo "[PASS] push wrote a 5-field --save-locator file for the file backend"
+echo "[PASS] push wrote a 6-field --save-locator file (ciphertext + signature locator) for the file backend"
 
 SNAP="$(find "$WIZ_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
 [ -n "$SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found under CIPHER_BRAIN_HOME"; exit 1; }
@@ -196,6 +203,7 @@ PRE_KIT_MODE="$(file_mode "$F_KIT_PATH")"
 cat > "$TMP/qa-pass.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "y"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -276,6 +284,7 @@ cat > "$TMP/qa-rollback-fail.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "y"],
   ["Path for the backup keypair", ""],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -300,6 +309,7 @@ RB_KIT_PATH="$RB_HOME/recovery-kit.txt"
 cat > "$TMP/qa-rollback-retry.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -335,6 +345,7 @@ TILDE_STORE="$TMP/tilde-store"
 cat > "$TMP/qa-tilde.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -375,6 +386,7 @@ printf 'prepush-rollback-marker\n' > "$J0_SRC/note.txt"
 cat > "$TMP/qa-prepush-rollback-fail.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -420,6 +432,7 @@ BLOCKED_KIT_PATH="$BLOCKED_PARENT/subdir/recovery-kit.txt"
 cat > "$TMP/qa-snap-preserve-fail.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -480,6 +493,7 @@ mkdir -p "$K_LOCATOR_PATH"  # pre-create AS A DIRECTORY at the wizard's fixed --
 cat > "$TMP/qa-locator-preserve-fail.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -578,6 +592,7 @@ cat > "$TMP/qa-backup-partial-retry.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "y"],
   ["Path for the backup keypair", ""],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -722,6 +737,7 @@ chmod +x "$FAKE_PGBIN/pg_dump"
 cat > "$TMP/qa-pg.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -779,6 +795,7 @@ PG2_KIT_PATH="$PG_HOME/recovery-kit-2.txt"
 cat > "$TMP/qa-pg-decline.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -815,6 +832,7 @@ cat > "$TMP/qa-reprompt.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "yeah"],
   ["Please answer", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -849,6 +867,7 @@ cat > "$TMP/qa-wallet-precheck.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "y"],
   ["Path for the backup keypair", ""],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -890,6 +909,7 @@ O2_WALLET="$TMP/no-such-wallet.json" # set but deliberately never created
 cat > "$TMP/qa-wallet-precheck-missing.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
@@ -918,6 +938,7 @@ cb wallet create --out "$O3_WALLET" > "$TMP/wallet-precheck-present-walletcreate
 cat > "$TMP/qa-wallet-precheck-present.json" <<JSON
 [
   ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],

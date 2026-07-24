@@ -3,9 +3,10 @@ import { rm, stat, readFile, writeFile, readdir, rename, lstat } from 'node:fs/p
 import { mkdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
-import { AGE_MAGIC, CIPHER_YES, IDENTITY, PIPE_TIMEOUT_MS, pgTool } from './config.js';
+import { AGE_MAGIC, CIPHER_YES, IDENTITY, PIPE_TIMEOUT_MS, SIGN_RECIPIENT, pgTool } from './config.js';
 import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
+import { checkArtifactSignature } from './minisign.js';
 import { exists, sha256, readHead, fmtBytes, redactPgConn, errMsg } from './util.js';
 import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
 import { moodForVerdict, printMascot } from './ui.js';
@@ -335,6 +336,35 @@ async function restoreImpl(o: CliOptions): Promise<void> {
         `re-run restore with --yes or set CIPHER_BRAIN_YES=1 to confirm`,
     );
   }
+  // Authenticity check FIRST (#214), before any decryption or even the age identity
+  // check below: age proves confidentiality + tamper detection, but NOT authenticity
+  // (a recipient's public key is not secret — anyone holding it can forge ciphertext
+  // that decrypts cleanly). A tampered/forged *.minisig always refuses outright. An
+  // ABSENT signature (unsigned/legacy artifact) or an absent signing public key on this
+  // box are non-fatal (warn and continue) BY DEFAULT — so this never breaks a pre-#214
+  // backup or an existing setup that hasn't run `keygen --sign` — UNLESS --require-
+  // signature opts into strict mode, in which case an attacker who simply deletes the
+  // .minisig sidecar (rather than forging one) no longer silently succeeds either.
+  const signRecipient = o.sign_recipient || SIGN_RECIPIENT;
+  // An EXPLICITLY-named --sign-recipient that doesn't exist is a configuration typo,
+  // not "authenticity isn't set up yet" — silently falling back to no_pubkey/SKIP here
+  // would make a mistyped path look identical to a deliberately unconfigured one. Only
+  // the DEFAULT path missing means "not opted in yet" (see snapshot.ts's --sign-identity
+  // for the same distinction on the signing side).
+  if (o.sign_recipient && !(await exists(o.sign_recipient))) {
+    throw new Error(`--sign-recipient ${o.sign_recipient} does not exist`);
+  }
+  const sigCheck = await checkArtifactSignature(o.in, signRecipient);
+  if (sigCheck.status === 'invalid') {
+    throw new Error(`refusing to restore ${o.in}: ${sigCheck.reason}`);
+  }
+  if (sigCheck.status === 'verified') {
+    console.log(`[PASS] minisign authenticity signature verified (${o.in}.minisig)`);
+  } else if (o.require_signature) {
+    throw new Error(`refusing to restore ${o.in}: --require-signature was given but ${sigCheck.reason}`);
+  } else {
+    console.error(`warning: ${sigCheck.reason}`);
+  }
   const identity = o.identity || IDENTITY;
   if (!(await exists(identity))) throw new Error(`no identity at ${identity} — cannot decrypt without the private key`);
   // Load the identity FIRST (this prompts for the passphrase if the file is wrapped)
@@ -451,16 +481,61 @@ export async function verify(o: CliOptions): Promise<void> {
     }
   }
 
-  // negative control: a throwaway key must NOT decrypt (header-only check — fast on any size)
-  const wrongKeyRejected = await wrongKeyRejects(o.in);
-  if (!o.json) console.log(`[${wrongKeyRejected ? 'PASS' : 'FAIL'}] a wrong key is rejected`);
+  // authenticity (#214): does a *.minisig sidecar next to --in verify against the
+  // configured signing public key? `null` (not 'pass'/'fail') when there is nothing
+  // to check — no sidecar (unsigned/legacy artifact) or no signing public key on this
+  // box — mirrors hashOk's own null-means-skipped contract above; a tampered/forged
+  // signature is the only case this fails, and (per #214) it also SKIPS the positive
+  // control below rather than decrypting an artifact already known to be untrustworthy.
+  const signRecipient = o.sign_recipient || SIGN_RECIPIENT;
+  // An EXPLICITLY-named --sign-recipient that doesn't exist is a configuration typo,
+  // not "authenticity isn't set up yet" (see restoreImpl's identical guard above).
+  if (o.sign_recipient && !(await exists(o.sign_recipient))) {
+    throw new Error(`--sign-recipient ${o.sign_recipient} does not exist`);
+  }
+  const sigCheck = await checkArtifactSignature(o.in, signRecipient);
+  let sigOk: boolean | null = sigCheck.status === 'verified' ? true : sigCheck.status === 'invalid' ? false : null;
+  // --require-signature (#214): an absent signature or absent signing public key is a
+  // SKIP by default (backward compatible with unsigned/pre-#214 artifacts) — this
+  // upgrades that to a hard FAIL, so an attacker who deletes the .minisig sidecar
+  // instead of forging one no longer silently passes either, for callers who opt in.
+  if (sigOk === null && o.require_signature) sigOk = false;
+  if (!o.json) {
+    if (sigOk === null) console.log(`[SKIP] minisign authenticity signature — ${sigCheck.reason}`);
+    else
+      console.log(
+        `[${sigOk ? 'PASS' : 'FAIL'}] minisign authenticity signature verified${sigOk ? '' : ` (${sigCheck.reason})`}`,
+      );
+  }
+
+  // negative control: a throwaway key must NOT decrypt (header-only check — fast on any
+  // size). Skipped when the signature above is already known INVALID — every decrypt
+  // attempt against an artifact known to be tampered/forged is one this module claims
+  // never happens once authenticity fails (#214), and this is itself a decrypt attempt
+  // (with a throwaway key, but still one), so it must not run either.
+  let wrongKeyRejected = true;
+  let wrongKeyCheckSkipped = false;
+  if (sigOk === false) {
+    wrongKeyCheckSkipped = true;
+    if (!o.json) console.log('[SKIP] a wrong key is rejected — skipped (the authenticity signature above failed)');
+  } else {
+    wrongKeyRejected = await wrongKeyRejects(o.in);
+    if (!o.json) console.log(`[${wrongKeyRejected ? 'PASS' : 'FAIL'}] a wrong key is rejected`);
+  }
 
   // positive control: your identity decrypts the whole thing into a well-formed
   // bundle. Streamed (decrypt | tar -t) so it never buffers a multi-GB plaintext.
+  // Skipped outright (never attempted) when the signature above was checked and found
+  // INVALID — decrypting an artifact already known to be tampered/forged proves
+  // nothing and (per #214) restore's own equivalent check refuses outright rather
+  // than decrypt, so verify's report should not imply this one just "went ahead".
   const identity = o.identity || IDENTITY;
   let positiveOk = true;
   let positiveSkipped = false;
-  if (await exists(identity)) {
+  if (sigOk === false) {
+    positiveSkipped = true;
+    if (!o.json) console.log('[SKIP] positive control — skipped (the authenticity signature above failed)');
+  } else if (await exists(identity)) {
     try {
       const decrypter = newDecrypter(await loadIdentities(identity)); // prompts if passphrase-wrapped
       await decryptToChild(decrypter, o.in, 'tar', ['-tf', '-'], { consStdout: 'ignore', timeoutMs: PIPE_TIMEOUT_MS });
@@ -480,7 +555,7 @@ export async function verify(o: CliOptions): Promise<void> {
   // skipped) we must NOT print PASS / exit 0 — a cron/log reading "PASS" would be
   // false-green and could mask a month of snapshots encrypted to a wrong/lost key.
   let verdict: 'PASS' | 'FAIL' | 'PARTIAL';
-  if (!isAge || !wrongKeyRejected || !positiveOk || hashOk === false) {
+  if (!isAge || !wrongKeyRejected || !positiveOk || hashOk === false || sigOk === false) {
     verdict = 'FAIL';
     if (!o.json) console.log('\nVERDICT: FAIL');
     process.exitCode = 1;
@@ -509,7 +584,8 @@ export async function verify(o: CliOptions): Promise<void> {
         checks: {
           age_header: isAge,
           sha256_match: hashOk, // null when --sha256 was not passed (check skipped, not failed)
-          wrong_key_rejected: wrongKeyRejected,
+          signature: sigOk === null ? 'skip' : sigOk ? 'pass' : 'fail', // #214: 'skip' when unsigned or no signing pubkey on this box
+          wrong_key_rejected: wrongKeyCheckSkipped ? 'skip' : wrongKeyRejected, // #214: 'skip' when the authenticity signature above already failed
           positive_control: positiveSkipped ? 'skip' : positiveOk ? 'pass' : 'fail',
         },
         verdict,

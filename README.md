@@ -75,7 +75,7 @@ key**. It can produce snapshots forever but can never read them back: the
 **snapshots it writes, and anything the storage backend ever sees, are ciphertext
 only** — that is the property this design guarantees.
 
-Two honest caveats, since this is a security tool. (1) That box also *runs* gbrain,
+Three honest caveats, since this is a security tool. (1) That box also *runs* gbrain,
 so the live plaintext (its Postgres + `~/.gbrain`) is on it regardless — cipher-brain
 protects the snapshots you ship off-box, not the source machine; keep it
 full-disk-encrypted. (2) A box that can rewrite `recipient.txt` (or inject an extra
@@ -83,8 +83,27 @@ full-disk-encrypted. (2) A box that can rewrite `recipient.txt` (or inject an ex
 restore still works. Pin the allowed recipients with `CIPHER_BRAIN_PIN_RECIPIENTS`
 (snapshot refuses any recipient not on the list), and prove restorability where the
 identity lives — `verify` on a public-key-only box reports **PARTIAL**, never PASS.
+(3) age gives **confidentiality** and AEAD **tamper detection**, but not
+**authenticity**: a recipient's public key is not a secret — by design, it can be
+shared for key recovery (see "Key recovery" in `MANAGEMENT.md`) — so anyone who
+obtains it can forge ciphertext that decrypts cleanly with your identity, claiming to
+be a real snapshot. `keygen --sign` addresses the **forged-ciphertext** half of this
+gap: it generates a separate, [minisign](https://jedisct1.github.io/minisign/)-compatible
+Ed25519 signing keypair; `snapshot` then writes a detached `*.minisig` signature over
+each ciphertext it produces, and `restore`/`verify` check that signature **before
+decrypting**, refusing outright on a tampered/forged one. By default this is optional
+and additive — a snapshot with no `*.minisig` (a pre-existing backup, or `snapshot
+--no-sign`) restores exactly as before, so `keygen --sign` alone does NOT close the
+**stripped-signature** half: an attacker who can substitute your ciphertext can also
+just delete the `*.minisig` sidecar instead of forging one, and by default that looks
+identical to a legitimate unsigned/pre-`keygen --sign` backup (both WARN and proceed).
+Add `--require-signature` to `restore`/`verify` once you have run `keygen --sign` and
+expect every artifact to carry a valid signature, to turn a missing/unverifiable
+signature into a hard failure too — that is the recipe that actually closes the full
+gap. See the CLI reference's `keygen`/`snapshot`/`restore`/`verify` entries below for
+the flags.
 
-Permanence adds a third caveat: **harvest now, decrypt later.** Ciphertext parked
+Permanence adds a fourth caveat: **harvest now, decrypt later.** Ciphertext parked
 on a permanent public network can never be recalled — anyone can copy it today and
 wait for the cryptography to fail. age's plain X25519 recipient scheme is **not
 post-quantum secure**, and rotating keys cannot protect snapshots already pushed:
@@ -333,7 +352,7 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       --force, or drive the commands below by hand, to redo it) and requires a TTY
       on stdin (it is interactive, not automatable).
 
-  cipher-brain keygen [--passphrase] [--force] [--pq] | keygen --wrap-in-place
+  cipher-brain keygen [--passphrase] [--force] [--pq] | keygen --wrap-in-place | keygen --sign
       Create your age keypair: identity (PRIVATE) + recipient (PUBLIC).
       --passphrase wraps the identity at rest with a scrypt passphrase (prompted on the
       TTY); restore/verify then prompt for it. Identity = /home/user/.cipher-brain/identity.age
@@ -349,6 +368,17 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       snapshot unrecoverable) — use this if you skipped the passphrase step during "init"
       or a bare keygen and want to add one later. Refuses if the identity is already
       wrapped, or if none exists yet.
+      --sign (#214) generates a SEPARATE minisign-compatible Ed25519 SIGNING keypair
+      instead of an age keypair — an independent mode (like --wrap-in-place; the two are
+      mutually exclusive), so it can add authenticity to an existing setup without
+      touching the age identity at all. age gives confidentiality + tamper detection but
+      NOT authenticity (a recipient's public key is not secret — anyone holding it can
+      forge ciphertext that decrypts cleanly); signing the *.age ciphertext and verifying
+      BEFORE decrypt (see restore/verify below) closes that gap. Writes
+      $CIPHER_BRAIN_HOME/sign-identity.key (PRIVATE) and sign-recipient.pub (PUBLIC, in
+      the reference minisign CLI's own wire format — verifiable with a real
+      "minisign -V -p sign-recipient.pub"). --passphrase/--force apply to it the same way
+      they do to the age identity above; --wrap-in-place does not (age-only).
 
   cipher-brain wallet create [--out <path>] [--force]
       Generate a fresh Arweave JWK for the arweave/turbo storage backends (needs the
@@ -368,6 +398,7 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
   cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]...
                          [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...
                          [--recipient <pubkey|file>]... [--dry-run] [--scan-secrets warn|deny]
+                         [--no-sign] [--sign-identity <file>]
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
       A ".cipherbrainignore" file (gitignore-compatible syntax; the "ignore" npm package
       does the matching, not a hand-rolled glob) at the ROOT of a --dir (or a --profile-
@@ -427,8 +458,15 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       secret, file path, or line) and proceed. deny: refuse the whole snapshot if
       any component has findings. Drop a .gitleaks.toml into a scanned source to
       customize/allowlist rules, same as you would for a git repo.
+      Authenticity (#214): whenever a signing identity exists (default
+      $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
+      a different one), snapshot ALSO writes a detached "<out>.minisig" signature over
+      the ciphertext — automatic, no separate flag needed. restore/verify then check it
+      BEFORE decrypting. --no-sign skips this even when a signing identity is present.
+      No signing identity at all -> unchanged pre-#214 behavior (no *.minisig written).
 
   cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>] [--yes] [--no-expand-components]
+                        [--sign-recipient <file>] [--require-signature]
       Decrypt with the PRIVATE identity. Extraction never clobbers a file already
       present in --out-dir (--keep-old-files: an existing file is left untouched,
       the rest of the archive still extracts around it).
@@ -450,14 +488,31 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       in the target database — an irreversible operation — so it requires --yes or
       CIPHER_BRAIN_YES=1 to confirm, same as push's paid-backend guard below. Bounded by
       the same pipe timeout as the decrypt/extract step (CIPHER_BRAIN_PIPE_TIMEOUT).
+      Authenticity (#214): checked FIRST, before any decryption. If "<in>.minisig"
+      exists AND a signing public key is configured (default
+      $CIPHER_BRAIN_HOME/sign-recipient.pub; --sign-recipient picks a different one),
+      an INVALID signature refuses to restore outright (nothing is decrypted or written).
+      An absent signature (unsigned/legacy artifact) or an absent signing public key on
+      this box only warn and proceed — this never breaks a pre-#214 backup. --require-
+      signature turns that warn into a refusal too: an attacker who simply DELETES the
+      .minisig sidecar (rather than forging one) no longer silently succeeds either.
 
-  cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>] [--json]
+  cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>] [--sign-recipient <file>] [--require-signature] [--json]
       Assert it is real age ciphertext, a wrong key cannot open it, AND (when the
       private identity is on this box) that YOUR key decrypts it into a well-formed
-      bundle. --sha256 also pins the artifact to an expected hash. VERDICT: PASS (exit 0)
-      / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not proven, e.g. public-key-only box).
+      bundle. --sha256 also pins the artifact to an expected hash. Authenticity (#214):
+      if "<in>.minisig" exists and a signing public key is configured (default
+      $CIPHER_BRAIN_HOME/sign-recipient.pub; --sign-recipient overrides), verifies it
+      too — an INVALID signature is a hard FAIL and skips the positive-control decrypt
+      below (an artifact already known to be tampered/forged proves nothing by
+      decrypting); no signature or no configured public key just [SKIP]s this check
+      by default. --require-signature upgrades that [SKIP] to a hard FAIL too — use it
+      once you have run "keygen --sign" and expect every artifact you verify to carry
+      a valid signature; without it, an unsigned/legacy artifact still reaches PASS.
+      VERDICT: PASS (exit 0) / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not
+      proven, e.g. public-key-only box).
       --json prints one JSON object to stdout instead of the human-readable report
-      (file, size_bytes, checks: {age_header, sha256_match, wrong_key_rejected,
+      (file, size_bytes, checks: {age_header, sha256_match, signature, wrong_key_rejected,
       positive_control}, verdict, exit_code) — the SAME checks computed above, so it
       never disagrees with the human-readable report or the MCP verify_restore tool.
       The exit code is unchanged either way.
@@ -478,14 +533,19 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       PATH and a remote already set up via 'rclone config' (or a config-less
       on-the-fly remote, e.g. --remote ":local:/path"). --remote is required.
       --save-locator writes "<locator>\t<backend>\t<sha256>[\t<content_digest>[\t
-      <recipients_fingerprint>]]" to a file (rewritten atomically each push, so it
-      always holds the LATEST + an integrity pin; legacy 3/4-field files are still
-      accepted everywhere). Back this file up off-box next to your identity: it is the
-      durable pointer a fresh machine needs to find the most recent snapshot. (For the
-      file backend the locator is a LOCAL store path — arweave/turbo locators are
+      <recipients_fingerprint>[\t<sig_locator>]]]" to a file (rewritten atomically each
+      push, so it always holds the LATEST + an integrity pin; legacy 3/4/5-field files
+      are still accepted everywhere). Back this file up off-box next to your identity: it
+      is the durable pointer a fresh machine needs to find the most recent snapshot. (For
+      the file backend the locator is a LOCAL store path — arweave/turbo locators are
       always portable to another machine; an rclone locator is portable too, PROVIDED
       the same remote name is configured there — a config-less ":local:/path" remote
       is as machine-local as the file backend.)
+      Authenticity (#214): if "<in>.minisig" exists (snapshot writes one automatically
+      when a signing identity is present — see "snapshot" above), it is ALSO uploaded to
+      the SAME backend right after the ciphertext, under the SAME already-granted
+      consent — its own locator becomes the 6th --save-locator field above, so pull can
+      fetch it back automatically. Unchanged behavior when no sidecar exists.
       --skip-unchanged (requires --save-locator): skips ONLY when BOTH (a) the
       snapshot's PLAINTEXT content digest — read from the "<in>.digest" sidecar
       snapshot writes, or given as --digest <hex> — equals the content_digest recorded
@@ -514,7 +574,7 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       the human-readable report — field-for-field identical to what estimate_cost
       returns.
 
-  cipher-brain pull (--locator <id> --backend <…> | --remote <name>:<path> --backend rclone | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>] [--force]
+  cipher-brain pull (--locator <id> --backend <…> | --remote <name>:<path> --backend rclone | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>] [--sig-locator <id>] [--force]
       Fetch ciphertext by locator into --out. --from-locator-file reads the locator, its
       backend AND the saved sha256 from a file written by push --save-locator (the recovery
       path: identity + this file are all a fresh machine needs; the saved sha256 is applied
@@ -528,6 +588,11 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       --backend rclone accepts --remote <name>:<path> in place of --locator (the
       rclone backend's locator IS that string — see push's rclone section above);
       an explicit --locator still wins if both are given.
+      Authenticity (#214): --sig-locator <id> (or the 6th --from-locator-file field,
+      read automatically) ALSO fetches the "<in>.minisig" sidecar push uploaded, into
+      "<out>.minisig" — best-effort, never fails the pull itself (restore/verify treat a
+      missing sidecar as a warning, not a failure). Omit it and pull behaves exactly as
+      before #214 (ciphertext only).
 
   cipher-brain schedule install --backend <file|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
                                 [--profile <name>] [--pg <conn>] [--pg-table <t>]...

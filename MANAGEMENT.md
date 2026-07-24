@@ -340,6 +340,7 @@ failure); the plain message is still the full story either way. Over MCP,
 | CB-E013 | `--backend` was given a value other than `file`, `arweave`, `turbo`, or `rclone`. | Correct the typo — only those four are valid. |
 | CB-E014 | `schedule status`/`uninstall` ran before `schedule install`, or writing the crontab entry failed. | Run `cipher-brain schedule install` first; a crontab-write failure usually means missing cron permissions/availability in this environment. |
 | CB-E015 | `restore`/`verify` can't find the private identity file it needs to decrypt (default or `--identity` path). | Run `cipher-brain keygen` if you haven't yet, or point `--identity` at the correct file. |
+| CB-E016 | `restore`/`verify` found a `*.minisig` signature next to the ciphertext, and a configured signing public key, but the signature did NOT verify — the artifact may be tampered or forged. | Do not trust the artifact. Confirm you're checking against the correct `sign-recipient.pub` (or `--sign-recipient`); if it matches and the failure persists, treat the ciphertext as compromised and re-fetch from a trusted copy. |
 
 ## What's proven vs recommended
 
@@ -352,5 +353,6 @@ failure); the plain message is still the full story either way. Over MCP,
 | `rclone` backend (delegates to the `rclone` binary and its own configured remote) | **proven** — `selftest:rclone` (CI) |
 | Identity at rest (passphrase-wrap via `keygen --passphrase`; FDE on the identity host) | **available / recommended** — `--passphrase` ships; FDE is operator config, not enforced by code |
 | Post-quantum hybrid keypair (`keygen --pq`, ML-KEM-768 + X25519 — mitigates harvest-now-decrypt-later, see README Threat model) | **available** — `selftest:pq` (CI); combines with a plain-X25519 backup key and `CIPHER_BRAIN_PIN_RECIPIENTS`, but the recipient/ciphertext are much bigger than plain X25519 |
+| Authenticity signing (`keygen --sign`, a minisign-compatible Ed25519 detached signature over each `*.age` — mitigates age's lack of authenticity, see README Threat model #214) | **available** — `selftest:minisign` (CI, in-process round trip always; real `minisign` binary interop when it's on PATH); optional and additive — an unsigned artifact restores exactly as before |
 | Nightly cadence (`schedule install / status / uninstall`: generated runner + launchd/cron trigger, paid backends refused without a spend cap, end-to-end run of the generated runner) | **proven** — `selftest:schedule` (CI) |
 | Identity off-box backup, Shamir M-of-N | **recommended practice / future** — not enforced by code |

@@ -96,6 +96,27 @@ export function wrapIdentity(text: string, passphrase: string): Promise<Uint8Arr
 // with "unrecognized identity type" instead of ever prompting for a passphrase).
 export async function loadIdentities(path: string): Promise<string[]> {
   await warnIfLooseKeyPerms(path, 'age identity (private key)');
+  const text = await unwrapTextFile(path);
+  const ids = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
+  if (ids.length === 0) throw new Error(`no identities found in ${path}`);
+  return ids;
+}
+
+// Read `path`, transparently reversing whatever at-rest wrapping it carries: ASCII-
+// armor (`age -p -a`, or a recovery note it was pasted from) is de-armored first, then
+// age-ciphertext bytes (the scrypt passphrase wrap — `keygen --passphrase` / `age -p`)
+// are unwrapped by prompting on the TTY (or CIPHER_BRAIN_PASSPHRASE for automation);
+// anything else is returned as plain UTF-8 text unchanged. Extracted out of
+// loadIdentities() (#214) so a second caller with its own file shape — the minisign
+// signing identity (src/lib/minisign.ts), which reuses this SAME age-based wrap rather
+// than inventing its own key-encryption scheme — gets the exact same detection/
+// unwrap logic instead of a second, subtly-different copy of it. loadIdentities()'s
+// OWN job (splitting the result into non-comment identity lines) stays there; this
+// only ever returns the plaintext file body.
+export async function unwrapTextFile(path: string): Promise<string> {
   let raw = await readFile(path);
   const rawText = raw.toString('utf8');
   // trimStart, not a byte-0 match: a copy-pasted-into-a-note identity routinely picks
@@ -109,23 +130,15 @@ export async function loadIdentities(path: string): Promise<string[]> {
       throw new Error(`could not dearmor ${path}: ${errMsg(e)}`);
     }
   }
-  let text: string;
   if (raw.subarray(0, AGE_MAGIC.length).toString('latin1') === AGE_MAGIC) {
     const pass = await askPassphrase(`Enter passphrase for ${path}: `);
     try {
-      text = await unwrap(raw, pass);
+      return await unwrap(raw, pass);
     } catch (e) {
       throw new Error(`could not unwrap ${path} (wrong passphrase?): ${errMsg(e)}`);
     }
-  } else {
-    text = raw.toString('utf8');
   }
-  const ids = text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('#'));
-  if (ids.length === 0) throw new Error(`no identities found in ${path}`);
-  return ids;
+  return raw.toString('utf8');
 }
 
 async function unwrap(raw: Buffer, pass: string): Promise<string> {

@@ -29,6 +29,19 @@ jobs:
       - name: install age (macos, interop assertion only)
         if: runner.os == 'macOS'
         run: brew install age
+      # minisign is NOT a runtime dependency either (#214 — src/lib/minisign.ts
+      # implements the wire format in-process, using only Node's own built-in
+      # `crypto` Ed25519) — installed here solely so scripts/selftest-minisign.sh's
+      # real-binary interop assertions actually run instead of SKIPping (same
+      # posture as the `age` install steps above). Available via `apt-get` on
+      # Ubuntu (universe) and via `brew` on macOS — no separate release-asset
+      # download/checksum needed, unlike gitleaks below.
+      - name: install minisign (ubuntu, interop assertion only)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: install minisign (macos, interop assertion only)
+        if: runner.os == 'macOS'
+        run: brew install minisign
       # gitleaks is NOT a runtime dependency of the CLI either — it is installed here
       # solely so the --scan-secrets warn|deny selftest block (#215) actually exercises
       # the scan/warn/deny paths instead of silently [SKIP]-ing (the CLI itself only

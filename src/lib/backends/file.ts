@@ -1,19 +1,33 @@
 // file backend: a local content-addressed store. Needs no daemon and no network,
-// so CI can exercise push/pull end-to-end. locator = <FILE_DIR>/<sha256>.age
+// so CI can exercise push/pull end-to-end. locator = <FILE_DIR>/<sha256><ext>
 import { mkdir, copyFile } from 'node:fs/promises';
-import { join, dirname, resolve, basename } from 'node:path';
+import { join, dirname, resolve, basename, extname } from 'node:path';
 import { FILE_DIR } from '../config.js';
 import { exists, sha256 } from '../util.js';
 import type { StorageBackend, PutOpts } from '../types.js';
 
-// locators produced by put() always have this shape (basename of `<sha256>.age`).
-const LOCATOR_SHAPE_RE = /^[0-9a-f]{64}\.age$/;
+// locators produced by put() always have this shape (basename of `<sha256><ext>`).
+// ".age" is the ciphertext extension every --in push() itself accepts; ".minisig" is
+// the ONLY other extension push() ever hands this backend — the detached authenticity
+// sidecar (#214), uploaded alongside the ciphertext it signs (see push() in
+// pushpull.ts). A tight allowlist, not an open regex: same "narrow validated shape"
+// defense-in-depth this file already applied to age ciphertext (an untrusted locator,
+// e.g. from a tampered --save-locator file, must never resolve outside FILE_DIR OR to
+// an unexpected extension).
+const LOCATOR_SHAPE_RE = /^[0-9a-f]{64}\.(age|minisig)$/;
 
 export function fileBackend(): StorageBackend {
   return {
     async put(file: string, _opts: PutOpts = {}): Promise<string> {
       await mkdir(FILE_DIR, { recursive: true });
-      const locator = join(FILE_DIR, `${await sha256(file)}.age`);
+      // Preserve the pushed file's own extension instead of assuming every object is
+      // ciphertext (#214: a *.minisig sidecar pushed through this SAME backend must not
+      // be misnamed "<sha>.age") — content-addressed either way, so this is purely a
+      // display/routing convenience, never a correctness dependency. Falls back to
+      // ".age" for an extensionless input (unchanged behavior for every pre-#214 caller,
+      // which only ever pushed *.age files).
+      const ext = extname(file) || '.age';
+      const locator = join(FILE_DIR, `${await sha256(file)}${ext}`);
       await copyFile(file, locator);
       return locator;
     },

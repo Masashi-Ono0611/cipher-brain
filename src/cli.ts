@@ -57,6 +57,41 @@ const BOOL_FLAGS = new Set([
   'require_signature',
 ]); // flags that take no value
 
+// Value flags (always a string when passed) — kept in sync with CliOptions
+// (src/lib/types.ts), which is the authoritative list of every field a command
+// actually reads. `dir`/`pg-table`/`pg-exclude-table-data`/`recipient` are NOT
+// listed here: they're repeatable array flags handled by their own branches
+// below, before this set is ever consulted.
+const VALUE_FLAGS = new Set([
+  'out',
+  'out_dir',
+  'profile',
+  'vault',
+  'zip',
+  'pg',
+  'pg_filter',
+  'in',
+  'identity',
+  'sha256',
+  'backend',
+  'remote',
+  'digest',
+  'save_locator',
+  'locator',
+  'scan_secrets',
+  'from_locator_file',
+  'sign_identity',
+  'sign_recipient',
+  'sig_locator',
+  'wait',
+  'at',
+  'max_spend',
+  'index_file',
+  'wallet',
+  'ping_url',
+  'ping_url_fail',
+]);
+
 function parseArgs(argv: string[]): CliOptions {
   const o: CliOptions = { dirs: [], tables: [], recipients: [] };
   const rec = o as unknown as Record<string, string | boolean | undefined>;
@@ -71,6 +106,14 @@ function parseArgs(argv: string[]): CliOptions {
       o.recipients.push(argv[++i]); // repeatable: key recovery
     else if (a.startsWith('--')) {
       const key = a.slice(2).replace(/-/g, '_');
+      // issue #253: an unrecognized/mistyped --flag used to be silently stored
+      // on `o` and then just never read by any command — no error, just quiet
+      // wrong behavior (the same bug class as #96/#101/#114). Refuse instead.
+      if (!BOOL_FLAGS.has(key) && !VALUE_FLAGS.has(key)) {
+        throw new Error(
+          `unknown flag: --${a.slice(2)} (run 'cipher-brain --help' or '<command> --help' to see valid flags)`,
+        );
+      }
       rec[key] = BOOL_FLAGS.has(key) ? true : argv[++i];
     } else o._ = a;
   }

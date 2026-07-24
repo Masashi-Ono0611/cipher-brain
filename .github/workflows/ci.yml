@@ -77,5 +77,11 @@ jobs:
       # along on this per-cell job rather than getting a dedicated one.
       - name: lint (biome check, non-mutating)
         run: npm run lint
+      # Runs the CLI straight off src/*.ts (scripts/dev-node-flags.mjs) — no build
+      # step needed, and it fails fast, before the slower selftest suite, on the
+      # same OS/node-invariance argument as typecheck/lint above (issue #227 part
+      # 2: README.md's CLI reference must stay byte-identical to --help output).
+      - name: docs sync check (README.md CLI reference vs --help, #227)
+        run: npm run check:help-docs
       - name: verify (build + all selftests + CLI smoke)
         run: npm run verify

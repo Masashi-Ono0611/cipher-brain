@@ -1,8 +1,18 @@
 // keygen + identity/recipient helpers.
 import { mkdir, writeFile, rm, rename, chmod, readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
-import { HOME, IDENTITY, RECIPIENT, AGE_PUBKEY_RE, AGE_MAGIC, AGE_ARMOR_HEADER } from './config.js';
+import {
+  HOME,
+  IDENTITY,
+  RECIPIENT,
+  SIGN_IDENTITY,
+  SIGN_RECIPIENT,
+  AGE_PUBKEY_RE,
+  AGE_MAGIC,
+  AGE_ARMOR_HEADER,
+} from './config.js';
 import { generateKeypair, identityFileText, askNewPassphrase, wrapIdentity } from './crypt.js';
+import { keygenSignAt } from './minisign.js';
 import { exists } from './util.js';
 import type { CliOptions } from './types.js';
 
@@ -149,7 +159,45 @@ async function wrapInPlace(identityPath: string): Promise<void> {
   console.log(`identity re-written, passphrase-wrapped: ${identityPath}`);
 }
 
+// keygen --sign (#214): generates a minisign-compatible Ed25519 SIGNING keypair —
+// entirely independent of the age identity/recipient above (a separate credential,
+// same as `wallet create`'s Arweave JWK is). Deliberately its OWN mode (like
+// --wrap-in-place above), not combined with the age-specific flags (--pq/--passphrase
+// still apply to it for at-rest wrapping, but there is no age keypair generated or
+// touched by this branch) — keeps `keygen --sign` usable to ADD signing to an existing
+// setup without re-running (or being blocked by) the age identity's own no-clobber
+// check.
+async function keygenSign(o: CliOptions): Promise<void> {
+  const identityPath = o.sign_identity || SIGN_IDENTITY;
+  const recipientPath = o.sign_recipient || SIGN_RECIPIENT;
+  const { wrapped, pubkeyText } = await keygenSignAt({
+    home: HOME,
+    identityPath,
+    recipientPath,
+    passphrase: o.passphrase,
+    force: o.force,
+  });
+  console.log(`signing identity (PRIVATE, keep offline): ${identityPath}${wrapped ? ' (passphrase-wrapped)' : ''}`);
+  console.log(`signing public key (PUBLIC, safe to copy): ${recipientPath}`);
+  console.log(pubkeyText.trimEnd());
+  console.log(
+    '\n⚠  Back up the signing identity now. Losing it means future snapshots can no longer be signed ' +
+      '(existing *.minisig files stay verifiable against the public key above regardless).',
+  );
+}
+
 export async function keygen(o: CliOptions): Promise<void> {
+  if (o.sign) {
+    // Same "fail loud instead of silently no-op-ing one of the two" discipline as the
+    // --pq + --wrap-in-place guard below: --wrap-in-place only re-wraps the EXISTING
+    // age identity, and has no meaning for the (independent) signing keypair --sign
+    // generates.
+    if (o.wrap_in_place)
+      throw new Error(
+        '--sign has no effect with --wrap-in-place (which only re-wraps the age identity). Run "keygen --sign" on its own.',
+      );
+    return keygenSign(o);
+  }
   if (o.wrap_in_place) {
     // --wrap-in-place only re-wraps the EXISTING identity file's text with a
     // passphrase — it never touches the keypair itself (see wrapInPlace() above).

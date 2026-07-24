@@ -5,7 +5,7 @@ import { mkdir, writeFile, rm, readFile, rename, link, stat } from 'node:fs/prom
 import { dirname, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { AGE_MAGIC, CIPHER_YES } from './config.js';
-import { exists, sleep, sha256, readHead, RetryableError } from './util.js';
+import { exists, sleep, sha256, readHead, errMsg, RetryableError } from './util.js';
 import { backendFor } from './backends/index.js';
 import { estimateCost, formatEstimate } from './estimate.js';
 import type { CliOptions } from './types.js';
@@ -76,12 +76,14 @@ interface SavedLocator {
   sha: string | undefined;
   contentDigest: string | undefined;
   recipientsFingerprint: string | undefined;
+  sigLocator: string | undefined; // #214: where the "<in>.minisig" sidecar was pushed, if any
 }
 
-// Parse the FIRST locator line of a save-locator file into its (up to 5) fields.
+// Parse the FIRST locator line of a save-locator file into its (up to 6) fields.
 // Returns null when the file is missing/empty — callers treat that as "no previous
-// push recorded". The 3-field legacy format, the 4-field one (+content_digest) and
-// the 5-field one (+recipients_fingerprint) all parse here identically.
+// push recorded". The 3-field legacy format, the 4-field one (+content_digest), the
+// 5-field one (+recipients_fingerprint) and the 6-field one (+sig_locator, #214) all
+// parse here identically.
 async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> {
   let text: string;
   try {
@@ -94,8 +96,8 @@ async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> 
     .map((l) => l.trim())
     .find((l) => l && !l.startsWith('#'));
   if (!line) return null;
-  const [locator, backend, sha, contentDigest, recipientsFingerprint] = line.split('\t');
-  return { locator, backend, sha, contentDigest, recipientsFingerprint };
+  const [locator, backend, sha, contentDigest, recipientsFingerprint, sigLocator] = line.split('\t');
+  return { locator, backend, sha, contentDigest, recipientsFingerprint, sigLocator };
 }
 
 // Returns whether an upload actually happened: false for the --skip-unchanged
@@ -207,6 +209,20 @@ export async function push(o: CliOptions): Promise<boolean> {
   // as `yes` is only meaningful to arweave/turbo.
   const locator = await backend.put(o.in, { yes, remote: o.remote });
   console.error(`pushed ${o.in} -> ${o.backend}:${locator}`);
+  // Authenticity sidecar (#214): if snapshot() wrote a "<in>.minisig" next to the
+  // ciphertext, upload it too — same backend, same already-granted consent (`yes`
+  // covers the whole push() call, not a per-file re-prompt for a few-hundred-byte
+  // signature). Automatic whenever the sidecar exists; a pre-#214 push (no sidecar)
+  // is byte-for-byte unchanged. The rclone backend needs its OWN distinct --remote
+  // destination per file (its locator IS that destination string, unlike every other
+  // backend's content-addressed/post-assigned one) — derived here as "<remote>.minisig",
+  // a deterministic sibling of the ciphertext's own --remote.
+  const sigPath = `${o.in}.minisig`;
+  let sigLocator: string | undefined;
+  if (await exists(sigPath)) {
+    sigLocator = await backend.put(sigPath, { yes, remote: o.remote ? `${o.remote}.minisig` : undefined });
+    console.error(`pushed ${sigPath} -> ${o.backend}:${sigLocator}`);
+  }
   // --save-locator <path>: persist the returned locator so operators can back it up
   // alongside their identity (the two things a fresh machine needs to restore).
   // The file is rewritten on each push — it always holds the most recent locator.
@@ -221,7 +237,7 @@ export async function push(o: CliOptions): Promise<boolean> {
   if (o.save_locator) {
     try {
       await mkdir(dirname(resolve(o.save_locator)), { recursive: true });
-      // Record "<locator>\t<backend>\t<sha256>[\t<content_digest>[\t<recipients_fingerprint>]]".
+      // Record "<locator>\t<backend>\t<sha256>[\t<content_digest>[\t<recipients_fingerprint>[\t<sig_locator>]]]".
       // The sha256 — computed here off the bytes we just pushed — binds the locator to
       // its ciphertext, so a recovery via --from-locator-file is fail-closed: for
       // arweave/turbo (locator != content hash) a gateway/storage attacker can't later
@@ -230,17 +246,23 @@ export async function push(o: CliOptions): Promise<boolean> {
       // existing --sha256 pin relies on). The 4th field is the PLAINTEXT content digest
       // (from the "<in>.digest" sidecar / --digest); the 5th is the recipients
       // fingerprint (from the "<in>.recipients-fingerprint" sidecar) — both are the
-      // comparison targets for the next push --skip-unchanged. The 5th field is only
-      // ever written alongside a present 4th (never in its place — a positional format
-      // can't safely encode "5th but not 4th"); omitted when no signal is available
-      // (parsers accept all three widths).
+      // comparison targets for the next push --skip-unchanged. The 6th (#214) is where
+      // the "<in>.minisig" sidecar landed, if one was pushed above — pull's
+      // --from-locator-file reads it back to also fetch the signature alongside the
+      // ciphertext. Every field past the 3rd is only ever written alongside ALL the
+      // ones before it (never a later one in an earlier one's place — a positional
+      // format can't safely encode "6th but not 5th"); omitted when no signal is
+      // available (readSavedLocatorLine accepts every width from 3 to 6).
       const digest = await sha256(o.in);
       const contentDigest = await contentDigestFor(o);
       const recipientsFingerprint = await recipientsFingerprintFor(o);
       const fields = [locator, o.backend, digest];
       if (contentDigest) {
         fields.push(contentDigest);
-        if (recipientsFingerprint) fields.push(recipientsFingerprint);
+        if (recipientsFingerprint) {
+          fields.push(recipientsFingerprint);
+          if (sigLocator) fields.push(sigLocator);
+        }
       }
       // Atomic write: a crash / ENOSPC mid-rewrite must not leave the recovery pointer
       // empty AND destroy the previous good locator. Write a temp sibling, then rename.
@@ -323,15 +345,15 @@ export async function pull(o: CliOptions): Promise<void> {
       .find((l) => l && !l.startsWith('#'));
     if (!line) throw new Error(`locator file ${o.from_locator_file} has no locator line`);
     // Accept the legacy 3-field line, the 4-field one (a trailing content_digest,
-    // written since --skip-unchanged) AND the 5-field one (+recipients_fingerprint):
-    // recovery of every existing save-locator file must keep working, so extra
-    // columns are simply ignored here.
-    const [savedLoc, savedBackend, savedSha] = line.split('\t');
+    // written since --skip-unchanged), the 5-field one (+recipients_fingerprint) AND
+    // the 6-field one (+sig_locator, #214): recovery of every existing save-locator
+    // file must keep working, so extra columns are simply ignored here.
+    const [savedLoc, savedBackend, savedSha, , , savedSigLocator] = line.split('\t');
     // A truncated / hand-mangled file missing the backend column would otherwise fall
     // through to the generic "--backend required" error, hiding the real cause.
     if (!savedLoc || !savedBackend) {
       throw new Error(
-        `locator file ${o.from_locator_file} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>]]]" — got: ${JSON.stringify(line)}`,
+        `locator file ${o.from_locator_file} must contain "<locator>\\t<backend>[\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>[\\t<sig_locator>]]]]" — got: ${JSON.stringify(line)}`,
       );
     }
     if (!o.locator) o.locator = savedLoc;
@@ -339,6 +361,9 @@ export async function pull(o: CliOptions): Promise<void> {
     // Apply the saved integrity pin so recovery is fail-closed (a substituted ciphertext
     // is rejected); an explicit --sha256 still wins if the operator passed one.
     if (!o.sha256 && savedSha) o.sha256 = savedSha;
+    // Same idea for the authenticity sidecar (#214): if push recorded where "<in>.minisig"
+    // landed, fetch it alongside the ciphertext below (best-effort — see the fetch site).
+    if (!o.sig_locator && savedSigLocator) o.sig_locator = savedSigLocator;
   }
   // rclone backend (#204): its locator IS the "<remote>:<path>" string (see
   // backends/rclone.ts) — --remote is accepted here as the same value --locator
@@ -424,4 +449,28 @@ export async function pull(o: CliOptions): Promise<void> {
     throw e;
   }
   console.error(`pulled ${o.backend}:${o.locator} -> ${o.out}`);
+  // Authenticity sidecar (#214): --sig-locator (explicit, or read from
+  // --from-locator-file's 6th field above) says where push() parked the "<in>.minisig"
+  // that was signed alongside this ciphertext — fetch it too, into "<out>.minisig", so
+  // restore/verify on THIS machine has something to check. Best-effort and entirely
+  // separate from the main fetch's own retry/--sha256/no-clobber machinery above: the
+  // ciphertext is already safely at --out by this point, so a problem fetching the
+  // (non-essential, additive) signature must only warn, never undo or fail the pull —
+  // restore/verify's own "no signature -> WARN, not FAIL" contract (#214) already
+  // covers a missing sidecar gracefully.
+  if (o.sig_locator) {
+    const sigOut = `${o.out}.minisig`;
+    if (await exists(sigOut)) {
+      console.error(`warning: ${sigOut} already exists — not overwriting it with the fetched signature`);
+    } else {
+      try {
+        await backend.get(o.sig_locator, sigOut);
+        console.error(`pulled ${o.backend}:${o.sig_locator} -> ${sigOut}`);
+      } catch (e) {
+        console.error(
+          `warning: could not fetch the authenticity signature (${o.backend}:${o.sig_locator} -> ${sigOut}): ${errMsg(e)}`,
+        );
+      }
+    }
+  }
 }

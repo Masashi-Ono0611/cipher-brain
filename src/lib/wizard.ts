@@ -22,9 +22,10 @@ import { readFile, writeFile, mkdir, rm, rename, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir, userInfo } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { HOME, IDENTITY, RECIPIENT } from './config.js';
+import { HOME, IDENTITY, RECIPIENT, SIGN_IDENTITY, SIGN_RECIPIENT } from './config.js';
 import { keygen, keygenAt } from './keys.js';
 import { askNewPassphrase, wrapIdentity } from './crypt.js';
+import { keygenSignAt } from './minisign.js';
 import { PROFILE_NAMES } from './profiles.js';
 import { snapshot } from './snapshot.js';
 import { push, PushLocatorWriteError } from './pushpull.js';
@@ -107,10 +108,17 @@ interface BackupKey {
 // leaves the machine to go offline; the primary identity is only referenced by
 // location (it is already durably on this machine and duplicating a live secret into
 // a file whose whole purpose is to also leave the building would only multiply risk).
+interface SigningKey {
+  identityPath: string;
+  recipientPath: string;
+  pubkeyText: string; // the minisign-wire-format public key file's content — PUBLIC, safe to inline verbatim (unlike the backup identity above, this is never secret)
+}
+
 interface KitInputs {
   primaryIdentityPath: string;
   primaryRecipient: string;
   backup: BackupKey | null;
+  signing: SigningKey | null; // #214: authenticity signing keypair, if generated during this run
   pinRecipientsLine: string | null;
   savedLocatorLine: string;
   profile: string;
@@ -152,6 +160,28 @@ function buildRecoveryKit(k: KitInputs): string {
     lines.push('None was generated during init. The PRIMARY identity above is the only key');
     lines.push('that can restore — losing it loses the brain. MANAGEMENT.md "Key recovery #1"');
     lines.push('recommends adding an offline backup key: CIPHER_BRAIN_HOME=<path> cipher-brain keygen');
+    lines.push('');
+  }
+  if (k.signing) {
+    lines.push('--- SIGNING PUBLIC KEY (authenticity, #214 — PUBLIC, safe to keep with this kit or share) ---');
+    lines.push('age proves confidentiality but not authenticity: anyone holding a recipient public key can');
+    lines.push('forge decryptable ciphertext. This signing key closes that gap — snapshot signs each *.age it');
+    lines.push('writes, and restore/verify check the signature BEFORE decrypting. Keep this public key alongside');
+    lines.push(`the recovery locator so restore on ANY machine can verify: ${k.signing.recipientPath}`);
+    lines.push('');
+    lines.push('BEGIN SIGNING PUBLIC KEY');
+    lines.push(k.signing.pubkeyText.replace(/\n+$/, ''));
+    lines.push('END SIGNING PUBLIC KEY');
+    lines.push('(The matching PRIVATE signing key stays on this machine only — see MANAGEMENT.md "Key recovery" —');
+    lines.push(
+      ' it is not needed to VERIFY a signature, only to CREATE new ones, so it is deliberately not inlined here.)',
+    );
+    lines.push('');
+  } else {
+    lines.push('--- SIGNING PUBLIC KEY (authenticity, #214) ---');
+    lines.push('None was generated during init. Snapshots restore exactly as before (age confidentiality +');
+    lines.push('tamper detection), just without the extra authenticity check. Add one later at any time:');
+    lines.push('cipher-brain keygen --sign');
     lines.push('');
   }
   lines.push('--- LATEST SAVE-LOCATOR (back this up off-box, next to the backup identity) ---');
@@ -249,12 +279,14 @@ export async function init(_o: CliOptions): Promise<void> {
     );
   }
 
-  console.log('cipher-brain init — interactive setup: keygen, key recovery, first snapshot + push, recovery kit.\n');
+  console.log(
+    'cipher-brain init — interactive setup: keygen, key recovery, authenticity signing, first snapshot + push, recovery kit.\n',
+  );
 
   let rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     // ---------- 1. primary keygen (reuses keygen() verbatim — no reimplementation) ----------
-    console.log('== 1/6: generating your primary identity ==');
+    console.log('== 1/7: generating your primary identity ==');
     // keygen() -> keygenAt() (keys.ts) checks identity.age AND recipient.txt for
     // pre-existence UP FRONT, before writing either — so a stray pre-existing
     // recipient.txt (or a directory sitting at that path) now refuses cleanly before
@@ -296,6 +328,7 @@ export async function init(_o: CliOptions): Promise<void> {
     // above before this try started), then re-throw so the original error still
     // surfaces unchanged.
     let backup: BackupKey | null = null;
+    let signing: SigningKey | null = null;
     // Set the moment snapshot() below actually succeeds — never before. snapshot()'s own
     // promote step (promoteSnapshot in snapshot.ts) only renames/links its .part onto
     // o.out on success, so if snapshot() itself throws, o.out (and its sidecars) were
@@ -321,7 +354,7 @@ export async function init(_o: CliOptions): Promise<void> {
     let pushedLocatorPath: string | null = null;
     try {
       // ---------- 2. backup key guidance (MANAGEMENT.md Key recovery #1) ----------
-      console.log('\n== 2/6: offline backup key (recommended) ==');
+      console.log('\n== 2/7: offline backup key (recommended) ==');
       console.log(
         'cipher-brain gives you two independent defenses against losing the primary identity; the first is a\n' +
           'second, OFFLINE backup keypair. If you encrypt every snapshot to BOTH the primary and the backup\n' +
@@ -387,8 +420,42 @@ export async function init(_o: CliOptions): Promise<void> {
         );
       }
 
-      // ---------- 3. passphrase wrap the primary identity (MANAGEMENT.md Key recovery #2) ----------
-      console.log('\n== 3/6: protect the primary identity at rest (recommended) ==');
+      // ---------- 3. authenticity signing keypair (#214, README Threat model) ----------
+      console.log('\n== 3/7: authenticity signing keypair (recommended) ==');
+      console.log(
+        'age proves confidentiality but NOT authenticity: a recipient public key is not secret, so anyone\n' +
+          'holding it can forge ciphertext that decrypts cleanly, claiming to be a real snapshot. A separate,\n' +
+          'minisign-compatible Ed25519 signing keypair closes this gap — snapshot signs each *.age it writes,\n' +
+          'and restore/verify check that signature BEFORE decrypting. See README "Threat model".',
+      );
+      if (await askYesNo(rl, 'Generate a signing keypair now?', true)) {
+        // Same partial-write hazard/rollback shape as the backup keypair above: check
+        // pre-existence BEFORE calling keygenSignAt (never assume these paths are
+        // absent — SIGN_IDENTITY/SIGN_RECIPIENT could already exist from an earlier,
+        // independent "keygen --sign" run), and only remove what THIS call itself
+        // created if it throws partway through.
+        const signIdentityPreExisted = await exists(SIGN_IDENTITY);
+        const signRecipientPreExisted = await exists(SIGN_RECIPIENT);
+        let pubkeyText: string;
+        try {
+          ({ pubkeyText } = await keygenSignAt({
+            home: HOME,
+            identityPath: SIGN_IDENTITY,
+            recipientPath: SIGN_RECIPIENT,
+          }));
+        } catch (e) {
+          if (!signIdentityPreExisted) await rm(SIGN_IDENTITY, { force: true });
+          if (!signRecipientPreExisted) await rm(SIGN_RECIPIENT, { force: true });
+          throw e;
+        }
+        signing = { identityPath: SIGN_IDENTITY, recipientPath: SIGN_RECIPIENT, pubkeyText };
+        console.log(`signing public key written to: ${SIGN_RECIPIENT}`);
+      } else {
+        console.log('Skipping authenticity signing. You can add it later at any time: cipher-brain keygen --sign');
+      }
+
+      // ---------- 4. passphrase wrap the primary identity (MANAGEMENT.md Key recovery #2) ----------
+      console.log('\n== 4/7: protect the primary identity at rest (recommended) ==');
       console.log(
         'The identity file just written is a bare secret guarded only by file permissions (0600) — anyone who\n' +
           'copies it off this machine can decrypt every snapshot. A passphrase wrap (scrypt, the same "keygen\n' +
@@ -426,8 +493,8 @@ export async function init(_o: CliOptions): Promise<void> {
         console.log('the machine that holds the identity (MANAGEMENT.md recommends both).');
       }
 
-      // ---------- 4. recipient pin suggestion (CIPHER_BRAIN_PIN_RECIPIENTS) ----------
-      console.log('\n== 4/6: recipient pin (optional, recommended) ==');
+      // ---------- 5. recipient pin suggestion (CIPHER_BRAIN_PIN_RECIPIENTS) ----------
+      console.log('\n== 5/7: recipient pin (optional, recommended) ==');
       console.log(
         'CIPHER_BRAIN_PIN_RECIPIENTS is an env var snapshot reads at run time: when set, it refuses to encrypt\n' +
           'to any recipient NOT on the list — so a tampered recipient.txt, or an injected extra --recipient, can\n' +
@@ -449,8 +516,8 @@ export async function init(_o: CliOptions): Promise<void> {
         console.log('Skipping the recipient pin suggestion.');
       }
 
-      // ---------- 5. profile selection ----------
-      console.log('\n== 5/6: what to back up ==');
+      // ---------- 6. profile selection ----------
+      console.log('\n== 6/7: what to back up ==');
       console.log(`Available profiles (one-flag source presets): ${PROFILE_NAMES.join(', ')}. Or "none" to point at`);
       console.log('directories yourself (the same as passing --dir manually to snapshot later).');
       const profileChoice = await askLine(rl, `Profile [none/${PROFILE_NAMES.join('/')}] (default none): `, 'none');
@@ -507,8 +574,8 @@ export async function init(_o: CliOptions): Promise<void> {
         }
       }
 
-      // ---------- 6. initial snapshot + push ----------
-      console.log('\n== 6/6: first snapshot + push ==');
+      // ---------- 7. initial snapshot + push ----------
+      console.log('\n== 7/7: first snapshot + push ==');
       console.log(`Storage backends: ${BACKEND_NAMES.join(', ')}. arweave/turbo are PAID, permanent stores.`);
       const backend = await askLine(rl, `Backend [${BACKEND_NAMES.join('/')}] (default file): `, 'file');
       if (!(BACKEND_NAMES as readonly string[]).includes(backend)) {
@@ -652,6 +719,7 @@ export async function init(_o: CliOptions): Promise<void> {
         primaryIdentityPath: IDENTITY,
         primaryRecipient,
         backup,
+        signing,
         pinRecipientsLine,
         savedLocatorLine,
         profile: profileChoice,
@@ -685,6 +753,7 @@ export async function init(_o: CliOptions): Promise<void> {
       console.log('\n=== cipher-brain init: complete ===');
       console.log(`primary identity:  ${IDENTITY}`);
       if (backup) console.log(`backup identity:   ${backup.identityPath}  (move this OFF this machine)`);
+      if (signing) console.log(`signing public key: ${signing.recipientPath}`);
       console.log(`snapshot:          ${outPath}`);
       if (snapshotOpts.pg) console.log('postgres:          included (pg_dump)');
       const backendWarning =
@@ -721,6 +790,9 @@ export async function init(_o: CliOptions): Promise<void> {
           `primary identity: ${IDENTITY}`,
           `primary recipient: ${RECIPIENT}`,
           ...(backup ? [`backup identity: ${backup.identityPath}`, `backup recipient: ${backup.recipientPath}`] : []),
+          ...(signing
+            ? [`signing identity: ${signing.identityPath}`, `signing public key: ${signing.recipientPath}`]
+            : []),
           ...(snapshotOutPath ? [`snapshot: ${snapshotOutPath}`] : []),
         ].join('; ');
         // pushedLocatorPath is null exactly when PushLocatorWriteError fired above:
@@ -756,6 +828,10 @@ export async function init(_o: CliOptions): Promise<void> {
       if (backup) {
         await rm(backup.identityPath, { force: true });
         await rm(backup.recipientPath, { force: true });
+      }
+      if (signing) {
+        await rm(signing.identityPath, { force: true });
+        await rm(signing.recipientPath, { force: true });
       }
       if (snapshotOutPath) {
         await rm(snapshotOutPath, { force: true });

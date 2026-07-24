@@ -28,6 +28,8 @@ export interface CliOptions {
   no_expand_components?: boolean;
   dry_run?: boolean; // snapshot --dry-run: preview .cipherbrainignore include/exclude without writing anything (#216)
   json?: boolean; // verify/estimate/schedule status: machine-readable JSON on stdout instead of the human-readable report (issue #211)
+  sign?: boolean; // keygen --sign: generate a minisign-compatible Ed25519 signing keypair instead of an age identity (#214)
+  no_sign?: boolean; // snapshot --no-sign: skip writing a <out>.minisig sidecar even when a signing identity is present (#214)
 
   // value flags — always a string when passed (argv is untyped text)
   out?: string;
@@ -47,6 +49,9 @@ export interface CliOptions {
   locator?: string;
   scan_secrets?: string; // snapshot --scan-secrets warn|deny (gitleaks, #215) — validated in snapshot.ts, not here (parseArgs can't know the enum)
   from_locator_file?: string;
+  sign_identity?: string; // keygen/snapshot: signing PRIVATE key path override (default $CIPHER_BRAIN_HOME/sign-identity.key, #214)
+  sign_recipient?: string; // snapshot/restore/verify: signing PUBLIC key path override (default $CIPHER_BRAIN_HOME/sign-recipient.pub, #214)
+  sig_locator?: string; // pull: explicit locator for the <out>.minisig sidecar (mirrors --locator; usually read from --from-locator-file's 6th field instead, #214)
   wait?: string;
   at?: string;
   max_spend?: string;

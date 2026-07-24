@@ -16,6 +16,16 @@ export const pgTool = (name: string): string => (PG_BIN ? join(PG_BIN, name) : n
 export const IDENTITY = join(HOME, 'identity.age'); // private key — required to restore
 export const RECIPIENT = join(HOME, 'recipient.txt'); // public key — all snapshot needs
 
+// Minisign-compatible Ed25519 signing keypair (#214) — an ADDITIONAL, optional layer:
+// age (above) gives confidentiality + tamper detection but no AUTHENTICITY (anyone
+// holding `recipient` — public by design — can forge ciphertext that decrypts cleanly
+// with your identity, claiming to be a real snapshot). Signing the *.age ciphertext
+// with this keypair and verifying BEFORE decrypt (src/lib/restore.ts) closes that gap.
+// Wire-compatible with the reference `minisign` CLI (src/lib/minisign.ts) — a real
+// `minisign -V -p sign-recipient.pub` can verify a *.minisig cipher-brain writes.
+export const SIGN_IDENTITY = join(HOME, 'sign-identity.key'); // PRIVATE signing key — keep offline, same posture as IDENTITY
+export const SIGN_RECIPIENT = join(HOME, 'sign-recipient.pub'); // PUBLIC verification key — safe to copy, same posture as RECIPIENT
+
 export const AGE_MAGIC = 'age-encryption.org/v1';
 export const AGE_ARMOR_HEADER = '-----BEGIN AGE ENCRYPTED FILE-----';
 

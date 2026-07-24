@@ -5,11 +5,12 @@ import { hostname, tmpdir } from 'node:os';
 import { join, basename, dirname, resolve, relative, sep } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import ignore, { type Ignore } from 'ignore';
-import { RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, pgTool } from './config.js';
+import { RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, SIGN_IDENTITY, pgTool } from './config.js';
 import { run } from './proc.js';
 import { newEncrypter, encryptToFile } from './crypt.js';
 import { exists, fmtBytes, sha256, errMsg, redactPgConn } from './util.js';
 import { recipientEntries, resolvePinnedRecipients } from './keys.js';
+import { loadSignIdentity, signDetached } from './minisign.js';
 import { resolveProfilePaths } from './profiles.js';
 import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.js';
 import {
@@ -695,6 +696,27 @@ export async function snapshot(o: CliOptions): Promise<void> {
       console.error(
         `warning: could not write recipients-fingerprint sidecar ${o.out}.recipients-fingerprint (${errMsg(e)}) — push --skip-unchanged will not have a recipients fingerprint for this snapshot`,
       );
+    }
+    // Authenticity sidecar (#214): age gives confidentiality + tamper detection, but
+    // NOT authenticity — anyone holding a recipient's PUBLIC key (by design, not a
+    // secret) can forge ciphertext that decrypts cleanly, claiming to be a real
+    // snapshot. Signing the ciphertext bytes we just wrote closes that gap; restore/
+    // verify check this BEFORE decrypting (src/lib/restore.ts). Automatic whenever a
+    // signing identity is present (default $CIPHER_BRAIN_HOME/sign-identity.key, or
+    // --sign-identity) — no separate opt-in flag, mirroring how snapshot already just
+    // encrypts whenever a recipient is present — so running `keygen --sign` once is
+    // the entire "turn signing on" step. --no-sign opts out even when a key is
+    // present (e.g. a deliberately-unsigned test artifact). Fully backward compatible:
+    // no key present -> no *.minisig -> restore/verify treat it exactly like every
+    // pre-#214 snapshot (a WARN, never a FAIL).
+    if (!o.no_sign) {
+      const signIdentityPath = o.sign_identity || SIGN_IDENTITY;
+      if (await exists(signIdentityPath)) {
+        const { privateKey, keyId } = await loadSignIdentity(signIdentityPath);
+        const minisig = await signDetached(privateKey, keyId, o.out);
+        await writeFile(`${o.out}.minisig`, minisig);
+        console.log(`signed: ${o.out}.minisig (minisign-compatible detached signature, key: ${signIdentityPath})`);
+      }
     }
     const sz = (await stat(o.out)).size;
     console.log(`wrote ${o.out} (${fmtBytes(sz)}, encrypted to ${recs.length} recipient(s): ${recs.join(', ')})`);

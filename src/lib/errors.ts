@@ -68,7 +68,7 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     code: 'CB-E003',
     title: 'cannot unwrap a passphrase-protected identity (wrong passphrase?)',
     pattern: /\(wrong passphrase\?\)/,
-    source: 'src/lib/crypt.ts (loadIdentities, "could not unwrap … (wrong passphrase?)")',
+    source: 'src/lib/crypt.ts (unwrapTextFile, "could not unwrap … (wrong passphrase?)")',
   },
   {
     code: 'CB-E004',
@@ -146,6 +146,13 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     title: 'identity file not found (cannot decrypt)',
     pattern: /cannot decrypt without the private key/,
     source: 'src/lib/restore.ts (restoreImpl, "no identity at … — cannot decrypt without the private key")',
+  },
+  {
+    code: 'CB-E016',
+    title: 'minisign authenticity signature failed to verify — refusing to decrypt (#214)',
+    pattern: /signature (?:does not verify|verification failed)/,
+    source:
+      'src/lib/restore.ts (restoreImpl) + src/lib/minisign.ts (verifyDetached), "… signature does not verify …" / "… signature verification failed …"',
   },
 ];
 

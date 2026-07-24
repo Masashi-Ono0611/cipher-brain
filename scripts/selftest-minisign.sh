@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# Minisign-compatible authenticity signing round trip (#214): age proves confidentiality
+# + tamper detection but NOT authenticity (a recipient public key is not secret, so
+# anyone holding it can forge decryptable ciphertext) — `keygen --sign` generates a
+# separate Ed25519 signing keypair, `snapshot` signs each *.age it writes, and
+# restore/verify check that signature BEFORE decrypting. src/lib/minisign.ts implements
+# ONLY the minisign wire SERIALIZATION itself (no new crypto primitive) — the actual
+# signing/verification is Node's own built-in `crypto` Ed25519.
+#
+# This asserts, ALWAYS (no external dependency):
+#   - keygen --sign writes a signing identity + public key
+#   - snapshot auto-signs whenever a signing identity is present, writing <out>.minisig
+#   - verify/restore both PASS and print the signature check when the .minisig is intact
+#   - a tampered .minisig makes verify FAIL and restore REFUSE — before any decryption
+#   - snapshot --no-sign / no signing key at all -> unsigned, backward-compatible (SKIP,
+#     never FAIL) — the whole feature is additive
+#   - push (file backend) uploads the .minisig sidecar alongside the ciphertext, and
+#     pull --from-locator-file fetches it back automatically (the 6th --save-locator field)
+#
+# PLUS, only when the reference `minisign` binary is on PATH (SKIPs otherwise, same
+# posture as scripts/selftest-interop.sh's `age` binary check):
+#   - a *.minisig cipher-brain writes verifies with the REAL `minisign -V` binary
+#   - a *.minisig the REAL `minisign` binary writes (with its OWN keypair) verifies
+#     with cipher-brain's OWN verification code (src/lib/minisign.ts)
+# Proving BOTH directions is what makes "wire-compatible with minisign" a checked claim
+# instead of an assertion.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/bin/cipher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+# build step) under plain node — see scripts/dev-node-flags.sh (never an exported
+# NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
+source "$ROOT/scripts/dev-node-flags.sh"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+export CIPHER_BRAIN_FILE_DIR="$TMP/store"
+cb() { CIPHER_BRAIN_HOME="$HOME_DIR" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+
+HOME_DIR="$TMP/keys"
+cb keygen >/dev/null
+cb keygen --sign >/dev/null
+test -f "$HOME_DIR/sign-identity.key" && echo "[PASS] keygen --sign wrote sign-identity.key" \
+  || { echo "[FAIL] sign-identity.key missing"; exit 1; }
+test -f "$HOME_DIR/sign-recipient.pub" && echo "[PASS] keygen --sign wrote sign-recipient.pub" \
+  || { echo "[FAIL] sign-recipient.pub missing"; exit 1; }
+grep -q '^untrusted comment: minisign public key ' "$HOME_DIR/sign-recipient.pub" \
+  && echo "[PASS] sign-recipient.pub has the minisign wire-format comment line" \
+  || { echo "[FAIL] sign-recipient.pub does not look like a minisign public key file"; exit 1; }
+
+echo "== keygen --sign refuses to clobber an existing signing keypair without --force =="
+if cb keygen --sign 2>/dev/null; then
+  echo "[FAIL] a second keygen --sign (no --force) was accepted (should refuse)"; exit 1
+fi
+echo "[PASS] keygen --sign no-clobber refusal"
+
+echo "== keygen --sign --wrap-in-place is refused (mutually exclusive, #214) =="
+if cb keygen --sign --wrap-in-place 2>/dev/null; then
+  echo "[FAIL] --sign --wrap-in-place was accepted (should refuse)"; exit 1
+fi
+echo "[PASS] --sign --wrap-in-place refused"
+
+SRC="$TMP/brain-src"
+mkdir -p "$SRC"
+MARKER="minisign-selftest-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
+printf '%s\n' "$MARKER" >"$SRC/note.txt"
+
+echo "== snapshot auto-signs whenever a signing identity is present =="
+cb snapshot --dir "$SRC" --out "$TMP/snap.age" >"$TMP/snap.out" 2>&1
+test -f "$TMP/snap.age.minisig" && echo "[PASS] snapshot wrote <out>.minisig" \
+  || { echo "[FAIL] no .minisig sidecar written"; cat "$TMP/snap.out"; exit 1; }
+grep -q '^untrusted comment: ' "$TMP/snap.age.minisig" \
+  && echo "[PASS] .minisig has the expected untrusted-comment line" \
+  || { echo "[FAIL] .minisig does not look like a minisig file"; exit 1; }
+
+echo "== verify: signature check PASSes, overall VERDICT PASS =="
+cb verify --in "$TMP/snap.age" >"$TMP/verify.out" 2>&1 || true
+grep -q '\[PASS\] minisign authenticity signature verified' "$TMP/verify.out" \
+  && echo "[PASS] verify reports the signature check as PASS" \
+  || { echo "[FAIL] verify did not report a PASS signature check"; cat "$TMP/verify.out"; exit 1; }
+grep -q 'VERDICT: PASS' "$TMP/verify.out" && echo "[PASS] verify VERDICT: PASS" \
+  || { echo "[FAIL] verify did not reach VERDICT: PASS"; cat "$TMP/verify.out"; exit 1; }
+
+echo "== verify --json includes the signature check =="
+cb verify --in "$TMP/snap.age" --json >"$TMP/verify.json" 2>/dev/null
+grep -q '"signature":"pass"' "$TMP/verify.json" && echo "[PASS] verify --json reports signature: pass" \
+  || { echo "[FAIL] verify --json missing signature: pass"; cat "$TMP/verify.json"; exit 1; }
+
+echo "== restore: signature verified BEFORE decrypting, then restores normally =="
+rm -rf "$TMP/restored"
+cb restore --in "$TMP/snap.age" --out-dir "$TMP/restored" >"$TMP/restore.out" 2>&1
+grep -q '\[PASS\] minisign authenticity signature verified' "$TMP/restore.out" \
+  && echo "[PASS] restore reports the signature check as PASS" \
+  || { echo "[FAIL] restore did not report a PASS signature check"; cat "$TMP/restore.out"; exit 1; }
+tar -xzf "$TMP/restored/brain-src.tar.gz" -C "$TMP/restored"
+grep -qF "$MARKER" "$TMP/restored/brain-src/note.txt" && echo "[PASS] restored content matches the source" \
+  || { echo "[FAIL] restored content mismatch"; exit 1; }
+
+echo "== tamper detection: a corrupted .minisig makes verify FAIL and restore REFUSE (before decrypt) =="
+cp "$TMP/snap.age.minisig" "$TMP/snap.age.minisig.orig"
+# Flip one base64 character in the signature-blob line (line 2) — corrupts the sig
+# bytes (or, depending on which byte, the embedded key id — either way the artifact
+# must be rejected either way).
+python3 - "$TMP/snap.age.minisig" <<'PYEOF'
+import sys
+p = sys.argv[1]
+with open(p) as f:
+    lines = f.readlines()
+line = lines[1]
+c = "A" if line[5] != "A" else "B"
+lines[1] = line[:5] + c + line[6:]
+with open(p, "w") as f:
+    f.writelines(lines)
+PYEOF
+if cb verify --in "$TMP/snap.age" >"$TMP/verify-tampered.out" 2>&1; then
+  echo "[FAIL] verify exited 0 against a tampered .minisig"; cat "$TMP/verify-tampered.out"; exit 1
+fi
+grep -q '\[FAIL\] minisign authenticity signature verified' "$TMP/verify-tampered.out" \
+  && echo "[PASS] verify reports the signature check as FAIL" \
+  || { echo "[FAIL] verify did not report a FAIL signature check"; cat "$TMP/verify-tampered.out"; exit 1; }
+grep -q 'VERDICT: FAIL' "$TMP/verify-tampered.out" && echo "[PASS] verify VERDICT: FAIL" \
+  || { echo "[FAIL] verify did not reach VERDICT: FAIL"; cat "$TMP/verify-tampered.out"; exit 1; }
+rm -rf "$TMP/restored-tampered"
+if cb restore --in "$TMP/snap.age" --out-dir "$TMP/restored-tampered" >"$TMP/restore-tampered.out" 2>&1; then
+  echo "[FAIL] restore exited 0 against a tampered .minisig"; cat "$TMP/restore-tampered.out"; exit 1
+fi
+grep -q 'CB-E016' "$TMP/restore-tampered.out" && echo "[PASS] restore refuses with the CB-E016 error code" \
+  || { echo "[FAIL] restore did not refuse with CB-E016"; cat "$TMP/restore-tampered.out"; exit 1; }
+[ ! -d "$TMP/restored-tampered" ] && echo "[PASS] restore wrote nothing to --out-dir before refusing" \
+  || { echo "[FAIL] restore created --out-dir despite refusing (decrypted before checking the signature?)"; exit 1; }
+cp "$TMP/snap.age.minisig.orig" "$TMP/snap.age.minisig"
+
+echo "== snapshot --no-sign opts out even when a signing identity exists =="
+cb snapshot --dir "$SRC" --out "$TMP/nosign.age" --no-sign >/dev/null
+[ ! -f "$TMP/nosign.age.minisig" ] && echo "[PASS] --no-sign wrote no .minisig sidecar" \
+  || { echo "[FAIL] --no-sign wrote a .minisig anyway"; exit 1; }
+cb verify --in "$TMP/nosign.age" >"$TMP/verify-nosign.out" 2>&1
+grep -q '\[SKIP\] minisign authenticity signature' "$TMP/verify-nosign.out" \
+  && echo "[PASS] verify SKIPs the signature check on an unsigned artifact" \
+  || { echo "[FAIL] verify did not SKIP on an unsigned artifact"; cat "$TMP/verify-nosign.out"; exit 1; }
+grep -q 'VERDICT: PASS' "$TMP/verify-nosign.out" && echo "[PASS] an unsigned artifact still reaches VERDICT: PASS (backward compatible)" \
+  || { echo "[FAIL] an unsigned artifact did not PASS overall"; cat "$TMP/verify-nosign.out"; exit 1; }
+rm -rf "$TMP/restored-nosign"
+cb restore --in "$TMP/nosign.age" --out-dir "$TMP/restored-nosign" >"$TMP/restore-nosign.out" 2>&1
+grep -q 'no .*\.minisig found' "$TMP/restore-nosign.out" \
+  && echo "[PASS] restore warns (not fails) on an unsigned artifact" \
+  || { echo "[FAIL] restore did not warn about the missing signature"; cat "$TMP/restore-nosign.out"; exit 1; }
+
+echo "== a machine with no signing public key configured: SKIP, never FAIL =="
+NOKEY_HOME="$TMP/keys-nokey"
+mkdir -p "$NOKEY_HOME"
+cp "$HOME_DIR/identity.age" "$NOKEY_HOME/identity.age"
+cp "$HOME_DIR/recipient.txt" "$NOKEY_HOME/recipient.txt"
+CIPHER_BRAIN_HOME="$NOKEY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/snap.age" >"$TMP/verify-nokey.out" 2>&1
+grep -q '\[SKIP\] minisign authenticity signature' "$TMP/verify-nokey.out" \
+  && echo "[PASS] verify SKIPs when no signing public key is configured on this box" \
+  || { echo "[FAIL] verify did not SKIP with no configured signing public key"; cat "$TMP/verify-nokey.out"; exit 1; }
+
+echo "== push (file backend) uploads the .minisig sidecar; pull fetches it back automatically =="
+rm -f "$TMP/loc.tsv"
+cb push --in "$TMP/snap.age" --backend file --save-locator "$TMP/loc.tsv" >/dev/null
+LOC_FIELDS=$(head -n1 "$TMP/loc.tsv" | awk -F'\t' '{print NF}')
+[ "$LOC_FIELDS" -ge 6 ] && echo "[PASS] save-locator recorded a 6th (sig_locator) field" \
+  || { echo "[FAIL] save-locator has only $LOC_FIELDS field(s), expected >= 6"; cat "$TMP/loc.tsv"; exit 1; }
+rm -f "$TMP/pulled.age" "$TMP/pulled.age.minisig"
+cb pull --from-locator-file "$TMP/loc.tsv" --out "$TMP/pulled.age" >/dev/null 2>&1
+test -f "$TMP/pulled.age.minisig" && echo "[PASS] pull fetched the .minisig sidecar automatically" \
+  || { echo "[FAIL] pull did not fetch the .minisig sidecar"; exit 1; }
+diff "$TMP/snap.age.minisig" "$TMP/pulled.age.minisig" >/dev/null \
+  && echo "[PASS] pulled .minisig is byte-identical to the pushed one" \
+  || { echo "[FAIL] pulled .minisig differs from the pushed one"; exit 1; }
+cb verify --in "$TMP/pulled.age" | grep -q 'VERDICT: PASS' \
+  && echo "[PASS] the pulled artifact verifies end-to-end (push -> pull -> verify)" \
+  || { echo "[FAIL] the pulled artifact did not VERIFY: PASS"; exit 1; }
+
+if ! command -v minisign >/dev/null 2>&1; then
+  echo "[SKIP] real \`minisign\` binary interop: no \`minisign\` on PATH — install it (brew/apt) to exercise CLI<->binary wire-format interop"
+else
+  echo "== interop: a cipher-brain-made .minisig verifies with the REAL minisign binary =="
+  minisign -V -p "$HOME_DIR/sign-recipient.pub" -m "$TMP/snap.age" >"$TMP/real-verify.out" 2>&1
+  grep -q 'Signature and comment signature verified' "$TMP/real-verify.out" \
+    && echo "[PASS] the real minisign binary verified a cipher-brain-generated .minisig" \
+    || { echo "[FAIL] the real minisign binary rejected a cipher-brain-generated .minisig"; cat "$TMP/real-verify.out"; exit 1; }
+
+  echo "== interop: a REAL-minisign-made .minisig verifies with cipher-brain's OWN code =="
+  # -W: generate the secret key WITHOUT a password, so it loads non-interactively below
+  # (no TTY / pty needed — unlike `age -p`, which needs one via readpassphrase(3); see
+  # selftest-interop.sh's with_pty helper for that contrast). Fine for this throwaway,
+  # selftest-only keypair, which exists only to prove the wire format, not to protect
+  # anything.
+  minisign -G -W -p "$TMP/real.pub" -s "$TMP/real.key" </dev/null >/dev/null 2>&1
+  printf '%s\n' "second" >"$TMP/real-msg.txt"
+  minisign -S -s "$TMP/real.key" -m "$TMP/real-msg.txt" </dev/null >/dev/null 2>&1
+  test -f "$TMP/real-msg.txt.minisig" || { echo "[FAIL] the real minisign binary did not write a .minisig"; exit 1; }
+  # Feed the real binary's OWN public key + .minisig into cipher-brain's verify by
+  # standing up a throwaway CIPHER_BRAIN_HOME whose sign-recipient.pub IS the real
+  # binary's public key — proves cipher-brain's verifyDetached()/parsePubkeyFile()
+  # (src/lib/minisign.ts) parse and verify a genuine minisign-generated artifact, not
+  # just its own round trip.
+  REAL_HOME="$TMP/keys-real-pubkey"
+  mkdir -p "$REAL_HOME"
+  cp "$HOME_DIR/identity.age" "$REAL_HOME/identity.age"
+  cp "$HOME_DIR/recipient.txt" "$REAL_HOME/recipient.txt"
+  cp "$TMP/real.pub" "$REAL_HOME/sign-recipient.pub"
+  cb2() { CIPHER_BRAIN_HOME="$REAL_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+  cb2 snapshot --dir "$SRC" --out "$TMP/real-snap.age" --no-sign >/dev/null
+  # Reuse the real binary's OWN signature bytes against a *different* file is invalid
+  # (would rightly fail authenticity) — instead, sign the SAME ciphertext bytes cipher-
+  # brain just produced, using the real binary + its own throwaway key, so the
+  # resulting .minisig is a genuine, freshly-made signature OVER that exact artifact.
+  minisign -S -s "$TMP/real.key" -m "$TMP/real-snap.age" </dev/null >/dev/null 2>&1
+  cb2 verify --in "$TMP/real-snap.age" >"$TMP/verify-real.out" 2>&1 || true
+  grep -q '\[PASS\] minisign authenticity signature verified' "$TMP/verify-real.out" \
+    && echo "[PASS] cipher-brain's own verify accepted a REAL minisign-generated signature" \
+    || { echo "[FAIL] cipher-brain's verify rejected a genuine minisign-generated signature"; cat "$TMP/verify-real.out"; exit 1; }
+fi
+
+echo
+echo "MINISIGN AUTHENTICITY SELFTEST PASS"

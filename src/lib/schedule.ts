@@ -247,7 +247,7 @@ SNAP_DIR="$SCHEDULE_DIR/snapshots"
 mkdir -p "$LOG_DIR" "$SNAP_DIR"
 LOG="$LOG_DIR/nightly-$(date +%F).log"
 exec >>"$LOG" 2>&1
-${pingLines.length ? pingLines.join('\n') + '\n' : ''}
+${pingLines.length ? `${pingLines.join('\n')}\n` : ''}
 # Every run ends with a machine-readable status line a heartbeat monitor can tail:
 # "OK rc=0" on success, "FAILED rc=N" on any failure (set -e exits at the first error).
 ${
@@ -262,7 +262,7 @@ ${
 }trap 'rc=$?; if [ "$rc" -eq 0 ]; then echo "OK rc=0"; ${pingOkCmd}else echo "FAILED rc=$rc"; ${pingFailCmd}fi' EXIT
 
 ${envLines.join('\n')}
-${spendLines.length ? spendLines.join('\n') + '\n' : ''}
+${spendLines.length ? `${spendLines.join('\n')}\n` : ''}
 echo "== cipher-brain nightly run start: $(date -u +%FT%TZ) =="
 # Retry-safe naming: snapshot.ts refuses to overwrite an existing --out (by design —
 # see src/lib/snapshot.ts), so a name keyed on the date ALONE collides the moment this
@@ -361,7 +361,7 @@ function loadCron(entry: string): void {
   const kept = crontabText()
     .split('\n')
     .filter((l) => l.trim() && !l.includes(CRON_MARKER));
-  const next = [...kept, entry].join('\n') + '\n';
+  const next = `${[...kept, entry].join('\n')}\n`;
   const r = sh('crontab', ['-'], { input: next });
   if (r.error || r.status !== 0)
     throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
@@ -548,10 +548,10 @@ async function install(o: CliOptions): Promise<void> {
     await writeFile(PLIST, plistBody(cfg));
     console.error(`launchd plist written -> ${PLIST}`);
   } else {
-    await writeFile(CRON_ENTRY_FILE, cronLine(cfg) + '\n');
+    await writeFile(CRON_ENTRY_FILE, `${cronLine(cfg)}\n`);
     console.error(`cron entry written -> ${CRON_ENTRY_FILE}`);
   }
-  await writeFile(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
+  await writeFile(CONFIG, `${JSON.stringify(cfg, null, 2)}\n`);
 
   if (o.no_load) {
     if (cfg.trigger.type === 'launchd') {
@@ -585,7 +585,7 @@ async function install(o: CliOptions): Promise<void> {
         .filter((l) => l.trim());
       const kept = lines.filter((l) => !isLegacyCronLine(l));
       if (kept.length !== lines.length) {
-        const r = sh('crontab', ['-'], { input: kept.length ? kept.join('\n') + '\n' : '' });
+        const r = sh('crontab', ['-'], { input: kept.length ? `${kept.join('\n')}\n` : '' });
         if (r.error || r.status !== 0)
           throw new Error(
             `crontab write failed while migrating off the legacy entry: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`,
@@ -783,7 +783,7 @@ async function uninstall(o: CliOptions): Promise<void> {
       .filter((l) => l.trim());
     const kept = lines.filter((l) => !l.includes(CRON_MARKER) && !(migrateLegacy && isLegacyCronLine(l)));
     if (kept.length !== lines.length) {
-      const r = sh('crontab', ['-'], { input: kept.length ? kept.join('\n') + '\n' : '' });
+      const r = sh('crontab', ['-'], { input: kept.length ? `${kept.join('\n')}\n` : '' });
       if (r.error || r.status !== 0)
         throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
       removed.push(

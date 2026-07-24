@@ -91,7 +91,7 @@ function makeRpcClient(child) {
   child.on('error', (err) => {
     throw err;
   });
-  const send = (msg) => child.stdin.write(JSON.stringify(msg) + '\n');
+  const send = (msg) => child.stdin.write(`${JSON.stringify(msg)}\n`);
   async function waitFor(id) {
     const deadline = Date.now() + TIMEOUT_MS;
     while (Date.now() < deadline) {

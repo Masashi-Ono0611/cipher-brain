@@ -68,7 +68,7 @@ type ToolArgs = Record<string, unknown>;
 // Safety net: nothing outside a captured call may write to stdout (it would
 // corrupt the JSON-RPC framing). Rebind console.log at module load; the capture
 // below swaps in per-call buffers on top of this.
-const rawStderrLine = (s: string) => process.stderr.write(s + '\n');
+const rawStderrLine = (s: string) => process.stderr.write(`${s}\n`);
 console.log = (...a: unknown[]) => rawStderrLine(a.map(String).join(' '));
 console.error = (...a: unknown[]) => rawStderrLine(a.map(String).join(' '));
 

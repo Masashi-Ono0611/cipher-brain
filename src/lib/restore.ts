@@ -279,19 +279,18 @@ async function expandComponents(outDir: string): Promise<void> {
     // leave it untouched rather than clobbering or duplicating it via append, the
     // same no-clobber posture the expanded component directories themselves keep.
     if (!(await exists(readmePath))) {
-      const readme =
-        [
-          '# cipher-brain restore: expanded components',
-          '',
-          'Each row maps a directory under expanded/ back to the ABSOLUTE path it was',
-          'captured from. Nothing was written back to that original path — restore never',
-          'writes over a live location automatically; review the contents and copy them back',
-          'yourself if that is what you want.',
-          '',
-          '<expanded dir>\t<-\t<original source path>\t(<component file>)',
-          ...rows.map((r) => `${r.dir}\t<-\t${r.source}\t(${r.name})`),
-        ].join('\n') + '\n';
-      await writeFile(readmePath, readme);
+      const readmeLines = [
+        '# cipher-brain restore: expanded components',
+        '',
+        'Each row maps a directory under expanded/ back to the ABSOLUTE path it was',
+        'captured from. Nothing was written back to that original path — restore never',
+        'writes over a live location automatically; review the contents and copy them back',
+        'yourself if that is what you want.',
+        '',
+        '<expanded dir>\t<-\t<original source path>\t(<component file>)',
+        ...rows.map((r) => `${r.dir}\t<-\t${r.source}\t(${r.name})`),
+      ];
+      await writeFile(readmePath, `${readmeLines.join('\n')}\n`);
     }
   } catch (e) {
     console.error(`warning: ${errMsg(e)} — the expanded directories above are still there, just without a README.txt`);

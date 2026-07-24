@@ -132,7 +132,7 @@ async function contentDigestOfPath(abs: string): Promise<string> {
   const top = await lstat(abs);
   if (top.isSymbolicLink()) return hexOf(`l\t${await readlink(abs)}`);
   if (!top.isDirectory() && !top.isFile()) return hexOf('s\t-\t0'); // FIFO/socket/device — never read, could hang
-  if (!top.isDirectory()) return hexOf((await fileTupleLine(basename(abs), abs)) + '\n');
+  if (!top.isDirectory()) return hexOf(`${await fileTupleLine(basename(abs), abs)}\n`);
   const lines = [`.\td\t-\t0\t${modeOf(top)}`]; // the --dir arg's own mode, never covered by readdir below
   for (const d of await readdir(abs, { recursive: true, withFileTypes: true })) {
     const full = join(d.parentPath, d.name);
@@ -143,7 +143,7 @@ async function contentDigestOfPath(abs: string): Promise<string> {
     else lines.push(`${rel}\ts\t-\t0`);
   }
   lines.sort();
-  return hexOf(lines.join('\n') + '\n');
+  return hexOf(`${lines.join('\n')}\n`);
 }
 
 // #216: ".cipherbrainignore" (gitignore-compatible syntax) at the ROOT of a --dir (or a
@@ -438,7 +438,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // would still skip and return the OLD locator — the new key could never decrypt
   // it, and/or a revoked key still could, even though the operator believes the
   // "current" backup no longer trusts it (#70 review round 2, real regression).
-  const recipientsFingerprint = hexOf([...effectiveKeys].sort().join('\n') + '\n');
+  const recipientsFingerprint = hexOf(`${[...effectiveKeys].sort().join('\n')}\n`);
 
   // Build the encrypter up front: an invalid recipient line (typage takes native age
   // recipients only) must fail HERE, before any plaintext is staged or a .part opened.
@@ -497,7 +497,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
     const usedNames = new Set<string>();
     for (const d of o.dirs) {
       const abs = resolve(d);
-      let name = basename(abs) + '.tar.gz';
+      let name = `${basename(abs)}.tar.gz`;
       // multiple --dir with the same basename must not overwrite each other in the stage
       for (let n = 1; usedNames.has(name); n++) name = `${basename(abs)}-${n}.tar.gz`;
       usedNames.add(name);
@@ -557,7 +557,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
         // equivalent guard for the -T list's first line, which `--` does not reach.
         const listFile = join(stage, `.tarlist-${name}`);
         const base = basename(abs);
-        await writeFile(listFile, [base, ...tarEntries.map((r) => `${base}/${r}`)].join('\0') + '\0');
+        await writeFile(listFile, `${[base, ...tarEntries.map((r) => `${base}/${r}`)].join('\0')}\0`);
         try {
           await run('tar', ['-czf', archivePath, '-C', dirname(abs), '--no-recursion', '--null', '-T', listFile], {
             timeoutMs: PIPE_TIMEOUT_MS,
@@ -635,7 +635,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
     // component order → same digest, regardless of mtimes or the (ephemeral-file-key)
     // ciphertext bytes.
     const contentDigest = hexOf(
-      components.map((c) => `${c.source ?? c.name}\t${c.kind}\t${c.content_digest}`).join('\n') + '\n',
+      `${components.map((c) => `${c.source ?? c.name}\t${c.kind}\t${c.content_digest}`).join('\n')}\n`,
     );
     // manifest carries NO secrets — just what's inside (+ capture timestamps so a
     // DB↔files skew is detectable after the fact, + which --profile produced it,
@@ -643,24 +643,23 @@ export async function snapshot(o: CliOptions): Promise<void> {
     // content_digest as a SEPARATE field — content_digest stays pure-plaintext
     // (unaffected by who can decrypt); recipients_fingerprint is the additional
     // signal push --skip-unchanged folds in (see its definition above).
-    await writeFile(
-      join(stage, 'manifest.json'),
-      JSON.stringify(
-        {
-          tool: 'cipher-brain',
-          schema: 1,
-          host: hostname(),
-          created_at: createdAt,
-          content_digest: contentDigest,
-          recipients_fingerprint: recipientsFingerprint,
-          ...(o.profile ? { profile: o.profile } : {}),
-          ...(scanMode ? { scan_secrets_mode: scanMode } : {}),
-          components,
-        },
-        null,
-        2,
-      ) + '\n',
+    const manifestPath = join(stage, 'manifest.json');
+    const manifestJson = JSON.stringify(
+      {
+        tool: 'cipher-brain',
+        schema: 1,
+        host: hostname(),
+        created_at: createdAt,
+        content_digest: contentDigest,
+        recipients_fingerprint: recipientsFingerprint,
+        ...(o.profile ? { profile: o.profile } : {}),
+        ...(scanMode ? { scan_secrets_mode: scanMode } : {}),
+        components,
+      },
+      null,
+      2,
     );
+    await writeFile(manifestPath, `${manifestJson}\n`);
     // tar the staged components into one stream, encrypt to all recipients (in-process
     // typage, streaming — bounded RSS at any snapshot size). Write to a PER-RUN-UNIQUE
     // .part so overlapping snapshots to the same --out never share/clobber each other's
@@ -689,7 +688,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
     // verbatim; the recipients fingerprint is a genuinely separate signal and gets its
     // own sidecar right below, never folded into this one.
     try {
-      await writeFile(`${o.out}.digest`, contentDigest + '\n');
+      await writeFile(`${o.out}.digest`, `${contentDigest}\n`);
     } catch (e) {
       console.error(
         `warning: could not write digest sidecar ${o.out}.digest (${errMsg(e)}) — push --skip-unchanged will not have a digest for this snapshot`,
@@ -701,7 +700,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
     // point of a "recipient" — safe to copy), so this sidecar carries no secrets
     // either. Best-effort, same as the content digest sidecar above.
     try {
-      await writeFile(`${o.out}.recipients-fingerprint`, recipientsFingerprint + '\n');
+      await writeFile(`${o.out}.recipients-fingerprint`, `${recipientsFingerprint}\n`);
     } catch (e) {
       console.error(
         `warning: could not write recipients-fingerprint sidecar ${o.out}.recipients-fingerprint (${errMsg(e)}) — push --skip-unchanged will not have a recipients fingerprint for this snapshot`,

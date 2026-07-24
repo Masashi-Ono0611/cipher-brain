@@ -89,8 +89,8 @@ try {
   // build a synthetic brain + snapshot it
   const src = join(tmp, 'brain');
   await mkdir(src, { recursive: true });
-  const marker = 'arweave-marker-' + randomBytes(6).toString('hex');
-  await writeFile(join(src, 'note.txt'), marker + '\n');
+  const marker = `arweave-marker-${randomBytes(6).toString('hex')}`;
+  await writeFile(join(src, 'note.txt'), `${marker}\n`);
   log('keygen');
   cb('keygen');
   log('snapshot');
@@ -248,7 +248,7 @@ try {
   await ar.transactions.post(junkTx);
   await mine();
   const l1AgeOut = join(tmp, 'l1-agemagic.age');
-  const sentinel = 'PRE-EXISTING-VALID-CONTENT-SENTINEL-' + randomBytes(6).toString('hex');
+  const sentinel = `PRE-EXISTING-VALID-CONTENT-SENTINEL-${randomBytes(6).toString('hex')}`;
   await writeFile(l1AgeOut, sentinel); // a prior, valid --out that must survive a rejected L1 write
   const l1age = spawnSync(
     'node',

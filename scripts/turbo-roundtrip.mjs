@@ -42,8 +42,8 @@ try {
   // small payload (<100KB ⇒ free Turbo upload)
   const src = join(tmp, 'brain');
   await mkdir(src, { recursive: true });
-  const marker = 'turbo-' + randomBytes(8).toString('hex');
-  await writeFile(join(src, 'note.txt'), marker + '\n');
+  const marker = `turbo-${randomBytes(8).toString('hex')}`;
+  await writeFile(join(src, 'note.txt'), `${marker}\n`);
   cb('keygen');
   cb('snapshot', '--dir', src, '--out', join(tmp, 'slice.age'));
   const cipher = await readFile(join(tmp, 'slice.age'));

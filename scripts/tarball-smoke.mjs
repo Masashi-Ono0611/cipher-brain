@@ -173,7 +173,7 @@ mcp.stderr.on('data', (d) => {
   stderrBuf += d.toString('utf8');
 });
 
-const send = (msg) => mcp.stdin.write(JSON.stringify(msg) + '\n');
+const send = (msg) => mcp.stdin.write(`${JSON.stringify(msg)}\n`);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(id) {
   const deadline = Date.now() + TIMEOUT_MS;

@@ -118,7 +118,7 @@ export async function keygenAt(opts: KeygenAtOpts): Promise<KeygenAtResult> {
   // only from here on is an existing file (--force) ever touched, and even then via
   // write-new-then-rename, never delete-then-write (#122; see writeKeyFile above).
   await writeKeyFile(opts.identityPath, payload, 0o600, !!opts.force);
-  await writeKeyFile(opts.recipientPath, recipient + '\n', 0o644, !!opts.force);
+  await writeKeyFile(opts.recipientPath, `${recipient}\n`, 0o644, !!opts.force);
   return { recipient, wrapped };
 }
 

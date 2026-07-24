@@ -100,6 +100,15 @@ combines normally with the existing multi-recipient mechanism (a hybrid primary 
 an X25519 backup, or vice versa — either identity restores) and with
 `CIPHER_BRAIN_PIN_RECIPIENTS`.
 
+A different risk lives in the plaintext sources themselves, not the crypto:
+`snapshot --scan-secrets warn|deny` runs [gitleaks](https://github.com/gitleaks/gitleaks)
+over each `--dir`/`--profile` source's staged plaintext *before* it is
+archived+encrypted, and `deny` refuses the whole snapshot if a component has
+findings. Because Arweave/Turbo are write-once, un-deletable backends, an
+accidentally-committed API key/token/password can never be scrubbed out after
+the fact — the ciphertext sealing it stays parked there permanently, exposed
+to whatever might compromise the identity down the line.
+
 ## Install
 
 Install from the registry (requires node >= 22.6.0 — the age crypto layer is
@@ -216,6 +225,12 @@ cipher-brain schedule install --backend turbo --pg "postgres://user@localhost:54
   --dir ~/.gbrain --max-spend 500000000 --ping-url https://hc-ping.com/<uuid>
 cipher-brain schedule status   # last run + rc, next scheduled run, ping-url config
 ```
+
+`verify`, `estimate`, and `schedule status` each also take `--json` for a
+single machine-readable object instead of the printed report — the same
+fields the equivalent MCP tool (`verify_restore`/`estimate_cost`/
+`schedule_status`, see below) returns, so scripts and the MCP server never
+disagree.
 
 ### Profiles
 
@@ -609,8 +624,10 @@ pay-once permanence (via `--backend turbo`) is the one recommended path.
   cadence / restore runbook documented in [`MANAGEMENT.md`](MANAGEMENT.md).
 - **Backends** — `turbo` (**recommended** — upload via a bundler, payable with
   **ETH/USDC**, `<100KB` free; operator-proven real round-trip, #20) · `arweave`
-  (raw L1; parity CI-proven against arlocal ✅, #9) · `file` (local/CI ✅). The
-  abstraction is validated across content-addressed *and* post-assigned-id backends.
+  (raw L1; parity CI-proven against arlocal ✅, #9) · `file` (local/CI ✅) ·
+  `rclone` (delegates to the `rclone` binary's own configured remote, #204/#233,
+  CI-proven ✅). The abstraction is validated across content-addressed *and*
+  post-assigned-id backends.
 
 The cipher layer is backend-agnostic by design — proven, not just asserted, now that
 both a content-addressed (`file`) and a post-assigned-id (`arweave`) backend round-trip.

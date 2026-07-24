@@ -14,6 +14,7 @@ export interface CliOptions {
   dirs: string[];
   tables: string[];
   recipients: string[];
+  pg_exclude_table_data?: string[]; // repeatable --pg-exclude-table-data <table>: passed through verbatim to pg_dump
 
   // boolean flags (BOOL_FLAGS in cli.ts) — absent when not passed
   force?: boolean;
@@ -34,6 +35,7 @@ export interface CliOptions {
   vault?: string;
   zip?: string;
   pg?: string;
+  pg_filter?: string; // --pg-filter <file>: passed through verbatim as pg_dump's --filter <file> (issue #235)
   in?: string;
   identity?: string;
   sha256?: string;

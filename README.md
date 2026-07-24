@@ -258,6 +258,37 @@ path, so many same-basename sources (e.g. dozens of claude-code project `memory/
 land in separate, clearly-labeled directories instead of an undifferentiated pile of
 `memory.tar.gz` / `memory-1.tar.gz` / etc — see MANAGEMENT.md's Restore runbook.
 
+### Excluding files (`.cipherbrainignore`)
+
+A `.cipherbrainignore` file at the root of a `--dir` (or a `--profile`-resolved
+directory) filters what gets archived from that directory, using the same syntax
+as `.gitignore` (matched by the well-known [`ignore`](https://www.npmjs.com/package/ignore)
+npm package, not a hand-rolled glob):
+
+```
+# .cipherbrainignore, dropped at the root of the --dir you're backing up
+node_modules/
+.git/
+*.log
+!important.log
+```
+
+`node_modules/`, build caches, and other churn you'd never want tar'd, encrypted,
+and — on a paid backend — permanently stored no longer have to ride along just
+because they live under a backed-up tree. No `.cipherbrainignore` present =
+unchanged behavior (every path archived, exactly as before). A single-file `--dir`
+source (a `--profile` file/zip) has no tree to filter and is always archived as-is.
+
+Preview the effect before spending anything:
+
+```sh
+cipher-brain snapshot --dir ~/some/big/project --dry-run
+```
+
+`--dry-run` prints, per `--dir`, whether a `.cipherbrainignore` was found and the
+include/exclude file list with an approximate byte total for each side — no
+`--out`, staging, or encryption happens.
+
 ### Staging & env vars
 
 Each component (the `pg_dump`, each `--dir` archive) is staged into a private

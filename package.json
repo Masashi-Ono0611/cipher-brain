@@ -41,9 +41,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "biome check --error-on-warnings .",
     "format": "biome format --write .",
-    "verify": "npm run build && npm run typecheck && npm run selftest && npm run selftest:profiles && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:pq && npm run selftest:schedule && npm run selftest:init && npm run selftest:arweave && npm run selftest:arweave-nodeps && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
+    "verify": "npm run build && npm run typecheck && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:pq && npm run selftest:schedule && npm run selftest:init && npm run selftest:arweave && npm run selftest:arweave-nodeps && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
     "selftest": "bash scripts/selftest.sh",
     "selftest:profiles": "bash scripts/selftest-profiles.sh",
+    "selftest:cipherbrainignore": "bash scripts/selftest-cipherbrainignore.sh",
     "selftest:interop": "bash scripts/selftest-interop.sh",
     "selftest:storage": "bash scripts/selftest-storage.sh",
     "selftest:rclone": "bash scripts/selftest-rclone.sh",
@@ -79,6 +80,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "age-encryption": "^0.3.0"
+    "age-encryption": "^0.3.0",
+    "ignore": "^7.0.6"
   }
 }

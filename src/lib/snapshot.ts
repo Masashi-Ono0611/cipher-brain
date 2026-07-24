@@ -716,6 +716,13 @@ export async function snapshot(o: CliOptions): Promise<void> {
         const minisig = await signDetached(privateKey, keyId, o.out);
         await writeFile(`${o.out}.minisig`, minisig);
         console.log(`signed: ${o.out}.minisig (minisign-compatible detached signature, key: ${signIdentityPath})`);
+      } else if (o.sign_identity) {
+        // An EXPLICITLY-named --sign-identity that doesn't exist is a configuration
+        // error, not "signing isn't set up yet" — silently producing an unsigned
+        // snapshot here would look identical to a successful signed one except for
+        // the missing console line, easy to miss in a cron log. Only the DEFAULT
+        // path (no --sign-identity given at all) silently means "not opted in yet".
+        throw new Error(`--sign-identity ${signIdentityPath} does not exist — refusing to write an unsigned snapshot`);
       }
     }
     const sz = (await stat(o.out)).size;

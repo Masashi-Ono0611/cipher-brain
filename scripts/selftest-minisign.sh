@@ -65,6 +65,20 @@ mkdir -p "$SRC"
 MARKER="minisign-selftest-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
 printf '%s\n' "$MARKER" >"$SRC/note.txt"
 
+echo "== snapshot --sign-identity naming a NONEXISTENT path fails loudly, not silently unsigned =="
+# The ciphertext itself is already durable at this point (encryption succeeds before
+# the signing step runs — same "sidecar is best-effort, the artifact itself is not
+# thrown away" precedent as the digest/recipients-fingerprint sidecars), but the
+# command must still exit non-zero and must NOT write a .minisig it never made.
+if cb snapshot --dir "$SRC" --out "$TMP/badsignid.age" --sign-identity "$TMP/no-such-sign-identity.key" >"$TMP/badsignid.out" 2>&1; then
+  echo "[FAIL] snapshot with a nonexistent --sign-identity exited 0"; cat "$TMP/badsignid.out"; exit 1
+fi
+grep -q -- '--sign-identity .* does not exist' "$TMP/badsignid.out" \
+  && echo "[PASS] snapshot refuses loudly when an explicit --sign-identity does not exist" \
+  || { echo "[FAIL] snapshot's error did not name the missing --sign-identity"; cat "$TMP/badsignid.out"; exit 1; }
+[ ! -f "$TMP/badsignid.age.minisig" ] && echo "[PASS] no .minisig was written for the failed signing attempt" \
+  || { echo "[FAIL] a .minisig was written despite the signing identity being missing"; exit 1; }
+
 echo "== snapshot auto-signs whenever a signing identity is present =="
 cb snapshot --dir "$SRC" --out "$TMP/snap.age" >"$TMP/snap.out" 2>&1
 test -f "$TMP/snap.age.minisig" && echo "[PASS] snapshot wrote <out>.minisig" \
@@ -145,6 +159,29 @@ cb restore --in "$TMP/nosign.age" --out-dir "$TMP/restored-nosign" >"$TMP/restor
 grep -q 'no .*\.minisig found' "$TMP/restore-nosign.out" \
   && echo "[PASS] restore warns (not fails) on an unsigned artifact" \
   || { echo "[FAIL] restore did not warn about the missing signature"; cat "$TMP/restore-nosign.out"; exit 1; }
+
+echo "== --require-signature: an unsigned artifact is a hard FAIL/refusal instead of warn-and-proceed =="
+if cb verify --in "$TMP/nosign.age" --require-signature >"$TMP/verify-require-sig.out" 2>&1; then
+  echo "[FAIL] verify --require-signature exited 0 against an unsigned artifact"; cat "$TMP/verify-require-sig.out"; exit 1
+fi
+grep -q '\[FAIL\] minisign authenticity signature' "$TMP/verify-require-sig.out" \
+  && echo "[PASS] verify --require-signature reports a FAIL (not SKIP) on an unsigned artifact" \
+  || { echo "[FAIL] verify --require-signature did not report a FAIL signature check"; cat "$TMP/verify-require-sig.out"; exit 1; }
+grep -q 'VERDICT: FAIL' "$TMP/verify-require-sig.out" \
+  && echo "[PASS] verify --require-signature VERDICT: FAIL on an unsigned artifact" \
+  || { echo "[FAIL] verify --require-signature did not reach VERDICT: FAIL"; cat "$TMP/verify-require-sig.out"; exit 1; }
+rm -rf "$TMP/restored-require-sig"
+if cb restore --in "$TMP/nosign.age" --out-dir "$TMP/restored-require-sig" --require-signature >"$TMP/restore-require-sig.out" 2>&1; then
+  echo "[FAIL] restore --require-signature exited 0 against an unsigned artifact"; cat "$TMP/restore-require-sig.out"; exit 1
+fi
+[ ! -d "$TMP/restored-require-sig" ] \
+  && echo "[PASS] restore --require-signature refuses an unsigned artifact, writing nothing to --out-dir" \
+  || { echo "[FAIL] restore --require-signature created --out-dir despite refusing"; exit 1; }
+# an actually-SIGNED artifact must still pass --require-signature (this flag tightens
+# the unsigned/no-pubkey case, not the already-strict tampered-signature case).
+cb verify --in "$TMP/snap.age" --require-signature | grep -q 'VERDICT: PASS' \
+  && echo "[PASS] --require-signature does not affect a genuinely-signed, valid artifact" \
+  || { echo "[FAIL] --require-signature rejected a genuinely-signed, valid artifact"; exit 1; }
 
 echo "== a machine with no signing public key configured: SKIP, never FAIL =="
 NOKEY_HOME="$TMP/keys-nokey"

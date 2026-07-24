@@ -339,10 +339,12 @@ async function restoreImpl(o: CliOptions): Promise<void> {
   // Authenticity check FIRST (#214), before any decryption or even the age identity
   // check below: age proves confidentiality + tamper detection, but NOT authenticity
   // (a recipient's public key is not secret — anyone holding it can forge ciphertext
-  // that decrypts cleanly). A tampered/forged *.minisig is the ONE status this refuses
-  // to proceed on — an ABSENT signature (unsigned/legacy artifact) or an absent signing
-  // public key on this box are both non-fatal (warn and continue), so this never
-  // breaks a pre-#214 backup or an existing setup that hasn't run `keygen --sign`.
+  // that decrypts cleanly). A tampered/forged *.minisig always refuses outright. An
+  // ABSENT signature (unsigned/legacy artifact) or an absent signing public key on this
+  // box are non-fatal (warn and continue) BY DEFAULT — so this never breaks a pre-#214
+  // backup or an existing setup that hasn't run `keygen --sign` — UNLESS --require-
+  // signature opts into strict mode, in which case an attacker who simply deletes the
+  // .minisig sidecar (rather than forging one) no longer silently succeeds either.
   const signRecipient = o.sign_recipient || SIGN_RECIPIENT;
   const sigCheck = await checkArtifactSignature(o.in, signRecipient);
   if (sigCheck.status === 'invalid') {
@@ -350,6 +352,8 @@ async function restoreImpl(o: CliOptions): Promise<void> {
   }
   if (sigCheck.status === 'verified') {
     console.log(`[PASS] minisign authenticity signature verified (${o.in}.minisig)`);
+  } else if (o.require_signature) {
+    throw new Error(`refusing to restore ${o.in}: --require-signature was given but ${sigCheck.reason}`);
   } else {
     console.error(`warning: ${sigCheck.reason}`);
   }
@@ -477,7 +481,12 @@ export async function verify(o: CliOptions): Promise<void> {
   // control below rather than decrypting an artifact already known to be untrustworthy.
   const signRecipient = o.sign_recipient || SIGN_RECIPIENT;
   const sigCheck = await checkArtifactSignature(o.in, signRecipient);
-  const sigOk: boolean | null = sigCheck.status === 'verified' ? true : sigCheck.status === 'invalid' ? false : null;
+  let sigOk: boolean | null = sigCheck.status === 'verified' ? true : sigCheck.status === 'invalid' ? false : null;
+  // --require-signature (#214): an absent signature or absent signing public key is a
+  // SKIP by default (backward compatible with unsigned/pre-#214 artifacts) — this
+  // upgrades that to a hard FAIL, so an attacker who deletes the .minisig sidecar
+  // instead of forging one no longer silently passes either, for callers who opt in.
+  if (sigOk === null && o.require_signature) sigOk = false;
   if (!o.json) {
     if (sigOk === null) console.log(`[SKIP] minisign authenticity signature — ${sigCheck.reason}`);
     else
@@ -486,9 +495,18 @@ export async function verify(o: CliOptions): Promise<void> {
       );
   }
 
-  // negative control: a throwaway key must NOT decrypt (header-only check — fast on any size)
-  const wrongKeyRejected = await wrongKeyRejects(o.in);
-  if (!o.json) console.log(`[${wrongKeyRejected ? 'PASS' : 'FAIL'}] a wrong key is rejected`);
+  // negative control: a throwaway key must NOT decrypt (header-only check — fast on any
+  // size). Skipped when the signature above is already known INVALID — every decrypt
+  // attempt against an artifact known to be tampered/forged is one this module claims
+  // never happens once authenticity fails (#214), and this is itself a decrypt attempt
+  // (with a throwaway key, but still one), so it must not run either.
+  let wrongKeyRejected = true;
+  if (sigOk === false) {
+    if (!o.json) console.log('[SKIP] a wrong key is rejected — skipped (the authenticity signature above failed)');
+  } else {
+    wrongKeyRejected = await wrongKeyRejects(o.in);
+    if (!o.json) console.log(`[${wrongKeyRejected ? 'PASS' : 'FAIL'}] a wrong key is rejected`);
+  }
 
   // positive control: your identity decrypts the whole thing into a well-formed
   // bundle. Streamed (decrypt | tar -t) so it never buffers a multi-GB plaintext.

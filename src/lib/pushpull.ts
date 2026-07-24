@@ -249,18 +249,21 @@ export async function push(o: CliOptions): Promise<boolean> {
       // comparison targets for the next push --skip-unchanged. The 6th (#214) is where
       // the "<in>.minisig" sidecar landed, if one was pushed above — pull's
       // --from-locator-file reads it back to also fetch the signature alongside the
-      // ciphertext. Every field past the 3rd is only ever written alongside ALL the
-      // ones before it (never a later one in an earlier one's place — a positional
-      // format can't safely encode "6th but not 5th"); omitted when no signal is
-      // available (readSavedLocatorLine accepts every width from 3 to 6).
+      // ciphertext. This is a POSITIONAL format, so sigLocator can only occupy the 6th
+      // slot if slots 4/5 exist too — when contentDigest/recipientsFingerprint are
+      // themselves missing (an --in not produced by this cipher-brain's own snapshot,
+      // e.g. a foreign or pre-digest-era artifact) they're written as empty fields
+      // rather than omitted, so sigLocator still lands in its correct position instead
+      // of silently being dropped (readSavedLocatorLine's positional destructuring reads
+      // an empty field as falsy, same as a genuinely-absent one, for --skip-unchanged).
       const digest = await sha256(o.in);
       const contentDigest = await contentDigestFor(o);
       const recipientsFingerprint = await recipientsFingerprintFor(o);
       const fields = [locator, o.backend, digest];
-      if (contentDigest) {
-        fields.push(contentDigest);
-        if (recipientsFingerprint) {
-          fields.push(recipientsFingerprint);
+      if (contentDigest || recipientsFingerprint || sigLocator) {
+        fields.push(contentDigest ?? '');
+        if (recipientsFingerprint || sigLocator) {
+          fields.push(recipientsFingerprint ?? '');
           if (sigLocator) fields.push(sigLocator);
         }
       }

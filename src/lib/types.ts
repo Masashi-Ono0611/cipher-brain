@@ -30,6 +30,7 @@ export interface CliOptions {
   json?: boolean; // verify/estimate/schedule status: machine-readable JSON on stdout instead of the human-readable report (issue #211)
   sign?: boolean; // keygen --sign: generate a minisign-compatible Ed25519 signing keypair instead of an age identity (#214)
   no_sign?: boolean; // snapshot --no-sign: skip writing a <out>.minisig sidecar even when a signing identity is present (#214)
+  require_signature?: boolean; // restore/verify: an absent/unverifiable signature is a hard failure, not just a warning (#214)
 
   // value flags — always a string when passed (argv is untyped text)
   out?: string;

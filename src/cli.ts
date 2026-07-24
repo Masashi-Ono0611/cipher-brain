@@ -54,6 +54,7 @@ const BOOL_FLAGS = new Set([
   'json',
   'sign',
   'no_sign',
+  'require_signature',
 ]); // flags that take no value
 
 function parseArgs(argv: string[]): CliOptions {
@@ -202,7 +203,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       No signing identity at all -> unchanged pre-#214 behavior (no *.minisig written).
 
   cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>] [--yes] [--no-expand-components]
-                        [--sign-recipient <file>]
+                        [--sign-recipient <file>] [--require-signature]
       Decrypt with the PRIVATE identity. Extraction never clobbers a file already
       present in --out-dir (--keep-old-files: an existing file is left untouched,
       the rest of the archive still extracts around it).
@@ -229,9 +230,11 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       $CIPHER_BRAIN_HOME/sign-recipient.pub; --sign-recipient picks a different one),
       an INVALID signature refuses to restore outright (nothing is decrypted or written).
       An absent signature (unsigned/legacy artifact) or an absent signing public key on
-      this box only warn and proceed — this never breaks a pre-#214 backup.
+      this box only warn and proceed — this never breaks a pre-#214 backup. --require-
+      signature turns that warn into a refusal too: an attacker who simply DELETES the
+      .minisig sidecar (rather than forging one) no longer silently succeeds either.
 
-  cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>] [--sign-recipient <file>] [--json]
+  cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>] [--sign-recipient <file>] [--require-signature] [--json]
       Assert it is real age ciphertext, a wrong key cannot open it, AND (when the
       private identity is on this box) that YOUR key decrypts it into a well-formed
       bundle. --sha256 also pins the artifact to an expected hash. Authenticity (#214):
@@ -239,7 +242,10 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       $CIPHER_BRAIN_HOME/sign-recipient.pub; --sign-recipient overrides), verifies it
       too — an INVALID signature is a hard FAIL and skips the positive-control decrypt
       below (an artifact already known to be tampered/forged proves nothing by
-      decrypting); no signature or no configured public key just [SKIP]s this check.
+      decrypting); no signature or no configured public key just [SKIP]s this check
+      by default. --require-signature upgrades that [SKIP] to a hard FAIL too — use it
+      once you have run "keygen --sign" and expect every artifact you verify to carry
+      a valid signature; without it, an unsigned/legacy artifact still reaches PASS.
       VERDICT: PASS (exit 0) / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not
       proven, e.g. public-key-only box).
       --json prints one JSON object to stdout instead of the human-readable report

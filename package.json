@@ -80,7 +80,7 @@
     "@types/node": "^26.1.0",
     "arlocal": "^1.1.66",
     "arweave": "^1.15.7",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

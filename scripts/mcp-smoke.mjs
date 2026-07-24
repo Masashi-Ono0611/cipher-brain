@@ -1,18 +1,23 @@
 #!/usr/bin/env node
 // MCP smoke test for the bundled build. Spawns `node dist/mcp.mjs` over stdio and:
-//   1. initialize + notifications/initialized + tools/list — asserts all eight
+//   1. initialize + notifications/initialized + tools/list — asserts all nine
 //      tool names (snapshot_now, last_snapshot_status, verify_restore,
-//      estimate_cost, schedule_status, keygen, wallet_create, wallet_address)
-//      AND their MCP standard tool annotations (readOnlyHint/destructiveHint/
-//      idempotentHint/openWorldHint, issue #219) match the expected hints per
-//      tool (e.g. last_snapshot_status/estimate_cost/schedule_status/
-//      wallet_address are readOnlyHint:true; keygen/wallet_create are
-//      destructiveHint:true since force=true discards existing key material).
+//      restore_now, estimate_cost, schedule_status, keygen, wallet_create,
+//      wallet_address) AND their MCP standard tool annotations (readOnlyHint/
+//      destructiveHint/idempotentHint/openWorldHint, issue #219) match the
+//      expected hints per tool (e.g. last_snapshot_status/estimate_cost/
+//      schedule_status/wallet_address are readOnlyHint:true; keygen/
+//      wallet_create are destructiveHint:true since force=true discards
+//      existing key material; restore_now is destructiveHint:true since it
+//      can clobber pre-existing state via pg_restore --clean --if-exists).
 //   2. a REAL snapshot_now round-trip against the free `file` backend inside a
 //      temp CIPHER_BRAIN_HOME/CIPHER_BRAIN_FILE_DIR (keygen via the existing
 //      lib first), then last_snapshot_status + verify_restore (by bare locator;
 //      by locator_file, asserting its sha256 integrity pin was applied; and a
 //      wrong-sha256 negative control that must fail closed with no verdict)
+//      + restore_now (refuses without confirm_write, leaving out_dir untouched;
+//      then a REAL round-trip — pull by locator, decrypt, extract — with the
+//      restored file's content asserted on disk against what was snapshotted)
 //      + estimate_cost on the result + schedule_status against a --no-load
 //      schedule installed via the CLI (same schedule.ts state `cipher-brain
 //      schedule status` reads); the spend gate: snapshot_now with
@@ -29,7 +34,7 @@
 // Exits 0 on success, 1 on any failure with a descriptive message on stderr.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -297,6 +302,7 @@ async function run(tmp) {
       'estimate_cost',
       'keygen',
       'last_snapshot_status',
+      'restore_now',
       'schedule_status',
       'snapshot_now',
       'verify_restore',
@@ -314,6 +320,7 @@ async function run(tmp) {
       snapshot_now: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       last_snapshot_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       verify_restore: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      restore_now: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       estimate_cost: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       schedule_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       keygen: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -497,7 +504,102 @@ async function run(tmp) {
       throw new Error(`wrong-sha256 pin result lacks cb_code=CB-E001: ${JSON.stringify(verWrongSc).slice(0, 300)}`);
     }
 
-    // 2g. estimate_cost on the free file backend (offline + deterministic —
+    // 2g. restore_now: without confirm_write must refuse BEFORE any work (mirrors
+    // the snapshot_now spend gate at 2a) — out_dir must not even be created. Uses a
+    // deliberately-bogus locator (not snapSc.locator): if the gate were ever
+    // bypassed, pull() would attempt (and fail) against a nonexistent object,
+    // surfacing as a DIFFERENT error than ERR_CONFIRM_REQUIRED — proving the gate
+    // runs before any pull, not just that out_dir happens to be untouched.
+    const restoreOutDir = join(tmp, 'restored');
+    send({
+      jsonrpc: '2.0',
+      id: 15,
+      method: 'tools/call',
+      params: {
+        name: 'restore_now',
+        arguments: { locator: 'does-not-exist-locator', backend: 'file', out_dir: restoreOutDir },
+      },
+    });
+    const restoreGuard = await waitFor(15);
+    const restoreGuardSc = restoreGuard.result?.structuredContent;
+    if (!restoreGuard.result?.isError || restoreGuardSc?.code !== 'ERR_CONFIRM_REQUIRED') {
+      throw new Error(
+        `restore_now confirm_write gate is OFF: expected isError + ERR_CONFIRM_REQUIRED (even with a bogus locator), got ${JSON.stringify(restoreGuard.result).slice(0, 300)}`,
+      );
+    }
+    if (existsSync(restoreOutDir)) {
+      throw new Error(
+        'restore_now confirm_write gate fired but out_dir was still created (gate must run before any work)',
+      );
+    }
+
+    // 2h. restore_now REAL round-trip (issue #183): pull by locator, decrypt with
+    // the identity in this temp CIPHER_BRAIN_HOME, and extract into out_dir — then
+    // untar the restored `data.tar.gz` component (restore only extracts the OUTER
+    // archive; per-dir components stay tarred, same as the CLI — see MANAGEMENT.md's
+    // restore runbook) and assert hello.txt's content on disk matches what was
+    // snapshotted, proving an actual disk write, not just a reported verdict.
+    send({
+      jsonrpc: '2.0',
+      id: 16,
+      method: 'tools/call',
+      params: {
+        name: 'restore_now',
+        arguments: { locator: snapSc.locator, backend: 'file', out_dir: restoreOutDir, confirm_write: true },
+      },
+    });
+    const restoreRes = await waitFor(16);
+    const restoreResSc = restoreRes.result?.structuredContent;
+    if (restoreRes.result?.isError)
+      throw new Error(`restore_now failed: ${JSON.stringify(restoreResSc).slice(0, 500)}`);
+    if (restoreResSc?.pulled?.locator !== snapSc.locator || restoreResSc?.pulled?.backend !== 'file') {
+      throw new Error(`restore_now pulled the wrong artifact: ${JSON.stringify(restoreResSc?.pulled)}`);
+    }
+    if (restoreResSc?.out_dir !== restoreOutDir || restoreResSc?.pg_restored !== false) {
+      throw new Error(`restore_now result unexpected: ${JSON.stringify(restoreResSc).slice(0, 300)}`);
+    }
+    const restoredArchive = join(restoreOutDir, 'data.tar.gz');
+    if (!existsSync(restoredArchive)) throw new Error(`restore_now did not extract data.tar.gz into ${restoreOutDir}`);
+    const restoreExtractDir = join(tmp, 'restored-extract');
+    await mkdir(restoreExtractDir, { recursive: true });
+    const untarRes = spawnSync('tar', ['-xzf', restoredArchive, '-C', restoreExtractDir], { encoding: 'utf8' });
+    if (untarRes.status !== 0) throw new Error(`untarring restore_now's data.tar.gz failed: ${untarRes.stderr}`);
+    const restoredContent = await readFile(join(restoreExtractDir, 'data', 'hello.txt'), 'utf8');
+    if (restoredContent !== 'cipher-brain mcp smoke payload\n') {
+      throw new Error(`restore_now restored content mismatch: ${JSON.stringify(restoredContent)}`);
+    }
+
+    // 2h-ii. restore_now file-input mode with a WRONG sha256 pin must fail closed
+    // (fails BEFORE any decrypt/extract — restoreOutDir2 must never be created),
+    // exercising the copy-then-hash-then-restore integrity check on the directly-
+    // given `file` path (distinct from the pulled-artifact pin pull() itself checks).
+    const restoreOutDir2 = join(tmp, 'restored-wrongsha');
+    send({
+      jsonrpc: '2.0',
+      id: 17,
+      method: 'tools/call',
+      params: {
+        name: 'restore_now',
+        arguments: {
+          file: outAge,
+          out_dir: restoreOutDir2,
+          confirm_write: true,
+          sha256: '0'.repeat(64),
+        },
+      },
+    });
+    const restoreWrongSha = await waitFor(17);
+    const restoreWrongShaSc = restoreWrongSha.result?.structuredContent;
+    if (!restoreWrongSha.result?.isError || restoreWrongShaSc?.code !== 'ERR_INVALID_INPUT') {
+      throw new Error(
+        `restore_now file-input wrong-sha256 did not fail closed: expected isError + ERR_INVALID_INPUT, got ${JSON.stringify(restoreWrongSha.result).slice(0, 300)}`,
+      );
+    }
+    if (existsSync(restoreOutDir2)) {
+      throw new Error('restore_now file-input wrong-sha256 still created out_dir before refusing');
+    }
+
+    // 2i. estimate_cost on the free file backend (offline + deterministic —
     // exercises the fourth tool's dispatch without a network dependency).
     send({
       jsonrpc: '2.0',
@@ -512,7 +614,7 @@ async function run(tmp) {
       throw new Error(`estimate_cost(file) result unexpected: ${JSON.stringify(estSc).slice(0, 300)}`);
     }
 
-    // 2g-ii. estimate_cost via size_bytes (the CLI `estimate` command's alternative —
+    // 2i-ii. estimate_cost via size_bytes (the CLI `estimate` command's alternative —
     // it always sizes a real --in file, so this argument shape is MCP-only) exercises
     // the same shared estimateCost() (src/lib/estimate.ts) the file-arg call above did,
     // now via the OTHER branch of handleEstimateCost's own file/size_bytes resolution
@@ -531,7 +633,7 @@ async function run(tmp) {
       throw new Error(`estimate_cost(size_bytes) result unexpected: ${JSON.stringify(estBytesSc).slice(0, 300)}`);
     }
 
-    // 2g-iii. estimate_cost(backend: turbo) — offline, deterministic either way, but
+    // 2i-iii. estimate_cost(backend: turbo) — offline, deterministic either way, but
     // the expected shape depends on whether the OPTIONAL @ardrive/turbo-sdk actually
     // resolves in this environment (it is not a devDependency, only an optional
     // peerDependency — package.json — so a frozen-lockfile install normally leaves it
@@ -561,7 +663,7 @@ async function run(tmp) {
       );
     }
 
-    // 2h. schedule_status — thin wrapper over the SAME schedule() the CLI's `schedule
+    // 2j. schedule_status — thin wrapper over the SAME schedule() the CLI's `schedule
     // status` dispatches to; asserts against the --no-load schedule installed above,
     // verbatim report lines rather than re-parsed fields (matching handleScheduleStatus's
     // "no re-implemented logic" design).
@@ -579,7 +681,7 @@ async function run(tmp) {
       throw new Error(`schedule_status report missing the next-run line: ${JSON.stringify(schedSc.report)}`);
     }
 
-    // 2i. schedule_status must REJECT unexpected arguments rather than silently
+    // 2k. schedule_status must REJECT unexpected arguments rather than silently
     // ignore them (the tool takes none — a stray field could otherwise mask a
     // client's mistaken attempt to scope the report to a different schedule).
     send({
@@ -596,7 +698,7 @@ async function run(tmp) {
       );
     }
 
-    // 2j. keygen against THIS server's home — which already has a real identity
+    // 2l. keygen against THIS server's home — which already has a real identity
     // (written by the CLI-driven keygen at the top of this run, not by the tool
     // itself) — must refuse rather than silently re-key a brain snapshots already
     // depend on. Complements the fresh-home keygen coverage in
@@ -614,7 +716,8 @@ async function run(tmp) {
     process.stdout.write(
       `MCP SMOKE: PASS — tools=[${names.join(', ')}], spend gate=ERR_CONFIRM_REQUIRED, ` +
         `file round-trip locator=${snapSc.locator.split('/').pop()}, status.age=${latest.age_seconds}s, verify=${verSc.verdict}, ` +
-        `verify(locator_file pin)=${verPinnedSc.verdict}, wrong-pin=fail-closed, estimate(file)=0, ` +
+        `verify(locator_file pin)=${verPinnedSc.verdict}, wrong-pin=fail-closed, ` +
+        `restore_now gate=ERR_CONFIRM_REQUIRED, restore_now round-trip content=ok, estimate(file)=0, ` +
         `estimate(size_bytes)=0, estimate(turbo, sdk ${turboSdkInstalled ? 'installed' : 'missing'})=ok, ` +
         `schedule_status.report.length=${schedSc.report.length}, keygen(pre-existing)=refused\n`,
     );

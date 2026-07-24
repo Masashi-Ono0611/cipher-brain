@@ -767,8 +767,8 @@ Arweave is the mainline because its durability is purchasable (pay once) — see
 
 ## MCP server
 
-`cipher-brain-mcp` (stdio) lets an AI agent snapshot and verify its own brain by
-calling the same `src/lib` functions the CLI uses:
+`cipher-brain-mcp` (stdio) lets an AI agent snapshot, verify and restore its own
+brain by calling the same `src/lib` functions the CLI uses:
 
 ```sh
 node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-mcp.mjs
@@ -779,6 +779,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP) |
 | `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
+| `restore_now` | **writes files, can clobber a DB** (no spend) | pull by locator (or a local file / `locator_file`, same dual-mode input as `verify_restore`) + decrypt + extract into `out_dir` — the actual restore `verify_restore` stops short of. Requires `confirm_write: true` before any work happens; when `pg` is given, `pg_restore --clean --if-exists` also DROPS and replaces objects in that database, the same `--yes` consent the CLI's `restore --pg` requires |
 | `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable — a direct HTTP call to Turbo's public rate endpoint (#170), so it works with or without `@ardrive/turbo-sdk` installed. Same computation as `cipher-brain estimate` (`src/lib/estimate.ts`) |
 | `schedule_status` | read-only | the same report as `cipher-brain schedule status`: configured time/backend, trigger registration state, last run log + its final rc line, next scheduled run |
 | `keygen` | **writes a keypair** (no spend) | generate a fresh age identity/recipient keypair at `<CIPHER_BRAIN_HOME>/{identity.age,recipient.txt}` — first-run setup for a shell-less agent. `pq: true` generates a post-quantum HYBRID keypair (ML-KEM-768 + X25519) instead of plain X25519. Refuses if one already exists unless `force: true` (destructive — discards the old identity) |
@@ -801,9 +802,10 @@ Claude Code config (`.mcp.json`):
 `scripts/mcp-smoke.mjs` (part of `npm run verify`) proves initialize/tools-list,
 a real `snapshot_now` round-trip on the `file` backend, `schedule_status` against a
 `--no-load` schedule installed via the CLI, that the paid-backend spend gate
-refuses without `confirm_paid`, and a real `keygen` → `wallet_create` → `wallet_address`
-round-trip (plus the no-clobber-unless-`force` refusal) against an isolated
-`CIPHER_BRAIN_HOME`.
+refuses without `confirm_paid`, a real `restore_now` round-trip (pull by locator +
+decrypt + extract, content asserted on disk) that refuses without `confirm_write`,
+and a real `keygen` → `wallet_create` → `wallet_address` round-trip (plus the
+no-clobber-unless-`force` refusal) against an isolated `CIPHER_BRAIN_HOME`.
 
 ## Project continuity
 

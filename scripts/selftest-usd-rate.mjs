@@ -66,11 +66,19 @@ const MOCK_WINSTON = '9999999';
 const MOCK_RATE = 1.89;
 const EXPECTED_USD = ((Number(MOCK_WINSTON) / 1e12) * MOCK_RATE).toFixed(6);
 
+// Every mock server opened via startServer() is tracked here and closed in the
+// top-level finally below — not just on the success path of whichever check opened
+// it — so a rejected/timed-out runEstimate() partway through can't leave an earlier
+// case's server dangling.
+const openedServers = [];
 const startServer = (handler) =>
   new Promise((resolve, reject) => {
     const s = createServer(handler);
     s.on('error', reject);
-    s.listen(0, '127.0.0.1', () => resolve(s));
+    s.listen(0, '127.0.0.1', () => {
+      openedServers.push(s);
+      resolve(s);
+    });
   });
 const serverUrl = (s) => `http://127.0.0.1:${s.address().port}`;
 
@@ -99,7 +107,7 @@ const runEstimate = (usdRateUrl) =>
       child.kill('SIGKILL');
       reject(new Error('estimate timed out'));
     }, 15000);
-    child.on('exit', (code) => {
+    child.on('close', (code) => {
       clearTimeout(to);
       resolve({ code, stdout, stderr });
     });
@@ -137,7 +145,6 @@ try {
     res.end(JSON.stringify({ currency: 'usd', rate: MOCK_RATE }));
   });
   expectUsdLine(await runEstimate(serverUrl(rateOk)), 'a working USD-rate mock');
-  rateOk.close();
 
   // (2) non-200 response -> no usd line, native cost still succeeds
   const rate500 = await startServer((_req, res) => {
@@ -145,7 +152,6 @@ try {
     res.end('nope');
   });
   expectNoUsdLine(await runEstimate(serverUrl(rate500)), 'a non-200 USD-rate response');
-  rate500.close();
 
   // (3) malformed JSON -> no usd line
   const rateBadJson = await startServer((_req, res) => {
@@ -153,7 +159,6 @@ try {
     res.end('not json');
   });
   expectNoUsdLine(await runEstimate(serverUrl(rateBadJson)), 'a malformed-JSON USD-rate response');
-  rateBadJson.close();
 
   // (4) non-positive rate -> no usd line
   const rateZero = await startServer((_req, res) => {
@@ -161,7 +166,6 @@ try {
     res.end(JSON.stringify({ currency: 'usd', rate: 0 }));
   });
   expectNoUsdLine(await runEstimate(serverUrl(rateZero)), 'a zero USD/AR rate');
-  rateZero.close();
 
   // (5) connection refused (network error) -> no usd line. fetch() rejects the same
   // way for a real timeout, so this exercises the same catch-all path a timeout would
@@ -169,6 +173,7 @@ try {
   expectNoUsdLine(await runEstimate('http://127.0.0.1:1'), 'a connection-refused USD-rate endpoint');
 } finally {
   priceServer.close();
+  for (const s of openedServers) s.close();
 }
 
 console.log('');

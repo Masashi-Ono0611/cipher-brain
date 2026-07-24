@@ -128,8 +128,9 @@ grep -q "not a regular file" "$TMP/estimate-dir.log" \
 echo "[PASS] dist estimate --in <dir>: rejected with 'not a regular file'"
 
 # (i) #253: an unrecognized/mistyped --flag must be a hard error, not silently
-# stored and ignored. Covers both a typo of a real flag (--recipiant) and a
-# bool-flag typo (--dryrun instead of --dry-run) landing in the generic branch.
+# stored and ignored. Covers both a typo of a value flag (--recipiant, for
+# --recipient) and a typo of a repeatable array flag (--dirs, plural, for
+# --dir) landing in the generic branch.
 node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file --recipiant foo > "$TMP/unknown-flag.log" 2>&1
 if [ $? -eq 0 ]; then echo "[FAIL] estimate with unknown --recipiant exited 0, expected non-zero"; cat "$TMP/unknown-flag.log"; exit 1; fi
 grep -q "unknown flag: --recipiant" "$TMP/unknown-flag.log" \

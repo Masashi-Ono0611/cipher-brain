@@ -127,4 +127,25 @@ grep -q "not a regular file" "$TMP/estimate-dir.log" \
   || { echo "[FAIL] estimate --in <dir> did not report 'not a regular file'"; cat "$TMP/estimate-dir.log"; exit 1; }
 echo "[PASS] dist estimate --in <dir>: rejected with 'not a regular file'"
 
+# (i) #253: an unrecognized/mistyped --flag must be a hard error, not silently
+# stored and ignored. Covers both a typo of a real flag (--recipiant) and a
+# bool-flag typo (--dryrun instead of --dry-run) landing in the generic branch.
+node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file --recipiant foo > "$TMP/unknown-flag.log" 2>&1
+if [ $? -eq 0 ]; then echo "[FAIL] estimate with unknown --recipiant exited 0, expected non-zero"; cat "$TMP/unknown-flag.log"; exit 1; fi
+grep -q "unknown flag: --recipiant" "$TMP/unknown-flag.log" \
+  || { echo "[FAIL] unknown --recipiant did not report 'unknown flag: --recipiant'"; cat "$TMP/unknown-flag.log"; exit 1; }
+echo "[PASS] dist estimate --recipiant (typo): rejected with 'unknown flag: --recipiant'"
+
+node "$DIST" snapshot --out "$TMP/unknown-bool.age" --dirs "$CIPHER_BRAIN_HOME" > "$TMP/unknown-bool-flag.log" 2>&1
+if [ $? -eq 0 ]; then echo "[FAIL] snapshot with unknown --dirs exited 0, expected non-zero"; cat "$TMP/unknown-bool-flag.log"; exit 1; fi
+grep -q "unknown flag: --dirs" "$TMP/unknown-bool-flag.log" \
+  || { echo "[FAIL] unknown --dirs did not report 'unknown flag: --dirs'"; cat "$TMP/unknown-bool-flag.log"; exit 1; }
+if [ -f "$TMP/unknown-bool.age" ]; then echo "[FAIL] snapshot with an unknown flag still wrote --out"; exit 1; fi
+echo "[PASS] dist snapshot --dirs (typo for --dir, plural): rejected with 'unknown flag: --dirs', no --out written"
+
+# a legitimate, fully-recognized flag set must still pass through untouched
+node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file > "$TMP/known-flags.log" 2>&1 \
+  || { echo "[FAIL] estimate with only recognized flags exited non-zero"; cat "$TMP/known-flags.log"; exit 1; }
+echo "[PASS] dist estimate with only recognized flags: still exits 0 (no false-positive rejection)"
+
 echo "CLI SMOKE: PASS"

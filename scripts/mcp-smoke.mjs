@@ -505,19 +505,26 @@ async function run(tmp) {
     }
 
     // 2g. restore_now: without confirm_write must refuse BEFORE any work (mirrors
-    // the snapshot_now spend gate at 2a) — out_dir must not even be created.
+    // the snapshot_now spend gate at 2a) — out_dir must not even be created. Uses a
+    // deliberately-bogus locator (not snapSc.locator): if the gate were ever
+    // bypassed, pull() would attempt (and fail) against a nonexistent object,
+    // surfacing as a DIFFERENT error than ERR_CONFIRM_REQUIRED — proving the gate
+    // runs before any pull, not just that out_dir happens to be untouched.
     const restoreOutDir = join(tmp, 'restored');
     send({
       jsonrpc: '2.0',
       id: 15,
       method: 'tools/call',
-      params: { name: 'restore_now', arguments: { locator: snapSc.locator, backend: 'file', out_dir: restoreOutDir } },
+      params: {
+        name: 'restore_now',
+        arguments: { locator: 'does-not-exist-locator', backend: 'file', out_dir: restoreOutDir },
+      },
     });
     const restoreGuard = await waitFor(15);
     const restoreGuardSc = restoreGuard.result?.structuredContent;
     if (!restoreGuard.result?.isError || restoreGuardSc?.code !== 'ERR_CONFIRM_REQUIRED') {
       throw new Error(
-        `restore_now confirm_write gate is OFF: expected isError + ERR_CONFIRM_REQUIRED, got ${JSON.stringify(restoreGuard.result).slice(0, 300)}`,
+        `restore_now confirm_write gate is OFF: expected isError + ERR_CONFIRM_REQUIRED (even with a bogus locator), got ${JSON.stringify(restoreGuard.result).slice(0, 300)}`,
       );
     }
     if (existsSync(restoreOutDir)) {
@@ -560,6 +567,36 @@ async function run(tmp) {
     const restoredContent = await readFile(join(restoreExtractDir, 'data', 'hello.txt'), 'utf8');
     if (restoredContent !== 'cipher-brain mcp smoke payload\n') {
       throw new Error(`restore_now restored content mismatch: ${JSON.stringify(restoredContent)}`);
+    }
+
+    // 2h-ii. restore_now file-input mode with a WRONG sha256 pin must fail closed
+    // (fails BEFORE any decrypt/extract — restoreOutDir2 must never be created),
+    // exercising the copy-then-hash-then-restore integrity check on the directly-
+    // given `file` path (distinct from the pulled-artifact pin pull() itself checks).
+    const restoreOutDir2 = join(tmp, 'restored-wrongsha');
+    send({
+      jsonrpc: '2.0',
+      id: 17,
+      method: 'tools/call',
+      params: {
+        name: 'restore_now',
+        arguments: {
+          file: outAge,
+          out_dir: restoreOutDir2,
+          confirm_write: true,
+          sha256: '0'.repeat(64),
+        },
+      },
+    });
+    const restoreWrongSha = await waitFor(17);
+    const restoreWrongShaSc = restoreWrongSha.result?.structuredContent;
+    if (!restoreWrongSha.result?.isError || restoreWrongShaSc?.code !== 'ERR_INVALID_INPUT') {
+      throw new Error(
+        `restore_now file-input wrong-sha256 did not fail closed: expected isError + ERR_INVALID_INPUT, got ${JSON.stringify(restoreWrongSha.result).slice(0, 300)}`,
+      );
+    }
+    if (existsSync(restoreOutDir2)) {
+      throw new Error('restore_now file-input wrong-sha256 still created out_dir before refusing');
     }
 
     // 2i. estimate_cost on the free file backend (offline + deterministic —

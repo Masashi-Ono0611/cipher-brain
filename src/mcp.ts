@@ -20,7 +20,7 @@
 // env escape hatch the CLI honors is deliberately NOT honored here, so an
 // agent can never spend without saying so in the call itself.
 
-import { stat, readFile, mkdtemp, rm } from 'node:fs/promises';
+import { stat, readFile, mkdtemp, rm, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 
@@ -994,18 +994,24 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
       };
     } else if (!isStr(file)) {
       throw new ToolError('ERR_INVALID_INPUT', 'file must be a string path');
-    }
-    if (!target) throw new ToolError('ERR_INTERNAL', 'no target file resolved for restore');
-    // Unlike a pulled artifact (pinned above by pull() itself), a directly-given
-    // `file` never passes through that check — apply the SAME pin here so file and
-    // locator/locator_file inputs get identical integrity guarantees before any
-    // decrypt/extract work runs (restore(), unlike verify(), does not check sha256 itself).
-    if (effectivePin) {
+    } else if (effectivePin) {
+      // Unlike a pulled artifact (pinned above by pull() itself), a directly-given
+      // `file` never passes through that check — apply the SAME pin here so file
+      // and locator/locator_file inputs get identical integrity guarantees before
+      // any decrypt/extract work runs (restore(), unlike verify(), does not check
+      // sha256 itself). Copy `file` into our own private tmpdir FIRST, then hash
+      // and restore that copy — never re-open the caller-given path a second time
+      // (a hash-then-reopen would leave a window where the file at that path
+      // could change between the two operations; copying once removes it).
+      tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-mcp-'));
+      const pinnedCopy = join(tdir, 'given.age');
+      await copyFile(file, pinnedCopy);
+      target = pinnedCopy;
       const got = await sha256(target);
       if (got.toLowerCase() !== effectivePin.toLowerCase()) {
         throw new ToolError(
           'ERR_INVALID_INPUT',
-          `sha256 mismatch: ${target} has ${got}, expected ${effectivePin} — refusing to restore an unverified artifact`,
+          `sha256 mismatch: ${file} has ${got}, expected ${effectivePin} — refusing to restore an unverified artifact`,
         );
       }
     }

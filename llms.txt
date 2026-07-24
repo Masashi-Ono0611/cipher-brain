@@ -53,6 +53,8 @@ it wraps (keygen, snapshot, push) by hand instead — see README.md's "Manual fl
 ## Everyday commands
 
 ```sh
+cipher-brain --version                                          # the installed version, bare, on stdout
+cipher-brain <command> --help                                   # just that command's flags (--help alone = everything)
 cipher-brain keygen                                             # one-time identity + recipient
 cipher-brain snapshot --dir <path> --recipient <file> --out <f.age>
 cipher-brain verify --in <f.age>                                # real ciphertext? wrong key rejected?

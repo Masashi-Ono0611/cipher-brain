@@ -25,6 +25,8 @@
 // in src/lib/ (config, proc, util, signal-guard, identity, snapshot, restore,
 // pushpull, backends/).
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { IDENTITY } from './lib/config.js';
 import { keygen } from './lib/keys.js';
 import { snapshot } from './lib/snapshot.js';
@@ -121,6 +123,16 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
+
+  cipher-brain --version
+      Print the version this build was packaged with (the "version" field of the
+      installed package.json) on stdout and exit 0 — nothing else, so it can be
+      captured straight into a variable. "-V" is the same thing.
+
+  cipher-brain <command> --help
+      Print just that command's section of this reference (plus the Env/Storage/
+      Spend/Consent block below, which applies to every command). Plain
+      "cipher-brain --help" prints the whole thing, as it does here.
 
   cipher-brain init
       Recommended for a FRESH setup: an interactive wizard that walks keygen -> an
@@ -429,6 +441,67 @@ Storage: CIPHER_BRAIN_FILE_DIR (file);
 Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the arweave/turbo cost estimate (winston/winc).
 Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes or CIPHER_BRAIN_YES=1.`;
 
+// The version reported by `--version` (issue #261). Read from package.json at
+// runtime rather than copied into a constant here, which would be a second place
+// to bump and so a place to drift. `../package.json` resolves to the same file
+// from BOTH src/cli.ts (repo root, the dev/type-stripping path scripts use) and
+// the bundled dist/cli.mjs (the installed package root) — the two are at the
+// same depth, so the CLI reports one version no matter which one is running.
+// npm always ships package.json in the tarball regardless of the "files" field.
+function cliVersion(): string {
+  const pkgUrl = new URL('../package.json', import.meta.url);
+  const pkg = JSON.parse(readFileSync(pkgUrl, 'utf8')) as { version?: string };
+  if (!pkg.version) throw new Error(`no "version" field in ${fileURLToPath(pkgUrl)}`);
+  return pkg.version;
+}
+
+// `<command> --help` prints only that command's section of HELP (issue #262).
+// #171 made `<command> --help` show help at all; it showed the WHOLE ~300-line
+// reference, which is what the unknown-flag error (#253) points people at, so a
+// typo'd flag on `push` answers with several screens to scroll back through.
+//
+// This SLICES the existing HELP string rather than introducing per-command help
+// text: `cipher-brain --help`'s output stays byte-identical, which is what
+// scripts/check-help-docs.mjs pins README.md's CLI reference against in CI
+// (#227). One source of truth for the text, two ways to print it.
+//
+// Returns null when `cmd` names no section, so the caller can fall back to the
+// full HELP (an unknown command with --help is better answered by everything
+// than by nothing).
+function helpForCommand(cmd: string): string | null {
+  const lines = HELP.split('\n');
+  const isSectionStart = (line: string) => /^ {2}cipher-brain \S/.test(line);
+  // The trailing Env:/Storage:/Spend:/Consent: block starts at column 0 and is
+  // command-agnostic, so every scoped help ends with it.
+  const trailerStart = lines.findIndex((line) => line.startsWith('Env:'));
+  const sectionsEnd = trailerStart === -1 ? lines.length : trailerStart;
+
+  const matched: string[] = [];
+  let inMatch = false;
+  for (let i = 1; i < sectionsEnd; i++) {
+    const line = lines[i];
+    if (isSectionStart(line)) {
+      // `wallet create` / `schedule status` etc. are separate sections sharing
+      // one command word — matching on the word keeps all of them together.
+      inMatch = line.match(/^ {2}cipher-brain (\S+)/)?.[1] === cmd;
+    }
+    if (inMatch) matched.push(line);
+  }
+  if (matched.length === 0) return null;
+
+  // Drop the blank line(s) each section ends with, then re-add exactly one.
+  while (matched.length > 0 && matched[matched.length - 1].trim() === '') matched.pop();
+  const trailer = trailerStart === -1 ? [] : ['', ...lines.slice(trailerStart)];
+  return [
+    lines[0],
+    '',
+    ...matched,
+    ...trailer,
+    '',
+    `(one section of "cipher-brain --help", which prints the full reference)`,
+  ].join('\n');
+}
+
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   // `<subcommand> --help` / `-h` must show help instead of running the
@@ -439,7 +512,7 @@ async function main(): Promise<void> {
   // (multi-model review finding).
   if (rest.includes('--help') || rest.includes('-h')) {
     printMascot('neutral');
-    console.log(HELP);
+    console.log((cmd !== undefined && helpForCommand(cmd)) || HELP);
     return;
   }
   const o = parseArgs(rest);
@@ -503,6 +576,14 @@ async function main(): Promise<void> {
     case undefined:
       printMascot('neutral');
       console.log(HELP);
+      return;
+    // issue #261: `--version` used to fall through to the `default:` arm below —
+    // "unknown command: --version" on stderr, the entire HELP on stdout, exit 2.
+    // Bare version string on stdout, nothing else, so it can be captured
+    // directly; no mascot, for the same reason.
+    case '--version':
+    case '-V':
+      console.log(cliVersion());
       return;
     default:
       console.error(`unknown command: ${cmd}\n`);

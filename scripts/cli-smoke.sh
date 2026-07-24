@@ -149,4 +149,57 @@ node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file > "
   || { echo "[FAIL] estimate with only recognized flags exited non-zero"; cat "$TMP/known-flags.log"; exit 1; }
 echo "[PASS] dist estimate with only recognized flags: still exits 0 (no false-positive rejection)"
 
+# (h) --version (#261): the BARE version on stdout, nothing else (so it can be
+# captured straight into a variable), exit 0, and the SAME string from the
+# bundled dist and the unbundled bin shim — the version is read out of
+# package.json at runtime via a relative URL that has to resolve correctly from
+# both layouts, so a regression there would silently split the two apart.
+node "$DIST" --version > "$TMP/version-dist.txt" 2> "$TMP/version-dist.err" \
+  || { echo "[FAIL] dist --version exited non-zero"; cat "$TMP/version-dist.err"; exit 1; }
+# the path goes through argv, not string interpolation into the -p script, so a
+# checkout directory containing a quote or a space cannot break the expression
+PKG_VERSION="$(node -p "require(process.argv[1]).version" "$ROOT/package.json")"
+if [ "$(cat "$TMP/version-dist.txt")" != "$PKG_VERSION" ]; then
+  echo "[FAIL] dist --version printed '$(cat "$TMP/version-dist.txt")', expected the bare '$PKG_VERSION'"; exit 1
+fi
+node "${BIN_DEV_ARGS[@]}" "$BIN" --version > "$TMP/version-bin.txt" 2>&1 \
+  || { echo "[FAIL] bin --version exited non-zero"; cat "$TMP/version-bin.txt"; exit 1; }
+if ! diff -q "$TMP/version-bin.txt" "$TMP/version-dist.txt" >/dev/null; then
+  echo "[FAIL] bin --version differs from dist --version"; diff "$TMP/version-bin.txt" "$TMP/version-dist.txt"; exit 1
+fi
+node "$DIST" -V > "$TMP/version-short.txt" 2>&1 \
+  || { echo "[FAIL] dist -V exited non-zero"; cat "$TMP/version-short.txt"; exit 1; }
+if ! diff -q "$TMP/version-short.txt" "$TMP/version-dist.txt" >/dev/null; then
+  echo "[FAIL] -V differs from --version"; diff "$TMP/version-short.txt" "$TMP/version-dist.txt"; exit 1
+fi
+echo "[PASS] dist --version / -V: bare '$PKG_VERSION' on stdout, exit 0, identical from bin and dist"
+
+# (i) <command> --help (#262): only that command's section, and the full
+# reference is still what plain --help prints.
+node "$DIST" verify --help > "$TMP/help-verify.txt" 2>/dev/null \
+  || { echo "[FAIL] dist verify --help exited non-zero"; exit 1; }
+grep -q "cipher-brain verify --in" "$TMP/help-verify.txt" \
+  || { echo "[FAIL] 'verify --help' does not contain the verify section"; cat "$TMP/help-verify.txt"; exit 1; }
+# Structural, not name-based: count the section headers rather than grepping for
+# one other command's heading, so this keeps failing on a whole-help dump even if
+# some command's usage line is later reworded (multi-model review finding).
+HELP_SECTIONS="$(grep -c '^  cipher-brain ' "$TMP/help-verify.txt")"
+if [ "$HELP_SECTIONS" -ne 1 ]; then
+  echo "[FAIL] 'verify --help' has $HELP_SECTIONS command sections, expected exactly 1 (whole help dumped?)"; exit 1
+fi
+grep -q "^Env: CIPHER_BRAIN_HOME" "$TMP/help-verify.txt" \
+  || { echo "[FAIL] 'verify --help' dropped the command-agnostic Env/Storage/Spend block"; exit 1; }
+# an unknown command with --help falls back to the full reference rather than
+# nothing. The baseline is re-captured HERE rather than reusing help-dist.txt
+# from (a): HELP interpolates ${IDENTITY}, which (b) changed by exporting
+# CIPHER_BRAIN_HOME, so the two would differ on that line alone.
+node "$DIST" --help > "$TMP/help-full-now.txt" 2>&1 \
+  || { echo "[FAIL] dist --help exited non-zero"; exit 1; }
+node "$DIST" nosuchcommand --help > "$TMP/help-unknown.txt" 2>&1 \
+  || { echo "[FAIL] dist nosuchcommand --help exited non-zero"; exit 1; }
+if ! diff -q "$TMP/help-unknown.txt" "$TMP/help-full-now.txt" >/dev/null; then
+  echo "[FAIL] unknown command + --help did not fall back to the full help"; exit 1
+fi
+echo "[PASS] dist <command> --help: scoped to that command, keeps the Env block, unknown command falls back to full help"
+
 echo "CLI SMOKE: PASS"

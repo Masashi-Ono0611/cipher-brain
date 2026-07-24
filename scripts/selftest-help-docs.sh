@@ -74,4 +74,20 @@ cp "$TMP/cli.ts.orig" "$CLI_SRC"
 node "$CHECK" >/dev/null 2>&1 || fail "checker fails after restoring the original src/cli.ts"
 echo "[PASS] restored tree: checker passes again"
 
+# (3) duplicate markers: a second HELP-START/HELP-END pair appended to README.md
+# (e.g. from a bad merge) must be refused, not silently matched against the FIRST
+# pair while a stale duplicate second pair goes unchecked.
+printf '\n%s\n```text\nstale\n```\n%s\n' "$(grep -F 'HELP-START' "$README")" "$(grep -F 'HELP-END' "$README")" >> "$README"
+set +e
+node "$CHECK" >"$TMP/dup-marker.log" 2>&1
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "checker exited 0 with a duplicate marker pair in README.md"
+grep -q "more than one" "$TMP/dup-marker.log" || fail "checker's failure message did not mention the duplicate marker"
+echo "[PASS] duplicate markers: checker refuses rather than silently matching the first pair"
+
+# restore the pristine README before the final check
+cp "$TMP/README.md.orig" "$README"
+node "$CHECK" >/dev/null 2>&1 || fail "checker fails after restoring the original README.md"
+
 echo "[PASS] scripts/check-help-docs.mjs selftest: all checks passed"

@@ -73,6 +73,9 @@ function extractDocHelp(readme) {
   if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
     return { error: `README.md is missing the ${MARKER_START} / ${MARKER_END} marker pair` };
   }
+  if (readme.indexOf(MARKER_START, startIdx + 1) !== -1 || readme.indexOf(MARKER_END, endIdx + 1) !== -1) {
+    return { error: 'README.md has more than one HELP-START/HELP-END marker — remove the duplicate before comparing' };
+  }
   const inner = readme
     .slice(startIdx + MARKER_START.length, endIdx)
     .replace(/\r\n/g, '\n')

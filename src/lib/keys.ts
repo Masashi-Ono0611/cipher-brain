@@ -177,7 +177,9 @@ async function keygenSign(o: CliOptions): Promise<void> {
     passphrase: o.passphrase,
     force: o.force,
   });
-  console.log(`signing identity (PRIVATE, keep offline): ${identityPath}${wrapped ? ' (passphrase-wrapped)' : ''}`);
+  // The two labels differ in width (41 vs 42 chars), so the shorter one gets an
+  // extra space to keep both paths starting in the same column (issue #263).
+  console.log(`signing identity (PRIVATE, keep offline):  ${identityPath}${wrapped ? ' (passphrase-wrapped)' : ''}`);
   console.log(`signing public key (PUBLIC, safe to copy): ${recipientPath}`);
   console.log(pubkeyText.trimEnd());
   console.log(
@@ -228,8 +230,10 @@ export async function keygen(o: CliOptions): Promise<void> {
     force: o.force,
     pq: o.pq,
   });
+  // Both labels are the same width (33 chars), so a single space after each
+  // colon is what actually lines the two paths up (issue #263).
   console.log(`identity (PRIVATE, keep offline): ${IDENTITY}${wrapped ? ' (passphrase-wrapped)' : ''}`);
-  console.log(`recipient (PUBLIC, safe to copy):  ${RECIPIENT}`);
+  console.log(`recipient (PUBLIC, safe to copy): ${RECIPIENT}`);
   console.log(`recipient = ${recipient}`);
   if (o.pq)
     console.log(

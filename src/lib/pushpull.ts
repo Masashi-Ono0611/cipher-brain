@@ -463,7 +463,11 @@ export async function pull(o: CliOptions): Promise<void> {
   // covers a missing sidecar gracefully.
   if (o.sig_locator) {
     const sigOut = `${o.out}.minisig`;
-    if (await exists(sigOut)) {
+    // Mirror --out's own --force gate above: --force already replaced --out with a
+    // NEW ciphertext, so leaving a STALE .minisig sidecar next to it would make the
+    // freshly-pulled artifact fail verification against a signature over the OLD
+    // bytes — --force must refresh both together, not just the ciphertext.
+    if ((await exists(sigOut)) && !o.force) {
       console.error(`warning: ${sigOut} already exists — not overwriting it with the fetched signature`);
     } else {
       try {

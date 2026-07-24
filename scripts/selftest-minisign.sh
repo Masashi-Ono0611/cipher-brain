@@ -210,6 +210,21 @@ cb verify --in "$TMP/pulled.age" | grep -q 'VERDICT: PASS' \
   && echo "[PASS] the pulled artifact verifies end-to-end (push -> pull -> verify)" \
   || { echo "[FAIL] the pulled artifact did not VERIFY: PASS"; exit 1; }
 
+echo "== pull --force refreshes a stale .minisig alongside the ciphertext it also overwrites =="
+printf 'second-generation-content\n' >"$SRC/note2.txt"
+cb snapshot --dir "$SRC" --out "$TMP/snap2.age" >/dev/null
+rm -f "$TMP/loc2.tsv"
+cb push --in "$TMP/snap2.age" --backend file --save-locator "$TMP/loc2.tsv" >/dev/null
+# "$TMP/pulled.age(.minisig)" already holds the FIRST snapshot's bytes from above —
+# --force must replace BOTH with the second snapshot's, not just the ciphertext.
+cb pull --from-locator-file "$TMP/loc2.tsv" --out "$TMP/pulled.age" --force >/dev/null 2>&1
+diff "$TMP/snap2.age.minisig" "$TMP/pulled.age.minisig" >/dev/null \
+  && echo "[PASS] pull --force refreshed the stale .minisig to match the newly-pulled ciphertext" \
+  || { echo "[FAIL] pull --force left a stale .minisig that does not match the new ciphertext"; exit 1; }
+cb verify --in "$TMP/pulled.age" | grep -q 'VERDICT: PASS' \
+  && echo "[PASS] the force-repulled artifact verifies end-to-end" \
+  || { echo "[FAIL] the force-repulled artifact did not VERIFY: PASS (stale-signature mismatch?)"; exit 1; }
+
 if ! command -v minisign >/dev/null 2>&1; then
   echo "[SKIP] real \`minisign\` binary interop: no \`minisign\` on PATH — install it (brew/apt) to exercise CLI<->binary wire-format interop"
 else

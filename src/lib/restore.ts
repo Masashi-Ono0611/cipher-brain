@@ -346,6 +346,14 @@ async function restoreImpl(o: CliOptions): Promise<void> {
   // signature opts into strict mode, in which case an attacker who simply deletes the
   // .minisig sidecar (rather than forging one) no longer silently succeeds either.
   const signRecipient = o.sign_recipient || SIGN_RECIPIENT;
+  // An EXPLICITLY-named --sign-recipient that doesn't exist is a configuration typo,
+  // not "authenticity isn't set up yet" — silently falling back to no_pubkey/SKIP here
+  // would make a mistyped path look identical to a deliberately unconfigured one. Only
+  // the DEFAULT path missing means "not opted in yet" (see snapshot.ts's --sign-identity
+  // for the same distinction on the signing side).
+  if (o.sign_recipient && !(await exists(o.sign_recipient))) {
+    throw new Error(`--sign-recipient ${o.sign_recipient} does not exist`);
+  }
   const sigCheck = await checkArtifactSignature(o.in, signRecipient);
   if (sigCheck.status === 'invalid') {
     throw new Error(`refusing to restore ${o.in}: ${sigCheck.reason}`);
@@ -480,6 +488,11 @@ export async function verify(o: CliOptions): Promise<void> {
   // signature is the only case this fails, and (per #214) it also SKIPS the positive
   // control below rather than decrypting an artifact already known to be untrustworthy.
   const signRecipient = o.sign_recipient || SIGN_RECIPIENT;
+  // An EXPLICITLY-named --sign-recipient that doesn't exist is a configuration typo,
+  // not "authenticity isn't set up yet" (see restoreImpl's identical guard above).
+  if (o.sign_recipient && !(await exists(o.sign_recipient))) {
+    throw new Error(`--sign-recipient ${o.sign_recipient} does not exist`);
+  }
   const sigCheck = await checkArtifactSignature(o.in, signRecipient);
   let sigOk: boolean | null = sigCheck.status === 'verified' ? true : sigCheck.status === 'invalid' ? false : null;
   // --require-signature (#214): an absent signature or absent signing public key is a

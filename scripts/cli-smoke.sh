@@ -180,8 +180,12 @@ node "$DIST" verify --help > "$TMP/help-verify.txt" 2>/dev/null \
   || { echo "[FAIL] dist verify --help exited non-zero"; exit 1; }
 grep -q "cipher-brain verify --in" "$TMP/help-verify.txt" \
   || { echo "[FAIL] 'verify --help' does not contain the verify section"; cat "$TMP/help-verify.txt"; exit 1; }
-if grep -q "cipher-brain snapshot --out" "$TMP/help-verify.txt"; then
-  echo "[FAIL] 'verify --help' still contains other commands' sections (whole help dumped)"; exit 1
+# Structural, not name-based: count the section headers rather than grepping for
+# one other command's heading, so this keeps failing on a whole-help dump even if
+# some command's usage line is later reworded (multi-model review finding).
+HELP_SECTIONS="$(grep -c '^  cipher-brain ' "$TMP/help-verify.txt")"
+if [ "$HELP_SECTIONS" -ne 1 ]; then
+  echo "[FAIL] 'verify --help' has $HELP_SECTIONS command sections, expected exactly 1 (whole help dumped?)"; exit 1
 fi
 grep -q "^Env: CIPHER_BRAIN_HOME" "$TMP/help-verify.txt" \
   || { echo "[FAIL] 'verify --help' dropped the command-agnostic Env/Storage/Spend block"; exit 1; }

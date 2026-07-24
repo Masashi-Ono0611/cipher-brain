@@ -2,7 +2,12 @@
 // MCP smoke test for the bundled build. Spawns `node dist/mcp.mjs` over stdio and:
 //   1. initialize + notifications/initialized + tools/list — asserts all eight
 //      tool names (snapshot_now, last_snapshot_status, verify_restore,
-//      estimate_cost, schedule_status, keygen, wallet_create, wallet_address).
+//      estimate_cost, schedule_status, keygen, wallet_create, wallet_address)
+//      AND their MCP standard tool annotations (readOnlyHint/destructiveHint/
+//      idempotentHint/openWorldHint, issue #219) match the expected hints per
+//      tool (e.g. last_snapshot_status/estimate_cost/schedule_status/
+//      wallet_address are readOnlyHint:true; keygen/wallet_create are
+//      destructiveHint:true since force=true discards existing key material).
 //   2. a REAL snapshot_now round-trip against the free `file` backend inside a
 //      temp CIPHER_BRAIN_HOME/CIPHER_BRAIN_FILE_DIR (keygen via the existing
 //      lib first), then last_snapshot_status + verify_restore (by bare locator;
@@ -300,6 +305,31 @@ async function run(tmp) {
     ];
     if (JSON.stringify(names) !== JSON.stringify(expected)) {
       throw new Error(`tools/list mismatch: expected ${expected.join(', ')} got ${names.join(', ')}`);
+    }
+
+    // 1b. MCP standard tool annotations (issue #219) — every tool must carry
+    // readOnlyHint/destructiveHint/idempotentHint/openWorldHint hints
+    // matching its actual behavior, alongside the existing confirm_paid logic.
+    const expectedAnnotations = {
+      snapshot_now: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      last_snapshot_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      verify_restore: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      estimate_cost: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      schedule_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      keygen: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      wallet_create: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      wallet_address: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    };
+    for (const tool of list.result?.tools ?? []) {
+      const expectedAnn = expectedAnnotations[tool.name];
+      if (!expectedAnn) continue; // unreachable given the names check above
+      const actualAnn = tool.annotations ?? {};
+      const mismatched = Object.entries(expectedAnn).filter(([key, value]) => actualAnn[key] !== value);
+      if (mismatched.length > 0) {
+        throw new Error(
+          `${tool.name}.annotations mismatch: expected ${JSON.stringify(expectedAnn)} got ${JSON.stringify(actualAnn)} (field(s) ${mismatched.map(([key]) => key).join(', ')})`,
+        );
+      }
     }
 
     // 2a. spend gate: paid backend without confirm_paid must be refused —

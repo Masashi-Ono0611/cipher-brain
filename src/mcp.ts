@@ -241,6 +241,16 @@ const SNAPSHOT_NOW_TOOL: Tool = {
     required: ['recipients', 'out'],
     additionalProperties: false,
   },
+  annotations: {
+    // Creates a new snapshot file (and, with backend, pushes it) — never
+    // overwrites (out is no-clobber), so it adds state rather than destroying
+    // existing state. Each call produces a distinct snapshot/spend, so it is
+    // not idempotent. Talks to Postgres and/or the storage backends.
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  },
 };
 
 const LAST_SNAPSHOT_STATUS_TOOL: Tool = {
@@ -265,6 +275,13 @@ const LAST_SNAPSHOT_STATUS_TOOL: Tool = {
       },
     },
     additionalProperties: false,
+  },
+  annotations: {
+    // Reads a local locator/index file only — no writes, no network calls.
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
   },
 };
 
@@ -317,6 +334,15 @@ const VERIFY_RESTORE_TOOL: Tool = {
     },
     additionalProperties: false,
   },
+  annotations: {
+    // Never uploads or spends (per description); a pulled artifact only lands
+    // in a temp dir that this handler removes before returning. Pulling from
+    // arweave/turbo/a gateway is a network call to an external store.
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  },
 };
 
 const ESTIMATE_COST_TOOL: Tool = {
@@ -344,6 +370,14 @@ const ESTIMATE_COST_TOOL: Tool = {
     required: ['backend'],
     additionalProperties: false,
   },
+  annotations: {
+    // Price queries only (per description) — reads a local file's size at
+    // most, then calls the gateway/turbo rate endpoints for pricing.
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  },
 };
 
 const SCHEDULE_STATUS_TOOL: Tool = {
@@ -360,6 +394,14 @@ const SCHEDULE_STATUS_TOOL: Tool = {
     type: 'object',
     properties: {},
     additionalProperties: false,
+  },
+  annotations: {
+    // Reads the launchd/cron registration + the last run's log file — spends
+    // and mutates nothing (per description).
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
   },
 };
 
@@ -400,6 +442,17 @@ const KEYGEN_TOOL: Tool = {
     },
     additionalProperties: false,
   },
+  annotations: {
+    // force=true discards the existing identity/recipient — every snapshot
+    // already encrypted to it becomes permanently unrecoverable — so this is
+    // destructive the same way keygen's description frames it. Each call
+    // generates a fresh random keypair, so repeat calls are not idempotent.
+    // Purely local key generation, no network calls.
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: false,
+  },
 };
 
 const WALLET_CREATE_TOOL: Tool = {
@@ -429,6 +482,17 @@ const WALLET_CREATE_TOOL: Tool = {
     },
     additionalProperties: false,
   },
+  annotations: {
+    // force=true discards the existing wallet — the only credential able to
+    // spend any AR/Turbo Credits already sent to its address — so this is
+    // destructive the same way keygen's force is. Each call generates a fresh
+    // random JWK, so repeat calls are not idempotent. Purely local
+    // key/file generation, no network calls.
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: false,
+  },
 };
 
 const WALLET_ADDRESS_TOOL: Tool = {
@@ -448,6 +512,15 @@ const WALLET_ADDRESS_TOOL: Tool = {
       },
     },
     additionalProperties: false,
+  },
+  annotations: {
+    // Read-only, spends nothing (per description) — derives the address from
+    // a local JWK file with no side effects; the same wallet always yields
+    // the same address, and there is no network call.
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
   },
 };
 

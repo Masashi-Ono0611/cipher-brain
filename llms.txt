@@ -40,11 +40,15 @@ it wraps (keygen, snapshot, push) by hand instead — see README.md's "Manual fl
 - **signing keypair** (optional, `keygen --sign`) — age gives confidentiality +
   tamper detection but not *authenticity* (a recipient's public key is not a
   secret, so anyone holding it can forge decryptable ciphertext). A separate
-  minisign-compatible Ed25519 signing key closes that gap: `snapshot` writes a
-  detached `*.minisig` alongside the ciphertext whenever a signing identity is
-  present, and `restore`/`verify` check it BEFORE decrypting — see README.md's
-  Threat model. Unsigned artifacts (no signing key configured) restore exactly
-  as before, unaffected.
+  minisign-compatible Ed25519 signing key addresses the forged-ciphertext half:
+  `snapshot` writes a detached `*.minisig` alongside the ciphertext whenever a
+  signing identity is present, and `restore`/`verify` check it BEFORE
+  decrypting — see README.md's Threat model. By default this is additive: an
+  unsigned artifact (no signing key configured, or `snapshot --no-sign`)
+  restores exactly as before, which also means an attacker can strip a
+  `*.minisig` sidecar instead of forging one and it looks like a legitimate
+  unsigned backup. Pass `--require-signature` to `restore`/`verify` to close
+  that half too, once every artifact you expect to check is actually signed.
 
 ## Everyday commands
 

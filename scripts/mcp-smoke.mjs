@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 // MCP smoke test for the bundled build. Spawns `node dist/mcp.mjs` over stdio and:
-//   1. initialize + notifications/initialized + tools/list — asserts all nine
+//   1. initialize + notifications/initialized + tools/list — asserts all ten
 //      tool names (snapshot_now, last_snapshot_status, verify_restore,
-//      restore_now, estimate_cost, schedule_status, keygen, wallet_create,
-//      wallet_address) AND their MCP standard tool annotations (readOnlyHint/
-//      destructiveHint/idempotentHint/openWorldHint, issue #219) match the
-//      expected hints per tool (e.g. last_snapshot_status/estimate_cost/
-//      schedule_status/wallet_address are readOnlyHint:true; keygen/
-//      wallet_create are destructiveHint:true since force=true discards
-//      existing key material; restore_now is destructiveHint:true since it
-//      can clobber pre-existing state via pg_restore --clean --if-exists).
+//      restore_now, estimate_cost, schedule_install, schedule_status, keygen,
+//      wallet_create, wallet_address) AND their MCP standard tool annotations
+//      (readOnlyHint/destructiveHint/idempotentHint/openWorldHint, issue #219)
+//      match the expected hints per tool (e.g. last_snapshot_status/
+//      estimate_cost/schedule_status/wallet_address are readOnlyHint:true;
+//      keygen/wallet_create are destructiveHint:true since force=true discards
+//      existing key material; restore_now/schedule_install are
+//      destructiveHint:true — restore_now can clobber pre-existing state via
+//      pg_restore --clean --if-exists, schedule_install writes a real system
+//      file and replaces any prior configuration).
 //   2. a REAL snapshot_now round-trip against the free `file` backend inside a
 //      temp CIPHER_BRAIN_HOME/CIPHER_BRAIN_FILE_DIR (keygen via the existing
 //      lib first), then last_snapshot_status + verify_restore (by bare locator;
@@ -18,9 +20,12 @@
 //      + restore_now (refuses without confirm_write, leaving out_dir untouched;
 //      then a REAL round-trip — pull by locator, decrypt, extract — with the
 //      restored file's content asserted on disk against what was snapshotted)
-//      + estimate_cost on the result + schedule_status against a --no-load
-//      schedule installed via the CLI (same schedule.ts state `cipher-brain
-//      schedule status` reads); the spend gate: snapshot_now with
+//      + estimate_cost on the result + schedule_install (refuses without
+//      confirm_install; a REAL --no-load install against an isolated
+//      CIPHER_BRAIN_LAUNCHD_DIR/CIPHER_BRAIN_SCHEDULE_DIR, never touching the
+//      real launchctl/crontab) + schedule_status reading that same state back
+//      (same schedule.ts state `cipher-brain schedule status` reads); the
+//      spend gate: snapshot_now with
 //      backend=turbo and no confirm_paid must be refused with
 //      ERR_CONFIRM_REQUIRED — even with CIPHER_BRAIN_YES set in the
 //      environment (never silently spend); and a keygen call against this
@@ -235,44 +240,13 @@ async function run(tmp) {
   await mkdir(data, { recursive: true });
   await writeFile(join(data, 'hello.txt'), 'cipher-brain mcp smoke payload\n');
 
-  // schedule_status is a thin read of schedule.json (+ the trigger + last log) — no MCP
-  // tool can install a schedule (deliberately, see src/mcp.ts's design comment), so set
-  // one up here via the CLI, same as a human running `cipher-brain schedule install`
-  // would. --no-load: artifacts only, never registers a REAL launchd/cron trigger.
-  const scheduleInstallRes = spawnSync(
-    process.execPath,
-    [
-      SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs'),
-      'schedule',
-      'install',
-      '--backend',
-      'file',
-      '--dir',
-      data,
-      '--no-load',
-    ],
-    {
-      env: {
-        ...process.env,
-        CIPHER_BRAIN_HOME: home,
-        CIPHER_BRAIN_FILE_DIR: store,
-        CIPHER_BRAIN_LAUNCHD_DIR: launchdDir,
-      },
-      encoding: 'utf8',
-    },
-  );
-  if (scheduleInstallRes.status !== 0) {
-    throw new Error(
-      `schedule install --no-load failed (${scheduleInstallRes.status}): ${scheduleInstallRes.stderr || scheduleInstallRes.stdout}`,
-    );
-  }
-
   const child = spawn(process.execPath, [SERVER_PATH], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
       CIPHER_BRAIN_HOME: home,
       CIPHER_BRAIN_FILE_DIR: store,
+      CIPHER_BRAIN_LAUNCHD_DIR: launchdDir, // install() writes a plist here even with --no-load
       // The MCP spend gate must hold EVEN when the CLI env escape hatch is set.
       CIPHER_BRAIN_YES: '1',
     },
@@ -303,6 +277,7 @@ async function run(tmp) {
       'keygen',
       'last_snapshot_status',
       'restore_now',
+      'schedule_install',
       'schedule_status',
       'snapshot_now',
       'verify_restore',
@@ -322,6 +297,7 @@ async function run(tmp) {
       verify_restore: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       restore_now: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       estimate_cost: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      schedule_install: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       schedule_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       keygen: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       wallet_create: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -663,8 +639,48 @@ async function run(tmp) {
       );
     }
 
-    // 2j. schedule_status — thin wrapper over the SAME schedule() the CLI's `schedule
-    // status` dispatches to; asserts against the --no-load schedule installed above,
+    // 2j. schedule_install: without confirm_install must refuse BEFORE any file is
+    // written (mirrors the restore_now/snapshot_now gates above).
+    send({
+      jsonrpc: '2.0',
+      id: 18,
+      method: 'tools/call',
+      params: { name: 'schedule_install', arguments: { backend: 'file', dirs: [data], no_load: true } },
+    });
+    const schedInstallGuard = await waitFor(18);
+    const schedInstallGuardSc = schedInstallGuard.result?.structuredContent;
+    if (!schedInstallGuard.result?.isError || schedInstallGuardSc?.code !== 'ERR_CONFIRM_REQUIRED') {
+      throw new Error(
+        `schedule_install confirm_install gate is OFF: expected isError + ERR_CONFIRM_REQUIRED, got ${JSON.stringify(schedInstallGuard.result).slice(0, 300)}`,
+      );
+    }
+    if (existsSync(launchdDir)) {
+      throw new Error('schedule_install confirm_install gate fired but launchdDir was still created');
+    }
+
+    // 2k. schedule_install REAL --no-load install (issue #174 follow-up): registers
+    // NOTHING with the real launchctl/crontab (no_load: true — this env's
+    // CIPHER_BRAIN_LAUNCHD_DIR is already scoped to a temp dir, so even a real load
+    // would be harmless, but no_load also proves the tool's own opt-out path works),
+    // then schedule_status (below) reads back the SAME state this call wrote.
+    send({
+      jsonrpc: '2.0',
+      id: 19,
+      method: 'tools/call',
+      params: {
+        name: 'schedule_install',
+        arguments: { backend: 'file', dirs: [data], no_load: true, confirm_install: true },
+      },
+    });
+    const schedInstall = await waitFor(19);
+    const schedInstallSc = schedInstall.result?.structuredContent;
+    if (schedInstall.result?.isError) throw new Error(`schedule_install failed: ${JSON.stringify(schedInstallSc).slice(0, 500)}`);
+    if (schedInstallSc?.backend !== 'file' || schedInstallSc?.at !== '03:30' || schedInstallSc?.no_load !== true) {
+      throw new Error(`schedule_install result unexpected: ${JSON.stringify(schedInstallSc).slice(0, 300)}`);
+    }
+
+    // 2l. schedule_status — thin wrapper over the SAME schedule() the CLI's `schedule
+    // status` dispatches to; asserts against the schedule_install call just above,
     // verbatim report lines rather than re-parsed fields (matching handleScheduleStatus's
     // "no re-implemented logic" design).
     send({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'schedule_status', arguments: {} } });
@@ -681,7 +697,7 @@ async function run(tmp) {
       throw new Error(`schedule_status report missing the next-run line: ${JSON.stringify(schedSc.report)}`);
     }
 
-    // 2k. schedule_status must REJECT unexpected arguments rather than silently
+    // 2m. schedule_status must REJECT unexpected arguments rather than silently
     // ignore them (the tool takes none — a stray field could otherwise mask a
     // client's mistaken attempt to scope the report to a different schedule).
     send({
@@ -698,7 +714,7 @@ async function run(tmp) {
       );
     }
 
-    // 2l. keygen against THIS server's home — which already has a real identity
+    // 2n. keygen against THIS server's home — which already has a real identity
     // (written by the CLI-driven keygen at the top of this run, not by the tool
     // itself) — must refuse rather than silently re-key a brain snapshots already
     // depend on. Complements the fresh-home keygen coverage in
@@ -719,6 +735,7 @@ async function run(tmp) {
         `verify(locator_file pin)=${verPinnedSc.verdict}, wrong-pin=fail-closed, ` +
         `restore_now gate=ERR_CONFIRM_REQUIRED, restore_now round-trip content=ok, estimate(file)=0, ` +
         `estimate(size_bytes)=0, estimate(turbo, sdk ${turboSdkInstalled ? 'installed' : 'missing'})=ok, ` +
+        `schedule_install gate=ERR_CONFIRM_REQUIRED, schedule_install no_load=ok, ` +
         `schedule_status.report.length=${schedSc.report.length}, keygen(pre-existing)=refused\n`,
     );
   } finally {

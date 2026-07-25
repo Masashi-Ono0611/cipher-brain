@@ -202,4 +202,28 @@ if ! diff -q "$TMP/help-unknown.txt" "$TMP/help-full-now.txt" >/dev/null; then
 fi
 echo "[PASS] dist <command> --help: scoped to that command, keeps the Env block, unknown command falls back to full help"
 
+# (j) an unknown command (#269): everything on stderr, stdout EMPTY, exit 2, and a
+# short answer — the command list + where to read more — instead of ~26 KB of help.
+# stdout emptiness is the load-bearing part: `LOC=$(cipher-brain psh …)` used to
+# capture the entire reference into the variable.
+node "$DIST" definitelynotacommand > "$TMP/unknown-cmd.out" 2> "$TMP/unknown-cmd.err"
+UNKNOWN_RC=$?
+[ "$UNKNOWN_RC" = "2" ] || { echo "[FAIL] unknown command exited $UNKNOWN_RC, expected 2"; exit 1; }
+[ ! -s "$TMP/unknown-cmd.out" ] \
+  || { echo "[FAIL] unknown command wrote $(wc -c < "$TMP/unknown-cmd.out") bytes to stdout, expected none"; exit 1; }
+grep -Fq 'error: unknown command: definitelynotacommand' "$TMP/unknown-cmd.err" \
+  || { echo "[FAIL] unknown command did not name the offending command on stderr"; cat "$TMP/unknown-cmd.err"; exit 1; }
+grep -Fq "cipher-brain <command> --help" "$TMP/unknown-cmd.err" \
+  || { echo "[FAIL] unknown command did not point at --help"; cat "$TMP/unknown-cmd.err"; exit 1; }
+# the advertised list must actually name every command the help documents, and the
+# whole reply must stay short (it is derived from HELP, so a drift would show up here)
+for want in init keygen wallet snapshot restore verify push pull estimate schedule; do
+  grep -Eq "^valid commands: .*\b$want\b" "$TMP/unknown-cmd.err" \
+    || { echo "[FAIL] '$want' missing from the valid-commands line"; cat "$TMP/unknown-cmd.err"; exit 1; }
+done
+UNKNOWN_LINES=$(wc -l < "$TMP/unknown-cmd.err" | tr -d ' ')
+[ "$UNKNOWN_LINES" -le 5 ] \
+  || { echo "[FAIL] the unknown-command reply is $UNKNOWN_LINES lines — the whole help is being dumped again"; exit 1; }
+echo "[PASS] dist <unknown command>: exit 2, stdout empty, a ${UNKNOWN_LINES}-line stderr reply listing every valid command"
+
 echo "CLI SMOKE: PASS"

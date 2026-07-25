@@ -25,6 +25,20 @@ trap 'chmod -R u+rwX "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 
 SRC="$TMP/src"; mkdir -p "$SRC"; printf 'hello\n' > "$SRC/a.md"
 
+# with_timeout: the MCP drive below must FAIL LOUDLY within a bounded time rather than
+# hang the suite if the startup guard ever regresses. GNU `timeout` is NOT available on
+# macOS (this test passed locally and failed on macos-latest CI for exactly that reason),
+# so use the same helper scripts/selftest-init.sh and scripts/selftest-storage.sh already
+# carry — each selftest here is standalone, so it is copied rather than shared.
+with_timeout() {
+  local s=$1; shift
+  "$@" & local c=$!
+  ( sleep "$s"; kill -9 "$c" 2>/dev/null ) >/dev/null 2>&1 & local w=$!
+  wait "$c" 2>/dev/null; local rc=$?
+  kill -9 "$w" 2>/dev/null; wait "$w" 2>/dev/null
+  return $rc
+}
+
 # Each case gets its own CIPHER_BRAIN_HOME so a bad config in one cannot leak into another.
 new_home() { local h="$TMP/$1"; mkdir -p "$h"; printf '%s' "$h"; }
 write_cfg() { printf '%s\n' "${@:2}" > "$1/config.env"; chmod 600 "$1/config.env"; }
@@ -96,8 +110,9 @@ printf '%s' "$JSON" | node -e '
     const o=JSON.parse(s); if(typeof o.error!=="string"||o.exit_code!==1) throw new Error("bad error object: "+s);
   });' || { echo "[FAIL] --json did not produce a well-formed error object for a bad config file"; exit 1; }
 # ...and the MCP server refuses to serve rather than starting up as if unconfigured
-MOUT="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' \
-  | CIPHER_BRAIN_HOME="$H" timeout 20 node "$MCP" 2>&1 >/dev/null || true)"
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' > "$TMP/mcp-init.jsonl"
+CIPHER_BRAIN_HOME="$H" with_timeout 20 node "$MCP" < "$TMP/mcp-init.jsonl" > /dev/null 2> "$TMP/mcp.err" || true
+MOUT="$(cat "$TMP/mcp.err")"
 printf '%s' "$MOUT" | grep -q 'unknown setting' \
   || { echo "[FAIL] the MCP server started despite a config file it could not accept: $MOUT"; exit 1; }
 echo "[PASS] an unknown key is refused on the CLI (error: + --json) and by the MCP server"

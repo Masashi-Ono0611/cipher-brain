@@ -157,6 +157,39 @@ REALBIGDISK="$(cd "$TMP/bigdisk" && pwd -P)"
 grep -qF "export TMPDIR='$REALBIGDISK'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved TMPDIR"; cat "$RUNNER"; exit 1; }
 echo "[PASS] TMPDIR baked into the runner as an absolute export"
 
+echo "== (a3d) an explicitly EMPTY CIPHER_BRAIN_PIN_RECIPIENTS is baked into the runner VERBATIM, so the unattended run fails CLOSED exactly like the interactive one (#101) =="
+# config.ts keeps '' distinct from unset and snapshot() refuses to run on it, so a broken
+# cron/systemd template rendering CIPHER_BRAIN_PIN_RECIPIENTS="" cannot silently disable the
+# recipient allowlist. captureEnv() used to drop every falsy value, collapsing the two cases
+# into a runner carrying no pin at all — and because that runner exports
+# CIPHER_BRAIN_NO_CONFIG_FILE=1 (#286), $CIPHER_BRAIN_HOME/config.env could not put it back
+# either: the interactive path failed closed while the scheduled one ran unpinned.
+# A throwaway home/schedule/store, because the deliberately FAILING run below must not
+# disturb the shared log/index/store counts (c) and (c1b) assert on.
+PINHOME="$TMP/emptypin-home"; PINSCHED="$TMP/emptypin-sched"; PINSTORE="$TMP/emptypin-store"
+PINLAUNCHD="$TMP/emptypin-launchagents"
+PINSRC="$TMP/emptypin-src"; mkdir -p "$PINSRC"; echo "a-pinned-thought" > "$PINSRC/note.txt"
+PINRUNNER="$PINSCHED/nightly.sh"
+CIPHER_BRAIN_HOME="$PINHOME" cb keygen > /dev/null 2>&1 || { echo "[FAIL] keygen for the empty-pin home exited non-zero"; exit 1; }
+# Control: with the var genuinely UNSET, it is still dropped (no pin configured) — proving
+# the assertion below is about '' specifically, not about baking the name unconditionally.
+CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_SCHEDULE_DIR="$PINSCHED" CIPHER_BRAIN_FILE_DIR="$PINSTORE" CIPHER_BRAIN_LAUNCHD_DIR="$PINLAUNCHD" \
+  cb schedule install --backend file --dir "$PINSRC" --no-load > "$TMP/install-a3d-unset.log" 2>&1 \
+  || { echo "[FAIL] install (pin unset) exited non-zero"; cat "$TMP/install-a3d-unset.log"; exit 1; }
+if grep -q '^export CIPHER_BRAIN_PIN_RECIPIENTS=' "$PINRUNNER"; then echo "[FAIL] runner baked a CIPHER_BRAIN_PIN_RECIPIENTS export even though the var was UNSET at install time"; cat "$PINRUNNER"; exit 1; fi
+CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_SCHEDULE_DIR="$PINSCHED" CIPHER_BRAIN_FILE_DIR="$PINSTORE" CIPHER_BRAIN_LAUNCHD_DIR="$PINLAUNCHD" CIPHER_BRAIN_PIN_RECIPIENTS="" \
+  cb schedule install --backend file --dir "$PINSRC" --no-load > "$TMP/install-a3d.log" 2>&1 \
+  || { echo "[FAIL] install (explicitly empty pin) exited non-zero"; cat "$TMP/install-a3d.log"; exit 1; }
+grep -qF "export CIPHER_BRAIN_PIN_RECIPIENTS=''" "$PINRUNNER" || { echo "[FAIL] #101 fail-open regression: the runner does not bake the explicitly EMPTY CIPHER_BRAIN_PIN_RECIPIENTS verbatim (an unattended run would snapshot with NO recipient allowlist)"; cat "$PINRUNNER"; exit 1; }
+# End-to-end, not just the generated text: the baked empty pin must actually stop the run.
+if bash "$PINRUNNER" > "$TMP/emptypin-run.log" 2>&1; then echo "[FAIL] #101 fail-open regression: the generated runner completed a snapshot with an explicitly empty CIPHER_BRAIN_PIN_RECIPIENTS"; cat "$TMP/emptypin-run.log"; exit 1; fi
+PINRUNLOG="$PINSCHED/logs/nightly-$(date +%F).log"
+grep -q "CIPHER_BRAIN_PIN_RECIPIENTS is set but empty" "$PINRUNLOG" 2>/dev/null \
+  || { echo "[FAIL] the failing run did not report the fail-closed empty-pin error"; cat "$PINRUNLOG" 2>/dev/null || cat "$TMP/emptypin-run.log"; exit 1; }
+tail -n 1 "$PINRUNLOG" | grep -q '^FAILED rc=' || { echo "[FAIL] the empty-pin run did not end with the FAILED rc=N heartbeat line"; tail -n 3 "$PINRUNLOG"; exit 1; }
+[ -z "$(find "$PINSTORE" -maxdepth 1 -name '*.age' 2>/dev/null)" ] || { echo "[FAIL] the empty-pin run pushed an object to the store despite failing closed"; exit 1; }
+echo "[PASS] an explicitly empty CIPHER_BRAIN_PIN_RECIPIENTS is baked verbatim and the scheduled run fails closed (unset is still dropped)"
+
 echo "== (a4) --pg without CIPHER_BRAIN_PG_BIN resolves pg_dump on PATH at install time and bakes its DIRECTORY as CIPHER_BRAIN_PG_BIN (config.mjs's PG_BIN is a dir joined with the tool name via pgTool(), not the pg_dump binary path itself — baking the binary path verbatim would break both pg_dump AND pg_restore); install fails clearly when pg_dump cannot be resolved =="
 FAKE_PGBIN="$TMP/fake-pgbin"; mkdir -p "$FAKE_PGBIN"
 cat > "$FAKE_PGBIN/pg_dump" <<'SHIM'

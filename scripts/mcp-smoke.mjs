@@ -592,6 +592,10 @@ async function run(tmp) {
     for (const [id, name, args] of [
       [21, 'verify_restore', { file: missingPath }],
       [22, 'estimate_cost', { file: missingPath, backend: 'file' }],
+      // restore_now needs its write consent satisfied first, or the confirm gate answers
+      // before the path is ever looked at — and it is one of the two tools this changed,
+      // so leaving it out would have made the loop's claim of covering them untrue.
+      [23, 'restore_now', { file: missingPath, out_dir: join(tmp, 'missing-restore-out'), confirm_write: true }],
     ]) {
       send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
       const res = await waitFor(id);

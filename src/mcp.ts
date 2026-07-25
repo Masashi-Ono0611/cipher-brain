@@ -371,6 +371,13 @@ const VERIFY_RESTORE_TOOL: Tool = {
         type: 'string',
         description: 'Private identity file for the decrypt proof. Default: <CIPHER_BRAIN_HOME>/identity.age',
       },
+      require_signature: {
+        type: 'boolean',
+        description:
+          'REQUIRED true to turn an ABSENT .minisig from a [SKIP] check into a FAIL verdict ' +
+          "(#214's --require-signature). Deleting a sidecar — rather than forging one — is the downgrade this " +
+          'closes; an INVALID signature already fails without it.',
+      },
     },
     additionalProperties: false,
   },
@@ -435,6 +442,14 @@ const RESTORE_NOW_TOOL: Tool = {
       identity: {
         type: 'string',
         description: 'Private identity file to decrypt with. Default: <CIPHER_BRAIN_HOME>/identity.age',
+      },
+      require_signature: {
+        type: 'boolean',
+        description:
+          'REQUIRED true to refuse an artifact whose .minisig is ABSENT, rather than warning and continuing ' +
+          "(#214's --require-signature). Deleting a sidecar — rather than forging one — is the downgrade this " +
+          'closes; an INVALID signature is always refused regardless. Checked before anything is decrypted or ' +
+          'written, so it gates pg_restore rather than reporting on it afterwards.',
       },
       pg: {
         type: 'string',
@@ -1253,7 +1268,21 @@ function signatureGap(pullLog: string[], sigLocator: unknown): Record<string, un
 }
 
 async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
-  const { locator, file, backend, identity, sha256: pin, locator_file: locatorFile } = args;
+  const {
+    locator,
+    file,
+    backend,
+    identity,
+    sha256: pin,
+    locator_file: locatorFile,
+    require_signature: requireSignature,
+  } = args;
+  // Validated rather than coerced: `requireSignature === true` alone would read
+  // require_signature: "true" — a plausible thing for a client to send — as FALSE, silently
+  // handing back the permissive posture to a caller who asked for the strict one (multi-model
+  // review finding). Every neighbouring typed field is checked the same way.
+  if (requireSignature !== undefined && !isBool(requireSignature))
+    throw new ToolError('ERR_INVALID_INPUT', 'require_signature must be a boolean');
   const given = [locator, file, locatorFile].filter((v) => v !== undefined).length;
   if (given !== 1) {
     throw new ToolError(
@@ -1343,6 +1372,10 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
       in: target,
       identity: isStr(identity) ? identity : undefined,
       sha256: effectivePin,
+      // #319: passed through rather than reinterpreted. verify() already turns an ABSENT
+      // signature from a [SKIP] into a FAIL under this flag (#214), so the MCP surface gets
+      // the CLI's exact semantics instead of a second implementation of them.
+      require_signature: requireSignature === true,
       dirs: [],
       tables: [],
       recipients: [],
@@ -1387,8 +1420,15 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
     identity,
     pg,
     confirm_write: confirmWrite,
+    require_signature: requireSignature,
   } = args;
 
+  // Validated rather than coerced: `requireSignature === true` alone would read
+  // require_signature: "true" — a plausible thing for a client to send — as FALSE, silently
+  // handing back the permissive posture to a caller who asked for the strict one (multi-model
+  // review finding). Every neighbouring typed field is checked the same way.
+  if (requireSignature !== undefined && !isBool(requireSignature))
+    throw new ToolError('ERR_INVALID_INPUT', 'require_signature must be a boolean');
   const given = [locator, file, locatorFile].filter((v) => v !== undefined).length;
   if (given !== 1) {
     throw new ToolError(
@@ -1500,6 +1540,16 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
       tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-mcp-'));
       const pinnedCopy = join(tdir, 'given.age');
       await copyFile(file, pinnedCopy);
+      // The authenticity sidecar has to come WITH it. restore() looks for "<in>.minisig"
+      // beside whatever it is handed, so copying only the ciphertext left the artifact
+      // looking UNSIGNED to the very next step — and an absent signature warns and
+      // continues, while an INVALID one refuses (#214). Passing sha256 therefore turned a
+      // tampered signature into a silent success: adding an integrity pin, the more careful
+      // thing to do, disabled the authenticity check. Measured on the pre-fix build — the
+      // CLI refused the same tampered artifact and this path restored it (multi-model
+      // review finding). Best-effort by the same #214 logic: an artifact with no sidecar
+      // beside it is unsigned, which is a state restore() already handles.
+      if (await exists(`${file}.minisig`)) await copyFile(`${file}.minisig`, `${pinnedCopy}.minisig`);
       target = pinnedCopy;
       const got = await sha256(target);
       if (got.toLowerCase() !== effectivePin.toLowerCase()) {
@@ -1515,12 +1565,32 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
       out_dir: outDir,
       identity: isStr(identity) ? identity : undefined,
       pg: isStr(pg) ? pg : undefined,
+      // #319: restore() checks authenticity FIRST — before the identity is loaded, before
+      // out_dir is touched, and before pg_restore --clean --if-exists can drop anything.
+      // Passing the flag through therefore puts the refusal ahead of the consequential
+      // action, which is what a gate has to do. The `signature` field added in #312 reports
+      // the same situation but only after the restore has run: detection, not a gate.
+      require_signature: requireSignature === true,
       yes: true, // already gated above by confirm_write; restore()'s own --pg guard needs this to proceed
       dirs: [],
       tables: [],
       recipients: [],
     };
-    const res = await captureCall(() => restore(restoreOpts));
+    let res: CaptureResult<void>;
+    try {
+      res = await captureCall(() => restore(restoreOpts));
+    } catch (e) {
+      // A refusal under require_signature throws, so the structured result below — and with
+      // it the `signature` object #312 added — never gets built. The caller would then read
+      // restore()'s generic "no signature found" wording for a case where this server KNOWS
+      // a recorded sidecar failed to fetch, and knows why (multi-model review finding).
+      // Carry that diagnosis onto the error rather than losing it.
+      if (!signature) throw e;
+      throw new ToolError(
+        'ERR_INVALID_INPUT',
+        `${errMsg(e)} — note: ${String(signature.note ?? '')} (${String(signature.reason ?? 'no reason recorded')})`,
+      );
+    }
     return structuredOk({
       out_dir: outDir,
       ...(pulled ? { pulled } : {}),

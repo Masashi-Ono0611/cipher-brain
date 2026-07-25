@@ -59,6 +59,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1232,6 +1233,121 @@ async function run(tmp) {
           `${toolName} rejected an undeclared argument without naming it: ${JSON.stringify(sc).slice(0, 300)}`,
         );
       }
+    }
+
+    // 2m-iv-a. #319: require_signature over MCP, and — the point of the issue — that it
+    // gates rather than reports. `outAge` is unsigned, which is also the shape an attacker
+    // produces by DELETING a sidecar; #214 says that warns and continues, and this flag is
+    // what turns it into a refusal. The ordering assertion is the load-bearing one:
+    // restore_now must not have created out_dir at all, because restore() checks
+    // authenticity before the identity is loaded or pg_restore can drop anything.
+    send({
+      jsonrpc: '2.0',
+      id: 90,
+      method: 'tools/call',
+      params: { name: 'verify_restore', arguments: { file: outAge } },
+    });
+    const sigBase = (await waitFor(90)).result?.structuredContent;
+    if (sigBase?.verdict !== 'PASS') {
+      throw new Error(
+        `baseline verify_restore(file) should still PASS without require_signature: ${JSON.stringify(sigBase).slice(0, 300)}`,
+      );
+    }
+    send({
+      jsonrpc: '2.0',
+      id: 91,
+      method: 'tools/call',
+      params: { name: 'verify_restore', arguments: { file: outAge, require_signature: true } },
+    });
+    const sigStrict = (await waitFor(91)).result?.structuredContent;
+    if (sigStrict?.verdict === 'PASS' || sigStrict?.restorable_proven === true) {
+      throw new Error(
+        `verify_restore with require_signature still returned a PASS for an artifact with no signature: ${JSON.stringify(sigStrict).slice(0, 400)}`,
+      );
+    }
+    const sigOutDir = join(tmp, 'require-sig-out');
+    send({
+      jsonrpc: '2.0',
+      id: 92,
+      method: 'tools/call',
+      params: {
+        name: 'restore_now',
+        arguments: { file: outAge, out_dir: sigOutDir, confirm_write: true, require_signature: true },
+      },
+    });
+    const sigRestore = await waitFor(92);
+    if (sigRestore.result?.isError !== true) {
+      throw new Error(
+        `restore_now with require_signature restored an unsigned artifact: ${JSON.stringify(sigRestore.result).slice(0, 400)}`,
+      );
+    }
+    if (existsSync(sigOutDir)) {
+      throw new Error(
+        `restore_now refused AFTER touching out_dir — require_signature must gate the write, not report on it: ${sigOutDir} exists`,
+      );
+    }
+
+    // 2m-iv-a2. The pinned-copy path must carry the AUTHENTICITY SIDECAR with it. restore()
+    // looks for "<in>.minisig" beside whatever it is handed, so copying only the ciphertext
+    // into the scratch dir left the artifact looking UNSIGNED to the very next step — and an
+    // absent signature warns and continues while an INVALID one refuses (#214). Passing
+    // sha256 therefore turned a TAMPERED signature into a silent success: adding an
+    // integrity pin, the more careful thing to do, disabled the authenticity check. The CLI
+    // refuses the same artifact, which is what makes this a surface disagreement rather than
+    // a policy.
+    const signedSrc = join(tmp, 'signed-src');
+    await mkdir(signedSrc, { recursive: true });
+    await writeFile(join(signedSrc, 'note.txt'), 'signed-artifact-probe\n');
+    const signedAge = join(tmp, 'signed-probe.age');
+    const CLI = SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs');
+    const cliRun = (args) => spawnSync(process.execPath, [CLI, ...args], { env: { ...process.env }, encoding: 'utf8' });
+    const kgSign = cliRun(['keygen', '--sign']);
+    if (kgSign.status !== 0) throw new Error(`setup: keygen --sign failed: ${kgSign.stderr || kgSign.stdout}`);
+    const snapSign = cliRun(['snapshot', '--dir', signedSrc, '--out', signedAge, '--sign']);
+    if (snapSign.status !== 0) throw new Error(`setup: snapshot --sign failed: ${snapSign.stderr || snapSign.stdout}`);
+    if (!existsSync(`${signedAge}.minisig`)) {
+      throw new Error('setup: snapshot --sign did not write a .minisig, so the sidecar probe cannot run');
+    }
+    const signedSha = createHash('sha256')
+      .update(await readFile(signedAge))
+      .digest('hex');
+    // Structurally valid, cryptographically wrong — the shape restore() must REFUSE, as
+    // distinct from an absent sidecar, which it only warns about.
+    const sigLines = (await readFile(`${signedAge}.minisig`, 'utf8')).split('\n');
+    const sigBytes = Buffer.from(sigLines[1], 'base64');
+    sigBytes[sigBytes.length - 1] ^= 0xff;
+    sigLines[1] = sigBytes.toString('base64');
+    await writeFile(`${signedAge}.minisig`, sigLines.join('\n'));
+    const tamperOut = join(tmp, 'tampered-out');
+    send({
+      jsonrpc: '2.0',
+      id: 93,
+      method: 'tools/call',
+      params: {
+        name: 'restore_now',
+        arguments: { file: signedAge, out_dir: tamperOut, confirm_write: true, sha256: signedSha },
+      },
+    });
+    const tampered = await waitFor(93);
+    if (tampered.result?.isError !== true || existsSync(tamperOut)) {
+      throw new Error(
+        `restore_now with a sha256 pin restored an artifact whose signature is INVALID — the pin disabled the authenticity check: ${JSON.stringify(tampered.result).slice(0, 400)}`,
+      );
+    }
+
+    // 2m-iv-a3. A non-boolean must be refused, not coerced. `require_signature: "true"` read
+    // as false would hand the permissive posture to a caller who asked for the strict one.
+    send({
+      jsonrpc: '2.0',
+      id: 94,
+      method: 'tools/call',
+      params: { name: 'verify_restore', arguments: { file: outAge, require_signature: 'true' } },
+    });
+    const badBool = await waitFor(94);
+    if (badBool.result?.isError !== true || badBool.result?.structuredContent?.code !== 'ERR_INVALID_INPUT') {
+      throw new Error(
+        `verify_restore accepted a non-boolean require_signature instead of refusing it: ${JSON.stringify(badBool.result).slice(0, 300)}`,
+      );
     }
 
     // 2m-iv-b. #308 direction 2: a DECLARED field, a LEGAL value, and a branch that will

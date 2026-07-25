@@ -323,7 +323,17 @@ export async function restore(o: CliOptions): Promise<void> {
 
 async function restoreImpl(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
-  if (!o.out_dir) throw new Error('--out-dir <dir> required');
+  // #277: `--out` is what names the destination on snapshot/pull/wallet create, so
+  // typing it here is the natural mistake — and parseArgs accepts it (it is a valid
+  // flag SOMEWHERE) and then nothing reads it, leaving a bare "--out-dir required"
+  // that reads as if no destination had been given at all. Name what was ignored.
+  if (!o.out_dir) {
+    throw new Error(
+      o.out
+        ? '--out-dir <dir> required (restore extracts into a directory; you passed --out, which restore does not read — did you mean --out-dir?)'
+        : '--out-dir <dir> required',
+    );
+  }
   // pg_restore --clean --if-exists below DROPS and replaces objects in the target
   // database — an irreversible operation. Same consent gate as push's paid-backend
   // guard (pushpull.ts): require --yes or CIPHER_BRAIN_YES=1 up front, before any

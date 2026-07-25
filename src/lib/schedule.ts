@@ -82,6 +82,14 @@ const ENV_CAPTURE_VARS = [
   'CIPHER_BRAIN_AR_PAID_BY',
   'CIPHER_BRAIN_AR_HTTP_TIMEOUT',
   'CIPHER_BRAIN_AR_L1_MAX',
+  // The USD rate endpoint is read on the PUSH path, not just by `estimate`: arweave's
+  // put() and turbo both call arUsdRate() for the approximate-USD line next to the
+  // native-unit cost. Dropping it would not break the push (arUsdRate returns null on
+  // any failure, and the spend cap is in native units) but WOULD make the unattended
+  // run egress to the default payment.ardrive.io that the operator configured away
+  // from (#276). CIPHER_BRAIN_AR_GATEWAY/AR_GATEWAYS stay out on purpose: arGateways()
+  // is reached only from arweave's get(), and this runner only snapshots and pushes.
+  'CIPHER_BRAIN_AR_USD_RATE_URL',
   'CIPHER_BRAIN_PIPE_TIMEOUT',
 ];
 

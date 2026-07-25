@@ -97,10 +97,16 @@ echo "== (a2) non-default backend env vars (not just the FILE_DIR/PG_BIN/AR_WALL
 # backend (turbo/a custom arweave gateway) fail or fall back to the wrong default
 # vs. what the operator actually tested interactively (Codex review, #69 P2).
 CIPHER_BRAIN_AR_PAID_BY="1234567890abcdef1234567890ABCDEF12345678" \
+CIPHER_BRAIN_AR_USD_RATE_URL="https://rates.invalid/v1/rates/usd" \
   cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-a2.log" 2>&1 \
   || { echo "[FAIL] install (env-capture) exited non-zero"; cat "$TMP/install-a2.log"; exit 1; }
 grep -q "export CIPHER_BRAIN_AR_PAID_BY='1234567890abcdef1234567890ABCDEF12345678'" "$RUNNER" || { echo "[FAIL] runner did not bake CIPHER_BRAIN_AR_PAID_BY"; cat "$RUNNER"; exit 1; }
-echo "[PASS] env-capture: a non-default env var (CIPHER_BRAIN_AR_PAID_BY) set at install time is baked into the runner"
+# #276: read on the PUSH path (arweave put()/turbo call arUsdRate() for the approximate-USD
+# line), so dropping it makes the unattended run egress to the default payment.ardrive.io
+# that the operator configured away from. It is a bare URL, so it must be baked VERBATIM —
+# a value ending up path-resolved here would mean it was wrongly added to PATH_ENV_VARS.
+grep -q "export CIPHER_BRAIN_AR_USD_RATE_URL='https://rates.invalid/v1/rates/usd'" "$RUNNER" || { echo "[FAIL] runner did not bake CIPHER_BRAIN_AR_USD_RATE_URL verbatim"; cat "$RUNNER"; exit 1; }
+echo "[PASS] env-capture: non-default env vars (CIPHER_BRAIN_AR_PAID_BY, CIPHER_BRAIN_AR_USD_RATE_URL) set at install time are baked into the runner"
 
 echo "== (a3) relative --vault/--zip/--recipient file paths resolve to ABSOLUTE in the runner (launchd/cron runs from a DIFFERENT cwd than install); an inline age1... --recipient is left UNCHANGED =="
 # This is the exact issue #69 P2 regression: a relative path baked in verbatim resolves

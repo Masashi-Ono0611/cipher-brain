@@ -128,6 +128,24 @@ accidentally-committed API key/token/password can never be scrubbed out after
 the fact — the ciphertext sealing it stays parked there permanently, exposed
 to whatever might compromise the identity down the line.
 
+The gate is reachable from every surface that can take a snapshot, not just the
+interactive one (#307): `schedule install --scan-secrets warn|deny` bakes it into
+the unattended nightly (and refuses to install if gitleaks cannot be resolved,
+rather than registering a schedule that cannot scan), and the MCP `snapshot_now`
+and `schedule_install` tools take the same `scan_secrets` field. It is **off by
+default everywhere** — the unattended surfaces match the CLI rather than quietly
+applying a stricter policy of their own. It scans `--dir`/`--profile` staged
+plaintext, so asking for it with no such source (a `--pg`-only snapshot, whose
+dump it does not scan) is **refused**: a caller told a scan ran when it inspected
+nothing is worse off than one told it did not run at all.
+
+Know what it does not cover, so the gate is not mistaken for a guarantee: gitleaks
+reads files as they are and does not look **inside archives**, so a zip/tar source
+— notably `--profile chatgpt-export`, which archives the export zip as-is — is
+scanned only as opaque bytes, and a secret inside it is not found even though the
+run reports the mode. Extract such an export and snapshot the directory if you
+want the gate to cover its contents.
+
 ## Install
 
 Install from the registry (requires node >= 22.6.0 — the age crypto layer is
@@ -468,7 +486,17 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       behavior. warn: log any findings (rule ID + count only — never the matched
       secret, file path, or line) and proceed. deny: refuse the whole snapshot if
       any component has findings. Drop a .gitleaks.toml into a scanned source to
-      customize/allowlist rules, same as you would for a git repo.
+      customize/allowlist rules, same as you would for a git repo. It covers
+      --dir/--profile sources only — a --pg dump is not scanned — so a snapshot with
+      neither is REFUSED rather than reporting a scan that inspected no component.
+      For the same reason it cannot be combined with --dry-run, which stages no
+      plaintext for gitleaks to look at.
+      KNOWN LIMIT, so you can judge what the gate is worth for your sources: gitleaks
+      reads files as they are and does NOT look inside archives, so a zip/tar source
+      (notably --profile chatgpt-export, which archives the export zip as-is) is
+      scanned only as opaque bytes — a secret inside it will NOT be found, even
+      though the run reports the mode. Extract such an export and snapshot the
+      directory if you want the gate to actually cover its contents.
       Authenticity (#214): whenever a signing identity exists (default
       $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
       a different one), snapshot ALSO writes a detached "<out>.minisig" signature over
@@ -634,6 +662,7 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
                                 [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>]
                                 [--save-locator <path>] [--index-file <path>]
                                 [--ping-url <url>] [--ping-url-fail <url>]
+                                [--scan-secrets warn|deny]
       Make the nightly snapshot+push unattended. Writes a runner script
       ($CIPHER_BRAIN_HOME/schedule/nightly.sh) composing the snapshot/push pipeline from
       the SAME flags those commands take — dated outputs, --save-locator, an index.tsv
@@ -654,6 +683,19 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       (default: <url>/fail — a plain string append, not URL-aware: pass --ping-url-fail
       explicitly if your ping URL has a query string or a trailing slash); it requires
       --ping-url to also be set.
+      --scan-secrets warn|deny bakes snapshot's gitleaks gate (see 'snapshot' above) into
+      the generated runner, so the unattended nightly — the run nobody is watching — is
+      gated too. Install RESOLVES gitleaks now and PINS the absolute path into the runner
+      as CIPHER_BRAIN_GITLEAKS_BIN (launchd/cron do not inherit your PATH, same reason
+      --pg bakes CIPHER_BRAIN_PG_BIN; pinning rather than extending PATH so a different
+      gitleaks on the scheduler's PATH cannot take its place), and REFUSES to install if
+      it cannot be resolved — a schedule that cannot scan is never installed as if it
+      could. An explicit CIPHER_BRAIN_GITLEAKS_BIN is resolved and validated the same way,
+      not taken on trust: a bare name or a stale path there would be just as unusable to
+      the scheduler. Same --dir/--profile requirement as 'snapshot': a
+      --pg-only schedule is refused rather than reporting a scan of no component.
+      Fail-closed at run time too: if gitleaks later disappears, the nightly FAILS rather
+      than silently skipping the scan.
 
   cipher-brain schedule status [--json]
       Report the configured time + backend, whether a dead man's switch ping-url is
@@ -827,12 +869,12 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 
 | Tool | Money | What it does |
 |---|---|---|
-| `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP) |
+| `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP). `scan_secrets: "warn"\|"deny"` runs the same gitleaks gate as the CLI `--scan-secrets` (#307) — off by default, like the CLI, and requires at least one `dirs` entry (it does not scan a `pg` dump); the result reports the mode that actually ran (`null` when none did), and a call asking for a scan on a machine without gitleaks fails rather than silently skipping it |
 | `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
 | `restore_now` | **writes files, can clobber a DB** (no spend) | pull by locator (or a local file / `locator_file`, same dual-mode input as `verify_restore`) + decrypt + extract into `out_dir` — the actual restore `verify_restore` stops short of. Requires `confirm_write: true` before any work happens; when `pg` is given, `pg_restore --clean --if-exists` also DROPS and replaces objects in that database, the same `--yes` consent the CLI's `restore --pg` requires |
 | `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free). All seven fields are always present, `null` where they do not apply (#268) — never test for a key to decide whether a value exists. For turbo/arweave, `usd_estimate` carries an approximate USD figure when a USD/AR rate is fetchable — a direct HTTP call to Turbo's public rate endpoint (#170), so it works with or without `@ardrive/turbo-sdk` installed — and is `null` on any rate failure. Same computation as `cipher-brain estimate` (`src/lib/estimate.ts`) |
-| `schedule_install` | **writes a real system file, can commit to ongoing spend** (no spend by itself) | register the nightly snapshot+push (a launchd plist or crontab entry), the MCP equivalent of `cipher-brain schedule install` (issue #174 follow-up). `arweave`/`turbo` require `max_spend` (a positive integer cap on every unattended run); always requires `confirm_install: true` before any write happens. `no_load: true` writes the artifacts without registering the trigger |
+| `schedule_install` | **writes a real system file, can commit to ongoing spend** (no spend by itself) | register the nightly snapshot+push (a launchd plist or crontab entry), the MCP equivalent of `cipher-brain schedule install` (issue #174 follow-up). `arweave`/`turbo` require `max_spend` (a positive integer cap on every unattended run); always requires `confirm_install: true` before any write happens. `no_load: true` writes the artifacts without registering the trigger. `scan_secrets: "warn"\|"deny"` bakes the gitleaks gate into the generated nightly (#307) — off by default, needs at least one `dirs` entry, and fails rather than installing when gitleaks cannot be resolved |
 | `schedule_status` | read-only | the same report as `cipher-brain schedule status`: configured time/backend, which config file supplied settings, trigger registration state, last run log + its final rc line, next scheduled run. **Structured fields**, not the printed lines — `cipher-brain schedule status --json`, this tool and the resource below all return one object built by a single function, so they cannot disagree |
 | `keygen` | **writes a keypair** (no spend) | generate a fresh age identity/recipient keypair at `<CIPHER_BRAIN_HOME>/{identity.age,recipient.txt}` — first-run setup for a shell-less agent. `pq: true` generates a post-quantum HYBRID keypair (ML-KEM-768 + X25519) instead of plain X25519. Refuses if one already exists unless `force: true` (destructive — discards the old identity) |
 | `wallet_create` | **writes a wallet** (no spend) | generate a fresh Arweave JWK wallet (default `<CIPHER_BRAIN_HOME>/wallet.json`, `out` overrides). Refuses if one already exists at the target path unless `force: true` (destructive — discards spend authority over any funds already sent to it) |

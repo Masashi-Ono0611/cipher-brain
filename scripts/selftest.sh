@@ -898,6 +898,79 @@ printf '%s' "$BADMODE_ERR" | grep -q 'must be "warn" or "deny"' || { echo "[FAIL
 test ! -e "$TMP/badmode.age" || { echo "[FAIL] --scan-secrets bogus still produced an output file"; exit 1; }
 echo "[PASS] --scan-secrets rejects anything other than warn/deny, before any --out is created"
 
+echo "== #307: --scan-secrets with NO --dir/--profile source is refused (it would scan zero components while the manifest claimed the mode was in effect) =="
+# Needs no gitleaks: the refusal is checked BEFORE assertGitleaksAvailable() precisely so
+# the answer does not depend on whether the host happens to have the binary.
+set +e
+NOSRC_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/nosrc.age" --scan-secrets deny 2>&1); NOSRC_RC=$?
+set -e
+[ "$NOSRC_RC" != "0" ] || { echo "[FAIL] --scan-secrets deny with only --pg was accepted — it would scan nothing while reporting deny"; exit 1; }
+printf '%s' "$NOSRC_ERR" | grep -q 'nothing to scan' || { echo "[FAIL] the refusal does not say the scan would have no component to look at"; echo "$NOSRC_ERR"; exit 1; }
+test ! -e "$TMP/nosrc.age" || { echo "[FAIL] --scan-secrets with no scannable source still produced an output file"; exit 1; }
+# The same --pg-only snapshot WITHOUT the flag must not hit this refusal at all (it gets
+# as far as pg_dump and fails there for its own unrelated reason — an unreachable test
+# DSN — which is exactly the point: the new check fires only when the flag is present).
+set +e
+PGONLY_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/nosrc-noflag.age" 2>&1)
+set -e
+if printf '%s' "$PGONLY_ERR" | grep -q 'nothing to scan'; then echo "[FAIL] a --pg-only snapshot WITHOUT --scan-secrets was refused by the new check"; echo "$PGONLY_ERR"; exit 1; fi
+echo "[PASS] --scan-secrets is refused when no --dir/--profile source would be scanned, without needing gitleaks, and only when the flag is present"
+
+echo "== #307: --scan-secrets + --dry-run is refused (a dry run stages nothing, so the preview would exit 0 having scanned nothing) =="
+set +e
+DRYSCAN_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run --scan-secrets deny 2>&1); DRYSCAN_RC=$?
+# The pre-#307 shape of the same hole: --dry-run returned before the mode was even
+# validated, so a value the real run rejects also exited 0.
+DRYBAD_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run --scan-secrets bogus 2>&1); DRYBAD_RC=$?
+set -e
+[ "$DRYSCAN_RC" != "0" ] || { echo "[FAIL] --dry-run --scan-secrets deny exited 0 — readable as a clean scan preflight when nothing was scanned"; echo "$DRYSCAN_ERR"; exit 1; }
+printf '%s' "$DRYSCAN_ERR" | grep -q -- 'cannot be combined with --dry-run' || { echo "[FAIL] the --dry-run refusal does not explain the combination"; echo "$DRYSCAN_ERR"; exit 1; }
+[ "$DRYBAD_RC" != "0" ] || { echo "[FAIL] --dry-run --scan-secrets bogus exited 0"; echo "$DRYBAD_ERR"; exit 1; }
+# --dry-run on its own is untouched by this refusal.
+CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run > /dev/null 2>&1 || { echo "[FAIL] a plain --dry-run was broken by the new refusal"; exit 1; }
+echo "[PASS] --scan-secrets with --dry-run is refused (both a valid and an invalid mode), while a plain --dry-run still previews"
+
+echo "== #307: a value-taking flag given with NO value is refused, naming the flag (it used to read as \"flag omitted\" and silently disable the gate) =="
+set +e
+NOVAL_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/noval.age" --scan-secrets 2>&1); NOVAL_RC=$?
+set -e
+[ "$NOVAL_RC" != "0" ] || { echo "[FAIL] a trailing --scan-secrets (no mode) was accepted — the gate is silently off"; exit 1; }
+printf '%s' "$NOVAL_ERR" | grep -q -- '--scan-secrets requires a value' || { echo "[FAIL] the refusal does not name the flag that is missing its value"; echo "$NOVAL_ERR"; exit 1; }
+test ! -e "$TMP/noval.age" || { echo "[FAIL] a trailing --scan-secrets still produced an output file"; exit 1; }
+# Not special-cased to one flag: the parser refuses ANY value-taking flag left dangling.
+set +e
+NOVAL_OUT_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out 2>&1); NOVAL_OUT_RC=$?
+NOVAL_REC_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/noval2.age" --recipient 2>&1); NOVAL_REC_RC=$?
+set -e
+[ "$NOVAL_OUT_RC" != "0" ] || { echo "[FAIL] a trailing --out was accepted"; exit 1; }
+printf '%s' "$NOVAL_OUT_ERR" | grep -q -- '--out requires a value' || { echo "[FAIL] a trailing --out does not name itself"; echo "$NOVAL_OUT_ERR"; exit 1; }
+[ "$NOVAL_REC_RC" != "0" ] || { echo "[FAIL] a trailing --recipient was accepted"; exit 1; }
+printf '%s' "$NOVAL_REC_ERR" | grep -q -- '--recipient requires a value' || { echo "[FAIL] a trailing --recipient (a repeatable array flag) does not name itself"; echo "$NOVAL_REC_ERR"; exit 1; }
+# The nastier shape (multi-model review round 2): the value is not missing off the END of
+# argv, it is EATEN by the preceding flag. `--out --scan-secrets deny` used to parse as
+# out="--scan-secrets", scan_secrets=undefined, _="deny" — an UNSCANNED snapshot written to
+# a file literally named "--scan-secrets", from a command line that asked for deny.
+set +e
+EATEN_ERR=$(cd "$TMP" && CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out --scan-secrets deny 2>&1); EATEN_RC=$?
+set -e
+[ "$EATEN_RC" != "0" ] || { echo "[FAIL] '--out --scan-secrets deny' was accepted — the snapshot ran with the gate silently off"; echo "$EATEN_ERR"; exit 1; }
+printf '%s' "$EATEN_ERR" | grep -q -- '--out requires a value, but the next argument looks like another flag' || { echo "[FAIL] the swallowed-value refusal does not explain which flag ate which"; echo "$EATEN_ERR"; exit 1; }
+test ! -e "$TMP/--scan-secrets" || { echo "[FAIL] a swallowed --scan-secrets still produced a snapshot file named after the flag"; exit 1; }
+# A MISTYPED flag is the nastier version of the same shape: it is not a name this CLI
+# knows, so an "only reject recognized flags" rule would swallow it as --out's value and
+# never reach the unknown-flag refusal (#253) that exists to catch the typo. Any
+# "--"-leading token is refused as a value for exactly this reason.
+set +e
+TYPO_ERR=$(cd "$TMP" && CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out --scan-secret deny 2>&1); TYPO_RC=$?
+set -e
+[ "$TYPO_RC" != "0" ] || { echo "[FAIL] '--out --scan-secret deny' (typo) was accepted — an unscanned snapshot named after the typo"; echo "$TYPO_ERR"; exit 1; }
+test ! -e "$TMP/--scan-secret" || { echo "[FAIL] a mistyped flag swallowed as a value still produced a snapshot file"; exit 1; }
+# The escape for a value that genuinely starts with dashes, which the error suggests.
+CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/./--really-a-path.age" > /dev/null 2>&1 \
+  || { echo "[FAIL] a legitimate dash-leading value written as a ./ path was refused"; exit 1; }
+test -f "$TMP/--really-a-path.age" || { echo "[FAIL] the ./-escaped --out value did not produce its file"; exit 1; }
+echo "[PASS] a value flag is refused when its value is missing OR looks like a flag (recognized or mistyped), while a ./-escaped dash-leading path still works"
+
 if ! command -v gitleaks >/dev/null 2>&1; then
   echo "[SKIP] --scan-secrets warn/deny tests: no \`gitleaks\` binary on PATH (install it — https://github.com/gitleaks/gitleaks — to exercise this; CI installs it via the .github/workflows/ci.yml step, see #215)"
 else

@@ -18,10 +18,20 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { GITLEAKS_BIN } from './config.js';
 import { run } from './proc.js';
 import { errMsg } from './util.js';
 
 export type ScanSecretsMode = 'warn' | 'deny';
+
+// The accepted values, as data — every surface that offers the scan (the CLI's
+// --scan-secrets, `schedule install`'s baked-in runner, and the MCP snapshot_now
+// schema's `enum`) reads THIS, so an advertised enum can never drift from what
+// snapshot() actually accepts (#307).
+export const SCAN_SECRETS_MODES: readonly ScanSecretsMode[] = ['warn', 'deny'];
+
+export const isScanSecretsMode = (v: unknown): v is ScanSecretsMode =>
+  typeof v === 'string' && (SCAN_SECRETS_MODES as readonly string[]).includes(v);
 
 export interface SecretFinding {
   rule_id: string;
@@ -35,15 +45,19 @@ interface GitleaksRawFinding {
 export const SCAN_SECRETS_INSTALL_HINT =
   '--scan-secrets requires the gitleaks binary on PATH (https://github.com/gitleaks/gitleaks) ' +
   '— install it with `brew install gitleaks` (macOS/Linuxbrew) or see ' +
-  'https://github.com/gitleaks/gitleaks#installing for other platforms.';
+  'https://github.com/gitleaks/gitleaks#installing for other platforms, or point ' +
+  'CIPHER_BRAIN_GITLEAKS_BIN at it directly.';
 
 // `command -v` (POSIX shell builtin, portable macOS/Linux) — same reasoning schedule.ts's
 // resolvePgDumpDir already documents for pg_dump: resolves against THIS process's PATH,
 // and gives one clear actionable error instead of a bare spawn ENOENT bubbling out of a
-// scan step deep into a snapshot run.
+// scan step deep into a snapshot run. GITLEAKS_BIN is passed as an ARGUMENT rather than
+// interpolated into the script, so a path with spaces or shell metacharacters cannot be
+// re-parsed; `command -v` answers for an absolute path too (it echoes it back only when
+// it is executable), so one call covers both the bare-name and the pinned-path case.
 async function gitleaksAvailable(): Promise<boolean> {
   try {
-    const r = await run('sh', ['-c', 'command -v gitleaks']);
+    const r = await run('sh', ['-c', 'command -v "$1"', 'sh', GITLEAKS_BIN]);
     return r.out.trim().length > 0;
   } catch {
     return false;
@@ -67,7 +81,7 @@ export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
   const reportDir = await mkdtemp(join(tmpdir(), 'cipher-brain-gitleaks-'));
   const reportPath = join(reportDir, 'report.json');
   try {
-    await run('gitleaks', [
+    await run(GITLEAKS_BIN, [
       'dir',
       '--no-banner',
       '--redact',

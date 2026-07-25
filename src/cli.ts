@@ -97,15 +97,45 @@ const VALUE_FLAGS = new Set([
 function parseArgs(argv: string[]): CliOptions {
   const o: CliOptions = { dirs: [], tables: [], recipients: [] };
   const rec = o as unknown as Record<string, string | boolean | undefined>;
+  // A value-taking flag whose value is MISSING used to read its value off the end of the
+  // array (or off the next flag), i.e. `undefined` — which then looks exactly like "the
+  // flag was never passed" to every reader downstream. For a REQUIRED flag that surfaces
+  // as a confusing but safe "--x required"; for an OPTIONAL one it is silent, which is the
+  // same "asked for a gate, got none" failure #307 is about. Two shapes, both found by
+  // multi-model review, both refused here by naming the flag:
+  //
+  //   snapshot --dir src --out --scan-secrets deny   -> --out swallowed "--scan-secrets",
+  //                                                     scan_secrets stayed undefined, and
+  //                                                     the snapshot ran UNSCANNED into a
+  //                                                     file literally named --scan-secrets
+  //   schedule install … --scan-secrets              -> exit 0, runner with no scan at all
+  //
+  // "Looks like a flag" is ANY token starting with "--", not just a recognized one. An
+  // earlier revision only rejected recognized names, and review found the hole that
+  // leaves: `--out --scan-secret deny` (note the typo) is not a name this CLI knows, so
+  // it was swallowed as --out's value — writing an unscanned snapshot to a file called
+  // "--scan-secret" and never reaching the unknown-flag refusal (#253) that exists to
+  // catch exactly that typo. A value that genuinely begins with "--" is pathological
+  // enough to be worth an explicit "./--name", which the message suggests.
+  const valueAt = (i: number, flag: string): string => {
+    if (i >= argv.length) throw new Error(`${flag} requires a value (run 'cipher-brain --help' for the expected form)`);
+    if (argv[i].startsWith('--'))
+      throw new Error(
+        `${flag} requires a value, but the next argument looks like another flag (${argv[i]}) — ` +
+          `it was NOT consumed as ${flag}'s value. Give ${flag} its value, or write "./${argv[i]}" if you really ` +
+          `meant a path by that name.`,
+      );
+    return argv[i];
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--dir') o.dirs.push(argv[++i]);
-    else if (a === '--pg-table') o.tables.push(argv[++i]);
+    if (a === '--dir') o.dirs.push(valueAt(++i, a));
+    else if (a === '--pg-table') o.tables.push(valueAt(++i, a));
     else if (a === '--pg-exclude-table-data') {
       if (!o.pg_exclude_table_data) o.pg_exclude_table_data = [];
-      o.pg_exclude_table_data.push(argv[++i]);
+      o.pg_exclude_table_data.push(valueAt(++i, a));
     } else if (a === '--recipient')
-      o.recipients.push(argv[++i]); // repeatable: key recovery
+      o.recipients.push(valueAt(++i, a)); // repeatable: key recovery
     else if (a.startsWith('--')) {
       const key = a.slice(2).replace(/-/g, '_');
       // issue #253: an unrecognized/mistyped --flag used to be silently stored
@@ -116,7 +146,7 @@ function parseArgs(argv: string[]): CliOptions {
           `unknown flag: --${a.slice(2)} (run 'cipher-brain --help' or '<command> --help' to see valid flags)`,
         );
       }
-      rec[key] = BOOL_FLAGS.has(key) ? true : argv[++i];
+      rec[key] = BOOL_FLAGS.has(key) ? true : valueAt(++i, a);
     } else o._ = a;
   }
   return o;
@@ -249,7 +279,17 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       behavior. warn: log any findings (rule ID + count only — never the matched
       secret, file path, or line) and proceed. deny: refuse the whole snapshot if
       any component has findings. Drop a .gitleaks.toml into a scanned source to
-      customize/allowlist rules, same as you would for a git repo.
+      customize/allowlist rules, same as you would for a git repo. It covers
+      --dir/--profile sources only — a --pg dump is not scanned — so a snapshot with
+      neither is REFUSED rather than reporting a scan that inspected no component.
+      For the same reason it cannot be combined with --dry-run, which stages no
+      plaintext for gitleaks to look at.
+      KNOWN LIMIT, so you can judge what the gate is worth for your sources: gitleaks
+      reads files as they are and does NOT look inside archives, so a zip/tar source
+      (notably --profile chatgpt-export, which archives the export zip as-is) is
+      scanned only as opaque bytes — a secret inside it will NOT be found, even
+      though the run reports the mode. Extract such an export and snapshot the
+      directory if you want the gate to actually cover its contents.
       Authenticity (#214): whenever a signing identity exists (default
       $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
       a different one), snapshot ALSO writes a detached "<out>.minisig" signature over
@@ -415,6 +455,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
                                 [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>]
                                 [--save-locator <path>] [--index-file <path>]
                                 [--ping-url <url>] [--ping-url-fail <url>]
+                                [--scan-secrets warn|deny]
       Make the nightly snapshot+push unattended. Writes a runner script
       ($CIPHER_BRAIN_HOME/schedule/nightly.sh) composing the snapshot/push pipeline from
       the SAME flags those commands take — dated outputs, --save-locator, an index.tsv
@@ -435,6 +476,19 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       (default: <url>/fail — a plain string append, not URL-aware: pass --ping-url-fail
       explicitly if your ping URL has a query string or a trailing slash); it requires
       --ping-url to also be set.
+      --scan-secrets warn|deny bakes snapshot's gitleaks gate (see 'snapshot' above) into
+      the generated runner, so the unattended nightly — the run nobody is watching — is
+      gated too. Install RESOLVES gitleaks now and PINS the absolute path into the runner
+      as CIPHER_BRAIN_GITLEAKS_BIN (launchd/cron do not inherit your PATH, same reason
+      --pg bakes CIPHER_BRAIN_PG_BIN; pinning rather than extending PATH so a different
+      gitleaks on the scheduler's PATH cannot take its place), and REFUSES to install if
+      it cannot be resolved — a schedule that cannot scan is never installed as if it
+      could. An explicit CIPHER_BRAIN_GITLEAKS_BIN is resolved and validated the same way,
+      not taken on trust: a bare name or a stale path there would be just as unusable to
+      the scheduler. Same --dir/--profile requirement as 'snapshot': a
+      --pg-only schedule is refused rather than reporting a scan of no component.
+      Fail-closed at run time too: if gitleaks later disappears, the nightly FAILS rather
+      than silently skipping the scan.
 
   cipher-brain schedule status [--json]
       Report the configured time + backend, whether a dead man's switch ping-url is

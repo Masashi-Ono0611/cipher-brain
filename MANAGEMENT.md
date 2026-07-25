@@ -183,6 +183,26 @@ a query string or a trailing slash), so a schedule that silently stops running a
 gets noticed even if nobody runs `schedule status`. Both are best-effort (10s timeout,
 never affects the run's own outcome).
 
+**The unattended run can carry the secret-scanning gate too.** Add
+`--scan-secrets warn|deny` and the generated runner's `snapshot` line carries it, so the
+nightly gets the same [gitleaks](https://github.com/gitleaks/gitleaks) check an
+interactive `snapshot --scan-secrets` does — which matters most here, because this is the
+run nobody is watching when it pushes to a write-once store. Install resolves `gitleaks`
+at that moment and *pins* the absolute path into the runner as
+`CIPHER_BRAIN_GITLEAKS_BIN` (`launchd`/`cron` do not inherit your `PATH`, the same reason
+`--pg` bakes `CIPHER_BRAIN_PG_BIN` — pinned rather than added to `PATH` so a different
+`gitleaks` on the scheduler's `PATH` cannot quietly take its place), and *refuses to
+install* if it cannot be resolved. An explicit `CIPHER_BRAIN_GITLEAKS_BIN` is resolved and
+validated the same way rather than trusted: a bare name or a stale path in it is just as
+unusable to the scheduler. It stays fail-closed afterwards: if `gitleaks` later
+disappears, the nightly ends `FAILED rc=N` rather than quietly snapshotting unscanned.
+`schedule status` reports the scan mode the installed schedule is *configured* with (it
+reads `schedule.json`, so it is not a health check). The gate covers `--dir`/`--profile`
+staged plaintext only, so a `--pg`-only schedule is refused rather than installed
+reporting a scan of no component — and gitleaks does not look inside archives, so a
+zip source (e.g. `--profile chatgpt-export`) is scanned only as opaque bytes. (The MCP
+`schedule_install` tool takes the same `scan_secrets` field.)
+
 **Paid backends must be capped.** For `turbo`/`arweave` the generated runner sets
 `CIPHER_BRAIN_YES=1` — the unattended equivalent of `--yes` — which is exactly why
 `schedule install` *refuses* those backends without `--max-spend <n>`: an unattended

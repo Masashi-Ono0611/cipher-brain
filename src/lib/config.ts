@@ -30,6 +30,7 @@ const ENV_NAMES = [
   'CIPHER_BRAIN_LAUNCHD_DIR',
   'CIPHER_BRAIN_FILE_DIR',
   'CIPHER_BRAIN_RCLONE_BIN',
+  'CIPHER_BRAIN_GITLEAKS_BIN',
   'CIPHER_BRAIN_AR_HOST',
   'CIPHER_BRAIN_AR_PORT',
   'CIPHER_BRAIN_AR_PROTOCOL',
@@ -232,6 +233,11 @@ export const FILE_DIR = readEnv('CIPHER_BRAIN_FILE_DIR') || join(HOME, 'store');
 // pattern as PG_BIN above — most machines just need `rclone` on PATH; override
 // for a non-standard install location.
 export const RCLONE_BIN = readEnv('CIPHER_BRAIN_RCLONE_BIN') || 'rclone';
+// --scan-secrets' gitleaks binary (#215), same PATH-or-override pattern as RCLONE_BIN.
+// `schedule install --scan-secrets` sets this to the ABSOLUTE path it resolved, so the
+// unattended run executes the scanner the operator was shown at install time rather than
+// whatever a bare launchd/cron PATH resolves that name to (#307, multi-model review).
+export const GITLEAKS_BIN = readEnv('CIPHER_BRAIN_GITLEAKS_BIN') || 'gitleaks';
 export const AR_HOST = readEnv('CIPHER_BRAIN_AR_HOST') || 'arweave.net';
 export const AR_PORT = Number(readEnv('CIPHER_BRAIN_AR_PORT') || 443);
 export const AR_PROTOCOL = readEnv('CIPHER_BRAIN_AR_PROTOCOL') || 'https';

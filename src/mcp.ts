@@ -46,6 +46,7 @@ import { schedule, scheduleStatusReport } from './lib/schedule.js';
 import { estimateCost } from './lib/estimate.js';
 import { keygenAt } from './lib/keys.js';
 import { wallet } from './lib/wallet.js';
+import { SCAN_SECRETS_MODES, isScanSecretsMode } from './lib/secrets-scan.js';
 import { exists, requireFile, MissingPathError, sha256, errMsg } from './lib/util.js';
 import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
 import { didYouMean, nearestName } from './lib/suggest.js';
@@ -269,6 +270,12 @@ const SNAPSHOT_NOW_TOOL: Tool = {
       confirm_paid: {
         type: 'boolean',
         description: 'REQUIRED true to push to arweave/turbo. Confirms you accept an irreversible, real-money upload.',
+      },
+      scan_secrets: {
+        type: 'string',
+        enum: [...SCAN_SECRETS_MODES],
+        description:
+          'Run gitleaks over each dirs source\'s staged plaintext BEFORE it is archived+encrypted (the CLI --scan-secrets, #215): "warn" logs findings (rule ID + count only, never the secret) and proceeds, "deny" refuses the whole snapshot if any source has findings. Omitted = no scan (same default as the CLI). Requires the gitleaks binary on PATH: when set and gitleaks cannot be resolved, the call FAILS rather than silently skipping the scan.',
       },
     },
     required: ['recipients', 'out'],
@@ -558,6 +565,18 @@ const SCHEDULE_INSTALL_TOOL: Tool = {
       ping_url_fail: {
         type: 'string',
         description: 'Failure-ping URL override (default: ping_url + "/fail"). Requires ping_url to also be set.',
+      },
+      scan_secrets: {
+        type: 'string',
+        enum: [...SCAN_SECRETS_MODES],
+        description:
+          'Bake the gitleaks gate into the generated nightly runner (the CLI --scan-secrets, #215/#307): ' +
+          '"warn" logs findings and proceeds, "deny" refuses the whole snapshot on a finding. Omitted = the ' +
+          'nightly does not scan (same default as the CLI). Requires at least one dirs entry — the scan covers ' +
+          'staged directory plaintext, not the pg dump. Install RESOLVES gitleaks now and PINS the absolute ' +
+          'path into the runner as CIPHER_BRAIN_GITLEAKS_BIN (launchd/cron do not inherit a useful PATH, and a ' +
+          'different gitleaks on theirs must not take its place), and FAILS if it cannot be resolved, rather ' +
+          'than installing a schedule that cannot scan.',
       },
       confirm_install: {
         type: 'boolean',
@@ -876,7 +895,16 @@ function assertDeclaredEnums(tool: Tool, args: ToolArgs): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
-  const { dirs = [], pg, recipients, out, backend, locator_file: locatorFile, confirm_paid: confirmPaid } = args;
+  const {
+    dirs = [],
+    pg,
+    recipients,
+    out,
+    backend,
+    locator_file: locatorFile,
+    confirm_paid: confirmPaid,
+    scan_secrets: scanSecrets,
+  } = args;
   if (!isStrArray(recipients) || recipients.length === 0)
     throw new ToolError(
       'ERR_INVALID_INPUT',
@@ -888,6 +916,16 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
   if (pg !== undefined && !isStr(pg)) throw new ToolError('ERR_INVALID_INPUT', 'pg must be a string connection URI');
   if (locatorFile !== undefined && !isStr(locatorFile))
     throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
+  // #308's assertDeclaredEnums now refuses a bad mode before dispatch, reading the same
+  // SCAN_SECRETS_MODES this schema advertises — so this is not the check that stops one.
+  // It stays for the reason requireBackend stays on this same handler: it is the assertion
+  // that narrows `scan_secrets` from ToolArgs' unknown to a mode for the CliOptions handoff
+  // below. Both read one constant, so neither can drift from the schema or each other.
+  if (scanSecrets !== undefined && !isScanSecretsMode(scanSecrets))
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      `scan_secrets must be one of ${SCAN_SECRETS_MODES.join('|')} — got ${JSON.stringify(scanSecrets)}`,
+    );
   // Spend gate FIRST — before any snapshot work — so a refused paid push does no
   // work and leaves no artifact behind. Never silently spend: the CLI accepts
   // CIPHER_BRAIN_YES=1 for unattended cadence loops, but via MCP the consent
@@ -902,7 +940,7 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
     );
   }
 
-  const snapOpts: CliOptions = { out, pg, dirs, tables: [], recipients };
+  const snapOpts: CliOptions = { out, pg, dirs, tables: [], recipients, scan_secrets: scanSecrets };
   const snap = await captureCall(() => snapshot(snapOpts));
   const size = (await stat(out)).size;
   const digest = await sha256(out);
@@ -912,6 +950,14 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
     size_bytes: size,
     sha256: digest,
     pushed: false,
+    // Reporting the mode is honest rather than decorative: reaching this line means
+    // snapshot() RETURNED, and when scan_secrets was set snapshot() cannot return
+    // without having resolved gitleaks (assertGitleaksAvailable throws otherwise) and
+    // scanned every source it scans (the dirs/profile staged plaintext — same coverage as
+    // the CLI flag; a pg dump is not scanned on either surface). So `null` means "no scan
+    // was requested or run", and a mode means the scan really ran in that mode — never a
+    // request that was quietly dropped.
+    scan_secrets: scanSecrets ?? null,
     log: [...snap.out, ...snap.err],
   };
 
@@ -1346,6 +1392,7 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
     no_load: noLoad,
     ping_url: pingUrl,
     ping_url_fail: pingUrlFail,
+    scan_secrets: scanSecrets,
     confirm_install: confirmInstall,
   } = args;
   requireBackend(backend, 'backend');
@@ -1359,6 +1406,13 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
   if (pingUrl !== undefined && !isStr(pingUrl)) throw new ToolError('ERR_INVALID_INPUT', 'ping_url must be a string');
   if (pingUrlFail !== undefined && !isStr(pingUrlFail))
     throw new ToolError('ERR_INVALID_INPUT', 'ping_url_fail must be a string');
+  // Same as snapshot_now's: assertDeclaredEnums (#308) is what refuses a bad mode; this is
+  // the narrowing assertion for the CliOptions handoff below.
+  if (scanSecrets !== undefined && !isScanSecretsMode(scanSecrets))
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      `scan_secrets must be one of ${SCAN_SECRETS_MODES.join('|')} — got ${JSON.stringify(scanSecrets)}`,
+    );
 
   // Consequential-action gate FIRST — before any file write happens, same
   // discipline as every other mutating tool in this server. Covers BOTH the
@@ -1386,6 +1440,7 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
     no_load: noLoad,
     ping_url: pingUrl,
     ping_url_fail: pingUrlFail,
+    scan_secrets: scanSecrets,
     tables: [],
   };
   const res = await captureCall(() => schedule(installOpts));
@@ -1394,6 +1449,10 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
     at: at || '03:30',
     no_load: Boolean(noLoad),
     ...(maxSpend ? { max_spend: maxSpend } : {}),
+    // Reaching this line means install() succeeded, and with the mode set it cannot
+    // succeed without having resolved gitleaks and baked the flag into the runner — so
+    // this reports what the installed nightly will really do, not what was asked for.
+    scan_secrets: scanSecrets ?? null,
     log: [...res.out, ...res.err],
   });
 }

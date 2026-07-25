@@ -78,6 +78,10 @@ const PAID = new Set(['arweave', 'turbo']);
 const ENV_CAPTURE_VARS = [
   'CIPHER_BRAIN_FILE_DIR',
   'CIPHER_BRAIN_PG_BIN',
+  // #307: resolved to an ABSOLUTE path by install when --scan-secrets is used, so the
+  // nightly executes the very scanner install reported — not whatever a bare launchd/cron
+  // PATH resolves the name "gitleaks" to, which need not be the same binary.
+  'CIPHER_BRAIN_GITLEAKS_BIN',
   'CIPHER_BRAIN_PIN_RECIPIENTS',
   'CIPHER_BRAIN_AR_HOST',
   'CIPHER_BRAIN_AR_PORT',
@@ -107,6 +111,14 @@ const PATH_ENV_VARS = new Set([
   'CIPHER_BRAIN_FILE_DIR', // config.ts: "file backend object store"
   'CIPHER_BRAIN_PG_BIN', // config.ts: "dir holding pg_dump/pg_restore"
   'CIPHER_BRAIN_AR_WALLET', // config.ts: "path to a JWK key file"
+]);
+
+// Vars that may hold EITHER a path or a bare value, so resolve() must be conditional on
+// the value naming something that exists — an unconditional resolve() would turn a bare
+// binary name ("gitleaks") or an inline recipient list into a bogus cwd-relative path.
+const MAYBE_PATH_ENV_VARS = new Set([
+  'CIPHER_BRAIN_PIN_RECIPIENTS', // a recipients FILE or an inline age1... list
+  'CIPHER_BRAIN_GITLEAKS_BIN', // a binary PATH or a bare name resolved via PATH (#307)
 ]);
 
 // Snapshot + resolve, at install time, every ENV_CAPTURE_VARS value that is actually set —
@@ -140,11 +152,11 @@ async function captureEnv(): Promise<Record<string, string>> {
       // variable added here that distinguishes '' from unset at run time inherits that
       // distinction — check its config.ts fallback if it must not.
       captured[v] = '';
-    } else if (v === 'CIPHER_BRAIN_PIN_RECIPIENTS') {
+    } else if (MAYBE_PATH_ENV_VARS.has(v)) {
       // File-first, exactly like keys.ts's resolvePinnedRecipients: if the value names
-      // an existing file, it's a path — resolve it. Otherwise it's an inline age1... list
-      // (or a not-yet-existing path — either way, resolve() would only mangle it), leave
-      // it untouched.
+      // an existing file, it's a path — resolve it. Otherwise it's an inline age1... list,
+      // a bare binary name to be found on PATH, or a not-yet-existing path — in every one
+      // of those cases resolve() would only mangle it, so leave it untouched.
       captured[v] = (await exists(raw)) ? resolve(raw) : raw;
     } else if (PATH_ENV_VARS.has(v)) {
       captured[v] = resolve(raw);
@@ -194,11 +206,6 @@ interface ScheduleConfig {
   // CIPHER_BRAIN_* settings ENV_CAPTURE_VARS bakes. Absent = no scan (unchanged
   // pre-#307 runner, byte for byte).
   scan_secrets?: ScanSecretsMode;
-  // The directory gitleaks was resolved from at install time, recorded only when
-  // scan_secrets is set. Same problem (and same fix) as CIPHER_BRAIN_PG_BIN for pg_dump:
-  // launchd/cron start the runner with a BARE PATH that does not include Homebrew's bin,
-  // so a scan that resolves gitleaks fine interactively would fail every scheduled run.
-  gitleaks_dir?: string;
   save_locator: string;
   index_file: string;
   max_spend?: string;
@@ -237,21 +244,9 @@ function runnerBody(cfg: ScheduleConfig): string {
   // plaintext on a disk with enough room — bake it in too, or a scheduled run silently
   // falls back to the system temp dir even though install was run with TMPDIR set.
   if (cfg.tmpdir) envLines.push(`export TMPDIR=${shq(cfg.tmpdir)}`);
-  // --scan-secrets spawns `gitleaks` by name, resolved against the runner's PATH — which
-  // launchd/cron give as a bare system default that excludes Homebrew's bin. APPEND (not
-  // prepend) the install-time directory so gitleaks becomes resolvable without that
-  // directory's other binaries shadowing the system tar/curl/... this runner also uses.
-  //
-  // This makes the directory REACHABLE; it does not pin it. Appending means a gitleaks
-  // that is already on the runner's PATH wins, so what runs tonight is not guaranteed to
-  // be the binary install resolved (multi-model review). That is the same binary an
-  // interactive run would pick and it is still gitleaks, so the trade is deliberate:
-  // pinning would mean teaching secrets-scan.ts to spawn an absolute path, i.e. a new
-  // configuration surface of its own (the CIPHER_BRAIN_PG_BIN treatment), which belongs
-  // in its own change. What is NOT weakened either way is the fail-closed check:
-  // snapshot() calls assertGitleaksAvailable() on every run, so a run that can resolve no
-  // gitleaks at all FAILS rather than skipping the scan.
-  if (cfg.scan_secrets && cfg.gitleaks_dir) envLines.push(`export PATH="$PATH:"${shq(cfg.gitleaks_dir)}`);
+  // (--scan-secrets' scanner is pinned through CIPHER_BRAIN_GITLEAKS_BIN, which install
+  // resolves to an absolute path and the ENV_CAPTURE_VARS loop below bakes in like any
+  // other setting — see install(). Nothing extra to emit here.)
   // Every CIPHER_BRAIN_* var src/lib/config.ts reads that a snapshot+push run could need,
   // EXCEPT: CIPHER_BRAIN_HOME (baked above unconditionally), CIPHER_BRAIN_YES/MAX_SPEND
   // (baked separately below, only for paid backends), CIPHER_BRAIN_AGE/AGE_KEYGEN
@@ -452,13 +447,17 @@ function resolvePgDumpDir(): string | null {
   return found ? dirname(resolve(found)) : null;
 }
 
-// Same idea for gitleaks (#307), which secrets-scan.ts spawns by bare name. Resolved at
-// install time against the interactive PATH so the directory can be baked into the
-// runner, which launchd/cron start with a bare system PATH — see runnerBody's PATH line.
-function resolveGitleaksDir(): string | null {
+// Same idea for gitleaks (#307), except the BINARY itself is what gets baked, not its
+// directory: config.ts's GITLEAKS_BIN takes a full path, so pinning it means the nightly
+// executes the exact scanner install resolved and reported. Appending its directory to
+// the runner's PATH instead would only make it reachable — a different `gitleaks` earlier
+// on the scheduler's PATH would still win, which multi-model review demonstrated can turn
+// a `deny` runner into one that pushes (a stub reporting no findings shadowed the real
+// binary). Resolved against the interactive PATH, which is what the operator just tested.
+function resolveGitleaksBin(): string | null {
   const r = sh('sh', ['-c', 'command -v gitleaks']);
   const found = r.status === 0 ? r.stdout.trim() : '';
-  return found ? dirname(resolve(found)) : null;
+  return found ? resolve(found) : null;
 }
 
 // ---------- legacy (pre-#114 unscoped LABEL/CRON_MARKER) detection ----------
@@ -555,18 +554,23 @@ async function install(o: CliOptions): Promise<void> {
     );
   }
   // The environment half of --scan-secrets, kept with the other probes (pg_dump above)
-  // rather than with the validation: resolve gitleaks NOW so its directory can be baked in.
-  let gitleaksDir: string | null = null;
-  if (o.scan_secrets !== undefined) {
+  // rather than with the validation: resolve gitleaks NOW so the exact binary can be
+  // baked in. Mirrors the --pg block above line for line, including leaving an EXPLICIT
+  // CIPHER_BRAIN_GITLEAKS_BIN untouched — the operator who pointed it somewhere on
+  // purpose is not second-guessed, and captureEnv() bakes their value like any other.
+  if (o.scan_secrets !== undefined && !readEnv('CIPHER_BRAIN_GITLEAKS_BIN')) {
     // Resolved in this interactive env for the same reason --pg resolves pg_dump above:
     // the runner's bare launchd/cron PATH would not find a Homebrew-installed gitleaks, so
     // an install that looked fine would produce a nightly that fails on every run.
     // Refusing here is the same fail-closed posture assertGitleaksAvailable() takes at run
     // time — never a warning, never a silently unscanned schedule.
-    gitleaksDir = resolveGitleaksDir();
-    if (!gitleaksDir) throw new Error(SCAN_SECRETS_INSTALL_HINT);
+    const bin = resolveGitleaksBin();
+    if (!bin) throw new Error(SCAN_SECRETS_INSTALL_HINT);
+    // A WRITE, not a read, exactly as the pg_dump branch above explains: the resolved
+    // path goes back into the environment so captureEnv() bakes it into the runner.
+    process.env.CIPHER_BRAIN_GITLEAKS_BIN = bin;
     console.error(
-      `resolved gitleaks -> ${join(gitleaksDir, 'gitleaks')} (added to the runner's PATH — launchd/cron do not inherit PATH)`,
+      `resolved gitleaks -> ${bin} (baked into the runner as CIPHER_BRAIN_GITLEAKS_BIN — launchd/cron do not inherit PATH, and a different gitleaks on theirs must not silently take its place)`,
     );
   }
   const at = o.at || '03:30';
@@ -631,10 +635,10 @@ async function install(o: CliOptions): Promise<void> {
     // above: it must still name the same file when the runner is invoked from a
     // different cwd by launchd/cron).
     recipients: o.recipients.map((r) => (r.startsWith('age1') ? r : resolve(r))),
-    // Validated (and gitleaks resolved) above; both are absent entirely when the flag was
-    // not passed, so an install without it generates the exact same runner as before.
+    // Validated (and gitleaks resolved into the env for captureEnv) above; absent entirely
+    // when the flag was not passed, so an install without it generates the exact same
+    // runner as before.
     ...(isScanSecretsMode(o.scan_secrets) ? { scan_secrets: o.scan_secrets } : {}),
-    ...(gitleaksDir ? { gitleaks_dir: gitleaksDir } : {}),
     save_locator: resolve(o.save_locator || join(HOME, 'latest-locator.tsv')),
     index_file: resolve(o.index_file || join(SCHEDULE_DIR, 'index.tsv')),
     ...(o.max_spend ? { max_spend: String(o.max_spend) } : {}),

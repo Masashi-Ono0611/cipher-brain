@@ -954,14 +954,22 @@ set +e
 EATEN_ERR=$(cd "$TMP" && CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out --scan-secrets deny 2>&1); EATEN_RC=$?
 set -e
 [ "$EATEN_RC" != "0" ] || { echo "[FAIL] '--out --scan-secrets deny' was accepted — the snapshot ran with the gate silently off"; echo "$EATEN_ERR"; exit 1; }
-printf '%s' "$EATEN_ERR" | grep -q -- '--out requires a value, but the next argument is another flag' || { echo "[FAIL] the swallowed-value refusal does not explain which flag ate which"; echo "$EATEN_ERR"; exit 1; }
+printf '%s' "$EATEN_ERR" | grep -q -- '--out requires a value, but the next argument looks like another flag' || { echo "[FAIL] the swallowed-value refusal does not explain which flag ate which"; echo "$EATEN_ERR"; exit 1; }
 test ! -e "$TMP/--scan-secrets" || { echo "[FAIL] a swallowed --scan-secrets still produced a snapshot file named after the flag"; exit 1; }
-# A value that merely LOOKS flag-ish but names no flag this CLI has is still accepted —
-# the check is on recognized flag names, not on a leading "--".
-CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/--not-a-flag.age" > /dev/null 2>&1 \
-  || { echo "[FAIL] a legitimate value that starts with dashes was refused"; exit 1; }
-test -f "$TMP/--not-a-flag.age" || { echo "[FAIL] the dash-leading --out value did not produce its file"; exit 1; }
-echo "[PASS] a value flag is refused when its value is missing OR eaten by the next recognized flag, while a dash-leading non-flag value still works"
+# A MISTYPED flag is the nastier version of the same shape: it is not a name this CLI
+# knows, so an "only reject recognized flags" rule would swallow it as --out's value and
+# never reach the unknown-flag refusal (#253) that exists to catch the typo. Any
+# "--"-leading token is refused as a value for exactly this reason.
+set +e
+TYPO_ERR=$(cd "$TMP" && CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out --scan-secret deny 2>&1); TYPO_RC=$?
+set -e
+[ "$TYPO_RC" != "0" ] || { echo "[FAIL] '--out --scan-secret deny' (typo) was accepted — an unscanned snapshot named after the typo"; echo "$TYPO_ERR"; exit 1; }
+test ! -e "$TMP/--scan-secret" || { echo "[FAIL] a mistyped flag swallowed as a value still produced a snapshot file"; exit 1; }
+# The escape for a value that genuinely starts with dashes, which the error suggests.
+CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/./--really-a-path.age" > /dev/null 2>&1 \
+  || { echo "[FAIL] a legitimate dash-leading value written as a ./ path was refused"; exit 1; }
+test -f "$TMP/--really-a-path.age" || { echo "[FAIL] the ./-escaped --out value did not produce its file"; exit 1; }
+echo "[PASS] a value flag is refused when its value is missing OR looks like a flag (recognized or mistyped), while a ./-escaped dash-leading path still works"
 
 if ! command -v gitleaks >/dev/null 2>&1; then
   echo "[SKIP] --scan-secrets warn/deny tests: no \`gitleaks\` binary on PATH (install it — https://github.com/gitleaks/gitleaks — to exercise this; CI installs it via the .github/workflows/ci.yml step, see #215)"

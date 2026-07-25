@@ -379,15 +379,19 @@ PATH="$FAKE_GITLEAKS_DIR:$PATH" cb schedule install --backend file --dir "$SRC" 
 # THE tripwire: the generated snapshot command line must carry the flag.
 grep -q -- "snapshot --dir '$SRC' --scan-secrets 'deny' --out" "$RUNNER" \
   || { echo "[FAIL] #307: the runner's snapshot line does not carry --scan-secrets deny"; grep -n 'snapshot ' "$RUNNER"; exit 1; }
-grep -qF "export PATH=\"\$PATH:\"'$FAKE_GITLEAKS_DIR'" "$RUNNER" \
-  || { echo "[FAIL] runner does not append the resolved gitleaks directory to PATH (launchd/cron start with a bare PATH — the scan would fail every night)"; cat "$RUNNER"; exit 1; }
+# The BINARY is pinned, not merely made reachable: appending its directory to PATH would
+# let a different gitleaks earlier on the scheduler's PATH win (see (a6b) below, which
+# proves the pin holds against exactly that).
+grep -qF "export CIPHER_BRAIN_GITLEAKS_BIN='$FAKE_GITLEAKS_DIR/gitleaks'" "$RUNNER" \
+  || { echo "[FAIL] runner does not bake the resolved gitleaks BINARY as CIPHER_BRAIN_GITLEAKS_BIN (launchd/cron start with a bare PATH — the scan would fail every night)"; cat "$RUNNER"; exit 1; }
+if grep -q 'export PATH=' "$RUNNER"; then echo "[FAIL] runner rewrites PATH instead of pinning the binary — an earlier gitleaks could shadow the resolved one"; exit 1; fi
 grep -qF "resolved gitleaks -> $FAKE_GITLEAKS_DIR/gitleaks" "$TMP/install-scan.log" \
   || { echo "[FAIL] install did not report the resolved gitleaks path"; cat "$TMP/install-scan.log"; exit 1; }
 node -e "
 const cfg = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
 if (cfg.scan_secrets !== 'deny') throw new Error('schedule.json scan_secrets = ' + JSON.stringify(cfg.scan_secrets) + ', expected deny');
-if (cfg.gitleaks_dir !== process.argv[2]) throw new Error('schedule.json gitleaks_dir = ' + JSON.stringify(cfg.gitleaks_dir) + ', expected ' + process.argv[2]);
-" "$CONFIG" "$FAKE_GITLEAKS_DIR" || { echo "[FAIL] schedule.json did not record the scan mode / resolved gitleaks dir"; exit 1; }
+if (cfg.env.CIPHER_BRAIN_GITLEAKS_BIN !== process.argv[2]) throw new Error('schedule.json env.CIPHER_BRAIN_GITLEAKS_BIN = ' + JSON.stringify(cfg.env.CIPHER_BRAIN_GITLEAKS_BIN) + ', expected ' + process.argv[2]);
+" "$CONFIG" "$FAKE_GITLEAKS_DIR/gitleaks" || { echo "[FAIL] schedule.json did not record the scan mode / resolved gitleaks binary"; exit 1; }
 cb schedule status > "$TMP/status-scan.log" 2>&1 || { echo "[FAIL] status (scan-enabled schedule) exited non-zero"; cat "$TMP/status-scan.log"; exit 1; }
 grep -q 'secret scan: configured --scan-secrets deny' "$TMP/status-scan.log" \
   || { echo "[FAIL] status does not report that this schedule scans"; cat "$TMP/status-scan.log"; exit 1; }
@@ -395,14 +399,14 @@ grep -q 'secret scan: configured --scan-secrets deny' "$TMP/status-scan.log" \
 # schedule.json, so it cannot know gitleaks is still resolvable tonight (multi-model review).
 grep -q 'not a health check' "$TMP/status-scan.log" \
   || { echo "[FAIL] status states the scan mode as if it had verified gitleaks is still available"; cat "$TMP/status-scan.log"; exit 1; }
-echo "[PASS] --scan-secrets deny is threaded into the runner's snapshot line, gitleaks is resolved+baked onto the runner PATH, and status reports it"
+echo "[PASS] --scan-secrets deny is threaded into the runner's snapshot line, the resolved gitleaks BINARY is pinned into the runner, and status reports it"
 
-echo "== (a6b) the baked runner ACTUALLY refuses a leaky source when it runs, with gitleaks reachable ONLY via the baked PATH (#307 end-to-end) =="
-# Run the runner the way launchd/cron would: a bare system PATH, which reaches neither
-# the shim dir nor whatever real gitleaks this host happens to have. Only the runner's own
-# baked PATH line can resolve a scanner at all, so a run that still refuses proves the
-# whole chain — flag threaded -> gitleaks resolvable in a bare env -> deny honoured — and
-# proves it identically on a host with gitleaks installed and one without.
+echo "== (a6b) the baked runner ACTUALLY refuses a leaky source when it runs, using the PINNED gitleaks even when a different one shadows it on PATH (#307 end-to-end) =="
+# Run the runner the way launchd/cron would: a bare system PATH, which reaches neither the
+# shim dir nor whatever real gitleaks this host happens to have. Only the pinned binary can
+# be resolved, so a run that refuses proves the whole chain — flag threaded -> scanner
+# resolvable in a bare env -> deny honoured — identically on a host with gitleaks and one
+# without.
 SCAN_LOG="$CIPHER_BRAIN_SCHEDULE_DIR/logs/nightly-$(date +%F).log"
 if PATH=/usr/bin:/bin:/usr/sbin:/sbin bash "$RUNNER" > /dev/null 2>&1; then
   echo "[FAIL] #307: the runner exited 0 on a source the scan flags — the gate is baked in but not honoured"; cat "$SCAN_LOG"; exit 1
@@ -410,7 +414,34 @@ fi
 grep -q 'refusing to snapshot' "$SCAN_LOG" || { echo "[FAIL] the runner failed for some reason OTHER than the deny gate"; cat "$SCAN_LOG"; exit 1; }
 grep -q 'selftest-planted-rule' "$SCAN_LOG" || { echo "[FAIL] the refusal does not name the rule the scan reported"; cat "$SCAN_LOG"; exit 1; }
 tail -n 1 "$SCAN_LOG" | grep -q '^FAILED rc=' || { echo "[FAIL] the refused run did not end with the FAILED rc heartbeat line"; tail -n 3 "$SCAN_LOG"; exit 1; }
-echo "[PASS] the installed nightly really runs the scan and refuses on a finding, resolving gitleaks through the baked PATH alone"
+# THE shadowing tripwire (multi-model review round 4): a DIFFERENT gitleaks — one that
+# reports no findings — placed FIRST on the runner's PATH must not take the pinned one's
+# place. Merely appending the resolved directory to PATH failed exactly this: the stub won
+# and a deny runner exited 0 and pushed.
+SHADOW_DIR="$TMP/shadow-gitleaks"; mkdir -p "$SHADOW_DIR"
+cat > "$SHADOW_DIR/gitleaks" <<'SHIM'
+#!/usr/bin/env bash
+# A "clean" scanner: always reports zero findings. If this one runs, deny lets the
+# snapshot through — which is precisely what must NOT happen once the binary is pinned.
+REPORT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --report-path) REPORT="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$REPORT" ] || exit 3
+printf '%s' '[]' > "$REPORT"
+exit 0
+SHIM
+chmod +x "$SHADOW_DIR/gitleaks"
+SHADOW_LOG_FROM="$(( $(wc -l < "$SCAN_LOG" | tr -d ' ') + 1 ))" # first line the shadowed run will write
+if PATH="$SHADOW_DIR:/usr/bin:/bin:/usr/sbin:/sbin" bash "$RUNNER" > /dev/null 2>&1; then
+  echo "[FAIL] #307: a no-findings gitleaks earlier on PATH shadowed the pinned one — the deny runner exited 0 and pushed an unscanned snapshot"; tail -n +"$SHADOW_LOG_FROM" "$SCAN_LOG"; exit 1
+fi
+tail -n +"$SHADOW_LOG_FROM" "$SCAN_LOG" | grep -q 'selftest-planted-rule' \
+  || { echo "[FAIL] the run under a shadowing PATH did not use the pinned scanner (no planted finding reported)"; tail -n +"$SHADOW_LOG_FROM" "$SCAN_LOG"; exit 1; }
+echo "[PASS] the installed nightly really runs the scan, refuses on a finding, and uses the PINNED binary even when another gitleaks precedes it on PATH"
 
 echo "== (a6c) install REFUSES a bad mode, and refuses when gitleaks cannot be resolved — never a schedule that silently cannot scan (#307) =="
 if PATH="$FAKE_GITLEAKS_DIR:$PATH" cb schedule install --backend file --dir "$SRC" --scan-secrets bogus --no-load > "$TMP/install-scan-bad.log" 2>&1; then
@@ -442,7 +473,7 @@ echo "== (a6d) an install WITHOUT --scan-secrets is unchanged: no scan flag, no 
 cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-noscan.log" 2>&1 \
   || { echo "[FAIL] reinstall without --scan-secrets exited non-zero"; cat "$TMP/install-noscan.log"; exit 1; }
 if grep -q -- '--scan-secrets' "$RUNNER"; then echo "[FAIL] a runner installed WITHOUT --scan-secrets still carries the flag"; grep -n 'snapshot ' "$RUNNER"; exit 1; fi
-if grep -q 'export PATH=' "$RUNNER"; then echo "[FAIL] a runner installed WITHOUT --scan-secrets still rewrites PATH"; exit 1; fi
+if grep -q 'export PATH=' "$RUNNER"; then echo "[FAIL] a runner installed WITHOUT --scan-secrets rewrites PATH"; exit 1; fi
 if grep -qi 'gitleaks' "$RUNNER"; then echo "[FAIL] a runner installed WITHOUT --scan-secrets mentions gitleaks"; exit 1; fi
 cb schedule status > "$TMP/status-noscan.log" 2>&1 || { echo "[FAIL] status (no-scan schedule) exited non-zero"; exit 1; }
 grep -q 'secret scan: off' "$TMP/status-noscan.log" || { echo "[FAIL] status does not report that this schedule does NOT scan"; cat "$TMP/status-noscan.log"; exit 1; }

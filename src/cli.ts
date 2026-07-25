@@ -94,11 +94,6 @@ const VALUE_FLAGS = new Set([
   'ping_url_fail',
 ]);
 
-// The repeatable array flags, which the loop in parseArgs dispatches on BEFORE the
-// VALUE_FLAGS set is consulted — listed here so "is this token a flag?" can be answered
-// for all of them, not just the ones in that set.
-const REPEATABLE_FLAGS = new Set(['--dir', '--pg-table', '--pg-exclude-table-data', '--recipient']);
-
 function parseArgs(argv: string[]): CliOptions {
   const o: CliOptions = { dirs: [], tables: [], recipients: [] };
   const rec = o as unknown as Record<string, string | boolean | undefined>;
@@ -115,21 +110,18 @@ function parseArgs(argv: string[]): CliOptions {
   //                                                     file literally named --scan-secrets
   //   schedule install … --scan-secrets              -> exit 0, runner with no scan at all
   //
-  // "Looks like a flag" is judged by RECOGNIZED flag names only (the same BOOL/VALUE sets
-  // the loop below dispatches on), not by a leading "--": a value that merely starts with
-  // dashes but names no flag this CLI has is still accepted, and a path that genuinely
-  // begins with "--" can be written "./--name".
-  const isKnownFlagToken = (t: string): boolean => {
-    if (!t.startsWith('--')) return false;
-    if (REPEATABLE_FLAGS.has(t)) return true;
-    const k = t.slice(2).replace(/-/g, '_');
-    return BOOL_FLAGS.has(k) || VALUE_FLAGS.has(k);
-  };
+  // "Looks like a flag" is ANY token starting with "--", not just a recognized one. An
+  // earlier revision only rejected recognized names, and review found the hole that
+  // leaves: `--out --scan-secret deny` (note the typo) is not a name this CLI knows, so
+  // it was swallowed as --out's value — writing an unscanned snapshot to a file called
+  // "--scan-secret" and never reaching the unknown-flag refusal (#253) that exists to
+  // catch exactly that typo. A value that genuinely begins with "--" is pathological
+  // enough to be worth an explicit "./--name", which the message suggests.
   const valueAt = (i: number, flag: string): string => {
     if (i >= argv.length) throw new Error(`${flag} requires a value (run 'cipher-brain --help' for the expected form)`);
-    if (isKnownFlagToken(argv[i]))
+    if (argv[i].startsWith('--'))
       throw new Error(
-        `${flag} requires a value, but the next argument is another flag (${argv[i]}) — ` +
+        `${flag} requires a value, but the next argument looks like another flag (${argv[i]}) — ` +
           `it was NOT consumed as ${flag}'s value. Give ${flag} its value, or write "./${argv[i]}" if you really ` +
           `meant a path by that name.`,
       );
@@ -292,6 +284,12 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       neither is REFUSED rather than reporting a scan that inspected no component.
       For the same reason it cannot be combined with --dry-run, which stages no
       plaintext for gitleaks to look at.
+      KNOWN LIMIT, so you can judge what the gate is worth for your sources: gitleaks
+      reads files as they are and does NOT look inside archives, so a zip/tar source
+      (notably --profile chatgpt-export, which archives the export zip as-is) is
+      scanned only as opaque bytes — a secret inside it will NOT be found, even
+      though the run reports the mode. Extract such an export and snapshot the
+      directory if you want the gate to actually cover its contents.
       Authenticity (#214): whenever a signing identity exists (default
       $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
       a different one), snapshot ALSO writes a detached "<out>.minisig" signature over

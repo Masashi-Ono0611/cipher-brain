@@ -139,6 +139,13 @@ plaintext, so asking for it with no such source (a `--pg`-only snapshot, whose
 dump it does not scan) is **refused**: a caller told a scan ran when it inspected
 nothing is worse off than one told it did not run at all.
 
+Know what it does not cover, so the gate is not mistaken for a guarantee: gitleaks
+reads files as they are and does not look **inside archives**, so a zip/tar source
+— notably `--profile chatgpt-export`, which archives the export zip as-is — is
+scanned only as opaque bytes, and a secret inside it is not found even though the
+run reports the mode. Extract such an export and snapshot the directory if you
+want the gate to cover its contents.
+
 ## Install
 
 Install from the registry (requires node >= 22.6.0 — the age crypto layer is
@@ -484,6 +491,12 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       neither is REFUSED rather than reporting a scan that inspected no component.
       For the same reason it cannot be combined with --dry-run, which stages no
       plaintext for gitleaks to look at.
+      KNOWN LIMIT, so you can judge what the gate is worth for your sources: gitleaks
+      reads files as they are and does NOT look inside archives, so a zip/tar source
+      (notably --profile chatgpt-export, which archives the export zip as-is) is
+      scanned only as opaque bytes — a secret inside it will NOT be found, even
+      though the run reports the mode. Extract such an export and snapshot the
+      directory if you want the gate to actually cover its contents.
       Authenticity (#214): whenever a signing identity exists (default
       $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
       a different one), snapshot ALSO writes a detached "<out>.minisig" signature over

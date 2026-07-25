@@ -231,6 +231,27 @@ function parseMinisigText(text: string): ParsedMinisig {
   return { sigAlg, keyId: Buffer.from(keyId), signature: Buffer.from(signature), trustedComment, globalSignature };
 }
 
+// The key id a detached signature CLAIMS it was made with, as lowercase hex (issue
+// #250) — the unverified 8 bytes in the *.minisig packet, not proof of who signed
+// it. Read out of the sidecar itself rather than off the local signing key, so it
+// describes the ARTIFACT that was (or is about to be) pushed, not whatever key
+// happens to sit in $CIPHER_BRAIN_HOME right now. push --skip-unchanged records it
+// alongside the locator and compares it on the next run, so enabling signing, or
+// rotating the signing key, is a change that forces a re-push even when the
+// plaintext and recipients are identical.
+//
+// This makes NO authenticity claim: an attacker who forges a .minisig controls the
+// key id in it too. It is a change detector for the operator's own local state, in
+// the same spirit as the content digest and the recipients fingerprint — the actual
+// authenticity check is verifyDetached() above, against a pinned public key.
+// Rejects a malformed sidecar by throwing, same as every other parse here.
+export async function signatureKeyIdHex(sigPath: string): Promise<string> {
+  const { keyId } = parseMinisigText(await readFile(sigPath, 'utf8'));
+  // Byte order matches the identity file's "# key id: <hex>" comment (raw order),
+  // not the pubkey file's comment (which reverses it, mirroring minisign's own CLI).
+  return keyId.toString('hex');
+}
+
 export interface VerifyResult {
   valid: boolean;
   reason?: string; // present when valid === false

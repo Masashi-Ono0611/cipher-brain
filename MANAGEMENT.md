@@ -79,15 +79,18 @@ defenses, ideally both:
 
 The identity decrypts, but you still need to know *where the latest ciphertext lives*.
 `push --save-locator <path>` writes
-`<locator>\t<backend>\t<sha256>[\t<content_digest>[\t<recipients_fingerprint>]]`
+`<locator>\t<backend>\t<sha256>[\t<content_digest>[\t<recipients_fingerprint>[\t<sig_locator>[\t<sign_key_id>]]]]`
 to a small file, rewritten atomically on every push so it always holds the **most
 recent** snapshot's locator plus an integrity pin. The optional 4th field is the
 plaintext content digest (from the `<out>.digest` sidecar `snapshot` writes); the
 optional 5th is the recipients fingerprint (from the `<out>.recipients-fingerprint`
-sidecar) — `push --skip-unchanged` compares BOTH against the current snapshot and only
-skips when neither changed, so re-snapshotting unchanged content under a **different**
-`--recipient` set (added/removed a key) never returns a stale locator. Older 3- and
-4-field files keep working everywhere:
+sidecar); the 6th is where the `<out>.minisig` authenticity sidecar was pushed, if
+any, and the 7th is the signing key id inside it. `push --skip-unchanged` compares
+content, recipients AND signing state against the current snapshot and only skips when
+none of them changed — so re-snapshotting unchanged content under a **different**
+`--recipient` set (added/removed a key), or after enabling or rotating the signing key,
+never returns a stale locator. Older 3-, 4-, 5- and 6-field files keep working
+everywhere:
 
 ```sh
 cipher-brain push --in brain-$(date +%F).age --backend turbo --yes \

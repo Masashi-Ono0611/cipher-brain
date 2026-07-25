@@ -192,7 +192,10 @@ at that moment and adds its directory to the runner's `PATH` (`launchd`/`cron` d
 inherit yours, the same reason `--pg` bakes `CIPHER_BRAIN_PG_BIN`), and *refuses to
 install* if it cannot be resolved. It stays fail-closed afterwards: if `gitleaks` later
 disappears, the nightly ends `FAILED rc=N` rather than quietly snapshotting unscanned.
-`schedule status` reports whether the installed schedule scans.
+`schedule status` reports whether the installed schedule scans. The gate covers
+`--dir`/`--profile` staged plaintext only, so a `--pg`-only schedule is refused rather
+than installed reporting a scan of no component. (The MCP `schedule_install` tool takes
+the same `scan_secrets` field.)
 
 **Paid backends must be capped.** For `turbo`/`arweave` the generated runner sets
 `CIPHER_BRAIN_YES=1` — the unattended equivalent of `--yes` — which is exactly why

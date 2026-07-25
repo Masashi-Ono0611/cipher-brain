@@ -97,15 +97,30 @@ const VALUE_FLAGS = new Set([
 function parseArgs(argv: string[]): CliOptions {
   const o: CliOptions = { dirs: [], tables: [], recipients: [] };
   const rec = o as unknown as Record<string, string | boolean | undefined>;
+  // A value-taking flag in the LAST argv position reads its value off the end of the
+  // array, i.e. `undefined` — which then looks exactly like "the flag was never passed"
+  // to every reader downstream. For a REQUIRED flag that surfaces as a confusing but safe
+  // "--x required"; for an OPTIONAL one it is silent: `schedule install … --scan-secrets`
+  // (mode omitted) used to exit 0 and write a runner with no scan at all, which is the
+  // same "asked for a gate, got none" failure #307 is about. Refuse the moment the value
+  // is missing, naming the flag, for every value-taking flag rather than only the one
+  // that exposed it (multi-model review, #307). Only the last-position case is treated as
+  // missing: `--scan-secrets --out x.age` consumes "--out" as the value and is already
+  // caught by that flag's own validation, whereas rejecting any value that starts with
+  // "--" would refuse legitimate values.
+  const valueAt = (i: number, flag: string): string => {
+    if (i >= argv.length) throw new Error(`${flag} requires a value (run 'cipher-brain --help' for the expected form)`);
+    return argv[i];
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--dir') o.dirs.push(argv[++i]);
-    else if (a === '--pg-table') o.tables.push(argv[++i]);
+    if (a === '--dir') o.dirs.push(valueAt(++i, a));
+    else if (a === '--pg-table') o.tables.push(valueAt(++i, a));
     else if (a === '--pg-exclude-table-data') {
       if (!o.pg_exclude_table_data) o.pg_exclude_table_data = [];
-      o.pg_exclude_table_data.push(argv[++i]);
+      o.pg_exclude_table_data.push(valueAt(++i, a));
     } else if (a === '--recipient')
-      o.recipients.push(argv[++i]); // repeatable: key recovery
+      o.recipients.push(valueAt(++i, a)); // repeatable: key recovery
     else if (a.startsWith('--')) {
       const key = a.slice(2).replace(/-/g, '_');
       // issue #253: an unrecognized/mistyped --flag used to be silently stored
@@ -116,7 +131,7 @@ function parseArgs(argv: string[]): CliOptions {
           `unknown flag: --${a.slice(2)} (run 'cipher-brain --help' or '<command> --help' to see valid flags)`,
         );
       }
-      rec[key] = BOOL_FLAGS.has(key) ? true : argv[++i];
+      rec[key] = BOOL_FLAGS.has(key) ? true : valueAt(++i, a);
     } else o._ = a;
   }
   return o;
@@ -249,7 +264,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       behavior. warn: log any findings (rule ID + count only — never the matched
       secret, file path, or line) and proceed. deny: refuse the whole snapshot if
       any component has findings. Drop a .gitleaks.toml into a scanned source to
-      customize/allowlist rules, same as you would for a git repo.
+      customize/allowlist rules, same as you would for a git repo. It covers
+      --dir/--profile sources only — a --pg dump is not scanned — so a snapshot with
+      neither is REFUSED rather than reporting a scan that inspected no component.
       Authenticity (#214): whenever a signing identity exists (default
       $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
       a different one), snapshot ALSO writes a detached "<out>.minisig" signature over
@@ -441,8 +458,10 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       gated too. Install RESOLVES gitleaks now and adds its directory to the runner's PATH
       (launchd/cron do not inherit yours, same reason --pg bakes CIPHER_BRAIN_PG_BIN), and
       REFUSES to install if gitleaks is not on your PATH — a schedule that cannot scan is
-      never installed as if it could. Fail-closed at run time too: if gitleaks later
-      disappears, the nightly FAILS rather than silently skipping the scan.
+      never installed as if it could. Same --dir/--profile requirement as 'snapshot': a
+      --pg-only schedule is refused rather than reporting a scan of no component.
+      Fail-closed at run time too: if gitleaks later disappears, the nightly FAILS rather
+      than silently skipping the scan.
 
   cipher-brain schedule status [--json]
       Report the configured time + backend, whether a dead man's switch ping-url is

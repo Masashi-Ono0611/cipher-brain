@@ -419,7 +419,20 @@ if PATH="$ISOLATED_PATH_DIR" "$NODE_BIN" "${BIN_DEV_ARGS[@]}" "$BIN" schedule in
   echo "[FAIL] install --scan-secrets deny was accepted with no gitleaks resolvable"; cat "$TMP/install-scan-missing.log"; exit 1
 fi
 grep -qi 'gitleaks' "$TMP/install-scan-missing.log" || { echo "[FAIL] the refusal does not name the missing gitleaks binary"; cat "$TMP/install-scan-missing.log"; exit 1; }
-echo "[PASS] install refuses a bad --scan-secrets mode, and refuses outright when gitleaks cannot be resolved"
+# A trailing --scan-secrets (mode omitted) used to parse as `undefined`, i.e. exactly like
+# "flag not passed": install exited 0 and wrote a runner with no scan. That is the same
+# silent-drop this whole issue is about, so it gets its own tripwire.
+if PATH="$FAKE_GITLEAKS_DIR:$PATH" cb schedule install --backend file --dir "$SRC" --no-load --scan-secrets > "$TMP/install-scan-noval.log" 2>&1; then
+  echo "[FAIL] a trailing --scan-secrets (no mode) was accepted — install would write a runner with no scan"; cat "$TMP/install-scan-noval.log"; exit 1
+fi
+grep -q -- '--scan-secrets requires a value' "$TMP/install-scan-noval.log" || { echo "[FAIL] the dangling-flag refusal does not name --scan-secrets"; cat "$TMP/install-scan-noval.log"; exit 1; }
+# #307: --pg-only + --scan-secrets would install a nightly that scans zero components
+# while `schedule status` reports the mode as in effect.
+if PATH="$FAKE_GITLEAKS_DIR:$PATH" cb schedule install --backend file --pg "postgres://x/y" --scan-secrets deny --no-load > "$TMP/install-scan-nosrc.log" 2>&1; then
+  echo "[FAIL] --scan-secrets with only --pg was accepted — the nightly would report a scan of no component"; cat "$TMP/install-scan-nosrc.log"; exit 1
+fi
+grep -q 'nothing to scan' "$TMP/install-scan-nosrc.log" || { echo "[FAIL] the no-source refusal does not say the scan would have no component to look at"; cat "$TMP/install-scan-nosrc.log"; exit 1; }
+echo "[PASS] install refuses a bad --scan-secrets mode, a dangling --scan-secrets, a source-less --scan-secrets, and a gitleaks it cannot resolve"
 
 echo "== (a6d) an install WITHOUT --scan-secrets is unchanged: no scan flag, no PATH line, status says off (#307) =="
 cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-noscan.log" 2>&1 \

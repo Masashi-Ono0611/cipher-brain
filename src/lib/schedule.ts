@@ -501,6 +501,30 @@ async function install(o: CliOptions): Promise<void> {
   if (!o.pg && o.dirs.length === 0 && !o.profile) {
     throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
   }
+  // --scan-secrets (#307): validate the MODE here, before anything is written and before
+  // the environment probes below. snapshot() validates it too, but only when the runner
+  // finally runs — hours later, unattended, in a log nobody is reading. `schedule install
+  // --scan-secrets bogus` must not exit 0 and bake a nightly that fails every night, and
+  // whether the request is coherent at all must not depend on what happens to be
+  // installed on this host.
+  if (o.scan_secrets !== undefined) {
+    if (!isScanSecretsMode(o.scan_secrets)) {
+      throw new Error(
+        `--scan-secrets must be ${SCAN_SECRETS_MODES.join(' or ')} (got ${JSON.stringify(o.scan_secrets)})`,
+      );
+    }
+    // Same "nothing to scan" refusal snapshot() makes (see its --scan-secrets block): the
+    // gate covers --dir/--profile staged plaintext, so a --pg-only schedule would report
+    // scanning in `schedule status` while every nightly scanned zero components. Refused
+    // HERE too, rather than left to fail once a night, unattended, in a log nobody reads.
+    if (o.dirs.length === 0 && !o.profile) {
+      throw new Error(
+        `--scan-secrets ${o.scan_secrets} has nothing to scan: it covers --dir/--profile staged plaintext, and this ` +
+          `schedule has no --dir or --profile source (a --pg dump is not scanned). Add the source you meant to gate, ` +
+          `or drop --scan-secrets — refusing rather than installing a nightly that reports a scan of no component.`,
+      );
+    }
+  }
   // launchd/cron start with a BARE env — they do NOT inherit the interactive shell's PATH,
   // so a --pg snapshot that resolves pg_dump via PATH interactively (the common Homebrew /
   // Postgres.app setup) would find pg_dump right now but fail every scheduled run. Resolve
@@ -523,22 +547,15 @@ async function install(o: CliOptions): Promise<void> {
       `resolved pg_dump -> ${join(dir, 'pg_dump')} (baked into the runner as CIPHER_BRAIN_PG_BIN — launchd/cron do not inherit PATH)`,
     );
   }
-  // --scan-secrets (#307): validate the MODE here, before anything is written. snapshot()
-  // validates it too, but only when the runner finally runs — hours later, unattended, in
-  // a log nobody is reading. `schedule install --scan-secrets bogus` must not exit 0 and
-  // bake a nightly that fails every night.
+  // The environment half of --scan-secrets, kept with the other probes (pg_dump above)
+  // rather than with the validation: resolve gitleaks NOW so its directory can be baked in.
   let gitleaksDir: string | null = null;
   if (o.scan_secrets !== undefined) {
-    if (!isScanSecretsMode(o.scan_secrets)) {
-      throw new Error(
-        `--scan-secrets must be ${SCAN_SECRETS_MODES.join(' or ')} (got ${JSON.stringify(o.scan_secrets)})`,
-      );
-    }
-    // And resolve gitleaks NOW, in this interactive env, for the same reason --pg resolves
-    // pg_dump below: the runner's bare launchd/cron PATH would not find a Homebrew-installed
-    // gitleaks, so an install that looked fine would produce a nightly that fails on every
-    // run. Refusing here is the same fail-closed posture assertGitleaksAvailable() takes at
-    // run time — never a warning, never a silently unscanned schedule.
+    // Resolved in this interactive env for the same reason --pg resolves pg_dump above:
+    // the runner's bare launchd/cron PATH would not find a Homebrew-installed gitleaks, so
+    // an install that looked fine would produce a nightly that fails on every run.
+    // Refusing here is the same fail-closed posture assertGitleaksAvailable() takes at run
+    // time — never a warning, never a silently unscanned schedule.
     gitleaksDir = resolveGitleaksDir();
     if (!gitleaksDir) throw new Error(SCAN_SECRETS_INSTALL_HINT);
     console.error(

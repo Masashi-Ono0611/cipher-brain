@@ -566,6 +566,17 @@ const SCHEDULE_INSTALL_TOOL: Tool = {
         type: 'string',
         description: 'Failure-ping URL override (default: ping_url + "/fail"). Requires ping_url to also be set.',
       },
+      scan_secrets: {
+        type: 'string',
+        enum: [...SCAN_SECRETS_MODES],
+        description:
+          'Bake the gitleaks gate into the generated nightly runner (the CLI --scan-secrets, #215/#307): ' +
+          '"warn" logs findings and proceeds, "deny" refuses the whole snapshot on a finding. Omitted = the ' +
+          'nightly does not scan (same default as the CLI). Requires at least one dirs entry — the scan covers ' +
+          'staged directory plaintext, not the pg dump. Install RESOLVES gitleaks now and bakes its directory ' +
+          "onto the runner's PATH (launchd/cron do not inherit one), and FAILS if gitleaks cannot be resolved, " +
+          'rather than installing a schedule that cannot scan.',
+      },
       confirm_install: {
         type: 'boolean',
         description:
@@ -1379,6 +1390,7 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
     no_load: noLoad,
     ping_url: pingUrl,
     ping_url_fail: pingUrlFail,
+    scan_secrets: scanSecrets,
     confirm_install: confirmInstall,
   } = args;
   requireBackend(backend, 'backend');
@@ -1392,6 +1404,13 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
   if (pingUrl !== undefined && !isStr(pingUrl)) throw new ToolError('ERR_INVALID_INPUT', 'ping_url must be a string');
   if (pingUrlFail !== undefined && !isStr(pingUrlFail))
     throw new ToolError('ERR_INVALID_INPUT', 'ping_url_fail must be a string');
+  // Same reasoning as snapshot_now's own check: the advertised `enum` is a client hint,
+  // so the value that arrives still has to be verified here.
+  if (scanSecrets !== undefined && !isScanSecretsMode(scanSecrets))
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      `scan_secrets must be one of ${SCAN_SECRETS_MODES.join('|')} — got ${JSON.stringify(scanSecrets)}`,
+    );
 
   // Consequential-action gate FIRST — before any file write happens, same
   // discipline as every other mutating tool in this server. Covers BOTH the
@@ -1419,6 +1438,7 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
     no_load: noLoad,
     ping_url: pingUrl,
     ping_url_fail: pingUrlFail,
+    scan_secrets: scanSecrets,
     tables: [],
   };
   const res = await captureCall(() => schedule(installOpts));
@@ -1427,6 +1447,10 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
     at: at || '03:30',
     no_load: Boolean(noLoad),
     ...(maxSpend ? { max_spend: maxSpend } : {}),
+    // Reaching this line means install() succeeded, and with the mode set it cannot
+    // succeed without having resolved gitleaks and baked the flag into the runner — so
+    // this reports what the installed nightly will really do, not what was asked for.
+    scan_secrets: scanSecrets ?? null,
     log: [...res.out, ...res.err],
   });
 }

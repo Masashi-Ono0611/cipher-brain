@@ -898,6 +898,42 @@ printf '%s' "$BADMODE_ERR" | grep -q 'must be "warn" or "deny"' || { echo "[FAIL
 test ! -e "$TMP/badmode.age" || { echo "[FAIL] --scan-secrets bogus still produced an output file"; exit 1; }
 echo "[PASS] --scan-secrets rejects anything other than warn/deny, before any --out is created"
 
+echo "== #307: --scan-secrets with NO --dir/--profile source is refused (it would scan zero components while the manifest claimed the mode was in effect) =="
+# Needs no gitleaks: the refusal is checked BEFORE assertGitleaksAvailable() precisely so
+# the answer does not depend on whether the host happens to have the binary.
+set +e
+NOSRC_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/nosrc.age" --scan-secrets deny 2>&1); NOSRC_RC=$?
+set -e
+[ "$NOSRC_RC" != "0" ] || { echo "[FAIL] --scan-secrets deny with only --pg was accepted — it would scan nothing while reporting deny"; exit 1; }
+printf '%s' "$NOSRC_ERR" | grep -q 'nothing to scan' || { echo "[FAIL] the refusal does not say the scan would have no component to look at"; echo "$NOSRC_ERR"; exit 1; }
+test ! -e "$TMP/nosrc.age" || { echo "[FAIL] --scan-secrets with no scannable source still produced an output file"; exit 1; }
+# The same --pg-only snapshot WITHOUT the flag must not hit this refusal at all (it gets
+# as far as pg_dump and fails there for its own unrelated reason — an unreachable test
+# DSN — which is exactly the point: the new check fires only when the flag is present).
+set +e
+PGONLY_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/nosrc-noflag.age" 2>&1)
+set -e
+if printf '%s' "$PGONLY_ERR" | grep -q 'nothing to scan'; then echo "[FAIL] a --pg-only snapshot WITHOUT --scan-secrets was refused by the new check"; echo "$PGONLY_ERR"; exit 1; fi
+echo "[PASS] --scan-secrets is refused when no --dir/--profile source would be scanned, without needing gitleaks, and only when the flag is present"
+
+echo "== #307: a value-taking flag given with NO value is refused, naming the flag (it used to read as \"flag omitted\" and silently disable the gate) =="
+set +e
+NOVAL_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/noval.age" --scan-secrets 2>&1); NOVAL_RC=$?
+set -e
+[ "$NOVAL_RC" != "0" ] || { echo "[FAIL] a trailing --scan-secrets (no mode) was accepted — the gate is silently off"; exit 1; }
+printf '%s' "$NOVAL_ERR" | grep -q -- '--scan-secrets requires a value' || { echo "[FAIL] the refusal does not name the flag that is missing its value"; echo "$NOVAL_ERR"; exit 1; }
+test ! -e "$TMP/noval.age" || { echo "[FAIL] a trailing --scan-secrets still produced an output file"; exit 1; }
+# Not special-cased to one flag: the parser refuses ANY value-taking flag left dangling.
+set +e
+NOVAL_OUT_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out 2>&1); NOVAL_OUT_RC=$?
+NOVAL_REC_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/noval2.age" --recipient 2>&1); NOVAL_REC_RC=$?
+set -e
+[ "$NOVAL_OUT_RC" != "0" ] || { echo "[FAIL] a trailing --out was accepted"; exit 1; }
+printf '%s' "$NOVAL_OUT_ERR" | grep -q -- '--out requires a value' || { echo "[FAIL] a trailing --out does not name itself"; echo "$NOVAL_OUT_ERR"; exit 1; }
+[ "$NOVAL_REC_RC" != "0" ] || { echo "[FAIL] a trailing --recipient was accepted"; exit 1; }
+printf '%s' "$NOVAL_REC_ERR" | grep -q -- '--recipient requires a value' || { echo "[FAIL] a trailing --recipient (a repeatable array flag) does not name itself"; echo "$NOVAL_REC_ERR"; exit 1; }
+echo "[PASS] a dangling value flag (--scan-secrets/--out/--recipient) is refused by name, not read as an omitted flag"
+
 if ! command -v gitleaks >/dev/null 2>&1; then
   echo "[SKIP] --scan-secrets warn/deny tests: no \`gitleaks\` binary on PATH (install it — https://github.com/gitleaks/gitleaks — to exercise this; CI installs it via the .github/workflows/ci.yml step, see #215)"
 else

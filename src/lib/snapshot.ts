@@ -329,6 +329,21 @@ export async function snapshot(o: CliOptions): Promise<void> {
   if (o.scan_secrets !== undefined) {
     if (!isScanSecretsMode(o.scan_secrets))
       throw new Error(`--scan-secrets must be "warn" or "deny" (got ${JSON.stringify(o.scan_secrets)})`);
+    // The scan runs per --dir/--profile component (see the staging loop below), so with
+    // no such source there is nothing for it to look at: a --pg-only snapshot would
+    // scan ZERO components while the manifest — and, since #307, the MCP result and
+    // `schedule status` — all say the mode was in effect. Refuse instead of reporting a
+    // gate that inspected nothing; a caller believing a snapshot was scanned when it was
+    // not is worse than one who knows it was not. Scanning the pg_dump itself is a
+    // feature, not something to fake by staying quiet here. Checked BEFORE
+    // assertGitleaksAvailable() below so the answer does not depend on whether gitleaks
+    // happens to be installed.
+    if (o.dirs.length === 0)
+      throw new Error(
+        `--scan-secrets ${o.scan_secrets} has nothing to scan: it covers --dir/--profile staged plaintext, and this ` +
+          `snapshot has no --dir or --profile source (a --pg dump is not scanned). Add the source you meant to gate, ` +
+          `or drop --scan-secrets — refusing rather than reporting a scan that would inspect no component.`,
+      );
     scanMode = o.scan_secrets;
     await assertGitleaksAvailable();
   }

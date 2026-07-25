@@ -329,17 +329,22 @@ async function run(tmp) {
     // CLI's --scan-secrets accepts. This is the structural half of the bug — the field
     // did not exist at all, so no spelling of it could ever have scanned anything — and
     // it needs no gitleaks binary to assert.
-    const snapshotNowTool = (list.result?.tools ?? []).find((t) => t.name === 'snapshot_now');
-    const scanProp = snapshotNowTool?.inputSchema?.properties?.scan_secrets;
-    if (!scanProp) {
-      throw new Error(
-        `snapshot_now does not advertise scan_secrets (#307) — properties: ${Object.keys(snapshotNowTool?.inputSchema?.properties ?? {}).join(', ')}`,
-      );
-    }
-    if (scanProp.type !== 'string' || JSON.stringify(scanProp.enum) !== JSON.stringify(['warn', 'deny'])) {
-      throw new Error(
-        `snapshot_now.scan_secrets schema unexpected: ${JSON.stringify(scanProp).slice(0, 300)} (want type string, enum ["warn","deny"])`,
-      );
+    // Both unattended surfaces, not just the one: snapshot_now takes a snapshot directly,
+    // schedule_install bakes one into a nightly. Asserted from the same loop so a future
+    // surface cannot be added with a differently-spelled enum.
+    for (const toolName of ['snapshot_now', 'schedule_install']) {
+      const tool = (list.result?.tools ?? []).find((t) => t.name === toolName);
+      const scanProp = tool?.inputSchema?.properties?.scan_secrets;
+      if (!scanProp) {
+        throw new Error(
+          `${toolName} does not advertise scan_secrets (#307) — properties: ${Object.keys(tool?.inputSchema?.properties ?? {}).join(', ')}`,
+        );
+      }
+      if (scanProp.type !== 'string' || JSON.stringify(scanProp.enum) !== JSON.stringify(['warn', 'deny'])) {
+        throw new Error(
+          `${toolName}.scan_secrets schema unexpected: ${JSON.stringify(scanProp).slice(0, 300)} (want type string, enum ["warn","deny"])`,
+        );
+      }
     }
 
     // 2a. spend gate: paid backend without confirm_paid must be refused —
@@ -432,6 +437,37 @@ async function run(tmp) {
     }
     if (existsSync(badScanOut))
       throw new Error('snapshot_now rejected a bad scan_secrets but still produced a snapshot artifact');
+
+    // #307 (multi-model review): asking for the gate on a snapshot with no dirs source is
+    // refused, not reported. The scan runs per staged directory, so a pg-only call would
+    // scan ZERO components while the result said "deny" — a caller believing a snapshot
+    // was scanned when it was not is worse off than one told it was not. Needs neither
+    // gitleaks nor Postgres: the refusal comes before both.
+    const noSrcScanOut = join(tmp, 'nosrcscan.age');
+    send({
+      jsonrpc: '2.0',
+      id: 30708,
+      method: 'tools/call',
+      params: {
+        name: 'snapshot_now',
+        arguments: {
+          pg: 'postgres://x/y',
+          recipients: [recipientPath],
+          out: noSrcScanOut,
+          scan_secrets: 'deny',
+        },
+      },
+    });
+    const noSrcScan = await waitFor(30708);
+    if (
+      noSrcScan.result?.isError !== true ||
+      !/nothing to scan/.test(noSrcScan.result?.structuredContent?.message ?? '')
+    )
+      throw new Error(
+        `snapshot_now accepted scan_secrets with no dirs source: ${JSON.stringify(noSrcScan.result).slice(0, 400)}`,
+      );
+    if (existsSync(noSrcScanOut))
+      throw new Error('snapshot_now refused a source-less scan_secrets but still produced a snapshot artifact');
 
     // 2b-3. #307: the gate is actually WIRED to snapshot(), not just advertised. Needs
     // the real binary, so it SKIPs without one — same idiom as scripts/selftest.sh's
@@ -857,6 +893,13 @@ async function run(tmp) {
     if (schedInstallSc?.backend !== 'file' || schedInstallSc?.at !== '03:30' || schedInstallSc?.no_load !== true) {
       throw new Error(`schedule_install result unexpected: ${JSON.stringify(schedInstallSc).slice(0, 300)}`);
     }
+    // #307: an install that was not asked to scan says so, rather than leaving the caller
+    // to infer it from an absent field.
+    if (schedInstallSc?.scan_secrets !== null) {
+      throw new Error(
+        `schedule_install without scan_secrets should report scan_secrets:null, got ${JSON.stringify(schedInstallSc?.scan_secrets)}`,
+      );
+    }
 
     // 2l. schedule_status — thin wrapper over the SAME schedule() the CLI's `schedule
     // status` dispatches to; asserts against the schedule_install call just above,
@@ -1245,6 +1288,91 @@ async function run(tmp) {
     if (!/already exists/.test(keygenGuard.result?.structuredContent?.message ?? ''))
       throw new Error(`keygen refused for the wrong reason: ${JSON.stringify(keygenGuard.result?.structuredContent)}`);
 
+    // 2o. #307: schedule_install can enable the gate too — an agent installing a nightly
+    // over MCP is exactly the unattended surface this issue is about. Kept LAST because a
+    // successful install replaces the schedule 2k/2l wrote and read back.
+    //
+    // Structural first (no gitleaks needed): a source-less request is refused rather than
+    // baking a nightly that reports a scan of zero components, and a bad mode is refused.
+    send({
+      jsonrpc: '2.0',
+      id: 30704,
+      method: 'tools/call',
+      params: {
+        name: 'schedule_install',
+        arguments: {
+          backend: 'file',
+          pg: 'postgres://x/y',
+          scan_secrets: 'deny',
+          no_load: true,
+          confirm_install: true,
+        },
+      },
+    });
+    const schedNoSrc = await waitFor(30704);
+    if (
+      schedNoSrc.result?.isError !== true ||
+      !/nothing to scan/.test(schedNoSrc.result?.structuredContent?.message ?? '')
+    )
+      throw new Error(
+        `schedule_install accepted scan_secrets with no dirs source: ${JSON.stringify(schedNoSrc.result).slice(0, 400)}`,
+      );
+    send({
+      jsonrpc: '2.0',
+      id: 30705,
+      method: 'tools/call',
+      params: {
+        name: 'schedule_install',
+        arguments: { backend: 'file', dirs: [data], scan_secrets: 'bogus', no_load: true, confirm_install: true },
+      },
+    });
+    const schedBadMode = await waitFor(30705);
+    if (schedBadMode.result?.isError !== true || schedBadMode.result?.structuredContent?.code !== 'ERR_INVALID_INPUT')
+      throw new Error(
+        `schedule_install accepted scan_secrets:"bogus": ${JSON.stringify(schedBadMode.result).slice(0, 400)}`,
+      );
+
+    // Then the real wiring, when a gitleaks exists for install to resolve and bake in.
+    let schedScanSummary = 'skipped (no gitleaks)';
+    if (spawnSync('sh', ['-c', 'command -v gitleaks'], { encoding: 'utf8' }).status === 0) {
+      send({
+        jsonrpc: '2.0',
+        id: 30706,
+        method: 'tools/call',
+        params: {
+          name: 'schedule_install',
+          arguments: { backend: 'file', dirs: [data], scan_secrets: 'deny', no_load: true, confirm_install: true },
+        },
+      });
+      const schedScan = await waitFor(30706);
+      const schedScanSc = schedScan.result?.structuredContent;
+      if (schedScan.result?.isError)
+        throw new Error(`schedule_install with scan_secrets failed: ${JSON.stringify(schedScanSc).slice(0, 500)}`);
+      if (schedScanSc?.scan_secrets !== 'deny')
+        throw new Error(
+          `schedule_install should report the mode it baked in, got ${JSON.stringify(schedScanSc?.scan_secrets)}`,
+        );
+      // The claim is only worth anything if the generated runner really carries it.
+      const runnerText = await readFile(join(home, 'schedule', 'nightly.sh'), 'utf8');
+      if (!/snapshot .*--scan-secrets 'deny'/.test(runnerText))
+        throw new Error(
+          "schedule_install reported scan_secrets:deny but the generated runner's snapshot line lacks it",
+        );
+      // And schedule_status — the read-back surface an agent would check — agrees.
+      send({ jsonrpc: '2.0', id: 30707, method: 'tools/call', params: { name: 'schedule_status', arguments: {} } });
+      const schedScanStatus = await waitFor(30707);
+      if (schedScanStatus.result?.structuredContent?.configured?.scan_secrets !== 'deny')
+        throw new Error(
+          `schedule_status does not report the installed scan mode: ${JSON.stringify(schedScanStatus.result?.structuredContent?.configured)}`,
+        );
+      schedScanSummary = 'installed+runner+status=deny';
+    } else {
+      process.stdout.write(
+        'MCP SMOKE: [SKIP] schedule_install scan_secrets end-to-end — no `gitleaks` on PATH for install to resolve ' +
+          '(CI installs it, see #215). The schema and refusal assertions above still ran.\n',
+      );
+    }
+
     process.stdout.write(
       `MCP SMOKE: PASS — tools=[${names.join(', ')}], spend gate=ERR_CONFIRM_REQUIRED, ` +
         `file round-trip locator=${snapSc.locator.split('/').pop()}, status.age=${latest.age_seconds}s, verify=${verSc.verdict}, ` +
@@ -1252,7 +1380,8 @@ async function run(tmp) {
         `restore_now gate=ERR_CONFIRM_REQUIRED, restore_now round-trip content=ok, estimate(file)=0, ` +
         `estimate(size_bytes)=0, estimate(turbo, sdk ${turboSdkInstalled ? 'installed' : 'missing'})=ok, ` +
         `schedule_install gate=ERR_CONFIRM_REQUIRED, schedule_install no_load=ok, ` +
-        `schedule_status.next_run=${schedSc.next_run}, resource==tool=yes, ` +
+        `schedule_status.next_run=${schedSc.next_run}, schedule_install scan_secrets=${schedScanSummary}, ` +
+        `resource==tool=yes, ` +
         `prompt=restore-runbook(${promptText.length}ch), keygen(pre-existing)=refused, ` +
         `unknown-arg refused by all ${EXPECTED_MCP_TOOLS.length} tools (near miss named), ` +
         `out-of-enum value refused on all ${enumFields.length} declared enum field(s)\n`,

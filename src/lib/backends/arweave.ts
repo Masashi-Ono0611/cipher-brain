@@ -23,6 +23,7 @@ import {
 } from '../config.js';
 import { warnIfLooseKeyPerms, readHead, fmtBytes, errMsg, RetryableError, SdkMissingError } from '../util.js';
 import { arUsdRate, usdApprox } from '../estimate.js';
+import { progressReporter } from '../progress.js';
 import type { StorageBackend, PutOpts } from '../types.js';
 
 // The public gateways to try (in order) for the HTTP read, before the L1 chunk
@@ -202,9 +203,20 @@ async function streamArweaveGateway(url: string, part: string, timeoutMs: number
       break; // not a redirect (or a 3xx with no Location) → handle the response below
     }
     if (resp.statusCode === 200) {
+      // The stall tap is already counting every chunk, so progress (#283) costs one
+      // addition here rather than a second pass over the stream. A gateway that omits
+      // content-length just reports bytes without a percentage — the reporter handles a
+      // zero total, and "how much has arrived" is still the answer to "is it moving?".
+      // This is the download half of the same problem: a restore is precisely when you
+      // least want to wonder whether a transfer is alive.
+      const total = Number(resp.headers['content-length'] ?? 0) || 0;
+      const progress = progressReporter('arweave pull');
+      let received = 0;
       const tap = new Transform({
         transform(c, _e, cb) {
           arm();
+          received += c.length;
+          progress.report(received, total);
           cb(null, c);
         },
       }); // each chunk resets the stall deadline

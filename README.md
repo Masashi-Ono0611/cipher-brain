@@ -537,6 +537,13 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       (file: store path; arweave: tx id; turbo: ANS-104 data item id; rclone: the
       --remote value itself).
       Storage sees ciphertext only.
+      Transfer progress (#283) is printed to stderr on the backends that can actually be
+      slow: turbo uploads (from the SDK's own progress events), rclone transfers (rclone's
+      periodic stats, translated), and an arweave gateway READ during pull. file is a local
+      copy and the L1 arweave upload is capped at ~10 MiB, so neither reports anything. How
+      OFTEN depends on whether stderr is a terminal — roughly every 2s when a human is
+      watching, roughly every 30s when it is a nightly log or an MCP tool result, both of
+      which keep everything they are given.
       arweave/turbo are paid permanent stores — require --yes or CIPHER_BRAIN_YES=1;
       both print a native-unit cost estimate (winston/winc) before uploading, plus an
       approximate USD line when a USD/AR rate is fetchable — a rate failure drops that

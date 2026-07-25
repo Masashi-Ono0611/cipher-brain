@@ -10,6 +10,7 @@ import { resolve } from 'node:path';
 import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND } from '../config.js';
 import { warnIfLooseKeyPerms, fmtBytes, errMsg } from '../util.js';
 import { arUsdRate, usdApprox } from '../estimate.js';
+import { progressReporter } from '../progress.js';
 import { arweaveBackend } from './arweave.js';
 import type { StorageBackend, PutOpts } from '../types.js';
 
@@ -123,10 +124,42 @@ export function turboBackend(): StorageBackend {
           );
         dataItemOpts.paidBy = [AR_PAID_BY];
       }
+      // Progress (#283). The SDK has emitted these since v1.26.0 and we require ^1.42.0,
+      // so nothing here measures anything — we were simply never subscribing, and a
+      // brain-sized upload was minutes of silence. `step` distinguishes the signing pass
+      // from the upload pass; both move bytes and both can be slow on a large file, so
+      // both are reported, labelled, rather than silently sharing one percentage that
+      // appears to go backwards when the second pass starts from zero.
+      // One reporter PER STEP, each anchoring its own rate window when it is created —
+      // i.e. at that step's first event. Sharing one start time across steps looked
+      // tidier and was wrong: the SDK's counters restart per step, so an upload that
+      // begins after 90s of signing would be divided by 91s and report a rate an order
+      // of magnitude too low with an ETA to match (multi-model review finding). The
+      // cost of getting this right is that each step's FIRST line has no rate yet,
+      // which is the honest answer — at that instant nothing has been observed moving.
+      const reporters = new Map<string, ReturnType<typeof progressReporter>>();
+      const onProgress = ({
+        processedBytes,
+        totalBytes,
+        step,
+      }: {
+        processedBytes: number;
+        totalBytes: number;
+        step?: string;
+      }) => {
+        const label = `turbo ${step ?? 'upload'}`;
+        let r = reporters.get(label);
+        if (!r) {
+          r = progressReporter(label);
+          reporters.set(label, r);
+        }
+        r.report(processedBytes, totalBytes);
+      };
       const res = await turbo.uploadFile({
         fileStreamFactory: () => createReadStream(abs),
         fileSizeFactory: () => size,
         dataItemOpts,
+        events: { onProgress },
       });
       if (!res?.id) throw new Error(`turbo upload returned no data item id: ${JSON.stringify(res).slice(0, 200)}`);
       return res.id; // 43-char data item id — retrievable like any bundled item

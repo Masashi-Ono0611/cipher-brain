@@ -22,7 +22,7 @@ import { readFile, writeFile, mkdir, rm, rename, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir, userInfo } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { HOME, IDENTITY, RECIPIENT, SIGN_IDENTITY, SIGN_RECIPIENT } from './config.js';
+import { HOME, IDENTITY, RECIPIENT, SIGN_IDENTITY, SIGN_RECIPIENT, readEnv } from './config.js';
 import { keygen, keygenAt } from './keys.js';
 import { askNewPassphrase, wrapIdentity } from './crypt.js';
 import { keygenSignAt } from './minisign.js';
@@ -50,7 +50,7 @@ type Rl = ReturnType<typeof createInterface>;
 // scripted end-to-end selftest can drive it deterministically.
 function requireTTY(): void {
   if (process.stdin.isTTY) return;
-  if (process.env.CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE === '1') return;
+  if (readEnv('CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE') === '1') return;
   throw new Error(
     'cipher-brain init is an interactive wizard and requires stdin to be a TTY — run it directly in a ' +
       'terminal, not via a pipe, a redirected file, or in CI (same posture keygen --passphrase already has ' +

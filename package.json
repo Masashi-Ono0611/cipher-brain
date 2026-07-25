@@ -46,7 +46,7 @@
     "changeset:status": "changeset status --since=origin/main",
     "format": "biome format --write .",
     "check:help-docs": "node scripts/check-help-docs.mjs",
-    "verify": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:pq && npm run selftest:minisign && npm run selftest:schedule && npm run selftest:init && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && npm run selftest:error-codes && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
+    "verify": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:pq && npm run selftest:minisign && npm run selftest:schedule && npm run selftest:config-file && npm run selftest:init && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && npm run selftest:error-codes && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs",
     "selftest": "bash scripts/selftest.sh",
     "selftest:profiles": "bash scripts/selftest-profiles.sh",
     "selftest:cipherbrainignore": "bash scripts/selftest-cipherbrainignore.sh",
@@ -62,7 +62,8 @@
     "selftest:arweave": "node scripts/arweave-roundtrip.mjs",
     "selftest:arweave-nodeps": "node scripts/selftest-arweave-nodeps.mjs",
     "selftest:usd-rate": "node scripts/selftest-usd-rate.mjs",
-    "selftest:error-codes": "node scripts/selftest-error-codes.mjs"
+    "selftest:error-codes": "node scripts/selftest-error-codes.mjs",
+    "selftest:config-file": "bash scripts/selftest-config-file.sh"
   },
   "engines": {
     "node": ">=22.6.0"

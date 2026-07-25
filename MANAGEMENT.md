@@ -114,6 +114,40 @@ For full version history (not just the latest), keep backing up the whole `index
 recoverable. *(A stable name that always resolves to the newest snapshot — an ArNS
 mutable pointer — is a future option; until then this file is the durable pointer.)*
 
+## Settings in a file, and what that does *not* change
+
+Any `CIPHER_BRAIN_*` setting can live in `$CIPHER_BRAIN_HOME/config.env` — one
+`KEY=value` per line, `#` comments — instead of being re-established in every
+shell. The CLI and the MCP server both read it.
+
+```sh
+# $CIPHER_BRAIN_HOME/config.env   (chmod 600 — it may hold secrets)
+CIPHER_BRAIN_AR_WALLET=/Users/me/.cipher-brain/wallet.json
+CIPHER_BRAIN_MAX_SPEND=500000
+CIPHER_BRAIN_FILE_DIR=/Volumes/backup/cipher-brain-store
+```
+
+- **An explicit environment variable wins over the file.** `CIPHER_BRAIN_MAX_SPEND=1
+  cipher-brain push …` overrides whatever the file says, every time.
+- **`CIPHER_BRAIN_HOME` cannot come from the file** — the file lives inside it. Set
+  that one in the environment; a file that tries is warned about, not obeyed.
+- **An unknown `CIPHER_BRAIN_*` key is an error**, not a no-op. A
+  `CIPHER_BRAIN_MAXSPEND` typo would otherwise silently remove a spend cap.
+- **Only `CIPHER_BRAIN_*` settings are applied.** Any other key in the file is read
+  (so it can be reported) but never enters the environment — a stray `TMPDIR` or
+  proxy variable in there cannot reach the `tar`, `pg_dump` or `rclone` processes
+  cipher-brain spawns.
+
+**What it does not change is the nightly run.** `schedule install` still bakes the
+values that were in effect *at install time* into the runner, because launchd and
+cron start with a bare environment and the guarantee worth keeping is that the
+unattended run uses the configuration the operator actually tested. Editing
+`config.env` afterwards does **not** retune an installed schedule: the generated
+runner sets `CIPHER_BRAIN_NO_CONFIG_FILE=1`, so it uses only what was baked in and
+is unaffected by later edits — including an edit that would refuse a normal
+invocation. Re-run `schedule install` to pick changes up. `cipher-brain schedule status` prints
+which config file it loaded, so "why is this behaving differently" has an answer.
+
 ## Cadence
 
 gbrain re-synthesizes nightly, so a **nightly** snapshot is the natural cadence.

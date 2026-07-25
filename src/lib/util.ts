@@ -1,6 +1,6 @@
 // ---------- utils ----------
 import { access, lstat, stat } from 'node:fs/promises';
-import { createReadStream, constants as FS } from 'node:fs';
+import { createReadStream, statSync, constants as FS } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 export const exists = (p: string): Promise<boolean> =>
@@ -65,16 +65,27 @@ export async function requirePath(path: string, what = 'path'): Promise<void> {
 // identity is created 0600; an Arweave JWK is a spend-capable bearer credential (a Turbo
 // Credit Share Approval is granted TO its address) yet may be dropped in with loose modes.
 // We warn rather than hard-fail so an unusual-but-intentional setup still works.
+// One wording, two call shapes. config.ts has to check its own file from a MODULE
+// BODY, which cannot await, so it needs the sync form — and duplicating the sentence
+// there would be the same drift this codebase keeps removing.
+const loosePermsWarning = (path: string, what: string, mode: number): string =>
+  `⚠  ${what} at ${path} is group/other-accessible (mode ${(mode & 0o777).toString(8)}); chmod 600 it — it is a secret.\n`;
+
 export async function warnIfLooseKeyPerms(path: string, what: string): Promise<void> {
   try {
     const { mode } = await stat(path);
-    if (mode & 0o077) {
-      process.stderr.write(
-        `⚠  ${what} at ${path} is group/other-accessible (mode ${(mode & 0o777).toString(8)}); chmod 600 it — it is a secret.\n`,
-      );
-    }
+    if (mode & 0o077) process.stderr.write(loosePermsWarning(path, what, mode));
   } catch {
     /* unreadable / missing perms info — the caller's own read will surface real errors */
+  }
+}
+
+export function warnIfLooseKeyPermsSync(path: string, what: string): void {
+  try {
+    const { mode } = statSync(path);
+    if (mode & 0o077) process.stderr.write(loosePermsWarning(path, what, mode));
+  } catch {
+    /* same posture as the async form above */
   }
 }
 

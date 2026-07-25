@@ -528,7 +528,11 @@ export async function pull(o: CliOptions): Promise<void> {
       console.error(`warning: ${sigOut} already exists — not overwriting it with the fetched signature`);
     } else {
       try {
-        await backend.get(o.sig_locator, sigOut);
+        // 'minisig', not the default 'age': this object is a detached signature, and a
+        // backend that validates the shape it received (arweave/turbo) would otherwise
+        // refuse a perfectly good sidecar for not being ciphertext — which is exactly what
+        // it did before #318, making push --sign + pull impossible to round-trip there.
+        await backend.get(o.sig_locator, sigOut, 'minisig');
         console.error(`pulled ${o.backend}:${o.sig_locator} -> ${sigOut}`);
       } catch (e) {
         console.error(

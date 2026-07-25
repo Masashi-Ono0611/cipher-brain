@@ -12,7 +12,7 @@ import { warnIfLooseKeyPerms, fmtBytes, errMsg } from '../util.js';
 import { arUsdRate, usdApprox } from '../estimate.js';
 import { progressReporter } from '../progress.js';
 import { arweaveBackend } from './arweave.js';
-import type { StorageBackend, PutOpts } from '../types.js';
+import type { StorageBackend, PutOpts, FetchShape } from '../types.js';
 
 export function turboBackend(): StorageBackend {
   return {
@@ -167,8 +167,12 @@ export function turboBackend(): StorageBackend {
     // reads are identical to the arweave backend (Turbo items are bundled). Pure
     // delegation, so a turbo PULL needs neither @ardrive/turbo-sdk nor a wallet —
     // the "a fresh machine needs only the tx id" recovery property holds.
-    get(locator: string, out: string): Promise<void> {
-      return arweaveBackend().then((b) => b.get(locator, out));
+    get(locator: string, out: string, expect?: FetchShape): Promise<void> {
+      // Forwarded, not dropped: turbo uploads through its own SDK but READS through the
+      // arweave gateway, so the shape gate that decides whether a body is the object or a
+      // soft-404 lives over there — and a sidecar fetch that arrived here as `age` would be
+      // refused for not being ciphertext (#318).
+      return arweaveBackend().then((b) => b.get(locator, out, expect));
     },
   };
 }

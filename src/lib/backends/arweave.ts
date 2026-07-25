@@ -11,6 +11,7 @@ import http, { type IncomingMessage } from 'node:http';
 import https from 'node:https';
 import {
   AGE_MAGIC,
+  MINISIG_MAGIC,
   AR_HOST,
   AR_PORT,
   AR_PROTOCOL,
@@ -24,7 +25,7 @@ import {
 import { warnIfLooseKeyPerms, readHead, fmtBytes, errMsg, RetryableError, SdkMissingError } from '../util.js';
 import { arUsdRate, usdApprox } from '../estimate.js';
 import { progressReporter } from '../progress.js';
-import type { StorageBackend, PutOpts } from '../types.js';
+import type { StorageBackend, PutOpts, FetchShape } from '../types.js';
 
 // The public gateways to try (in order) for the HTTP read, before the L1 chunk
 // fallback (#21). Override the whole list with CIPHER_BRAIN_AR_GATEWAYS (comma-
@@ -150,7 +151,7 @@ function gatewayGet(url: string, signal: AbortSignal, pin: ScreenedTarget | null
   });
 }
 
-// Non-empty AND starts with AGE_MAGIC — every stored object is age ciphertext (push
+// Non-empty AND starts with AGE_MAGIC — the CIPHERTEXT objects are age ciphertext (push
 // enforces the same header), so anything else (a soft-404 page, a "tx pending"
 // placeholder, a CDN interstitial, an unrelated tx's bytes) must never be promoted to
 // the final output path. Shared by BOTH read paths (#118) so neither the gateway stream
@@ -160,12 +161,39 @@ async function isAgeCiphertext(part: string): Promise<boolean> {
   return (await stat(part)).size > 0 && (await readHead(part, 64)).startsWith(AGE_MAGIC);
 }
 
+// The same guard for the OTHER kind of object this backend stores. #214 started pushing a
+// detached minisign signature beside each ciphertext, which invalidated the comment above's
+// premise that "every stored object is age ciphertext" — and since the gate below only ever
+// asked isAgeCiphertext, a sidecar sitting intact in storage could never be promoted, so
+// `push --sign` + `pull` could not round-trip on arweave/turbo at all (#318). The fix is a
+// predicate per shape, not the removal of the predicate: a gateway serving a soft-404 page
+// must still be refused for a sidecar exactly as it is for a ciphertext.
+//
+// minisign's own writer emits "untrusted comment: " as line 1 (src/lib/minisign.ts's
+// COMMENT_PREFIX, and the format's own spec), so the first bytes identify the format the
+// same way AGE_MAGIC does — deliberately a HEAD check, not a full parse: this decides
+// "is this the object or the gateway's apology", and whether the signature actually
+// verifies is minisign.ts's job on a file that has already been promoted.
+async function isMinisig(part: string): Promise<boolean> {
+  return (await stat(part)).size > 0 && (await readHead(part, 64)).startsWith(MINISIG_MAGIC);
+}
+
+const SHAPE_CHECK: Record<FetchShape, (part: string) => Promise<boolean>> = {
+  age: isAgeCiphertext,
+  minisig: isMinisig,
+};
+
 // Stream an Arweave gateway GET to `part`; resolve true iff it produced a non-empty
 // file (the caller then promotes it to `out`). A STALL timeout (reset per chunk) bounds
 // a stalled gateway WITHOUT capping a large but progressing transfer (#17). Accept ONLY
 // HTTP 200 (a 202 "pending" / soft-404 means "not here, try the next gateway"). Redirects
 // are followed MANUALLY (#39) so each hop's target is SSRF-screened before we fetch it.
-async function streamArweaveGateway(url: string, part: string, timeoutMs: number): Promise<boolean> {
+async function streamArweaveGateway(
+  url: string,
+  part: string,
+  timeoutMs: number,
+  expect: FetchShape,
+): Promise<boolean> {
   const ctl = new AbortController();
   let stall: ReturnType<typeof setTimeout> | undefined;
   const arm = () => {
@@ -228,7 +256,7 @@ async function streamArweaveGateway(url: string, part: string, timeoutMs: number
       // must NOT be promoted: returning false here falls through to the next gateway,
       // then the L1 chunk read, then the retryable error that drives `pull --wait`,
       // instead of writing garbage to --out during the propagation window.
-      if (await isAgeCiphertext(part)) return true;
+      if (await SHAPE_CHECK[expect](part)) return true;
     } else {
       resp.resume(); // drain a non-200 (202 pending / 404) so the socket frees
     }
@@ -440,7 +468,7 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       if (res.status !== 200 && res.status !== 208) throw new Error(describeArweavePostError(res.status, res.data));
       return tx.id; // 43-char base64url tx id
     },
-    async get(locator: string, out: string): Promise<void> {
+    async get(locator: string, out: string, expect: FetchShape = 'age'): Promise<void> {
       // reads are unauthenticated — a fresh machine needs only the tx id, no wallet.
       // The locator is interpolated into a gateway URL below, so validate it is a
       // clean Arweave tx id first (this also closes a path-traversal/SSRF foot-gun).
@@ -457,7 +485,7 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       //    / non-ciphertext 200 error page is rejected by streamArweaveGateway's
       //    AGE_MAGIC check and falls through to the next gateway (then the chunk read).
       for (const gw of arGateways()) {
-        if (await streamArweaveGateway(`${gw.replace(/\/+$/, '')}/${locator}`, part, AR_HTTP_TIMEOUT_MS)) {
+        if (await streamArweaveGateway(`${gw.replace(/\/+$/, '')}/${locator}`, part, AR_HTTP_TIMEOUT_MS, expect)) {
           await rename(part, out);
           return;
         }
@@ -493,7 +521,7 @@ export async function arweaveBackend(): Promise<StorageBackend> {
         // write can neither corrupt --out nor destroy a pre-existing valid one.
         if (d?.length) {
           await writeFile(part, Buffer.from(d as Uint8Array));
-          if (await isAgeCiphertext(part)) {
+          if (await SHAPE_CHECK[expect](part)) {
             await rename(part, out);
             return;
           }

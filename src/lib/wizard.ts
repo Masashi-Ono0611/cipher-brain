@@ -532,9 +532,9 @@ export async function init(_o: CliOptions): Promise<void> {
           `both read:\n  ${configFilePath}   (one KEY=value per line; chmod 600 — it may hold secrets)\n` +
           'A shell rc (~/.zshrc / ~/.bashrc) also works, but only for the interactive shells you open yourself.\n' +
           'launchd/cron start the unattended nightly run with a bare environment, and "schedule install" bakes\n' +
-          'in whatever is in effect when you run it — so a value in the config file reaches the nightly run this\n' +
-          'setting most exists to protect, while one in a shell rc reaches it only if install happened to run\n' +
-          'from a shell that had sourced it. (Adding it after "schedule install"? Re-run install to pick it up.)',
+          'in whatever is in effect when you run it — so a value in the config file covers the nightly run as\n' +
+          'well as your own runs, while one in a shell rc covers the nightly run only if install happened to be\n' +
+          'run from a shell that had sourced it. (Added it after "schedule install"? Re-run install to pick it up.)',
       );
       let pinRecipientsLine: string | null = null;
       if (await askYesNo(rl, 'Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line for the config file?', true)) {
@@ -549,7 +549,9 @@ export async function init(_o: CliOptions): Promise<void> {
           `\nAdd this line to ${configFilePath} (create the file if it does not exist yet, then chmod 600 it):\n` +
             `${pinRecipientsLine}\n` +
             'For a shell rc instead, prefix it with "export " and open a new shell — but see the note above about\n' +
-            'the unattended nightly run.',
+            'the unattended nightly run. Either way it applies from the NEXT cipher-brain run onward: this\n' +
+            'wizard read its configuration at startup, so the first snapshot it is about to take (step 7/7,\n' +
+            'encrypting to the key(s) it just generated) is not itself checked against this list.',
         );
       } else {
         console.log('Skipping the recipient pin suggestion.');

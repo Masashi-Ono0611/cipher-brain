@@ -23,7 +23,7 @@ import {
   identityToRecipient,
   armor,
 } from 'age-encryption';
-import { AGE_MAGIC, AGE_ARMOR_HEADER } from './config.js';
+import { AGE_MAGIC, AGE_ARMOR_HEADER, readEnv } from './config.js';
 import { ACTIVE_CHILDREN } from './proc.js';
 import { errMsg, warnIfLooseKeyPerms } from './util.js';
 
@@ -152,13 +152,13 @@ async function unwrap(raw: Buffer, pass: string): Promise<string> {
 // CIPHER_BRAIN_PASSPHRASE (env) skips the prompt — for unattended restore/verify
 // and the CI interop test. Otherwise read hidden from the TTY (like `age -p`).
 export async function askPassphrase(question: string): Promise<string> {
-  const env = process.env.CIPHER_BRAIN_PASSPHRASE;
+  const env = readEnv('CIPHER_BRAIN_PASSPHRASE');
   if (env) return env;
   return promptHidden(question);
 }
 
 export async function askNewPassphrase(): Promise<string> {
-  const env = process.env.CIPHER_BRAIN_PASSPHRASE;
+  const env = readEnv('CIPHER_BRAIN_PASSPHRASE');
   if (env) return env;
   const a = await promptHidden('Enter passphrase: ');
   if (!a) throw new Error('empty passphrase — refusing to wrap the identity with nothing');

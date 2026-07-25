@@ -4,7 +4,7 @@
 import { mkdir, writeFile, rm, readFile, rename, link, stat } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { AGE_MAGIC, CIPHER_YES } from './config.js';
+import { AGE_MAGIC, CIPHER_YES, readEnv } from './config.js';
 import { exists, requireFile, sleep, sha256, readHead, errMsg, RetryableError } from './util.js';
 import { backendFor } from './backends/index.js';
 import { estimateCost, formatEstimate } from './estimate.js';
@@ -460,7 +460,7 @@ export async function pull(o: CliOptions): Promise<void> {
   // 0, and 0 is falsy, so `|| 30000` silently overrides the very value it was asked to
   // apply. Unset or empty falls back to the 30000ms default; anything else that parses
   // as a number is honored AS GIVEN, including 0.
-  const retryMsEnv = process.env.CIPHER_BRAIN_PULL_RETRY_MS;
+  const retryMsEnv = readEnv('CIPHER_BRAIN_PULL_RETRY_MS');
   const retryMsNum = retryMsEnv !== undefined && retryMsEnv !== '' ? Number(retryMsEnv) : NaN;
   const retryMs = Number.isFinite(retryMsNum) ? retryMsNum : 30000; // unset/empty/non-numeric -> default; anything else (incl. 0) is respected
   const deadline = Date.now() + waitMs;

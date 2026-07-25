@@ -30,15 +30,13 @@
 import { mkdir, writeFile, readFile, rm, readdir, chmod } from 'node:fs/promises';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { homedir } from 'node:os';
+
 import { join, resolve, dirname } from 'node:path';
-import { HOME } from './config.js';
+import { HOME, SCHEDULE_DIR, LAUNCHD_DIR, CONFIG_FILE, readEnv } from './config.js';
 import { exists } from './util.js';
 import { printJson } from './ui.js';
 import type { CliOptions } from './types.js';
 
-export const SCHEDULE_DIR = process.env.CIPHER_BRAIN_SCHEDULE_DIR || join(HOME, 'schedule');
-const LAUNCHD_DIR = process.env.CIPHER_BRAIN_LAUNCHD_DIR || join(homedir(), 'Library', 'LaunchAgents');
 // LABEL/CRON_MARKER are scoped to CIPHER_BRAIN_HOME (#114) so a second `install` under a
 // DIFFERENT CIPHER_BRAIN_HOME never overwrites or unregisters the first's launchd job /
 // crontab line — both LABEL (and therefore PLIST's filename) and CRON_MARKER used to be
@@ -217,7 +215,7 @@ function runnerBody(cfg: ScheduleConfig): string {
       `export CIPHER_BRAIN_YES=1`,
       `export CIPHER_BRAIN_MAX_SPEND=${cfg.max_spend}`,
     );
-    if (!process.env.CIPHER_BRAIN_AR_WALLET) {
+    if (!readEnv('CIPHER_BRAIN_AR_WALLET')) {
       spendLines.push(
         `# export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer — required to push via ${cfg.backend}`,
       );
@@ -442,13 +440,16 @@ async function install(o: CliOptions): Promise<void> {
   // (same mechanism as every other CIPHER_BRAIN_* var above) instead of requiring the user
   // to already know to set CIPHER_BRAIN_PG_BIN. An explicit CIPHER_BRAIN_PG_BIN is left
   // untouched (respected as-is by the envLines loop in runnerBody).
-  if (o.pg && !process.env.CIPHER_BRAIN_PG_BIN) {
+  if (o.pg && !readEnv('CIPHER_BRAIN_PG_BIN')) {
     const dir = resolvePgDumpDir();
     if (!dir) {
       throw new Error(
         `--pg requires pg_dump for the unattended run — could not resolve it (command -v pg_dump found nothing on PATH); install the postgresql client tools or pass CIPHER_BRAIN_PG_BIN=<dir containing pg_dump/pg_restore>`,
       );
     }
+    // A WRITE, not a read: the resolved dir is put back into the environment so
+    // captureEnv() below bakes it into the runner like any other setting. readEnv()
+    // (#286) is read-only by design, so this stays a direct assignment.
     process.env.CIPHER_BRAIN_PG_BIN = dir;
     console.error(
       `resolved pg_dump -> ${join(dir, 'pg_dump')} (baked into the runner as CIPHER_BRAIN_PG_BIN — launchd/cron do not inherit PATH)`,
@@ -707,6 +708,11 @@ async function status(o: CliOptions): Promise<void> {
     printJson({
       configured: { at: cfg.at, backend: cfg.backend },
       runner: cfg.runner,
+      // #286: the config file is loaded SILENTLY by config.ts — deliberately, so it does
+      // not add a line to every command. This is where it becomes visible, because a
+      // file can change which wallet, gateway or spend cap a run uses and "why is it
+      // behaving differently" has to be answerable somewhere.
+      config_file: CONFIG_FILE ? { path: CONFIG_FILE.path, variables: [...CONFIG_FILE.variables] } : null,
       ping: cfg.ping_url ? { url: cfg.ping_url, fail_url: cfg.ping_url_fail } : null,
       trigger: {
         type: cfg.trigger.type,
@@ -724,6 +730,11 @@ async function status(o: CliOptions): Promise<void> {
 
   console.log(`configured: daily at ${cfg.at}, backend ${cfg.backend}`);
   console.log(`runner: ${cfg.runner}`);
+  console.log(
+    CONFIG_FILE
+      ? `config file: ${CONFIG_FILE.path} (${CONFIG_FILE.variables.length} setting(s): ${CONFIG_FILE.variables.join(', ')})`
+      : 'config file: none',
+  );
   console.log(cfg.ping_url ? `ping: ${cfg.ping_url} (fail: ${cfg.ping_url_fail})` : 'ping: not configured');
   if (cfg.trigger.type === 'launchd') {
     console.log(`trigger: launchd ${triggerPath} (loaded: ${loadedYesNo})`);

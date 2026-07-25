@@ -19,6 +19,7 @@ import {
   AR_HTTP_TIMEOUT_MS,
   AR_MAX_SPEND,
   AR_L1_MAX_BYTES,
+  readEnv,
 } from '../config.js';
 import { warnIfLooseKeyPerms, readHead, fmtBytes, errMsg, RetryableError, SdkMissingError } from '../util.js';
 import { arUsdRate, usdApprox } from '../estimate.js';
@@ -30,13 +31,16 @@ import type { StorageBackend, PutOpts } from '../types.js';
 // host (CIPHER_BRAIN_AR_HOST/PORT/PROTOCOL — arweave.net, or arlocal in tests) is tried
 // first, then the extra public mirrors.
 function arGateways(): string[] {
-  if (process.env.CIPHER_BRAIN_AR_GATEWAYS) {
-    const list = process.env.CIPHER_BRAIN_AR_GATEWAYS.split(',')
+  const listed = readEnv('CIPHER_BRAIN_AR_GATEWAYS');
+  if (listed) {
+    const list = listed
+      .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
     if (list.length) return list; // ignore an all-blank override → fall through to the default
   }
-  if (process.env.CIPHER_BRAIN_AR_GATEWAY) return [process.env.CIPHER_BRAIN_AR_GATEWAY];
+  const pinned = readEnv('CIPHER_BRAIN_AR_GATEWAY');
+  if (pinned) return [pinned];
   // the derived host first, plus the public mirrors ONLY when the host is the default
   // arweave.net — a custom CIPHER_BRAIN_AR_HOST must not silently egress to them.
   const derived = `${AR_PROTOCOL}://${AR_HOST}:${AR_PORT}`;

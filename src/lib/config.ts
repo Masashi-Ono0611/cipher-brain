@@ -1,20 +1,151 @@
-// config — env-driven paths, binaries and tunables shared by every module.
+// config — env-driven paths, binaries and tunables shared by every module, plus the
+// optional config file (#286) that can supply any of them.
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { parseEnv } from 'node:util';
+import { warnIfLooseKeyPermsSync } from './util.js';
 
+// Every CIPHER_BRAIN_* name this codebase reads, declared exactly once.
+//
+// This list is not documentation — `readEnv()` below only accepts a name from it, so
+// reading a variable that is not declared here is a TYPE ERROR. That is what lets the
+// config file reject an unknown key (a `CIPHER_BRAIN_MAXSPEND` typo would otherwise be
+// silently ignored, and for a spend cap that is a real loss) WITHOUT introducing a
+// second list to keep in sync — the failure mode that produced #276 in the first place.
+//
+// Names read lazily elsewhere (crypt.ts, pushpull.ts, wizard.ts, backends/arweave.ts)
+// are declared here too and reach their call sites through readEnv(), so the set stays
+// complete without forcing those reads to happen at import time — several are read
+// per-invocation on purpose.
+const ENV_NAMES = [
+  'CIPHER_BRAIN_HOME',
+  'CIPHER_BRAIN_AGE', // deprecated no-op (#64), still declared so the file can name it and get the warning
+  'CIPHER_BRAIN_AGE_KEYGEN', // deprecated no-op (#64)
+  'CIPHER_BRAIN_PG_BIN',
+  'CIPHER_BRAIN_PIN_RECIPIENTS',
+  'CIPHER_BRAIN_PASSPHRASE',
+  'CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE',
+  'CIPHER_BRAIN_SCHEDULE_DIR',
+  'CIPHER_BRAIN_LAUNCHD_DIR',
+  'CIPHER_BRAIN_FILE_DIR',
+  'CIPHER_BRAIN_RCLONE_BIN',
+  'CIPHER_BRAIN_AR_HOST',
+  'CIPHER_BRAIN_AR_PORT',
+  'CIPHER_BRAIN_AR_PROTOCOL',
+  'CIPHER_BRAIN_AR_WALLET',
+  'CIPHER_BRAIN_AR_PAID_BY',
+  'CIPHER_BRAIN_AR_GATEWAY',
+  'CIPHER_BRAIN_AR_GATEWAYS',
+  'CIPHER_BRAIN_AR_HTTP_TIMEOUT',
+  'CIPHER_BRAIN_AR_USD_RATE_URL',
+  'CIPHER_BRAIN_AR_L1_MAX',
+  'CIPHER_BRAIN_YES',
+  'CIPHER_BRAIN_MAX_SPEND',
+  'CIPHER_BRAIN_PIPE_TIMEOUT',
+  'CIPHER_BRAIN_PULL_RETRY_MS',
+] as const;
+
+export type EnvName = (typeof ENV_NAMES)[number];
+
+/**
+ * Read one declared variable. The union type is the point: a name not in ENV_NAMES
+ * does not compile, so the list above cannot fall behind what the code reads.
+ * Deliberately NOT cached — several callers read per-invocation (tests set these
+ * between calls), and freezing them here would change that behaviour.
+ */
+export const readEnv = (name: EnvName): string | undefined => process.env[name];
+
+export interface LoadedConfigFile {
+  readonly path: string;
+  /** The CIPHER_BRAIN_* keys the file defined, for `schedule status` to report. */
+  readonly variables: readonly string[];
+}
+
+// A refusal here is RECORDED, not thrown. This runs in a module body, before cli.ts's
+// main().catch and before mcp.ts is serving, so throwing produces a raw stack trace
+// instead of the `error: …` line (plus the --json error object, #270, and the CB-E code
+// match) that every other failure in this tool gets. Both entry points re-throw
+// CONFIG_FILE_ERROR as their first act, which puts it back on the normal path.
+//
+// The file lives at $CIPHER_BRAIN_HOME/config.env, which means CIPHER_BRAIN_HOME is the
+// one variable it cannot set — the file would have to be read to know where it is. A
+// file that names it is warned about rather than silently ignored.
+//
+// Precedence is Node's, not ours: `process.loadEnvFile()` leaves an already-set
+// variable alone, so explicit env > file > built-in default with no logic here to get
+// wrong. The file is parsed a second time (parseEnv, which only parses — it does not
+// touch process.env) purely to learn which keys it declared, for validation and for
+// `schedule status`.
+function loadConfigFile(home: string): { file: LoadedConfigFile | null; error: Error | null } {
+  const path = join(home, 'config.env');
+  if (!existsSync(path)) return { file: null, error: null }; // by far the common case — never an error
+
+  let keys: string[];
+  try {
+    keys = Object.keys(parseEnv(readFileSync(path, 'utf8')));
+  } catch (e) {
+    return { file: null, error: new Error(`config file ${path} could not be parsed: ${(e as Error)?.message ?? e}`) };
+  }
+
+  const ours = keys.filter((k) => k.startsWith('CIPHER_BRAIN_'));
+  const unknown = ours.filter((k) => !(ENV_NAMES as readonly string[]).includes(k));
+  if (unknown.length) {
+    return {
+      file: null,
+      error: new Error(
+        `config file ${path}: unknown setting(s) ${unknown.join(', ')} — ` +
+          `cipher-brain reads no such variable, so this would have no effect (a typo in e.g. ` +
+          `CIPHER_BRAIN_MAX_SPEND would silently remove your spend cap). Run 'cipher-brain --help' ` +
+          `for the settings it does read. Keys outside the CIPHER_BRAIN_ namespace are left alone.`,
+      ),
+    };
+  }
+  if (ours.includes('CIPHER_BRAIN_HOME')) {
+    process.stderr.write(
+      `⚠  ${path} sets CIPHER_BRAIN_HOME, which is ignored — this file is found *inside* ` +
+        `CIPHER_BRAIN_HOME, so it cannot choose it. Set it in the environment instead.\n`,
+    );
+  }
+  warnIfLooseKeyPermsSync(path, 'config file');
+  process.loadEnvFile(path);
+  return { file: { path, variables: ours }, error: null };
+}
+
+// Resolved from the environment ALONE, before the file is loaded — see loadConfigFile.
 export const HOME = process.env.CIPHER_BRAIN_HOME || join(homedir(), '.cipher-brain');
+
+const CONFIG_LOAD = loadConfigFile(HOME);
+/** The config file that was loaded, if any. `schedule status` reports it (#286). */
+export const CONFIG_FILE: LoadedConfigFile | null = CONFIG_LOAD.file;
+/**
+ * Why the config file was refused, if it was. NOTHING from the file has been applied
+ * when this is set. Both entry points (cli.ts main(), mcp.ts startup) must re-throw it
+ * before doing any work — otherwise a command would run with the file silently ignored,
+ * which is the outcome this refusal exists to prevent.
+ */
+export const CONFIG_FILE_ERROR: Error | null = CONFIG_LOAD.error;
+
 // #64: age runs in-process (typage, bundled) — the external-binary overrides are obsolete.
-for (const v of ['CIPHER_BRAIN_AGE', 'CIPHER_BRAIN_AGE_KEYGEN']) {
-  if (process.env[v])
+for (const v of ['CIPHER_BRAIN_AGE', 'CIPHER_BRAIN_AGE_KEYGEN'] as const) {
+  if (readEnv(v))
     console.error(
       `cipher-brain: ${v} is deprecated and ignored — age is bundled in-process (typage); no external age binary is used`,
     );
 }
-export const PG_BIN = process.env.CIPHER_BRAIN_PG_BIN || ''; // dir holding pg_dump/pg_restore; '' => PATH
+export const PG_BIN = readEnv('CIPHER_BRAIN_PG_BIN') || ''; // dir holding pg_dump/pg_restore; '' => PATH
 export const pgTool = (name: string): string => (PG_BIN ? join(PG_BIN, name) : name);
 
 export const IDENTITY = join(HOME, 'identity.age'); // private key — required to restore
 export const RECIPIENT = join(HOME, 'recipient.txt'); // public key — all snapshot needs
+
+// schedule (#69) state and trigger locations. Declared here rather than in schedule.ts
+// so every CIPHER_BRAIN_* name lives in ENV_NAMES above (#286); the values and their
+// defaults are unchanged. LAUNCHD_DIR deliberately defaults OUTSIDE CIPHER_BRAIN_HOME —
+// ~/Library/LaunchAgents is a real system directory, which is why `schedule install
+// --no-load` warns about writing there and why the override exists (#182).
+export const SCHEDULE_DIR = readEnv('CIPHER_BRAIN_SCHEDULE_DIR') || join(HOME, 'schedule');
+export const LAUNCHD_DIR = readEnv('CIPHER_BRAIN_LAUNCHD_DIR') || join(homedir(), 'Library', 'LaunchAgents');
 
 // Minisign-compatible Ed25519 signing keypair (#214) — an ADDITIONAL, optional layer:
 // age (above) gives confidentiality + tamper detection but no AUTHENTICITY (anyone
@@ -42,7 +173,7 @@ export const AGE_ARMOR_HEADER = '-----BEGIN AGE ENCRYPTED FILE-----';
 // collapse both to the same falsy '' and silently disable the allowlist (fail-open).
 // Kept as `string | undefined` so the two cases stay distinguishable at the call site,
 // which must fail closed on the explicit-empty-string case.
-export const PIN_RECIPIENTS: string | undefined = process.env.CIPHER_BRAIN_PIN_RECIPIENTS;
+export const PIN_RECIPIENTS: string | undefined = readEnv('CIPHER_BRAIN_PIN_RECIPIENTS');
 // An age recipient: X25519 (age1 + bech32, bounded 50-63 so two unseparated keys
 // can't fuse) OR a post-quantum HYBRID recipient (#205: `keygen --pq`, ML-KEM-768 +
 // X25519 via typage's generateHybridIdentity()) — `age1pq1` + a MUCH longer bech32
@@ -55,23 +186,23 @@ export const PIN_RECIPIENTS: string | undefined = process.env.CIPHER_BRAIN_PIN_R
 export const AGE_PUBKEY_RE = /age1pq1[0-9a-z]{1900,2000}|age1[0-9a-z]{50,63}/g;
 
 // ---------- storage backend config (pluggable: storage only ever sees ciphertext) ----------
-export const FILE_DIR = process.env.CIPHER_BRAIN_FILE_DIR || join(HOME, 'store'); // file backend object store
+export const FILE_DIR = readEnv('CIPHER_BRAIN_FILE_DIR') || join(HOME, 'store'); // file backend object store
 // rclone backend (#204): the `rclone` binary name/path, same PATH-or-override
 // pattern as PG_BIN above — most machines just need `rclone` on PATH; override
 // for a non-standard install location.
-export const RCLONE_BIN = process.env.CIPHER_BRAIN_RCLONE_BIN || 'rclone';
-export const AR_HOST = process.env.CIPHER_BRAIN_AR_HOST || 'arweave.net';
-export const AR_PORT = Number(process.env.CIPHER_BRAIN_AR_PORT || 443);
-export const AR_PROTOCOL = process.env.CIPHER_BRAIN_AR_PROTOCOL || 'https';
-export const AR_WALLET = process.env.CIPHER_BRAIN_AR_WALLET || ''; // path to a JWK key file
-export const AR_PAID_BY = process.env.CIPHER_BRAIN_AR_PAID_BY || ''; // optional (turbo): an address that shared (delegated) Turbo Credits to the signer — passed as `paidBy` so the upload draws from that approval before the signer's own balance (the path for credits bought on a wallet we can't sign with, e.g. MetaMask, then shared to this JWK)
+export const RCLONE_BIN = readEnv('CIPHER_BRAIN_RCLONE_BIN') || 'rclone';
+export const AR_HOST = readEnv('CIPHER_BRAIN_AR_HOST') || 'arweave.net';
+export const AR_PORT = Number(readEnv('CIPHER_BRAIN_AR_PORT') || 443);
+export const AR_PROTOCOL = readEnv('CIPHER_BRAIN_AR_PROTOCOL') || 'https';
+export const AR_WALLET = readEnv('CIPHER_BRAIN_AR_WALLET') || ''; // path to a JWK key file
+export const AR_PAID_BY = readEnv('CIPHER_BRAIN_AR_PAID_BY') || ''; // optional (turbo): an address that shared (delegated) Turbo Credits to the signer — passed as `paidBy` so the upload draws from that approval before the signer's own balance (the path for credits bought on a wallet we can't sign with, e.g. MetaMask, then shared to this JWK)
 export const AR_DEFAULT_EXTRA_GATEWAYS = ['https://permagate.io']; // public mirror(s) tried after the primary (override the whole list with CIPHER_BRAIN_AR_GATEWAYS)
-export const AR_HTTP_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_AR_HTTP_TIMEOUT || 60000); // bound the gateway read so a stall falls through to the L1 chunk fallback
+export const AR_HTTP_TIMEOUT_MS = Number(readEnv('CIPHER_BRAIN_AR_HTTP_TIMEOUT') || 60000); // bound the gateway read so a stall falls through to the L1 chunk fallback
 // Public, unauthenticated USD/AR rate endpoint (ArDrive Turbo's payment service) — a
 // plain JSON GET, no SDK or auth required (#170). arUsdRate() (src/lib/estimate.ts)
 // fetches this directly instead of going through @ardrive/turbo-sdk, so the USD line
 // works even when that optional peerDependency isn't installed.
-export const AR_USD_RATE_URL = process.env.CIPHER_BRAIN_AR_USD_RATE_URL || 'https://payment.ardrive.io/v1/rates/usd';
+export const AR_USD_RATE_URL = readEnv('CIPHER_BRAIN_AR_USD_RATE_URL') || 'https://payment.ardrive.io/v1/rates/usd';
 // Spend guard: arweave/turbo uploads are irreversible and cost real funds. Require an
 // explicit opt-in so an unattended nightly loop doesn't silently accumulate charges.
 //   CIPHER_BRAIN_YES=1  — set in the nightly runner (`schedule install` writes it for paid backends) to suppress the --yes prompt
@@ -79,16 +210,17 @@ export const AR_USD_RATE_URL = process.env.CIPHER_BRAIN_AR_USD_RATE_URL || 'http
 //     unit: winston for arweave L1, winc for turbo) exceeds this value; 0/unset = no cap
 //     (the --yes guard still fires). Prevents runaway spend without changing behaviour
 //     when the upload is well under budget.
-export const CIPHER_YES = !!process.env.CIPHER_BRAIN_YES;
-export const AR_MAX_SPEND = process.env.CIPHER_BRAIN_MAX_SPEND ? BigInt(process.env.CIPHER_BRAIN_MAX_SPEND) : 0n;
+export const CIPHER_YES = !!readEnv('CIPHER_BRAIN_YES');
+const MAX_SPEND_RAW = readEnv('CIPHER_BRAIN_MAX_SPEND');
+export const AR_MAX_SPEND = MAX_SPEND_RAW ? BigInt(MAX_SPEND_RAW) : 0n;
 // The raw `arweave` backend posts one inline L1 tx; gateways reject single-tx bodies
 // past ~12 MiB. Guard at a conservative 10 MiB and redirect large uploads to `turbo`
 // (which streams + ANS-104-bundles). Override for a deliberate large L1 post.
-export const AR_L1_MAX_BYTES = Number(process.env.CIPHER_BRAIN_AR_L1_MAX || 10 * 1024 * 1024);
+export const AR_L1_MAX_BYTES = Number(readEnv('CIPHER_BRAIN_AR_L1_MAX') || 10 * 1024 * 1024);
 // Overall wall-clock cap for the tar|age / age|tar streaming pipelines, the pre-stage
 // tar, pg_restore, AND the rclone backend's copyto subprocess, so a wedged binary (or
 // a FIFO/special file under --dir, or a stalled remote transfer) can't hang the CLI
 // forever. Generous default (1h) — a real ~850 MB brain streams in seconds, so this
 // only ever trips on a genuine hang. Override with CIPHER_BRAIN_PIPE_TIMEOUT (ms) for
 // very large brains / restores / slow remotes.
-export const PIPE_TIMEOUT_MS = Number(process.env.CIPHER_BRAIN_PIPE_TIMEOUT || 60 * 60 * 1000);
+export const PIPE_TIMEOUT_MS = Number(readEnv('CIPHER_BRAIN_PIPE_TIMEOUT') || 60 * 60 * 1000);

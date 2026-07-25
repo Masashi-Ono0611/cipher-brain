@@ -33,7 +33,7 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { HOME, IDENTITY, RECIPIENT } from './lib/config.js';
+import { HOME, IDENTITY, RECIPIENT, CONFIG_FILE_ERROR } from './lib/config.js';
 import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
 import { push, pull } from './lib/pushpull.js';
@@ -1398,6 +1398,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
 });
 
 async function main(): Promise<void> {
+  // #286: same guard as the CLI — refuse to serve with a config file we could not
+  // accept, rather than silently running as if the operator had configured nothing.
+  if (CONFIG_FILE_ERROR) throw CONFIG_FILE_ERROR;
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

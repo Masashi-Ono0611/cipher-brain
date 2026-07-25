@@ -128,6 +128,14 @@ accidentally-committed API key/token/password can never be scrubbed out after
 the fact — the ciphertext sealing it stays parked there permanently, exposed
 to whatever might compromise the identity down the line.
 
+The gate is reachable from every surface that can take a snapshot, not just the
+interactive one (#307): `schedule install --scan-secrets warn|deny` bakes it into
+the unattended nightly (and refuses to install if gitleaks cannot be resolved,
+rather than registering a schedule that cannot scan), and the MCP `snapshot_now`
+tool takes the same `scan_secrets` field. It is **off by default everywhere** —
+the two unattended surfaces match the CLI rather than quietly applying a stricter
+policy of their own.
+
 ## Install
 
 Install from the registry (requires node >= 22.6.0 — the age crypto layer is
@@ -634,6 +642,7 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
                                 [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>]
                                 [--save-locator <path>] [--index-file <path>]
                                 [--ping-url <url>] [--ping-url-fail <url>]
+                                [--scan-secrets warn|deny]
       Make the nightly snapshot+push unattended. Writes a runner script
       ($CIPHER_BRAIN_HOME/schedule/nightly.sh) composing the snapshot/push pipeline from
       the SAME flags those commands take — dated outputs, --save-locator, an index.tsv
@@ -654,6 +663,13 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       (default: <url>/fail — a plain string append, not URL-aware: pass --ping-url-fail
       explicitly if your ping URL has a query string or a trailing slash); it requires
       --ping-url to also be set.
+      --scan-secrets warn|deny bakes snapshot's gitleaks gate (see 'snapshot' above) into
+      the generated runner, so the unattended nightly — the run nobody is watching — is
+      gated too. Install RESOLVES gitleaks now and adds its directory to the runner's PATH
+      (launchd/cron do not inherit yours, same reason --pg bakes CIPHER_BRAIN_PG_BIN), and
+      REFUSES to install if gitleaks is not on your PATH — a schedule that cannot scan is
+      never installed as if it could. Fail-closed at run time too: if gitleaks later
+      disappears, the nightly FAILS rather than silently skipping the scan.
 
   cipher-brain schedule status [--json]
       Report the configured time + backend, whether a dead man's switch ping-url is
@@ -827,7 +843,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 
 | Tool | Money | What it does |
 |---|---|---|
-| `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP) |
+| `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP). `scan_secrets: "warn"\|"deny"` runs the same gitleaks gate as the CLI `--scan-secrets` (#307) — off by default, like the CLI; the result reports the mode that actually ran (`null` when none did), and a call asking for a scan on a machine without gitleaks fails rather than silently skipping it |
 | `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
 | `restore_now` | **writes files, can clobber a DB** (no spend) | pull by locator (or a local file / `locator_file`, same dual-mode input as `verify_restore`) + decrypt + extract into `out_dir` — the actual restore `verify_restore` stops short of. Requires `confirm_write: true` before any work happens; when `pg` is given, `pg_restore --clean --if-exists` also DROPS and replaces objects in that database, the same `--yes` consent the CLI's `restore --pg` requires |

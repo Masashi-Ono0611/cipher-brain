@@ -46,6 +46,7 @@ import { schedule, scheduleStatusReport } from './lib/schedule.js';
 import { estimateCost } from './lib/estimate.js';
 import { keygenAt } from './lib/keys.js';
 import { wallet } from './lib/wallet.js';
+import { SCAN_SECRETS_MODES, isScanSecretsMode } from './lib/secrets-scan.js';
 import { exists, requireFile, MissingPathError, sha256, errMsg } from './lib/util.js';
 import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
 import { didYouMean, nearestName } from './lib/suggest.js';
@@ -269,6 +270,12 @@ const SNAPSHOT_NOW_TOOL: Tool = {
       confirm_paid: {
         type: 'boolean',
         description: 'REQUIRED true to push to arweave/turbo. Confirms you accept an irreversible, real-money upload.',
+      },
+      scan_secrets: {
+        type: 'string',
+        enum: [...SCAN_SECRETS_MODES],
+        description:
+          'Run gitleaks over each dirs source\'s staged plaintext BEFORE it is archived+encrypted (the CLI --scan-secrets, #215): "warn" logs findings (rule ID + count only, never the secret) and proceeds, "deny" refuses the whole snapshot if any source has findings. Omitted = no scan (same default as the CLI). Requires the gitleaks binary on PATH: when set and gitleaks cannot be resolved, the call FAILS rather than silently skipping the scan.',
       },
     },
     required: ['recipients', 'out'],
@@ -876,7 +883,16 @@ function assertDeclaredEnums(tool: Tool, args: ToolArgs): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
-  const { dirs = [], pg, recipients, out, backend, locator_file: locatorFile, confirm_paid: confirmPaid } = args;
+  const {
+    dirs = [],
+    pg,
+    recipients,
+    out,
+    backend,
+    locator_file: locatorFile,
+    confirm_paid: confirmPaid,
+    scan_secrets: scanSecrets,
+  } = args;
   if (!isStrArray(recipients) || recipients.length === 0)
     throw new ToolError(
       'ERR_INVALID_INPUT',
@@ -888,6 +904,15 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
   if (pg !== undefined && !isStr(pg)) throw new ToolError('ERR_INVALID_INPUT', 'pg must be a string connection URI');
   if (locatorFile !== undefined && !isStr(locatorFile))
     throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
+  // The advertised `enum` is a hint to the client, not something the server may
+  // assume was honored — reject a bad mode HERE rather than letting it reach
+  // snapshot(), so the caller gets the structured ERR_INVALID_INPUT this server
+  // contracts for instead of a stringly-typed CLI error.
+  if (scanSecrets !== undefined && !isScanSecretsMode(scanSecrets))
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      `scan_secrets must be one of ${SCAN_SECRETS_MODES.join('|')} — got ${JSON.stringify(scanSecrets)}`,
+    );
   // Spend gate FIRST — before any snapshot work — so a refused paid push does no
   // work and leaves no artifact behind. Never silently spend: the CLI accepts
   // CIPHER_BRAIN_YES=1 for unattended cadence loops, but via MCP the consent
@@ -902,7 +927,7 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
     );
   }
 
-  const snapOpts: CliOptions = { out, pg, dirs, tables: [], recipients };
+  const snapOpts: CliOptions = { out, pg, dirs, tables: [], recipients, scan_secrets: scanSecrets };
   const snap = await captureCall(() => snapshot(snapOpts));
   const size = (await stat(out)).size;
   const digest = await sha256(out);
@@ -912,6 +937,14 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
     size_bytes: size,
     sha256: digest,
     pushed: false,
+    // Reporting the mode is honest rather than decorative: reaching this line means
+    // snapshot() RETURNED, and when scan_secrets was set snapshot() cannot return
+    // without having resolved gitleaks (assertGitleaksAvailable throws otherwise) and
+    // scanned every source it scans (the dirs/profile staged plaintext — same coverage as
+    // the CLI flag; a pg dump is not scanned on either surface). So `null` means "no scan
+    // was requested or run", and a mode means the scan really ran in that mode — never a
+    // request that was quietly dropped.
+    scan_secrets: scanSecrets ?? null,
     log: [...snap.out, ...snap.err],
   };
 

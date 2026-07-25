@@ -348,6 +348,89 @@ echo "[PASS] end-to-end: a successful run curls only the success URL, a failing 
 cleanup_ping_server
 trap 'rm -rf "$TMP"' EXIT
 
+echo "== (a6) --scan-secrets is HONOURED by the generated runner, not accepted and discarded (#307) =="
+# The exact bug: `schedule install --backend file --dir X --scan-secrets deny --no-load`
+# exited 0 and produced a runner whose snapshot line had no --scan-secrets at all, so the
+# one run nobody watches was the one run that never scanned. These assertions need no real
+# gitleaks: a shim on PATH plays the part for the install-time resolution (same technique
+# as the pg_dump shim in (a4) above), which keeps the tripwire live on every machine.
+FAKE_GITLEAKS_DIR="$TMP/fake-gitleaks"; mkdir -p "$FAKE_GITLEAKS_DIR"
+cat > "$FAKE_GITLEAKS_DIR/gitleaks" <<'SHIM'
+#!/usr/bin/env bash
+# Minimal stand-in for the gitleaks CLI, emulating only what src/lib/secrets-scan.ts
+# invokes: write a JSON report to --report-path and exit 0. It always reports one
+# planted finding, so a run that really scans is unambiguously distinguishable from a
+# run that skipped the scan.
+REPORT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --report-path) REPORT="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$REPORT" ] || exit 3
+printf '%s' '[{"RuleID":"selftest-planted-rule"}]' > "$REPORT"
+exit 0
+SHIM
+chmod +x "$FAKE_GITLEAKS_DIR/gitleaks"
+
+PATH="$FAKE_GITLEAKS_DIR:$PATH" cb schedule install --backend file --dir "$SRC" --scan-secrets deny --no-load > "$TMP/install-scan.log" 2>&1 \
+  || { echo "[FAIL] install (--scan-secrets deny, shimmed gitleaks on PATH) exited non-zero"; cat "$TMP/install-scan.log"; exit 1; }
+# THE tripwire: the generated snapshot command line must carry the flag.
+grep -q -- "snapshot --dir '$SRC' --scan-secrets 'deny' --out" "$RUNNER" \
+  || { echo "[FAIL] #307: the runner's snapshot line does not carry --scan-secrets deny"; grep -n 'snapshot ' "$RUNNER"; exit 1; }
+grep -qF "export PATH=\"\$PATH:\"'$FAKE_GITLEAKS_DIR'" "$RUNNER" \
+  || { echo "[FAIL] runner does not append the resolved gitleaks directory to PATH (launchd/cron start with a bare PATH — the scan would fail every night)"; cat "$RUNNER"; exit 1; }
+grep -qF "resolved gitleaks -> $FAKE_GITLEAKS_DIR/gitleaks" "$TMP/install-scan.log" \
+  || { echo "[FAIL] install did not report the resolved gitleaks path"; cat "$TMP/install-scan.log"; exit 1; }
+node -e "
+const cfg = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+if (cfg.scan_secrets !== 'deny') throw new Error('schedule.json scan_secrets = ' + JSON.stringify(cfg.scan_secrets) + ', expected deny');
+if (cfg.gitleaks_dir !== process.argv[2]) throw new Error('schedule.json gitleaks_dir = ' + JSON.stringify(cfg.gitleaks_dir) + ', expected ' + process.argv[2]);
+" "$CONFIG" "$FAKE_GITLEAKS_DIR" || { echo "[FAIL] schedule.json did not record the scan mode / resolved gitleaks dir"; exit 1; }
+cb schedule status > "$TMP/status-scan.log" 2>&1 || { echo "[FAIL] status (scan-enabled schedule) exited non-zero"; cat "$TMP/status-scan.log"; exit 1; }
+grep -q 'secret scan: gitleaks --scan-secrets deny' "$TMP/status-scan.log" \
+  || { echo "[FAIL] status does not report that this schedule scans"; cat "$TMP/status-scan.log"; exit 1; }
+echo "[PASS] --scan-secrets deny is threaded into the runner's snapshot line, gitleaks is resolved+baked onto the runner PATH, and status reports it"
+
+echo "== (a6b) the baked runner ACTUALLY refuses a leaky source when it runs, with gitleaks reachable ONLY via the baked PATH (#307 end-to-end) =="
+# Run the runner the way launchd/cron would: a bare system PATH, which reaches neither
+# the shim dir nor whatever real gitleaks this host happens to have. Only the runner's own
+# baked PATH line can resolve a scanner at all, so a run that still refuses proves the
+# whole chain — flag threaded -> gitleaks resolvable in a bare env -> deny honoured — and
+# proves it identically on a host with gitleaks installed and one without.
+SCAN_LOG="$CIPHER_BRAIN_SCHEDULE_DIR/logs/nightly-$(date +%F).log"
+if PATH=/usr/bin:/bin:/usr/sbin:/sbin bash "$RUNNER" > /dev/null 2>&1; then
+  echo "[FAIL] #307: the runner exited 0 on a source the scan flags — the gate is baked in but not honoured"; cat "$SCAN_LOG"; exit 1
+fi
+grep -q 'refusing to snapshot' "$SCAN_LOG" || { echo "[FAIL] the runner failed for some reason OTHER than the deny gate"; cat "$SCAN_LOG"; exit 1; }
+grep -q 'selftest-planted-rule' "$SCAN_LOG" || { echo "[FAIL] the refusal does not name the rule the scan reported"; cat "$SCAN_LOG"; exit 1; }
+tail -n 1 "$SCAN_LOG" | grep -q '^FAILED rc=' || { echo "[FAIL] the refused run did not end with the FAILED rc heartbeat line"; tail -n 3 "$SCAN_LOG"; exit 1; }
+echo "[PASS] the installed nightly really runs the scan and refuses on a finding, resolving gitleaks through the baked PATH alone"
+
+echo "== (a6c) install REFUSES a bad mode, and refuses when gitleaks cannot be resolved — never a schedule that silently cannot scan (#307) =="
+if PATH="$FAKE_GITLEAKS_DIR:$PATH" cb schedule install --backend file --dir "$SRC" --scan-secrets bogus --no-load > "$TMP/install-scan-bad.log" 2>&1; then
+  echo "[FAIL] install --scan-secrets bogus was accepted"; cat "$TMP/install-scan-bad.log"; exit 1
+fi
+grep -q 'warn or deny' "$TMP/install-scan-bad.log" || { echo "[FAIL] the bad-mode refusal does not say what the valid modes are"; cat "$TMP/install-scan-bad.log"; exit 1; }
+# ISOLATED_PATH_DIR (built in (a4)) holds only `sh`, so gitleaks is guaranteed
+# unresolvable regardless of what the real host has installed.
+if PATH="$ISOLATED_PATH_DIR" "$NODE_BIN" "${BIN_DEV_ARGS[@]}" "$BIN" schedule install --backend file --dir "$SRC" --scan-secrets deny --no-load > "$TMP/install-scan-missing.log" 2>&1; then
+  echo "[FAIL] install --scan-secrets deny was accepted with no gitleaks resolvable"; cat "$TMP/install-scan-missing.log"; exit 1
+fi
+grep -qi 'gitleaks' "$TMP/install-scan-missing.log" || { echo "[FAIL] the refusal does not name the missing gitleaks binary"; cat "$TMP/install-scan-missing.log"; exit 1; }
+echo "[PASS] install refuses a bad --scan-secrets mode, and refuses outright when gitleaks cannot be resolved"
+
+echo "== (a6d) an install WITHOUT --scan-secrets is unchanged: no scan flag, no PATH line, status says off (#307) =="
+cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-noscan.log" 2>&1 \
+  || { echo "[FAIL] reinstall without --scan-secrets exited non-zero"; cat "$TMP/install-noscan.log"; exit 1; }
+if grep -q -- '--scan-secrets' "$RUNNER"; then echo "[FAIL] a runner installed WITHOUT --scan-secrets still carries the flag"; grep -n 'snapshot ' "$RUNNER"; exit 1; fi
+if grep -q 'export PATH=' "$RUNNER"; then echo "[FAIL] a runner installed WITHOUT --scan-secrets still rewrites PATH"; exit 1; fi
+if grep -qi 'gitleaks' "$RUNNER"; then echo "[FAIL] a runner installed WITHOUT --scan-secrets mentions gitleaks"; exit 1; fi
+cb schedule status > "$TMP/status-noscan.log" 2>&1 || { echo "[FAIL] status (no-scan schedule) exited non-zero"; exit 1; }
+grep -q 'secret scan: off' "$TMP/status-noscan.log" || { echo "[FAIL] status does not report that this schedule does NOT scan"; cat "$TMP/status-noscan.log"; exit 1; }
+echo "[PASS] omitting --scan-secrets leaves the generated runner exactly as before, and status says so"
+
 echo "== (b) paid backend: refused without --max-spend, spend lines written with it =="
 if cb schedule install --backend turbo --dir "$SRC" --no-load > "$TMP/turbo-refuse.log" 2>&1; then
   echo "[FAIL] install --backend turbo WITHOUT --max-spend was accepted"; exit 1

@@ -183,6 +183,17 @@ a query string or a trailing slash), so a schedule that silently stops running a
 gets noticed even if nobody runs `schedule status`. Both are best-effort (10s timeout,
 never affects the run's own outcome).
 
+**The unattended run can carry the secret-scanning gate too.** Add
+`--scan-secrets warn|deny` and the generated runner's `snapshot` line carries it, so the
+nightly gets the same [gitleaks](https://github.com/gitleaks/gitleaks) check an
+interactive `snapshot --scan-secrets` does — which matters most here, because this is the
+run nobody is watching when it pushes to a write-once store. Install resolves `gitleaks`
+at that moment and adds its directory to the runner's `PATH` (`launchd`/`cron` do not
+inherit yours, the same reason `--pg` bakes `CIPHER_BRAIN_PG_BIN`), and *refuses to
+install* if it cannot be resolved. It stays fail-closed afterwards: if `gitleaks` later
+disappears, the nightly ends `FAILED rc=N` rather than quietly snapshotting unscanned.
+`schedule status` reports whether the installed schedule scans.
+
 **Paid backends must be capped.** For `turbo`/`arweave` the generated runner sets
 `CIPHER_BRAIN_YES=1` — the unattended equivalent of `--yes` — which is exactly why
 `schedule install` *refuses* those backends without `--max-spend <n>`: an unattended

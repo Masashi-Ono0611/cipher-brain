@@ -17,6 +17,7 @@ import {
   assertGitleaksAvailable,
   scanForSecrets,
   reportSecretFindings,
+  isScanSecretsMode,
   type ScanSecretsMode,
   type SecretFinding,
 } from './secrets-scan.js';
@@ -326,7 +327,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // --out parent dir / recipient checks below already follow.
   let scanMode: ScanSecretsMode | undefined;
   if (o.scan_secrets !== undefined) {
-    if (o.scan_secrets !== 'warn' && o.scan_secrets !== 'deny')
+    if (!isScanSecretsMode(o.scan_secrets))
       throw new Error(`--scan-secrets must be "warn" or "deny" (got ${JSON.stringify(o.scan_secrets)})`);
     scanMode = o.scan_secrets;
     await assertGitleaksAvailable();

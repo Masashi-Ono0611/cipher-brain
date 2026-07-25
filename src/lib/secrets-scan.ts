@@ -23,6 +23,15 @@ import { errMsg } from './util.js';
 
 export type ScanSecretsMode = 'warn' | 'deny';
 
+// The accepted values, as data — every surface that offers the scan (the CLI's
+// --scan-secrets, `schedule install`'s baked-in runner, and the MCP snapshot_now
+// schema's `enum`) reads THIS, so an advertised enum can never drift from what
+// snapshot() actually accepts (#307).
+export const SCAN_SECRETS_MODES: readonly ScanSecretsMode[] = ['warn', 'deny'];
+
+export const isScanSecretsMode = (v: unknown): v is ScanSecretsMode =>
+  typeof v === 'string' && (SCAN_SECRETS_MODES as readonly string[]).includes(v);
+
 export interface SecretFinding {
   rule_id: string;
   count: number;

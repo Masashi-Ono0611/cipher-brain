@@ -325,6 +325,23 @@ async function run(tmp) {
       }
     }
 
+    // 1c. #307: snapshot_now must ADVERTISE the gitleaks gate, with the same enum the
+    // CLI's --scan-secrets accepts. This is the structural half of the bug — the field
+    // did not exist at all, so no spelling of it could ever have scanned anything — and
+    // it needs no gitleaks binary to assert.
+    const snapshotNowTool = (list.result?.tools ?? []).find((t) => t.name === 'snapshot_now');
+    const scanProp = snapshotNowTool?.inputSchema?.properties?.scan_secrets;
+    if (!scanProp) {
+      throw new Error(
+        `snapshot_now does not advertise scan_secrets (#307) — properties: ${Object.keys(snapshotNowTool?.inputSchema?.properties ?? {}).join(', ')}`,
+      );
+    }
+    if (scanProp.type !== 'string' || JSON.stringify(scanProp.enum) !== JSON.stringify(['warn', 'deny'])) {
+      throw new Error(
+        `snapshot_now.scan_secrets schema unexpected: ${JSON.stringify(scanProp).slice(0, 300)} (want type string, enum ["warn","deny"])`,
+      );
+    }
+
     // 2a. spend gate: paid backend without confirm_paid must be refused —
     // BEFORE any snapshot work (outAge must not exist afterwards) — even
     // though CIPHER_BRAIN_YES=1 is set in the server's environment.
@@ -384,6 +401,99 @@ async function run(tmp) {
       throw new Error(`snapshot_now sha256 unexpected: ${JSON.stringify(snapSc.sha256)}`);
     if (!(Number.isInteger(snapSc.size_bytes) && snapSc.size_bytes > 0))
       throw new Error(`snapshot_now size_bytes unexpected: ${JSON.stringify(snapSc.size_bytes)}`);
+    // #307: the result says, honestly, that nothing was scanned — the default is off on
+    // this surface exactly as it is on the CLI, and that has to be readable rather than
+    // inferred from a missing field.
+    if (snapSc.scan_secrets !== null)
+      throw new Error(
+        `snapshot_now without scan_secrets should report scan_secrets:null, got ${JSON.stringify(snapSc.scan_secrets)}`,
+      );
+
+    // 2b-2. #307: an invalid mode is REFUSED, not passed through (the advertised enum is
+    // a client hint; the server may not assume it was honored). No gitleaks needed.
+    const badScanOut = join(tmp, 'badscan.age');
+    send({
+      jsonrpc: '2.0',
+      // Ids in the 307xx range so this section stays clear of the sequentially-numbered
+      // ones above and the 41-43 / 50+i blocks further down.
+      id: 30701,
+      method: 'tools/call',
+      params: {
+        name: 'snapshot_now',
+        arguments: { dirs: [data], recipients: [recipientPath], out: badScanOut, scan_secrets: 'bogus' },
+      },
+    });
+    const badScan = await waitFor(30701);
+    const badScanSc = badScan.result?.structuredContent;
+    if (!badScan.result?.isError || badScanSc?.code !== 'ERR_INVALID_INPUT') {
+      throw new Error(
+        `snapshot_now accepted scan_secrets:"bogus": ${JSON.stringify(badScan.result).slice(0, 400)} (want isError + ERR_INVALID_INPUT)`,
+      );
+    }
+    if (existsSync(badScanOut))
+      throw new Error('snapshot_now rejected a bad scan_secrets but still produced a snapshot artifact');
+
+    // 2b-3. #307: the gate is actually WIRED to snapshot(), not just advertised. Needs
+    // the real binary, so it SKIPs without one — same idiom as scripts/selftest.sh's
+    // own #215 section. The structural assertions above run either way.
+    if (spawnSync('sh', ['-c', 'command -v gitleaks'], { encoding: 'utf8' }).status === 0) {
+      const leakDir = join(tmp, 'leaky');
+      await mkdir(leakDir, { recursive: true });
+      // A gitleaks-detectable dummy credential — same synthetic AWS key selftest.sh's
+      // #215 section uses. Not a real secret.
+      await writeFile(join(leakDir, 'creds.txt'), 'aws_access_key_id = AKIAABCDEFGHIJKLMNOP\n');
+      const denyOut = join(tmp, 'deny.age');
+      send({
+        jsonrpc: '2.0',
+        id: 30702,
+        method: 'tools/call',
+        params: {
+          name: 'snapshot_now',
+          arguments: { dirs: [leakDir], recipients: [recipientPath], out: denyOut, scan_secrets: 'deny' },
+        },
+      });
+      const deny = await waitFor(30702);
+      if (!deny.result?.isError)
+        throw new Error(
+          `snapshot_now scan_secrets:"deny" did not refuse a source with a planted secret — the option is threaded but not honored: ${JSON.stringify(deny.result?.structuredContent).slice(0, 400)}`,
+        );
+      if (JSON.stringify(deny.result).includes('AKIAABCDEFGHIJKLMNOP'))
+        throw new Error('the planted secret VALUE leaked into the snapshot_now error payload');
+      if (existsSync(denyOut))
+        throw new Error('snapshot_now scan_secrets:"deny" refused but still produced a snapshot artifact');
+
+      // warn proceeds on the same source, and the result reports the mode that really ran.
+      const warnOut = join(tmp, 'warn.age');
+      send({
+        jsonrpc: '2.0',
+        id: 30703,
+        method: 'tools/call',
+        params: {
+          name: 'snapshot_now',
+          arguments: { dirs: [leakDir], recipients: [recipientPath], out: warnOut, scan_secrets: 'warn' },
+        },
+      });
+      const warn = await waitFor(30703);
+      const warnSc = warn.result?.structuredContent;
+      if (warn.result?.isError)
+        throw new Error(`snapshot_now scan_secrets:"warn" failed: ${JSON.stringify(warnSc).slice(0, 400)}`);
+      if (warnSc?.scan_secrets !== 'warn')
+        throw new Error(
+          `snapshot_now warn run should report scan_secrets:"warn", got ${JSON.stringify(warnSc?.scan_secrets)}`,
+        );
+      if (!(warnSc?.log ?? []).some((l) => /gitleaks found/i.test(l)))
+        throw new Error(
+          `snapshot_now scan_secrets:"warn" did not report the finding in its log: ${JSON.stringify(warnSc?.log).slice(0, 400)}`,
+        );
+      if (JSON.stringify(warnSc?.log).includes('AKIAABCDEFGHIJKLMNOP'))
+        throw new Error('the planted secret VALUE leaked into the snapshot_now warn log');
+    } else {
+      process.stdout.write(
+        'MCP SMOKE: [SKIP] snapshot_now scan_secrets warn/deny end-to-end — no `gitleaks` on PATH ' +
+          '(install it — https://github.com/gitleaks/gitleaks — to exercise this; CI installs it, see #215). ' +
+          'The schema/validation assertions above still ran.\n',
+      );
+    }
 
     // 2c. last_snapshot_status reads the save-locator file back
     send({

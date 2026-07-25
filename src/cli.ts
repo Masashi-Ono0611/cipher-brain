@@ -415,6 +415,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
                                 [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>]
                                 [--save-locator <path>] [--index-file <path>]
                                 [--ping-url <url>] [--ping-url-fail <url>]
+                                [--scan-secrets warn|deny]
       Make the nightly snapshot+push unattended. Writes a runner script
       ($CIPHER_BRAIN_HOME/schedule/nightly.sh) composing the snapshot/push pipeline from
       the SAME flags those commands take — dated outputs, --save-locator, an index.tsv
@@ -435,6 +436,13 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       (default: <url>/fail — a plain string append, not URL-aware: pass --ping-url-fail
       explicitly if your ping URL has a query string or a trailing slash); it requires
       --ping-url to also be set.
+      --scan-secrets warn|deny bakes snapshot's gitleaks gate (see 'snapshot' above) into
+      the generated runner, so the unattended nightly — the run nobody is watching — is
+      gated too. Install RESOLVES gitleaks now and adds its directory to the runner's PATH
+      (launchd/cron do not inherit yours, same reason --pg bakes CIPHER_BRAIN_PG_BIN), and
+      REFUSES to install if gitleaks is not on your PATH — a schedule that cannot scan is
+      never installed as if it could. Fail-closed at run time too: if gitleaks later
+      disappears, the nightly FAILS rather than silently skipping the scan.
 
   cipher-brain schedule status [--json]
       Report the configured time + backend, whether a dead man's switch ping-url is

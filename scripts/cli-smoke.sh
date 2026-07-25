@@ -228,13 +228,18 @@ node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend nosuchba
   > "$TMP/err.json" 2> "$TMP/err.txt"
 ERR_RC=$?
 [ "$ERR_RC" != "0" ] || { echo "[FAIL] estimate with a bogus backend exited 0"; exit 1; }
+# exactly ONE JSON value on stdout (a second appended object would make the stream
+# unparseable), and its exit_code must agree with the process's real exit status
+ERR_LINES=$(wc -l < "$TMP/err.json" | tr -d ' ')
+[ "$ERR_LINES" = "1" ] \
+  || { echo "[FAIL] the --json error path wrote $ERR_LINES lines to stdout, expected exactly 1"; cat "$TMP/err.json"; exit 1; }
 ERR_CODE=$(node -e '
   const fs = require("node:fs");
   const o = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
   if (typeof o.error !== "string" || !o.error) throw new Error("no error string");
-  if (typeof o.exit_code !== "number") throw new Error("no exit_code");
+  if (o.exit_code !== Number(process.argv[2])) throw new Error("exit_code " + o.exit_code + " != process exit " + process.argv[2]);
   console.log(o.code === null ? "null" : o.code);
-' "$TMP/err.json") || { echo "[FAIL] --json error output is not a well-formed error object"; cat "$TMP/err.json"; exit 1; }
+' "$TMP/err.json" "$ERR_RC") || { echo "[FAIL] --json error output is not a well-formed error object (or exit_code disagrees with the real exit status $ERR_RC)"; cat "$TMP/err.json"; exit 1; }
 [ "$ERR_CODE" = "CB-E013" ] \
   || { echo "[FAIL] the --json error object reported code '$ERR_CODE', expected CB-E013"; cat "$TMP/err.json"; exit 1; }
 grep -Fq 'unknown backend' "$TMP/err.txt" \

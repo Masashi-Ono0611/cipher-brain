@@ -38,7 +38,7 @@ import { estimate } from './lib/estimate.js';
 import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
 import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
-import { printMascot } from './lib/ui.js';
+import { hasWrittenJson, printMascot } from './lib/ui.js';
 import { printFounderNote, printWisdomQuote } from './lib/wisdom.js';
 import type { CliOptions } from './lib/types.js';
 
@@ -630,7 +630,13 @@ main().catch((e: unknown) => {
   // would just make the JSON harder to consume. Additive: stdout on this path used to
   // be empty, stderr is byte-for-byte what it was, and the exit code stays the sole
   // authority on success/failure.
-  if (process.argv.slice(2).includes('--json')) {
+  //
+  // hasWrittenJson(): never append a SECOND JSON value to a stdout that already holds
+  // a command's own document — two values on one stream is not parseable as one. No
+  // --json command can currently throw after printing (each prints last and returns),
+  // so this is a structural guarantee for future ones rather than a live fix
+  // (multi-model review finding).
+  if (process.argv.slice(2).includes('--json') && !hasWrittenJson()) {
     console.log(JSON.stringify({ error: message, code: matchErrorCode(message)?.code ?? null, exit_code: 1 }));
   }
   process.exitCode = 1;

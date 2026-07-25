@@ -5,6 +5,7 @@
 import { stat } from 'node:fs/promises';
 import { AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS, AR_USD_RATE_URL } from './config.js';
 import { requireFile, errMsg, fmtBytes } from './util.js';
+import { printJson } from './ui.js';
 import type { CliOptions } from './types.js';
 
 // Every field is REQUIRED and nullable rather than optional (#268): a `--json`
@@ -211,11 +212,13 @@ export function formatEstimate(e: CostEstimate): string[] {
     lines.push('cost: unavailable');
   } else {
     lines.push(`cost: ${e.cost}${e.unit ? ` ${e.unit}` : ''}`);
-    // `!== null` since #268 made these required-and-nullable; the human-readable
-    // report still omits the line entirely when there is no number, exactly as it
-    // did when the key was absent — this rendering is unchanged, byte for byte.
-    if (e.approx_ar !== null) lines.push(`approx: ~${e.approx_ar.toFixed(8)} AR`);
-    if (e.usd_estimate !== null) {
+    // `!= null` (loose, so it covers undefined too) since #268 made these
+    // required-and-nullable: a hand-built CostEstimate from JS that still omits them
+    // must not reach .toFixed() on undefined. The human-readable report omits the
+    // line entirely when there is no number, exactly as it did when the key was
+    // absent — this rendering is unchanged, byte for byte.
+    if (e.approx_ar != null) lines.push(`approx: ~${e.approx_ar.toFixed(8)} AR`);
+    if (e.usd_estimate != null) {
       lines.push(`approx: ~$${e.usd_estimate.toFixed(e.usd_estimate >= 0.01 ? 2 : 6)} USD`);
     }
   }
@@ -240,6 +243,6 @@ export async function estimate(o: CliOptions): Promise<void> {
   if (!st.isFile())
     throw new Error(`${o.in} is not a regular file (cannot size a directory/special file for an estimate)`);
   const result = await estimateCost(o.backend, st.size);
-  if (o.json) console.log(JSON.stringify(result));
+  if (o.json) printJson(result);
   else for (const line of formatEstimate(result)) console.log(line);
 }

@@ -83,6 +83,8 @@ idea that was considered and declined.
 | [x402](https://www.x402.org) | Agentic payment rails | Let an agent hold its own means of payment for a paid push | [#187](https://github.com/Masashi-Ono0611/cipher-brain/issues/187) | Open | Under discussion |
 | [Sigstore](https://www.sigstore.dev) | Keyless signing, transparency logs | Considered for release signing alongside npm OIDC provenance | [#186](https://github.com/Masashi-Ono0611/cipher-brain/issues/186), [#66](https://github.com/Masashi-Ono0611/cipher-brain/issues/66) | Closed | Partly shipped (npm OIDC provenance; no Rekor entry) |
 | [rclone](https://rclone.org/flags/) / [restic](https://restic.net) / [Turbo SDK](https://github.com/ardriveapp/turbo-sdk) | Transfer progress reporting | Report upload progress on `push`. The finding was that we need to *build* almost none of it: the Turbo SDK has emitted `onProgress`/`onUploadProgress` since v1.26.0 and we require `^1.42.0`, and rclone has `-P`/`--stats` we can pass through. Only the arweave L1 path has no upstream answer. **The SDK documents no resume API** — resumption is deliberately excluded | [#283](https://github.com/Masashi-Ono0611/cipher-brain/issues/283) | Open | Accepted, not built |
+| [Model Context Protocol spec](https://modelcontextprotocol.io/specification/2025-11-25/server) | What an MCP server should expose, and to whom | The protocol's own control model as a design question: tools are **model-controlled** (the LLM decides to invoke), resources are **application-controlled** (the client attaches them). Our server declares `capabilities: { tools: {} }` and nothing else, which was never a decision. Whether `last_snapshot_status`/`schedule_status` — state documents rather than actions — belong as resources, and whether the documented recovery procedures belong as prompts | [#285](https://github.com/Masashi-Ono0611/cipher-brain/issues/285) | Open | **Undecided — the issue argues both ways** |
+| [rclone.conf](https://rclone.org/docs/#config-config-file) / restic / [git config](https://git-scm.com/docs/git-config) | Configuration file models | Configuration is 25 environment variables and no file, which is the root cause of [#276](https://github.com/Masashi-Ono0611/cipher-brain/issues/276): the variable list has to be re-enumerated by hand in two unrelated places. Node's built-in `process.loadEnvFile()` (stable since v20.10.0, and `engines` requires >=22.6.0) means this needs **no new dependency** — which matters for a tool with three runtime deps | [#286](https://github.com/Masashi-Ono0611/cipher-brain/issues/286) | Open | Accepted in principle; open questions on precedence and on whether `schedule` should stop baking values |
 
 ## Angles already swept
 
@@ -98,7 +100,8 @@ scanning · PII/privacy tooling · FinOps cost reporting · plan-then-apply cons
 · interactive prompt libraries · property-based testing · structured
 logging/tracing · release automation · project-health baselines · transfer
 progress reporting · dead-man's-switch monitoring · printable recovery documents
-· stable error-code schemes.
+· stable error-code schemes · agent-protocol surface design · configuration-file
+models.
 
 ## Angles not yet swept
 
@@ -127,14 +130,6 @@ judgement against [`README.md`](../README.md)'s "What cipher-brain isn't".
   never for the harder question this project's permanence creates: what does
   "delete this snapshot" even mean when the ciphertext is public forever, and
   what should the CLI promise about it?
-- **The MCP surface as a surface.** cipher-brain exposes 10 MCP *tools* and
-  nothing else — no resources, no prompts. Whether the other primitives fit here
-  has not been examined.
-- **Configuration files.** Everything is environment variables — 25 distinct
-  `CIPHER_BRAIN_*` names, two of them deprecated no-ops — and
-  [#276](https://github.com/Masashi-Ono0611/cipher-brain/issues/276) was a bug
-  caused precisely by that list having to be re-enumerated by hand in two
-  places. `rclone.conf`, restic profiles and `git config` are the obvious models.
 - **Deterministic/reproducible archives.** Checked once and found *not* to be a
   correctness problem — `--skip-unchanged` hashes a sorted, normalized plaintext
   tree listing, not the tar bytes, so tar non-determinism cannot affect it.

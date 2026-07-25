@@ -62,6 +62,15 @@ export interface CliOptions {
   ping_url_fail?: string; // schedule install: failure ping override (defaults to `${ping_url}/fail`)
 }
 
+/**
+ * What a get() is fetching. `age` is the ciphertext; `minisig` is the detached authenticity
+ * signature push parks beside it (#214). They are different file formats, and a backend
+ * that validates the shape it received must be told which one to expect — hard-coding
+ * "always age ciphertext" is what made a signed artifact's sidecar unfetchable from
+ * arweave/turbo (#318).
+ */
+export type FetchShape = 'age' | 'minisig';
+
 // A StorageBackend is { put(file) -> locator, get(locator, outFile) }. Storage
 // only ever sees the *.age ciphertext. The locator is whatever the backend
 // assigns: a content hash for file (known before upload), or a tx id for
@@ -73,5 +82,13 @@ export interface PutOpts {
 
 export interface StorageBackend {
   put(file: string, opts?: PutOpts): Promise<string>;
-  get(locator: string, out: string): Promise<void>;
+  /**
+   * `expect` names the SHAPE of the object being fetched, because a backend that has to
+   * decide whether a gateway's HTTP 200 is the real artifact or a soft-404 page can only do
+   * that if it knows what the real artifact looks like (#318). It defaults to the
+   * ciphertext, which is what every caller but the authenticity-sidecar fetch wants.
+   * Backends without such a check (file, rclone — a local path or an rclone remote either
+   * has the object or errors) accept it and ignore it.
+   */
+  get(locator: string, out: string, expect?: FetchShape): Promise<void>;
 }

@@ -200,6 +200,12 @@ export const SIGN_IDENTITY = join(HOME, 'sign-identity.key'); // PRIVATE signing
 export const SIGN_RECIPIENT = join(HOME, 'sign-recipient.pub'); // PUBLIC verification key — safe to copy, same posture as RECIPIENT
 
 export const AGE_MAGIC = 'age-encryption.org/v1';
+// The first bytes of a *.minisig, beside AGE_MAGIC because they answer the same question
+// for the other object type this project stores: "are these bytes the thing I asked for, or
+// something a gateway handed me instead?" (#318). Kept identical to minisign.ts's
+// COMMENT_PREFIX, which is what this project's own writer emits and what the format
+// specifies for line 1.
+export const MINISIG_MAGIC = 'untrusted comment: ';
 export const AGE_ARMOR_HEADER = '-----BEGIN AGE ENCRYPTED FILE-----';
 
 // Optional recipient allowlist. When set (including to a non-empty inline list or a

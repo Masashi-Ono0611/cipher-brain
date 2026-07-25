@@ -7,6 +7,7 @@
 // the case file (a content-addressed locator) didn't exercise.
 import Arweave from 'arweave';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -194,6 +195,90 @@ try {
   spawnSync('tar', ['-xzf', join(tmp, 'out', 'brain.tar.gz'), '-C', join(tmp, 'out')]);
   const restored = await readFile(join(tmp, 'out', 'brain', 'note.txt'), 'utf8');
   restored.includes(marker) ? pass('decrypt(pulled) == original plaintext') : fail('decrypted content mismatch');
+
+  // #318: the SIGNED round trip, on this backend. push --sign parks a detached *.minisig
+  // beside the ciphertext and records its locator in field 6 of the save-locator file;
+  // pull is supposed to fetch it back so verify can check authenticity (#214). That was
+  // only ever exercised on the `file` backend — every push in selftest-minisign.sh passes
+  // --backend file — and on arweave it could not work at all: the gateway read promotes a
+  // body only if it is age ciphertext, and a minisign sidecar is plaintext, so an intact
+  // signature in storage was indistinguishable from a deleted one. The permanent,
+  // un-deletable backend, where authenticity matters most, was the untested one.
+  log('#318: push --sign parks a sidecar on arweave, and pull fetches it back');
+  cb('keygen', '--sign');
+  const signedSnap = join(tmp, 'signed.age');
+  cb('snapshot', '--dir', src, '--out', signedSnap, '--sign');
+  const signedLocFile = join(tmp, 'signed-loc.tsv');
+  cb('push', '--in', signedSnap, '--backend', 'arweave', '--save-locator', signedLocFile);
+  await mine();
+  const signedFields = (await readFile(signedLocFile, 'utf8')).trim().split('\t');
+  TX_RE.test(signedFields[5] ?? '')
+    ? pass('push --sign recorded the sidecar locator (field 6) as its own tx id')
+    : fail(`push --sign did not record a sidecar locator: ${JSON.stringify(signedFields)}`);
+
+  const sigOut = join(tmp, 'signed-pulled.age');
+  const sigPull = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--from-locator-file', signedLocFile, '--out', sigOut], {
+    env: pullEnv,
+    encoding: 'utf8',
+  });
+  sigPull.status === 0
+    ? pass('pull --from-locator-file (signed) succeeded')
+    : fail(`signed pull failed: ${sigPull.stderr}`);
+  // The failure this test exists for: pull's sidecar step is best-effort, so before #318 it
+  // WARNED and continued, leaving no .minisig and making verify report the artifact as
+  // "unsigned (legacy)". A warning here means the sidecar still cannot be fetched.
+  !/could not fetch the authenticity signature/.test(sigPull.stderr)
+    ? pass('pull fetched the sidecar without falling back to its best-effort warning')
+    : fail(`the sidecar still cannot be fetched from arweave: ${sigPull.stderr.slice(0, 300)}`);
+  existsSync(`${sigOut}.minisig`)
+    ? pass('the .minisig landed next to the pulled ciphertext')
+    : fail('no .minisig on disk after a signed pull');
+  const sigVerify = cb('verify', '--in', sigOut);
+  /\[PASS\] minisign authenticity signature/.test(sigVerify)
+    ? pass('verify CHECKED the authenticity signature on an arweave-pulled artifact')
+    : fail(`verify did not check authenticity on the pulled artifact: ${sigVerify.slice(0, 400)}`);
+  // The shape gate must still REFUSE a body that is neither. An unknown tx id would NOT
+  // prove that — arlocal serves nothing for it, so the predicate never runs and deleting
+  // isMinisig() entirely would still pass (multi-model review finding). Point the sidecar
+  // locator at a REAL, mined tx whose body is junk, so the gateway answers HTTP 200 and the
+  // predicate is what decides.
+  const junkSidecarTx = await ar.createTransaction(
+    { data: new TextEncoder().encode('not a minisign signature — issue #318 shape-gate test junk') },
+    jwk,
+  );
+  await ar.transactions.sign(junkSidecarTx, jwk);
+  await ar.transactions.post(junkSidecarTx);
+  await mine();
+  const fakeSidecar = [...signedFields];
+  fakeSidecar[5] = junkSidecarTx.id;
+  const fakeLocFile = join(tmp, 'fake-sidecar-loc.tsv');
+  await writeFile(fakeLocFile, `${fakeSidecar.join('\t')}\n`);
+  const fakeOut = join(tmp, 'fake-sidecar.age');
+  const fakePull = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--from-locator-file', fakeLocFile, '--out', fakeOut], {
+    env: pullEnv,
+    encoding: 'utf8',
+  });
+  fakePull.status === 0 && !existsSync(`${fakeOut}.minisig`)
+    ? pass('a served-but-wrong sidecar body is refused by the shape gate, and the pull still succeeds')
+    : fail(`the shape gate did not refuse junk served as a sidecar: status=${fakePull.status}`);
+
+  // The SAME must hold on the L1 chunk read, a second, separate call site for the
+  // predicate: hard-coding isAgeCiphertext() there again would recreate the bug whenever
+  // gateways are unavailable, and pass every assertion above (multi-model review finding).
+  // Dead-end the gateway so only path 2 can serve.
+  const l1SigOut = join(tmp, 'l1-signed.age');
+  const l1Sig = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--from-locator-file', signedLocFile, '--out', l1SigOut], {
+    env: { ...pullEnv, CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1' },
+    encoding: 'utf8',
+  });
+  l1Sig.status === 0 && existsSync(`${l1SigOut}.minisig`)
+    ? pass('L1 fallback: the sidecar is fetched through the chunk read too, not only the gateway')
+    : fail(
+        `the sidecar cannot be fetched via the L1 chunk read: status=${l1Sig.status} stderr=${(l1Sig.stderr || '').slice(0, 300)}`,
+      );
+  /\[PASS\] minisign authenticity signature/.test(cb('verify', '--in', l1SigOut))
+    ? pass('L1 fallback: the chunk-read sidecar verifies against the signing key')
+    : fail('the L1-fetched sidecar did not verify');
 
   // negative control: an unknown (but well-formed) tx id returns no bytes
   const badId = 'A'.repeat(43);

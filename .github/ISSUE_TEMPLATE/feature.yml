@@ -1,0 +1,65 @@
+name: Feature or idea
+description: Propose a capability, a UX change, or an idea borrowed from another project
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please skim [`docs/prior-art.md`](https://github.com/Masashi-Ono0611/cipher-brain/blob/main/docs/prior-art.md).
+        It lists the projects already consulted as design models and what was taken
+        from each — if your takeaway matches a row there, comment on that issue
+        instead of opening a second one.
+
+        Bug reports and questions do not need this form — open a blank issue.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation a user is in, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Prior art
+      description: |
+        Which existing project, tool, or spec does this idea come from, and what
+        specifically does it do that we would be borrowing? Link it.
+
+        If the idea is genuinely your own, write "none" — that is a fine answer.
+        This field exists because most ideas here *do* come from somewhere, and
+        naming the source is both how we credit it and how we avoid re-deriving
+        the same idea twice.
+
+        If the project already appears in `docs/prior-art.md` under a *different*
+        takeaway, say how yours differs.
+      placeholder: |
+        e.g. restic (https://restic.net) — its `forget --keep-daily` retention
+        policies. docs/prior-art.md lists restic for chunking and staged verify;
+        this is about retention, which is not covered there.
+    validations:
+      required: true
+
+  - type: textarea
+    id: existing-implementation
+    attributes:
+      label: Is there something we could wire in instead of writing it?
+      description: |
+        This project prefers integrating a maintained implementation over building
+        its own — see [Prefer an existing implementation](https://github.com/Masashi-Ono0611/cipher-brain/blob/main/CONTRIBUTING.md#prefer-an-existing-implementation).
+        If a library or tool already solves this, name it. If you think it has to
+        be written here, say why.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: I have read ["What cipher-brain isn't"](https://github.com/Masashi-Ono0611/cipher-brain/blob/main/README.md) and believe this fits the project's scope
+          required: true
+        - label: If this is borrowed from a project not yet in `docs/prior-art.md`, I will add a row (a PR adding one line is welcome, or say so here and a maintainer will)
+          required: false

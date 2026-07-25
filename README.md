@@ -838,6 +838,41 @@ decrypt + extract, content asserted on disk) that refuses without `confirm_write
 and a real `keygen` → `wallet_create` → `wallet_address` round-trip (plus the
 no-clobber-unless-`force` refusal) against an isolated `CIPHER_BRAIN_HOME`.
 
+## Acknowledgements
+
+cipher-brain is a thin layer over other people's work, and deliberately so —
+see [Prefer an existing implementation](CONTRIBUTING.md#prefer-an-existing-implementation).
+The cryptography, the storage, and most of the hard parts are theirs.
+
+**Built on:**
+
+- [age](https://age-encryption.org) by [@FiloSottile](https://github.com/FiloSottile)
+  — the encryption format this project stores everything in, via
+  [typage](https://github.com/FiloSottile/typage) (`age-encryption`), the same
+  author's TypeScript implementation. No cryptographic primitive here is our own.
+- [minisign](https://jedisct1.github.io/minisign/) by
+  [@jedisct1](https://github.com/jedisct1) — the signature format `keygen --sign`
+  and the `*.minisig` sidecars are compatible with.
+- [Turbo](https://ardrive.io) / [`@ardrive/turbo-sdk`](https://github.com/ardriveapp/turbo-sdk)
+  and [arweave-js](https://github.com/ArweaveTeam/arweave-js) — the upload and
+  gateway paths behind the `turbo` and `arweave` backends.
+- [rclone](https://rclone.org) — the entire `rclone` backend is a delegation to
+  it; its 70+ providers are its authors' work, not reimplemented here.
+- [gitleaks](https://github.com/gitleaks/gitleaks) — the scanner behind
+  `snapshot --scan-secrets`.
+- [`ignore`](https://github.com/kaelzhang/node-ignore) — gitignore-syntax
+  matching for `.cipherbrainignore`, so the semantics match git's rather than a
+  hand-rolled glob.
+- [Model Context Protocol](https://modelcontextprotocol.io) and its TypeScript
+  SDK — the MCP server surface.
+- [Bun](https://bun.sh), [Biome](https://biomejs.dev),
+  [Changesets](https://github.com/changesets/changesets) and
+  [commitlint](https://commitlint.js.org) — build, lint, and release tooling.
+
+**Learned from:** many projects have been read as design models without any of
+their code being used. They are credited individually, with what was taken from
+each, in [`docs/prior-art.md`](docs/prior-art.md).
+
 ## Project continuity
 
 `cipher-brain` is currently maintained by a single person

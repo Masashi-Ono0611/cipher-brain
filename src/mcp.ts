@@ -41,7 +41,7 @@ import { schedule } from './lib/schedule.js';
 import { estimateCost } from './lib/estimate.js';
 import { keygenAt } from './lib/keys.js';
 import { wallet } from './lib/wallet.js';
-import { exists, sha256, errMsg } from './lib/util.js';
+import { exists, requireFile, MissingPathError, sha256, errMsg } from './lib/util.js';
 import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
 import type { CliOptions } from './lib/types.js';
 
@@ -132,6 +132,22 @@ function structuredOk(payload: Record<string, unknown>): CallToolResult {
     content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
     structuredContent: payload,
   };
+}
+
+// #293: a caller-supplied path that is not there is bad INPUT, not a server fault —
+// left unchecked it reaches the library, whose plain Error structuredErr() can only
+// report as ERR_INTERNAL, telling an agent the server broke and inviting a retry that
+// can only fail the same way. requireFile() (not exists()) does the check, because
+// exists() swallows EVERY access() failure: EACCES/ELOOP would be relabelled "no such
+// file", which is the same misdiagnosis one level down that #267 fixed for the CLI.
+// Those propagate untouched and stay ERR_INTERNAL, which is the honest answer for them.
+async function requireCallerFile(file: string): Promise<void> {
+  try {
+    await requireFile(file);
+  } catch (e) {
+    if (e instanceof MissingPathError) throw new ToolError('ERR_INVALID_INPUT', e.message);
+    throw e;
+  }
 }
 
 function structuredErr(errObj: unknown): CallToolResult {
@@ -951,6 +967,8 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
       }
     } else if (!isStr(file)) {
       throw new ToolError('ERR_INVALID_INPUT', 'file must be a string path');
+    } else {
+      await requireCallerFile(file);
     }
     if (!target) throw new ToolError('ERR_INTERNAL', 'no target file resolved for verify');
     // The pin (explicit or read from locator_file) is ALSO handed to verify() so
@@ -1051,6 +1069,11 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
   }
 
   let target: string | undefined = isStr(file) ? file : undefined;
+  // #293: validate a caller-given `file` BEFORE any branch below, so a path that is
+  // not there is reported as bad input rather than failing later inside the pin copy
+  // or the decrypt. Skipped entirely for locator / locator_file input, where `file`
+  // is undefined and the artifact is fetched rather than given.
+  if (isStr(file)) await requireCallerFile(file);
   let effectivePin: string | undefined = isStr(pin) ? pin : undefined;
   let tdir: string | null = null;
   let pulled: Record<string, unknown> | undefined;
@@ -1139,7 +1162,7 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
   let size: number;
   if (file !== undefined) {
     if (!isStr(file)) throw new ToolError('ERR_INVALID_INPUT', 'file must be a string path');
-    if (!(await exists(file))) throw new ToolError('ERR_INVALID_INPUT', `no such file: ${file}`);
+    await requireCallerFile(file); // #293: shared with verify_restore/restore_now
     size = (await stat(file)).size;
   } else {
     if (typeof sizeBytes !== 'number' || !Number.isFinite(sizeBytes) || sizeBytes < 0)

@@ -27,13 +27,21 @@ export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 // relabelling "permission denied" as "missing" is the same misdiagnosis this issue
 // is about, one level down (multi-model review finding). push/estimate route
 // through here too, so all five commands share one implementation and one wording.
+// Thrown by requireFile/requirePath for the one condition they translate. The CLI does
+// not care — errMsg() renders it exactly like the plain Error it replaces — but the MCP
+// server needs to tell "the caller named a path that is not there" (bad input) apart
+// from any other failure (#293), and matching on message text to do that would be
+// exactly the kind of fragile coupling this codebase has been removing. A type is the
+// same signal without the string.
+export class MissingPathError extends Error {}
+
 export async function requireFile(path: string, what = 'file'): Promise<void> {
   try {
     await access(path, FS.F_OK);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException)?.code;
     if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
-    throw new Error(`no such ${what}: ${path}`);
+    throw new MissingPathError(`no such ${what}: ${path}`);
   }
 }
 
@@ -49,7 +57,7 @@ export async function requirePath(path: string, what = 'path'): Promise<void> {
     await lstat(path);
   } catch (e) {
     if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e;
-    throw new Error(`no such ${what}: ${path}`);
+    throw new MissingPathError(`no such ${what}: ${path}`);
   }
 }
 

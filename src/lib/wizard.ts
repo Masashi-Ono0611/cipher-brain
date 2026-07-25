@@ -22,7 +22,7 @@ import { readFile, writeFile, mkdir, rm, rename, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir, userInfo } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { HOME, IDENTITY, RECIPIENT, SIGN_IDENTITY, SIGN_RECIPIENT, readEnv } from './config.js';
+import { HOME, CONFIG_FILE_PATH, IDENTITY, RECIPIENT, SIGN_IDENTITY, SIGN_RECIPIENT, readEnv } from './config.js';
 import { keygen, keygenAt } from './keys.js';
 import { askNewPassphrase, wrapIdentity } from './crypt.js';
 import { keygenSignAt } from './minisign.js';
@@ -522,14 +522,16 @@ export async function init(_o: CliOptions): Promise<void> {
       // does not WRITE it (that is a separate consent question: this wizard has never
       // persisted a setting on the user's behalf, and a file that may hold secrets is not
       // the place to start doing it silently), so the suggestion stays a suggestion.
-      const configFilePath = join(HOME, 'config.env');
+      // The path itself comes from config.ts (CONFIG_FILE_PATH) rather than being
+      // re-derived here — the loader and this instruction must never be able to disagree
+      // about the filename, or the user creates a file nothing ever reads, silently.
       console.log('\n== 5/7: recipient pin (optional, recommended) ==');
       console.log(
         'CIPHER_BRAIN_PIN_RECIPIENTS is a setting snapshot reads at run time: when set, it refuses to encrypt\n' +
           'to any recipient NOT on the list — so a tampered recipient.txt, or an injected extra --recipient, can\n' +
           'never silently re-key your snapshots to an attacker. init does not write the setting for you, but it\n' +
           'can suggest the exact line. The place to put it is the config file, which the CLI and the MCP server\n' +
-          `both read:\n  ${configFilePath}   (one KEY=value per line; chmod 600 — it may hold secrets)\n` +
+          `both read:\n  ${CONFIG_FILE_PATH}   (one KEY=value per line; chmod 600 — it may hold secrets)\n` +
           'A shell rc (~/.zshrc / ~/.bashrc) also works, but only for the interactive shells you open yourself.\n' +
           'launchd/cron start the unattended nightly run with a bare environment, and "schedule install" bakes\n' +
           'in whatever is in effect when you run it — so a value in the config file covers the nightly run as\n' +
@@ -546,7 +548,7 @@ export async function init(_o: CliOptions): Promise<void> {
           defaultLine,
         );
         console.log(
-          `\nAdd this line to ${configFilePath} (create the file if it does not exist yet, then chmod 600 it):\n` +
+          `\nAdd this line to ${CONFIG_FILE_PATH} (create the file if it does not exist yet, then chmod 600 it):\n` +
             `${pinRecipientsLine}\n` +
             'For a shell rc instead, prefix it with "export " and open a new shell — but see the note above about\n' +
             'the unattended nightly run. Either way it applies from the NEXT cipher-brain run onward: this\n' +

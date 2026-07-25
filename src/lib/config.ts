@@ -63,6 +63,15 @@ export interface LoadedConfigFile {
   readonly variables: readonly string[];
 }
 
+// WHERE the config file lives, derived in exactly one place. Anything that needs to
+// name the resolved path (loadConfigFile below, the `init` wizard's recipient-pin step)
+// goes through this or through CONFIG_FILE_PATH under HOME — a second `join(home,
+// 'config.env')` elsewhere would drift silently the day the filename changes: the
+// loader would look at the new name while the wizard kept telling users to write the
+// old one, and a file nothing reads produces no error at all. Same drift shape #276
+// removed from the env-name list.
+const configFileIn = (home: string): string => join(home, 'config.env');
+
 // A refusal here is RECORDED, not thrown. This runs in a module body, before cli.ts's
 // main().catch and before mcp.ts is serving, so throwing produces a raw stack trace
 // instead of the `error: …` line (plus the --json error object, #270, and the CB-E code
@@ -79,7 +88,7 @@ export interface LoadedConfigFile {
 // touch process.env) purely to learn which keys it declared, for validation and for
 // `schedule status`.
 function loadConfigFile(home: string): { file: LoadedConfigFile | null; error: Error | null } {
-  const path = join(home, 'config.env');
+  const path = configFileIn(home);
   // The generated nightly runner sets this (#286): its values were baked in at install
   // time, and re-reading the file at run time would mean an edit could retune — or
   // break — an already-installed schedule, which is exactly the guarantee `schedule
@@ -138,6 +147,14 @@ function loadConfigFile(home: string): { file: LoadedConfigFile | null; error: E
 
 // Resolved from the environment ALONE, before the file is loaded — see loadConfigFile.
 export const HOME = process.env.CIPHER_BRAIN_HOME || join(homedir(), '.cipher-brain');
+
+/**
+ * The config file's resolved path under this run's HOME, whether or not it exists —
+ * for anything that needs to NAME it (e.g. `init` telling the user where to put a
+ * setting). Distinct from CONFIG_FILE below, which is null unless a file was actually
+ * loaded. Must stay after HOME: it is derived from it.
+ */
+export const CONFIG_FILE_PATH = configFileIn(HOME);
 
 const CONFIG_LOAD = loadConfigFile(HOME);
 /** The config file that was loaded, if any. `schedule status` reports it (#286). */

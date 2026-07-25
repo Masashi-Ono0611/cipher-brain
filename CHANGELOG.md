@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+Entries from the first tagged release onward are **generated** by
+[Changesets](https://github.com/changesets/changesets) (issue #227) from the
+`.changeset/*.md` files each PR contributes — see
+[CONTRIBUTING.md](CONTRIBUTING.md#changesets). `changeset version` prepends them
+above the `[Unreleased]` section below, which stays as the hand-written summary
+of everything before that point.
+
 ## [Unreleased]
 
 `cipher-brain` has not yet cut a tagged npm release (`package.json` is still

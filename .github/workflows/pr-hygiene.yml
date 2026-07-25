@@ -1,0 +1,66 @@
+name: pr-hygiene
+
+# Issue #227's contributor-workflow gates, kept OUT of ci.yml on purpose: they need
+# the `edited` activity type (a PR title can be changed after a green check, and the
+# default types — opened/synchronize/reopened — would leave the stale pass standing),
+# and putting `edited` on ci.yml would re-run its whole 4-cell build+selftest matrix
+# every time someone fixes a typo in a title. These two jobs are a checkout and a
+# script; re-running them is free.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+# Read-only: neither job needs to write anything, and both necessarily run against
+# PR-controlled content.
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-hygiene-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Conventional Commits, enforced on the PULL REQUEST TITLE rather than the branch's
+  # commits: this repo squash-merges, so the title is the message that lands on main
+  # and the only one that survives in `git log` — linting the intermediate commits
+  # would constrain messages that are about to be discarded while leaving the one
+  # that matters unchecked.
+  commitlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # nothing here talks back to the repo
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.8
+      # --ignore-scripts: this installs a dependency tree described by PR-controlled
+      # files in order to lint one string; it has no reason to run any package's
+      # lifecycle scripts. commitlint itself needs none.
+      - run: bun install --frozen-lockfile --ignore-scripts
+      # The title goes through the ENVIRONMENT, never interpolated into the shell:
+      # `${{ github.event.pull_request.title }}` inline would let a PR titled with a
+      # shell metacharacter run arbitrary code in this job. node_modules/.bin (not
+      # npx/bunx) so this can only ever run the pinned, lockfile-installed commitlint,
+      # never fetch one at job time.
+      - name: lint the PR title (Conventional Commits)
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s' "$PR_TITLE" | ./node_modules/.bin/commitlint
+
+  # A PR that changes shipped code must carry a changeset, so `changeset version` can
+  # generate the CHANGELOG entry and the version bump instead of someone remembering
+  # to hand-write both at release time.
+  changeset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # need the merge base to diff against the target branch
+          persist-credentials: false
+      - name: require a changeset when src/ changes
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bash scripts/check-changeset.sh "origin/$BASE_REF"

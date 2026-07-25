@@ -826,7 +826,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `restore_now` | **writes files, can clobber a DB** (no spend) | pull by locator (or a local file / `locator_file`, same dual-mode input as `verify_restore`) + decrypt + extract into `out_dir` — the actual restore `verify_restore` stops short of. Requires `confirm_write: true` before any work happens; when `pg` is given, `pg_restore --clean --if-exists` also DROPS and replaces objects in that database, the same `--yes` consent the CLI's `restore --pg` requires |
 | `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free). All seven fields are always present, `null` where they do not apply (#268) — never test for a key to decide whether a value exists. For turbo/arweave, `usd_estimate` carries an approximate USD figure when a USD/AR rate is fetchable — a direct HTTP call to Turbo's public rate endpoint (#170), so it works with or without `@ardrive/turbo-sdk` installed — and is `null` on any rate failure. Same computation as `cipher-brain estimate` (`src/lib/estimate.ts`) |
 | `schedule_install` | **writes a real system file, can commit to ongoing spend** (no spend by itself) | register the nightly snapshot+push (a launchd plist or crontab entry), the MCP equivalent of `cipher-brain schedule install` (issue #174 follow-up). `arweave`/`turbo` require `max_spend` (a positive integer cap on every unattended run); always requires `confirm_install: true` before any write happens. `no_load: true` writes the artifacts without registering the trigger |
-| `schedule_status` | read-only | the same report as `cipher-brain schedule status`: configured time/backend, trigger registration state, last run log + its final rc line, next scheduled run |
+| `schedule_status` | read-only | the same report as `cipher-brain schedule status`: configured time/backend, which config file supplied settings, trigger registration state, last run log + its final rc line, next scheduled run. **Structured fields**, not the printed lines — `cipher-brain schedule status --json`, this tool and the resource below all return one object built by a single function, so they cannot disagree |
 | `keygen` | **writes a keypair** (no spend) | generate a fresh age identity/recipient keypair at `<CIPHER_BRAIN_HOME>/{identity.age,recipient.txt}` — first-run setup for a shell-less agent. `pq: true` generates a post-quantum HYBRID keypair (ML-KEM-768 + X25519) instead of plain X25519. Refuses if one already exists unless `force: true` (destructive — discards the old identity) |
 | `wallet_create` | **writes a wallet** (no spend) | generate a fresh Arweave JWK wallet (default `<CIPHER_BRAIN_HOME>/wallet.json`, `out` overrides). Refuses if one already exists at the target path unless `force: true` (destructive — discards spend authority over any funds already sent to it) |
 | `wallet_address` | read-only | derive and show the Arweave address for a JWK wallet file (the address to fund before pushing to `arweave`/`turbo`) |
@@ -886,6 +886,23 @@ The cryptography, the storage, and most of the hard parts are theirs.
 **Learned from:** many projects have been read as design models without any of
 their code being used. They are credited individually, with what was taken from
 each, in [`docs/prior-art.md`](docs/prior-art.md).
+
+### Resources and prompts
+
+The server also exposes one of each, alongside the tools above. The distinction is the
+protocol's own: a **tool** is model-controlled (the LLM decides to invoke it), while a
+**resource** is application-controlled — something a client can attach without the model
+having to think to ask.
+
+| Kind | Name | What it is |
+|---|---|---|
+| resource | `cipher-brain://schedule/status` | The installed schedule's state, as JSON — **byte-identical to the `schedule_status` tool's result**. Useful pinned into a conversation: "is the nightly backup still armed" is a thing you want visible, not something to remember to check. |
+| prompt | `restore-runbook` | The restore procedure — pull, verify *before* trusting, then decrypt into a scratch target. Its text is [`MANAGEMENT.md`](MANAGEMENT.md)'s "Restore runbook" section, inlined at build time, so it cannot drift from the documentation. |
+
+Only these two, deliberately. `last_snapshot_status` takes optional path arguments and
+would need a URI template, which is a separate decision; and every capability is surface
+area on a security-adjacent server, so the case for widening it should come from a client
+that actually wanted more.
 
 ## Project continuity
 

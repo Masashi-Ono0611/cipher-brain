@@ -33,6 +33,7 @@
 import { readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { extractSection, RUNBOOK_HEADING } from '../src/lib/runbook.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
@@ -48,6 +49,20 @@ const external = [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.pee
   (d) => !INLINE.has(d),
 );
 
+// #285: the MCP `restore-runbook` prompt serves MANAGEMENT.md's "## Restore runbook"
+// section, but MANAGEMENT.md is NOT part of the published package (`files: ["dist"]`),
+// so an installed server cannot read it. Inline it here instead of keeping a second
+// copy in src/ — the same slicing helper the dev fallback uses, so the two paths cannot
+// diverge (src/lib/runbook.ts). Failing loudly matters: a prompt that resolves to an
+// empty string looks like a working feature while handing an agent no procedure.
+const runbook = extractSection(readFileSync(join(root, 'MANAGEMENT.md'), 'utf8'), RUNBOOK_HEADING);
+if (!runbook) {
+  console.error(
+    `build: no "${RUNBOOK_HEADING}" section found in MANAGEMENT.md — the MCP restore-runbook prompt would ship empty`,
+  );
+  process.exit(1);
+}
+
 rmSync(dist, { recursive: true, force: true });
 const result = await Bun.build({
   entrypoints: [join(root, 'src/cli.ts'), join(root, 'src/mcp.ts')],
@@ -57,6 +72,7 @@ const result = await Bun.build({
   external,
   naming: '[dir]/[name].mjs', // force the OUTPUT extension to .mjs (Bun defaults .ts sources to .js too)
   banner: '#!/usr/bin/env node',
+  define: { __CIPHER_BRAIN_RESTORE_RUNBOOK__: JSON.stringify(runbook) },
 });
 if (!result.success) {
   for (const message of result.logs) console.error(message);

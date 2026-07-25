@@ -672,7 +672,43 @@ const legacyLaunchdNote = () =>
 const legacyCronNote = () =>
   `this schedule is still registered under the legacy unscoped crontab marker (${LEGACY_CRON_MARKER}) from before CIPHER_BRAIN_HOME-scoped markers — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`;
 
-async function status(o: CliOptions): Promise<void> {
+/**
+ * The schedule's state, as one object (#285).
+ *
+ * There used to be three shapes of this: the CLI's `--json` built it inline here, the
+ * human-readable report printed its own lines, and the MCP `schedule_status` tool
+ * CAPTURED those printed lines because `status()` had no return value. A resource
+ * needs structured content, and adding a fourth shape would have been absurd — so all
+ * of them now read this one function. The MCP tool no longer round-trips through
+ * console output at all.
+ */
+// A type alias rather than an interface: mcp.ts hands this straight to structuredOk(),
+// which takes Record<string, unknown>, and only a type alias carries the implicit index
+// signature that assignment needs.
+export type ScheduleStatusReport = {
+  readonly configured: { readonly at: string; readonly backend: string };
+  readonly runner: string;
+  /** #286: which config file supplied settings, if any — names only, never values. */
+  readonly config_file: { readonly path: string; readonly variables: string[] } | null;
+  readonly ping: { readonly url: string; readonly fail_url?: string } | null;
+  readonly trigger: {
+    readonly type: 'launchd' | 'cron';
+    readonly path?: string;
+    readonly entry?: string;
+    readonly loaded: 'yes' | 'no' | 'unknown';
+    readonly legacy: boolean;
+    readonly legacy_note?: string;
+  };
+  readonly last_run: { readonly log: string; readonly rc_line: string } | null;
+  readonly next_run: string;
+};
+
+/**
+ * Read the installed schedule's state. Throws the usual "schedule not installed"
+ * error (CB-E014) when there is none — every caller wants that surfaced, not
+ * swallowed into an empty report.
+ */
+export async function scheduleStatusReport(): Promise<ScheduleStatusReport> {
   const cfg = await readConfig();
 
   let triggerPath: string | undefined;
@@ -706,52 +742,56 @@ async function status(o: CliOptions): Promise<void> {
     if (legacy) legacyNote = legacyCronNote();
   }
   const last = await lastLog();
-  const nextRun = nextRunAt(cfg.hour, cfg.minute);
+
+  return {
+    configured: { at: cfg.at, backend: cfg.backend },
+    runner: cfg.runner,
+    // #286: the config file is loaded SILENTLY by config.ts — deliberately, so it does
+    // not add a line to every command. This is where it becomes visible, because a
+    // file can change which wallet, gateway or spend cap a run uses and "why is it
+    // behaving differently" has to be answerable somewhere. Names only: a value could
+    // be a passphrase.
+    config_file: CONFIG_FILE ? { path: CONFIG_FILE.path, variables: [...CONFIG_FILE.variables] } : null,
+    ping: cfg.ping_url ? { url: cfg.ping_url, fail_url: cfg.ping_url_fail } : null,
+    trigger: {
+      type: cfg.trigger.type,
+      ...(triggerPath !== undefined ? { path: triggerPath } : {}),
+      ...(triggerEntry !== undefined ? { entry: triggerEntry } : {}),
+      loaded: loadedYesNo,
+      legacy,
+      ...(legacyNote !== undefined ? { legacy_note: legacyNote } : {}),
+    },
+    last_run: last ? { log: last.name, rc_line: last.rcLine } : null,
+    next_run: nextRunAt(cfg.hour, cfg.minute),
+  };
+}
+
+async function status(o: CliOptions): Promise<void> {
+  const r = await scheduleStatusReport();
 
   if (o.json) {
-    // --json (#211): the SAME state read above, as one machine-readable line on
-    // stdout instead of the human-readable report below — never a re-implementation,
-    // so this can never disagree with either the human-readable report or the MCP
-    // schedule_status tool.
-    printJson({
-      configured: { at: cfg.at, backend: cfg.backend },
-      runner: cfg.runner,
-      // #286: the config file is loaded SILENTLY by config.ts — deliberately, so it does
-      // not add a line to every command. This is where it becomes visible, because a
-      // file can change which wallet, gateway or spend cap a run uses and "why is it
-      // behaving differently" has to be answerable somewhere.
-      config_file: CONFIG_FILE ? { path: CONFIG_FILE.path, variables: [...CONFIG_FILE.variables] } : null,
-      ping: cfg.ping_url ? { url: cfg.ping_url, fail_url: cfg.ping_url_fail } : null,
-      trigger: {
-        type: cfg.trigger.type,
-        ...(triggerPath !== undefined ? { path: triggerPath } : {}),
-        ...(triggerEntry !== undefined ? { entry: triggerEntry } : {}),
-        loaded: loadedYesNo,
-        legacy,
-        ...(legacyNote !== undefined ? { legacy_note: legacyNote } : {}),
-      },
-      last_run: last ? { log: last.name, rc_line: last.rcLine } : null,
-      next_run: nextRun,
-    });
+    // --json (#211): the SAME object the MCP tool and the cipher-brain://schedule/status
+    // resource serve — never a re-implementation, so the three can never disagree.
+    printJson(r);
     return;
   }
 
-  console.log(`configured: daily at ${cfg.at}, backend ${cfg.backend}`);
-  console.log(`runner: ${cfg.runner}`);
+  console.log(`configured: daily at ${r.configured.at}, backend ${r.configured.backend}`);
+  console.log(`runner: ${r.runner}`);
   console.log(
-    CONFIG_FILE
-      ? `config file: ${CONFIG_FILE.path} (${CONFIG_FILE.variables.length} setting(s): ${CONFIG_FILE.variables.join(', ')})`
+    r.config_file
+      ? `config file: ${r.config_file.path} (${r.config_file.variables.length} setting(s): ${r.config_file.variables.join(', ')})`
       : 'config file: none',
   );
-  console.log(cfg.ping_url ? `ping: ${cfg.ping_url} (fail: ${cfg.ping_url_fail})` : 'ping: not configured');
-  if (cfg.trigger.type === 'launchd') {
-    console.log(`trigger: launchd ${triggerPath} (loaded: ${loadedYesNo})`);
+  console.log(r.ping ? `ping: ${r.ping.url} (fail: ${r.ping.fail_url})` : 'ping: not configured');
+  if (r.trigger.type === 'launchd') {
+    console.log(`trigger: launchd ${r.trigger.path} (loaded: ${r.trigger.loaded})`);
   } else {
-    console.log(`trigger: cron "${triggerEntry}" (registered: ${loadedYesNo})`);
+    console.log(`trigger: cron "${r.trigger.entry}" (registered: ${r.trigger.loaded})`);
   }
-  if (legacyNote) console.log(`note: ${legacyNote}`);
-  console.log(last ? `last run: ${last.name} — ${last.rcLine}` : 'last run: none yet');
-  console.log(`next run: ${nextRun} (local)`);
+  if (r.trigger.legacy_note) console.log(`note: ${r.trigger.legacy_note}`);
+  console.log(r.last_run ? `last run: ${r.last_run.log} — ${r.last_run.rc_line}` : 'last run: none yet');
+  console.log(`next run: ${r.next_run} (local)`);
 }
 
 async function uninstall(o: CliOptions): Promise<void> {

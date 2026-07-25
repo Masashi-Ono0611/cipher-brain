@@ -76,7 +76,9 @@ idea that was considered and declined.
 | [Changesets](https://github.com/changesets/changesets) / [commitlint](https://commitlint.js.org) | Release automation | Changesets for versioning + Conventional Commits enforced on the PR title | [#227](https://github.com/Masashi-Ono0611/cipher-brain/issues/227) | Closed | **Shipped** ([#274](https://github.com/Masashi-Ono0611/cipher-brain/pull/274)) |
 | semantic-release | Release automation | Nothing — evaluated in [#227](https://github.com/Masashi-Ono0611/cipher-brain/issues/227) and **declined** as overlapping Changesets | [#227](https://github.com/Masashi-Ono0611/cipher-brain/issues/227) | Closed | **Declined** |
 | [OpenSSF Best Practices](https://www.bestpractices.dev) / [contributing-template](https://github.com/nayafia/contributing-template) | Project health baseline | SECURITY.md, private vulnerability reporting, branch protection, CONTRIBUTING.md | [#229](https://github.com/Masashi-Ono0611/cipher-brain/issues/229) | Closed | Shipped except the bestpractices.dev registration itself |
-| Healthcheck ping services | Dead-man's-switch monitoring | `schedule` pings a URL on success/failure so a silent nightly failure surfaces | [#202](https://github.com/Masashi-Ono0611/cipher-brain/issues/202) | Closed | **Shipped** |
+| [healthchecks.io](https://healthchecks.io/docs/) | Dead-man's-switch monitoring | `schedule --ping-url`: the runner pings a URL on success and appends `/fail` on failure, so a nightly job that stops running surfaces instead of going quiet. The URL convention is theirs — base URL means success, `/fail` means failure — which is why the code and tests say "healthchecks.io-style" | [#202](https://github.com/Masashi-Ono0611/cipher-brain/issues/202) | Closed | **Shipped** |
+| [1Password Emergency Kit](https://support.1password.com/emergency-kit/) | A printable recovery document | The `init` wizard ends in one printable plain-text page carrying what a fresh machine needs. Same idea as their single printable sheet, kept physically rather than digitally | — (shipped with `init`) | — | **Shipped** |
+| [ngrok](https://ngrok.com/docs/errors/) | Stable, greppable error codes | The `CB-E###` scheme: a stable identifier per failure that maps to a documented entry (`MANAGEMENT.md#error-codes`), so an error can be searched for rather than pattern-matched on its wording. ngrok's `ERR_NGROK_XXXX` works the same way — a code per site in their own code, each with its own doc page | [#212](https://github.com/Masashi-Ono0611/cipher-brain/issues/212) | Closed | **Shipped** |
 | [Open Second Brain](https://github.com/itechmeat/open-second-brain) | A comparable second-brain project | A `--profile o2b` that ingests its bank-export bundle | [#206](https://github.com/Masashi-Ono0611/cipher-brain/issues/206) | Open | Accepted, not built |
 | [x402](https://www.x402.org) | Agentic payment rails | Let an agent hold its own means of payment for a paid push | [#187](https://github.com/Masashi-Ono0611/cipher-brain/issues/187) | Open | Under discussion |
 | [Sigstore](https://www.sigstore.dev) | Keyless signing, transparency logs | Considered for release signing alongside npm OIDC provenance | [#186](https://github.com/Masashi-Ono0611/cipher-brain/issues/186), [#66](https://github.com/Masashi-Ono0611/cipher-brain/issues/66) | Closed | Partly shipped (npm OIDC provenance; no Rekor entry) |
@@ -95,7 +97,8 @@ safety · archival packaging standards · verified gateway reads · supply-chain
 scanning · PII/privacy tooling · FinOps cost reporting · plan-then-apply consent
 · interactive prompt libraries · property-based testing · structured
 logging/tracing · release automation · project-health baselines · transfer
-progress reporting.
+progress reporting · dead-man's-switch monitoring · printable recovery documents
+· stable error-code schemes.
 
 ## Angles not yet swept
 
@@ -103,10 +106,16 @@ Recorded so a survey has somewhere to start. These are directions, not
 proposals — each still needs the usual "does this fit the project's scope?"
 judgement against [`README.md`](../README.md)'s "What cipher-brain isn't".
 
-- **Recovery-kit and emergency-access design.** `init` ends in a printed
-  recovery kit. Password managers have iterated hard on exactly this artifact
-  (1Password's Emergency Kit, Bitwarden's time-delayed Emergency Access). Nobody
-  has compared the two.
+- **Emergency access — a delegated, time-delayed one.** The *document* half of
+  this is done (1Password's Emergency Kit, in the table above). The other half is
+  not: [Bitwarden's Emergency Access](https://bitwarden.com/help/emergency-access/)
+  is a mechanism rather than a document — a grantor nominates a trusted contact,
+  the grantor's key is wrapped to that contact's public key, and a request either
+  gets approved or unlocks after a grantor-set waiting period. cipher-brain's
+  answer to "what happens to the brain if I am hit by a bus" is currently "hope
+  someone finds the printed kit", and a wrapped-to-a-second-recipient design is
+  already native to age. Whether that belongs in a tool that deliberately has no
+  server is exactly the question — there is nobody to enforce a waiting period.
 - **Retention and forgetting on permanent storage.** restic/Kopia pruning was
   consulted for *cost* ([#208](https://github.com/Masashi-Ono0611/cipher-brain/issues/208)),
   never for the harder question this project's permanence creates: what does

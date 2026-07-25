@@ -573,9 +573,10 @@ const SCHEDULE_INSTALL_TOOL: Tool = {
           'Bake the gitleaks gate into the generated nightly runner (the CLI --scan-secrets, #215/#307): ' +
           '"warn" logs findings and proceeds, "deny" refuses the whole snapshot on a finding. Omitted = the ' +
           'nightly does not scan (same default as the CLI). Requires at least one dirs entry — the scan covers ' +
-          'staged directory plaintext, not the pg dump. Install RESOLVES gitleaks now and bakes its directory ' +
-          "onto the runner's PATH (launchd/cron do not inherit one), and FAILS if gitleaks cannot be resolved, " +
-          'rather than installing a schedule that cannot scan.',
+          'staged directory plaintext, not the pg dump. Install RESOLVES gitleaks now and PINS the absolute ' +
+          'path into the runner as CIPHER_BRAIN_GITLEAKS_BIN (launchd/cron do not inherit a useful PATH, and a ' +
+          'different gitleaks on theirs must not take its place), and FAILS if it cannot be resolved, rather ' +
+          'than installing a schedule that cannot scan.',
       },
       confirm_install: {
         type: 'boolean',

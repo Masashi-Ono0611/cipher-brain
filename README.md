@@ -685,10 +685,14 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       --ping-url to also be set.
       --scan-secrets warn|deny bakes snapshot's gitleaks gate (see 'snapshot' above) into
       the generated runner, so the unattended nightly — the run nobody is watching — is
-      gated too. Install RESOLVES gitleaks now and adds its directory to the runner's PATH
-      (launchd/cron do not inherit yours, same reason --pg bakes CIPHER_BRAIN_PG_BIN), and
-      REFUSES to install if gitleaks is not on your PATH — a schedule that cannot scan is
-      never installed as if it could. Same --dir/--profile requirement as 'snapshot': a
+      gated too. Install RESOLVES gitleaks now and PINS the absolute path into the runner
+      as CIPHER_BRAIN_GITLEAKS_BIN (launchd/cron do not inherit your PATH, same reason
+      --pg bakes CIPHER_BRAIN_PG_BIN; pinning rather than extending PATH so a different
+      gitleaks on the scheduler's PATH cannot take its place), and REFUSES to install if
+      it cannot be resolved — a schedule that cannot scan is never installed as if it
+      could. An explicit CIPHER_BRAIN_GITLEAKS_BIN is resolved and validated the same way,
+      not taken on trust: a bare name or a stale path there would be just as unusable to
+      the scheduler. Same --dir/--profile requirement as 'snapshot': a
       --pg-only schedule is refused rather than reporting a scan of no component.
       Fail-closed at run time too: if gitleaks later disappears, the nightly FAILS rather
       than silently skipping the scan.

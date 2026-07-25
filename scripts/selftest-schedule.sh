@@ -454,6 +454,20 @@ if PATH="$ISOLATED_PATH_DIR" "$NODE_BIN" "${BIN_DEV_ARGS[@]}" "$BIN" schedule in
   echo "[FAIL] install --scan-secrets deny was accepted with no gitleaks resolvable"; cat "$TMP/install-scan-missing.log"; exit 1
 fi
 grep -qi 'gitleaks' "$TMP/install-scan-missing.log" || { echo "[FAIL] the refusal does not name the missing gitleaks binary"; cat "$TMP/install-scan-missing.log"; exit 1; }
+# An EXPLICIT CIPHER_BRAIN_GITLEAKS_BIN is resolved and validated, not trusted (multi-model
+# review round 5): a bare name is a fine interactive setting and a useless baked one, and a
+# stale path is worse — either would install a nightly that fails every run.
+if CIPHER_BRAIN_GITLEAKS_BIN="$TMP/definitely-not-here/gitleaks" PATH="$FAKE_GITLEAKS_DIR:$PATH" \
+   cb schedule install --backend file --dir "$SRC" --scan-secrets deny --no-load > "$TMP/install-scan-badbin.log" 2>&1; then
+  echo "[FAIL] an explicit CIPHER_BRAIN_GITLEAKS_BIN pointing at nothing was accepted"; cat "$TMP/install-scan-badbin.log"; exit 1
+fi
+grep -q 'could not be resolved to an executable' "$TMP/install-scan-badbin.log" || { echo "[FAIL] the bad-override refusal does not say the configured binary could not be resolved"; cat "$TMP/install-scan-badbin.log"; exit 1; }
+# A bare-name override resolves through PATH and is baked ABSOLUTE, never verbatim.
+CIPHER_BRAIN_GITLEAKS_BIN=gitleaks PATH="$FAKE_GITLEAKS_DIR:$PATH" \
+  cb schedule install --backend file --dir "$SRC" --scan-secrets deny --no-load > "$TMP/install-scan-barebin.log" 2>&1 \
+  || { echo "[FAIL] a bare-name CIPHER_BRAIN_GITLEAKS_BIN override was refused even though PATH could resolve it"; cat "$TMP/install-scan-barebin.log"; exit 1; }
+grep -qF "export CIPHER_BRAIN_GITLEAKS_BIN='$FAKE_GITLEAKS_DIR/gitleaks'" "$RUNNER" \
+  || { echo "[FAIL] a bare-name override was baked verbatim instead of resolved to an absolute path — the nightly would fail under the scheduler's bare PATH"; grep -n GITLEAKS "$RUNNER"; exit 1; }
 # A trailing --scan-secrets (mode omitted) used to parse as `undefined`, i.e. exactly like
 # "flag not passed": install exited 0 and wrote a runner with no scan. That is the same
 # silent-drop this whole issue is about, so it gets its own tripwire.

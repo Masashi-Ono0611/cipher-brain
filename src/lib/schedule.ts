@@ -454,8 +454,15 @@ function resolvePgDumpDir(): string | null {
 // on the scheduler's PATH would still win, which multi-model review demonstrated can turn
 // a `deny` runner into one that pushes (a stub reporting no findings shadowed the real
 // binary). Resolved against the interactive PATH, which is what the operator just tested.
-function resolveGitleaksBin(): string | null {
-  const r = sh('sh', ['-c', 'command -v gitleaks']);
+//
+// `nameOrPath` is whatever CIPHER_BRAIN_GITLEAKS_BIN says, or plain "gitleaks" when it
+// says nothing. An EXPLICIT value is resolved and validated too, not trusted as-is
+// (multi-model review): a bare name there is exactly as unusable to launchd/cron as the
+// default is, and a path that does not exist is worse — install would exit 0 having
+// promised a gate the nightly can never run. `command -v` answers for both shapes and
+// only echoes a path back when it is executable, so one call validates and absolutises.
+function resolveGitleaksBin(nameOrPath: string): string | null {
+  const r = sh('sh', ['-c', 'command -v "$1"', 'sh', nameOrPath]);
   const found = r.status === 0 ? r.stdout.trim() : '';
   return found ? resolve(found) : null;
 }
@@ -555,22 +562,31 @@ async function install(o: CliOptions): Promise<void> {
   }
   // The environment half of --scan-secrets, kept with the other probes (pg_dump above)
   // rather than with the validation: resolve gitleaks NOW so the exact binary can be
-  // baked in. Mirrors the --pg block above line for line, including leaving an EXPLICIT
-  // CIPHER_BRAIN_GITLEAKS_BIN untouched — the operator who pointed it somewhere on
-  // purpose is not second-guessed, and captureEnv() bakes their value like any other.
-  if (o.scan_secrets !== undefined && !readEnv('CIPHER_BRAIN_GITLEAKS_BIN')) {
-    // Resolved in this interactive env for the same reason --pg resolves pg_dump above:
-    // the runner's bare launchd/cron PATH would not find a Homebrew-installed gitleaks, so
-    // an install that looked fine would produce a nightly that fails on every run.
-    // Refusing here is the same fail-closed posture assertGitleaksAvailable() takes at run
-    // time — never a warning, never a silently unscanned schedule.
-    const bin = resolveGitleaksBin();
-    if (!bin) throw new Error(SCAN_SECRETS_INSTALL_HINT);
-    // A WRITE, not a read, exactly as the pg_dump branch above explains: the resolved
-    // path goes back into the environment so captureEnv() bakes it into the runner.
-    process.env.CIPHER_BRAIN_GITLEAKS_BIN = bin;
+  // baked in. Same motivation as --pg resolving pg_dump above — the runner's bare
+  // launchd/cron PATH would not find a Homebrew-installed gitleaks, so an install that
+  // looked fine would produce a nightly that fails on every run. Refusing here is the
+  // same fail-closed posture assertGitleaksAvailable() takes at run time: never a
+  // warning, never a silently unscanned schedule.
+  //
+  // Unlike the --pg branch, an EXPLICIT CIPHER_BRAIN_GITLEAKS_BIN is validated rather
+  // than passed through (multi-model review): `CIPHER_BRAIN_GITLEAKS_BIN=gitleaks` is a
+  // perfectly reasonable interactive setting and a useless baked one, and a stale
+  // absolute path in it is worse still — install would exit 0 promising a gate that can
+  // never run. Whatever it says is resolved through the same check the default gets.
+  let gitleaksBin: string | null = null;
+  if (o.scan_secrets !== undefined) {
+    const configured = readEnv('CIPHER_BRAIN_GITLEAKS_BIN') || 'gitleaks';
+    gitleaksBin = resolveGitleaksBin(configured);
+    if (!gitleaksBin) {
+      throw new Error(
+        configured === 'gitleaks'
+          ? SCAN_SECRETS_INSTALL_HINT
+          : `CIPHER_BRAIN_GITLEAKS_BIN=${configured} could not be resolved to an executable — refusing to install a ` +
+              `schedule whose nightly scan can never run. ${SCAN_SECRETS_INSTALL_HINT}`,
+      );
+    }
     console.error(
-      `resolved gitleaks -> ${bin} (baked into the runner as CIPHER_BRAIN_GITLEAKS_BIN — launchd/cron do not inherit PATH, and a different gitleaks on theirs must not silently take its place)`,
+      `resolved gitleaks -> ${gitleaksBin} (baked into the runner as CIPHER_BRAIN_GITLEAKS_BIN — launchd/cron do not inherit PATH, and a different gitleaks on theirs must not silently take its place)`,
     );
   }
   const at = o.at || '03:30';
@@ -605,6 +621,15 @@ async function install(o: CliOptions): Promise<void> {
   // pays for this extra I/O.
   const priorCfg = await tryReadConfig();
   const priorCronEntry = await readOwnCronEntry();
+
+  // The resolved scanner is layered ON TOP of the captured environment rather than being
+  // written back into process.env the way the --pg branch does with CIPHER_BRAIN_PG_BIN.
+  // In the CLI the two are equivalent (one process, one install), but the MCP server is
+  // long-lived: a process.env left mutated by one schedule_install call would still be
+  // there for the next one, which would then read a stale absolute path as if the
+  // operator had configured it (multi-model review). Nothing outside this call sees it.
+  const capturedEnv = await captureEnv();
+  if (gitleaksBin) capturedEnv.CIPHER_BRAIN_GITLEAKS_BIN = gitleaksBin;
 
   const cfg: ScheduleConfig = {
     schema: 1,
@@ -654,7 +679,7 @@ async function install(o: CliOptions): Promise<void> {
     // CIPHER_BRAIN_* env vars and TMPDIR: snapshot this process's env NOW (resolving any
     // relative path-valued vars to absolute) so the runner still resolves the same
     // files/dirs when launchd/cron invoke it later from a different cwd and bare env.
-    env: await captureEnv(),
+    env: capturedEnv,
     tmpdir: process.env.TMPDIR ? resolve(process.env.TMPDIR) : null,
     // Dead man's switch (issue #202): --ping-url is a bare value (a URL, not a path) —
     // nothing to resolve() against cwd, unlike --vault/--zip/--recipient above. When only

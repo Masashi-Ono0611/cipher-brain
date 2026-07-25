@@ -30,6 +30,54 @@ counterpart of that.)
   cipher-brain isn't" in [`README.md`](README.md) for scope boundaries the
   project intentionally does not expand.
 - Check open issues and PRs first so you're not duplicating in-flight work.
+- If your idea comes from how another project does something, check
+  [`docs/prior-art.md`](docs/prior-art.md) — it lists the projects already
+  consulted and the issue each one became, so you can join that discussion
+  instead of starting a parallel one. If your project isn't listed, add a row
+  when you file.
+
+## Prefer an existing implementation
+
+The crypto rule below is one instance of a general preference: **wire in a
+maintained implementation rather than writing our own.** age does the
+encryption, rclone does the 70+ storage providers, gitleaks does the secret
+scanning, `ignore` does gitignore matching, Changesets does versioning. Each of
+those is a problem this project chose not to re-solve, and the codebase is small
+because of it.
+
+So when an issue could be closed either by adding a dependency or by writing the
+logic here, adding the dependency is the default. If you write it in-house
+instead, say why in the issue or PR — a genuinely tiny surface, a dependency
+that is unmaintained or wildly oversized for what we need, or a hard constraint
+like "a `pull` on a fresh machine must work with no optional packages
+installed", which is why the gateway read path is deliberately dependency-free.
+
+The counterweight, stated honestly: this is a security tool, and every
+dependency is attack surface. Runtime dependencies are kept deliberately few and
+are weighed against the supply-chain cost, which is why paid-upload SDKs are
+`peerDependencies` rather than hard requirements. "Prefer the dependency" means
+prefer it over *reinventing* — not over *not needing the feature at all*. The
+first question is still whether the feature belongs here (see "What cipher-brain
+isn't" in [`README.md`](README.md)).
+
+## Credit what you borrowed
+
+This project is open source and lives off other open-source work, so borrowing
+is expected — doing it without saying so is not.
+
+- **Ideas.** If your issue or PR is reasoned from "project X does this", name X
+  and link it, in the issue or PR body. Add it to
+  [`docs/prior-art.md`](docs/prior-art.md) too, which is both the credit record
+  and how we avoid re-deriving the same idea twice.
+- **Code and text.** Do not paste in code, comments, or documentation from
+  another project without checking that its license permits it and keeping the
+  required notice. When in doubt, describe the approach in your own words and
+  cite the source instead of copying. If a change genuinely needs to vendor
+  someone's code, raise it in an issue first — that is a licensing decision, not
+  a coding one.
+- **New dependencies.** Per the section above, adding one is usually right. Note
+  its license in the PR (this project is MIT and its dependency tree should stay
+  compatible with that), and say what it saved us from writing.
 
 ## Do not roll your own crypto
 

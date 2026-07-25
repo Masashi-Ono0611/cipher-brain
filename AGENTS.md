@@ -38,6 +38,40 @@ message that lands on `main`): `type[(scope)]: summary` — the scope is optiona
 with types per [`commitlint.config.js`](commitlint.config.js). Your intermediate
 commit messages are not linted.
 
+## Reach for an existing implementation, and credit what you borrow
+
+Two rules that apply to almost every feature issue in this repo — both stated in
+full in [`CONTRIBUTING.md`](CONTRIBUTING.md), summarized here because they change
+what you should propose:
+
+- **Do not reinvent.** If a maintained library or tool already solves the
+  problem, wiring it in is the default answer, not writing the logic here. That
+  is why age does the encryption, rclone does the storage providers, gitleaks
+  does the secret scanning. Implementing it in-house instead is a choice you
+  have to justify in the issue or PR — and adding a dependency is never a reason
+  to skip asking whether the feature belongs here at all.
+- **Say where it came from.** Name and link the project any borrowed idea came
+  from, in the issue or PR body. Never paste in another project's code or docs
+  without checking its license and keeping the notice; describe the approach in
+  your own words and cite it instead.
+
+## Check `docs/prior-art.md` before proposing a borrowed idea
+
+A large share of this repo's feature issues start from "project X does this
+well". [`docs/prior-art.md`](docs/prior-art.md) records which projects have
+already been read that way, what was taken from each, and the issue it became.
+
+- Before filing an issue whose argument is "tool X does this", search that file
+  for X — then compare **what you want to take** against the "Taken away"
+  column. A listed project does not mean every idea it could inspire is already
+  filed: match on the takeaway, not the name. Same takeaway → comment on that
+  issue. Same project, different takeaway → file it, and say how it differs.
+- Its "Angles not yet swept" section is where a fresh survey should start; its
+  "Angles already swept" section is a prompt to check first, not a veto.
+- When you file an issue inspired by a project that is *not* listed, add a row
+  in the same sitting. A ledger nobody updates still reads as authoritative,
+  which makes it worse than not having one.
+
 ## Keep docs in sync with behavior changes
 
 If your PR adds or changes a CLI flag, subcommand, MCP tool, or any behavior

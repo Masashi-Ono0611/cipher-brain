@@ -23,18 +23,37 @@ fi
 
 # ...HEAD (three dots) = changed since the MERGE BASE, so commits that landed on the
 # base branch after this one forked are not counted as this PR's changes.
-CHANGED="$(git diff --name-only "$BASE...HEAD")"
+# --diff-filter=d EXCLUDES deletions: a PR that removes a changeset must not be
+# credited with having one (multi-model review finding).
+# Fail CLOSED if git itself fails — an empty CHANGED from a broken diff would
+# otherwise sail through the "no src/ changes" branch below as a PASS.
+if ! CHANGED="$(git diff --name-only --diff-filter=d "$BASE...HEAD")"; then
+  echo "[FAIL] 'git diff $BASE...HEAD' failed — cannot tell what this PR changed"
+  exit 1
+fi
 
 if ! printf '%s\n' "$CHANGED" | grep -q '^src/'; then
   echo "[PASS] no src/ changes in this diff — no changeset required"
   exit 0
 fi
 
-# .changeset/README.md and config.json are the tool's own files, not changesets.
-if printf '%s\n' "$CHANGED" | grep -Eq '^\.changeset/[^/]+\.md$' &&
-  printf '%s\n' "$CHANGED" | grep -E '^\.changeset/[^/]+\.md$' | grep -qvx '.changeset/README.md'; then
-  FOUND="$(printf '%s\n' "$CHANGED" | grep -E '^\.changeset/[^/]+\.md$' | grep -vx '.changeset/README.md' | tr '\n' ' ')"
-  echo "[PASS] src/ changed and this PR adds a changeset: $FOUND"
+# .changeset/README.md is the tool's own boilerplate, not a changeset.
+# Each candidate must still EXIST at HEAD: --diff-filter=d already excludes a
+# deletion, and this also rules out a path that is gone for any other reason, so
+# "a changeset is present" means present rather than merely mentioned in the diff
+# (multi-model review finding).
+FOUND=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  [ "$f" = ".changeset/README.md" ] && continue
+  [ -f "$f" ] || continue
+  FOUND="$FOUND $f"
+done <<EOF
+$(printf '%s\n' "$CHANGED" | grep -E '^\.changeset/[^/]+\.md$')
+EOF
+
+if [ -n "$FOUND" ]; then
+  echo "[PASS] src/ changed and this PR adds a changeset:$FOUND"
   exit 0
 fi
 

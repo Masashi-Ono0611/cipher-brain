@@ -75,7 +75,8 @@ not optional for that category of change, even from the maintainer.
 ## Commit messages and PR titles
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/): a
-`type(scope): summary` header, e.g. `fix(push): reject a non-age artifact`.
+`type[(scope)]: summary` header — the scope is optional, so both
+`fix(push): reject a non-age artifact` and `docs: fix a broken link` are fine.
 Allowed types are the conventional set plus `security` and `style`
 (see [`commitlint.config.js`](commitlint.config.js)).
 

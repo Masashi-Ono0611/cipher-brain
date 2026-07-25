@@ -34,9 +34,9 @@ Write the description for a release-notes reader — what changed for someone
 ## Use a Conventional Commits PR title
 
 CI lints the **pull request title** (this repo squash-merges, so that is the
-message that lands on `main`): `type(scope): summary`, types per
-[`commitlint.config.js`](commitlint.config.js). Your intermediate commit messages
-are not linted.
+message that lands on `main`): `type[(scope)]: summary` — the scope is optional —
+with types per [`commitlint.config.js`](commitlint.config.js). Your intermediate
+commit messages are not linted.
 
 ## Keep docs in sync with behavior changes
 

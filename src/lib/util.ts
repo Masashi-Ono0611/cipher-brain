@@ -20,11 +20,21 @@ export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 // possible moment. push/estimate already had this check inline; these helpers give
 // the call sites that skipped it the same one, with the same wording.
 //
-// requireFile follows symlinks (exists() is access(F_OK)), matching push/estimate:
-// for an --in that must actually be READ, a dangling symlink is as unusable as a
-// missing file and should say so.
+// requireFile follows symlinks (access(F_OK)): for an --in that must actually be
+// READ, a dangling symlink is as unusable as a missing file and should say so.
+// Only ENOENT/ENOTDIR (the path, or a directory component of it, is not there)
+// become "no such file" — EACCES, ELOOP and friends are rethrown untouched, since
+// relabelling "permission denied" as "missing" is the same misdiagnosis this issue
+// is about, one level down (multi-model review finding). push/estimate route
+// through here too, so all five commands share one implementation and one wording.
 export async function requireFile(path: string, what = 'file'): Promise<void> {
-  if (!(await exists(path))) throw new Error(`no such ${what}: ${path}`);
+  try {
+    await access(path, FS.F_OK);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+    throw new Error(`no such ${what}: ${path}`);
+  }
 }
 
 // requirePath does NOT follow symlinks — deliberately, and this is not

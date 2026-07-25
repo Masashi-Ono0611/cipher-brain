@@ -4,7 +4,7 @@
 // usdApprox) — one home so this math is never re-implemented per surface (#159).
 import { stat } from 'node:fs/promises';
 import { AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS, AR_USD_RATE_URL } from './config.js';
-import { exists, errMsg, fmtBytes } from './util.js';
+import { requireFile, errMsg, fmtBytes } from './util.js';
 import type { CliOptions } from './types.js';
 
 export interface CostEstimate {
@@ -201,7 +201,7 @@ export function formatEstimate(e: CostEstimate): string[] {
 export async function estimate(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone> required');
-  if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
+  await requireFile(o.in); // #267: one shared check/wording across every command
   const st = await stat(o.in);
   if (!st.isFile())
     throw new Error(`${o.in} is not a regular file (cannot size a directory/special file for an estimate)`);

@@ -988,7 +988,8 @@ check_missing_path() { # <label> <expected substring> <cb args...>
   local out; out=$(cb "$@" 2>&1 >/dev/null); local rc=$?
   set -e
   [ "$rc" != "0" ] || { echo "[FAIL] $label exited 0 for a path that does not exist"; echo "$out"; exit 1; }
-  printf '%s' "$out" | grep -q "$expect" \
+  # -F: $expect embeds a mktemp path, which can carry regex metacharacters
+  printf '%s' "$out" | grep -Fq -- "$expect" \
     || { echo "[FAIL] $label did not report '$expect'"; echo "$out"; exit 1; }
   # The raw Node errno text and the misleading decrypt code must both be gone.
   # `if` (not `grep -q … && { … }`): a NON-match is the passing case here, and a
@@ -1021,6 +1022,27 @@ cb snapshot --out "$TMP/dangling.age" --dir "$TMP/dangling-source" >/dev/null 2>
   || { echo "[FAIL] a dangling top-level symlink source was rejected — #267's check must not follow symlinks"; exit 1; }
 test -s "$TMP/dangling.age" || { echo "[FAIL] the dangling-symlink snapshot produced no artifact"; exit 1; }
 echo "[PASS] a dangling top-level symlink source still snapshots (the missing-path check does not follow symlinks)"
+
+# An UNREADABLE path is not a missing one: relabelling EACCES as "no such file" would
+# be the same misdiagnosis this issue is about, one level down, so requireFile only
+# converts ENOENT/ENOTDIR. Skipped when the sandbox cannot actually deny access (root).
+NOACC="$TMP/noaccess"; mkdir -p "$NOACC"; echo x >"$NOACC/f.age"; chmod 000 "$NOACC"
+if cat "$NOACC/f.age" >/dev/null 2>&1; then
+  chmod 755 "$NOACC"
+  echo "[SKIP] EACCES check: this user can read a 0000 directory (running as root?) — cannot deny access to test it"
+else
+  set +e
+  NOACC_ERR=$(cb verify --in "$NOACC/f.age" 2>&1 >/dev/null); NOACC_RC=$?
+  set -e
+  chmod 755 "$NOACC"
+  [ "$NOACC_RC" != "0" ] || { echo "[FAIL] verify exited 0 on an unreadable path"; exit 1; }
+  if printf '%s' "$NOACC_ERR" | grep -Fq 'no such file'; then
+    echo "[FAIL] an unreadable (EACCES) path was reported as missing"; echo "$NOACC_ERR"; exit 1
+  fi
+  printf '%s' "$NOACC_ERR" | grep -Fq 'EACCES' \
+    || { echo "[FAIL] the unreadable-path error does not mention EACCES"; echo "$NOACC_ERR"; exit 1; }
+  echo "[PASS] an unreadable (EACCES) path reports permission denied, not 'no such file'"
+fi
 
 echo
 echo "SELFTEST PASS"

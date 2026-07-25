@@ -324,10 +324,6 @@ export async function restore(o: CliOptions): Promise<void> {
 async function restoreImpl(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.out_dir) throw new Error('--out-dir <dir> required');
-  // #267: before ANY decrypt work, so a missing --in never reaches the age call and
-  // gets reported as "age decrypt failed … [CB-E002]" (i.e. "wrong identity, or a
-  // corrupt artifact") when the file simply is not there.
-  await requireFile(o.in);
   // pg_restore --clean --if-exists below DROPS and replaces objects in the target
   // database — an irreversible operation. Same consent gate as push's paid-backend
   // guard (pushpull.ts): require --yes or CIPHER_BRAIN_YES=1 up front, before any
@@ -339,6 +335,13 @@ async function restoreImpl(o: CliOptions): Promise<void> {
         `re-run restore with --yes or set CIPHER_BRAIN_YES=1 to confirm`,
     );
   }
+  // #267: deliberately AFTER the consent gate above, not before it — a missing --in
+  // must not demote the irreversible-pg_restore warning to second place (multi-model
+  // review finding). Still before ANY decrypt work, which is the point: a missing
+  // --in used to reach the age call and surface as "age decrypt failed: ENOENT …
+  // [CB-E002]", a code MANAGEMENT.md documents as "wrong identity, or a corrupt/
+  // truncated artifact" — a key audit in answer to a typo.
+  await requireFile(o.in);
   // Authenticity check FIRST (#214), before any decryption or even the age identity
   // check below: age proves confidentiality + tamper detection, but NOT authenticity
   // (a recipient's public key is not secret — anyone holding it can forge ciphertext

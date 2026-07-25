@@ -48,6 +48,7 @@ import { keygenAt } from './lib/keys.js';
 import { wallet } from './lib/wallet.js';
 import { exists, requireFile, MissingPathError, sha256, errMsg } from './lib/util.js';
 import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
+import { didYouMean, nearestName } from './lib/suggest.js';
 import type { CliOptions } from './lib/types.js';
 
 const SERVER_NAME = 'cipher-brain-mcp';
@@ -728,6 +729,62 @@ const ALL_TOOLS: Tool[] = [
   WALLET_ADDRESS_TOOL,
 ];
 
+const TOOLS_BY_NAME = new Map(ALL_TOOLS.map((t) => [t.name, t]));
+
+// #300: every schema above advertises `additionalProperties: false`, but the
+// low-level Server does not enforce the advertised inputSchema at runtime — so a
+// field a handler does not destructure was simply DISCARDED, and the call went ahead
+// as if it had never been asked for. That fails OPEN precisely where it hurts: a
+// misspelled REQUIRED field errors by accident (the real name is then missing), while
+// a misspelled OPTIONAL one — which here is where the safety and scoping arguments
+// live (confirm_paid, sha256, identity, no_load, pg) — silently changed nothing. A
+// `no_laod: true` on schedule_install registered a REAL trigger where the caller
+// meant a preview; a stray field on schedule_status would have reported the server's
+// own schedule as if it were the one asked about; a snapshot_now that named a
+// safety gate it misspelled reported plain success.
+//
+// Checked HERE, once, against each tool's own declared `properties` — the contract it
+// already publishes — rather than in ten handlers. Two of them used to carry a
+// hand-written copy of this check and eight did not, which is the same enumeration
+// drift #276/#290/#293 removed elsewhere; a per-handler rule is one every future tool
+// has to remember, and the eleventh would forget it again.
+//
+// Case-SENSITIVE, deliberately: JSON object keys are, `properties` is, and an agent
+// sending `Out` for `out` has a bug worth hearing about rather than a spelling the
+// server should quietly accept. The near-miss suggestion below is case-insensitive,
+// so such a call is still told exactly what it got wrong.
+//
+// Absent `arguments` and `{}` are the same thing (the dispatcher defaults one to the
+// other): both name no fields at all, so neither can be naming a wrong one.
+//
+// `additionalProperties` itself is deliberately NOT consulted: all ten schemas set it
+// false, and reading it would mean a tool added later without that line — the easiest
+// line to forget — silently opted out of the check. A tool that genuinely wants
+// open-ended arguments has to change this function, which is a decision someone makes
+// on purpose rather than one they can omit by accident.
+//
+// One key still never gets here, and cannot: the SDK parses `arguments` through a zod
+// record, which strips a literal `__proto__` before any handler runs (verified against
+// the built server — `constructor`/`toString` DO reach this check and are refused).
+// Left as it is on purpose. Stripping that key is the SDK defending against prototype
+// pollution, and unlike the fields this issue is about, `__proto__` cannot be a request
+// anyone meant to make — nothing is silently not-honored by dropping it.
+function assertDeclaredArgs(tool: Tool, args: ToolArgs): void {
+  const declared = Object.keys(tool.inputSchema.properties ?? {});
+  const unknown = Object.keys(args).filter((k) => !declared.includes(k));
+  if (unknown.length === 0) return;
+  const named = unknown.map((k) => {
+    const near = nearestName(k, declared);
+    return near ? `${k} (${didYouMean(near)})` : k;
+  });
+  throw new ToolError(
+    'ERR_INVALID_INPUT',
+    `${tool.name} got unrecognized argument(s): ${named.join(', ')} — ` +
+      (declared.length > 0 ? `it accepts only: ${declared.join(', ')}. ` : 'it takes no arguments. ') +
+      'Refused rather than ignored: a discarded field would look to the caller like it was honored.',
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1186,30 +1243,13 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
 // captured log verbatim plus an echo of the args that were actually consented
 // to, rather than re-parsing/re-deriving the written config (same "no
 // re-implemented logic" approach as handleScheduleStatus below).
-const SCHEDULE_INSTALL_KEYS = new Set([
-  'backend',
-  'dirs',
-  'pg',
-  'recipients',
-  'at',
-  'max_spend',
-  'no_load',
-  'ping_url',
-  'ping_url_fail',
-  'confirm_install',
-]);
-
+//
+// This tool's key set used to be enumerated here a SECOND time, to reject a stray
+// `no_laod` before it could register a real trigger where a preview was meant. The
+// dispatcher now derives that check from the advertised schema for every tool
+// (assertDeclaredArgs, #300), so the duplicate list is gone rather than left to drift
+// from the schema it copied.
 async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
-  // Unlike most handlers here, a stray/misspelled key is not just a wasted call —
-  // this tool's whole safety story rests on no_load/confirm_install being read
-  // correctly (a `no_laod: true` typo would otherwise silently register a REAL
-  // trigger where the caller intended a preview). The advertised inputSchema's
-  // additionalProperties: false is NOT enforced by the low-level Server at
-  // runtime, so check explicitly (same discipline as handleScheduleStatus below).
-  const unexpected = Object.keys(args).filter((k) => !SCHEDULE_INSTALL_KEYS.has(k));
-  if (unexpected.length > 0) {
-    throw new ToolError('ERR_INVALID_INPUT', `schedule_install got unrecognized argument(s): ${unexpected.join(', ')}`);
-  }
   const {
     backend,
     dirs = [],
@@ -1278,15 +1318,14 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
 // `{ report: [lines] }`, because that function had no return value — so the tool
 // handed back prose an agent had to parse. One object now, three surfaces, no
 // re-implementation and no text round-trip.
-async function handleScheduleStatus(args: ToolArgs): Promise<CallToolResult> {
-  // The low-level Server does not enforce the advertised inputSchema
-  // (additionalProperties: false) at runtime, so a stray/misunderstood field
-  // (e.g. a client expecting a schedule_dir override) would otherwise be
-  // silently discarded and this would report the server's own configured
-  // schedule instead of failing loud.
-  const unexpected = Object.keys(args);
-  if (unexpected.length > 0)
-    throw new ToolError('ERR_INVALID_INPUT', `schedule_status takes no arguments — got: ${unexpected.join(', ')}`);
+//
+// This handler used to reject stray arguments itself, because a field like a
+// schedule_dir override a client imagined would otherwise be discarded and this would
+// answer about the server's OWN configured schedule as if that were the one asked
+// about. That reasoning was always true of every tool here, not just this one — it is
+// now stated once and enforced for all of them in assertDeclaredArgs (#300), which is
+// why this takes no `args` at all.
+async function handleScheduleStatus(): Promise<CallToolResult> {
   return structuredOk(await scheduleStatusReport());
 }
 
@@ -1448,6 +1487,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
   const name = request.params.name;
   const args: ToolArgs = request.params.arguments ?? {};
   try {
+    // #300: one check, derived from the tool's own advertised inputSchema, applying to
+    // every tool including any added later — so `additionalProperties: false` means at
+    // runtime what tools/list says it means. Runs BEFORE dispatch, so no handler can
+    // start work on a call carrying a field it will not read.
+    //
+    // A name that is not in ALL_TOOLS is answered HERE and never reaches the switch —
+    // otherwise a future case added to the switch but forgotten in ALL_TOOLS would be
+    // both invisible in tools/list and reachable with entirely unvalidated arguments,
+    // which is the hole this whole change is about, one level up (multi-model review
+    // finding). Being unlisted therefore means uncallable, not unchecked.
+    const tool = TOOLS_BY_NAME.get(name);
+    if (!tool) return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
+    assertDeclaredArgs(tool, args);
     switch (name) {
       case 'snapshot_now':
         return await handleSnapshotNow(args);
@@ -1462,15 +1514,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       case 'schedule_install':
         return await handleScheduleInstall(args);
       case 'schedule_status':
-        return await handleScheduleStatus(args);
+        return await handleScheduleStatus();
       case 'keygen':
         return await handleKeygen(args);
       case 'wallet_create':
         return await handleWalletCreate(args);
       case 'wallet_address':
         return await handleWalletAddress(args);
+      // Unreachable via the guard above for any name outside ALL_TOOLS; what lands here
+      // is a tool this server ADVERTISES and cannot dispatch, which is a wiring bug on
+      // our side rather than a caller mistake — and ERR_INTERNAL is the honest way to
+      // say so. scripts/mcp-smoke.mjs calls every advertised tool, so it fires in CI.
       default:
-        return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
+        return structuredErr(new ToolError('ERR_INTERNAL', `${name} is advertised in tools/list but not dispatched`));
     }
   } catch (err) {
     return structuredErr(err);

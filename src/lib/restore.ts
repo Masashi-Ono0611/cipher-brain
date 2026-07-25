@@ -9,6 +9,7 @@ import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from '.
 import { checkArtifactSignature } from './minisign.js';
 import { exists, requireFile, sha256, readHead, fmtBytes, redactPgConn, errMsg } from './util.js';
 import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
+import { didYouMean } from './suggest.js';
 import { moodForVerdict, printMascot, printJson } from './ui.js';
 import type { CliOptions } from './types.js';
 
@@ -327,10 +328,15 @@ async function restoreImpl(o: CliOptions): Promise<void> {
   // typing it here is the natural mistake — and parseArgs accepts it (it is a valid
   // flag SOMEWHERE) and then nothing reads it, leaving a bare "--out-dir required"
   // that reads as if no destination had been given at all. Name what was ignored.
+  // #300: the "did you mean" wording itself comes from src/lib/suggest.ts, the one
+  // place that phrases it — the MCP server refuses unknown tool arguments with the
+  // same idiom, and two hand-written copies would drift. Only the PHRASING is shared:
+  // which flag was meant is known outright here, so this message never depends on a
+  // fuzzy match firing.
   if (!o.out_dir) {
     throw new Error(
       o.out
-        ? '--out-dir <dir> required (restore extracts into a directory; you passed --out, which restore does not read — did you mean --out-dir?)'
+        ? `--out-dir <dir> required (restore extracts into a directory; you passed --out, which restore does not read — ${didYouMean('--out-dir')})`
         : '--out-dir <dir> required',
     );
   }

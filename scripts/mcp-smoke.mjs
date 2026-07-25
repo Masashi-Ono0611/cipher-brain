@@ -25,7 +25,15 @@
 //      CIPHER_BRAIN_LAUNCHD_DIR/CIPHER_BRAIN_SCHEDULE_DIR, never touching the
 //      real launchctl/crontab) + schedule_status reading that same state back
 //      (same schedule.ts state `cipher-brain schedule status` reads); the
-//      spend gate: snapshot_now with
+//      unknown-argument refusal (#300): the reproduction that was filed —
+//      a misspelled OPTIONAL field on snapshot_now, which used to return
+//      isError:false having taken a real snapshot — plus the near-miss
+//      suggestion (`restore_now {out}` → "did you mean out_dir?", the MCP
+//      arrival of the CLI's own #277 hint), and a GENERIC pass over the
+//      shared tool list asserting every advertised tool refuses an
+//      undeclared argument, so a tool added later is covered without
+//      anyone remembering to add a test for it;
+//      the spend gate: snapshot_now with
 //      backend=turbo and no confirm_paid must be refused with
 //      ERR_CONFIRM_REQUIRED — even with CIPHER_BRAIN_YES set in the
 //      environment (never silently spend); and a keygen call against this
@@ -858,6 +866,8 @@ async function run(tmp) {
     // 2m. schedule_status must REJECT unexpected arguments rather than silently
     // ignore them (the tool takes none — a stray field could otherwise mask a
     // client's mistaken attempt to scope the report to a different schedule).
+    // #300: this is now the no-arguments case of the dispatcher-wide check, so the
+    // message must also SAY the tool takes none rather than list nothing.
     send({
       jsonrpc: '2.0',
       id: 11,
@@ -870,6 +880,103 @@ async function run(tmp) {
       throw new Error(
         `schedule_status did not reject an unexpected argument: ${JSON.stringify(schedBad.result).slice(0, 300)}`,
       );
+    }
+    if (!/takes no arguments/.test(schedBadSc?.message ?? '')) {
+      throw new Error(
+        `schedule_status rejection does not say it takes none: ${JSON.stringify(schedBadSc).slice(0, 300)}`,
+      );
+    }
+
+    // 2m-ii. #300 — the reproduction the issue was filed on. A MISSPELLED OPTIONAL
+    // field used to fail OPEN: snapshot_now returned isError:false having taken a real
+    // snapshot, so a caller asking for the strictest secret-scanning gate got a
+    // snapshot with no scan and nothing in the response saying so. It must now refuse,
+    // and refuse BEFORE any work — the .age artifact must not exist afterwards, which
+    // is what separates "reported an error" from "did it anyway and complained".
+    const unknownArgOut = join(tmp, 'unknown-arg.age');
+    send({
+      jsonrpc: '2.0',
+      id: 40,
+      method: 'tools/call',
+      params: {
+        name: 'snapshot_now',
+        arguments: { dirs: [data], recipients: [recipientPath], out: unknownArgOut, scan_secretz: 'deny' },
+      },
+    });
+    const strayOpt = await waitFor(40);
+    const strayOptSc = strayOpt.result?.structuredContent;
+    if (strayOpt.result?.isError !== true || strayOptSc?.code !== 'ERR_INVALID_INPUT') {
+      throw new Error(
+        `snapshot_now silently discarded a misspelled optional field: ${JSON.stringify(strayOpt.result).slice(0, 400)}`,
+      );
+    }
+    if (!/scan_secretz/.test(strayOptSc?.message ?? '')) {
+      throw new Error(
+        `snapshot_now rejection does not name the stray field: ${JSON.stringify(strayOptSc).slice(0, 300)}`,
+      );
+    }
+    if (existsSync(unknownArgOut)) {
+      throw new Error('snapshot_now rejected a stray field but still produced a snapshot (the check must run first)');
+    }
+
+    // 2m-iii. The rejection must NAME the near miss, the way the CLI's own
+    // `restore --out` hint does (#277) — `restore_now {out}` is that exact mistake
+    // arriving over MCP, which used to be answered with a bare "out_dir is required"
+    // that never mentioned the `out` it had thrown away. Both surfaces phrase it
+    // through the same helper (src/lib/suggest.ts), so they cannot drift apart.
+    //
+    // All three ways a name goes wrong, since they take different paths through that
+    // helper and a test of only the first would leave the other two unexercised
+    // (multi-model review finding): a real field of another tool that EXTENDS this
+    // one's (out → out_dir, the prefix rule), an ordinary misspelling (forcee → force,
+    // edit distance), and a case slip (Wallet → wallet — rejected, because JSON keys
+    // are case-sensitive and so is the check, but still explained rather than just
+    // refused).
+    for (const [id, toolName, strayArgs, expected] of [
+      [41, 'restore_now', { file: outAge, out: join(tmp, 'nope'), confirm_write: true }, 'did you mean out_dir?'],
+      [42, 'keygen', { forcee: true }, 'did you mean force?'],
+      [43, 'wallet_address', { Wallet: '/nope' }, 'did you mean wallet?'],
+    ]) {
+      send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: toolName, arguments: strayArgs } });
+      const nearMiss = await waitFor(id);
+      const nearMissSc = nearMiss.result?.structuredContent;
+      if (nearMiss.result?.isError !== true || nearMissSc?.code !== 'ERR_INVALID_INPUT') {
+        throw new Error(
+          `${toolName} accepted ${JSON.stringify(strayArgs)}: ${JSON.stringify(nearMiss.result).slice(0, 300)}`,
+        );
+      }
+      if (!(nearMissSc.message ?? '').includes(expected)) {
+        throw new Error(
+          `${toolName} rejection does not suggest the near miss (${expected}): ` +
+            `${JSON.stringify(nearMissSc?.message).slice(0, 300)}`,
+        );
+      }
+    }
+
+    // 2m-iv. The point of #300 is that this must not need remembering: the check is
+    // derived from each tool's own advertised schema in the dispatcher, so a tool
+    // added later is covered without anyone thinking about it. Assert that GENERICALLY
+    // over the shared tool list (#290) rather than by naming tools a third time — a
+    // future tool that accepts an argument it never declared fails HERE, in the test
+    // that was written before it existed. If a tool ever legitimately needs open-ended
+    // arguments, this failing is the deliberate step that says so.
+    const probe = 'zz_not_a_declared_property';
+    for (const [i, toolName] of EXPECTED_MCP_TOOLS.entries()) {
+      const id = 50 + i;
+      send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: toolName, arguments: { [probe]: 'x' } } });
+      const res = await waitFor(id);
+      const sc = res.result?.structuredContent;
+      if (res.result?.isError !== true || sc?.code !== 'ERR_INVALID_INPUT') {
+        throw new Error(
+          `${toolName} does not reject an undeclared argument — its handler can still be reached with a field ` +
+            `tools/list says is not allowed: ${JSON.stringify(res.result).slice(0, 300)}`,
+        );
+      }
+      if (!sc.message?.includes(probe)) {
+        throw new Error(
+          `${toolName} rejected an undeclared argument without naming it: ${JSON.stringify(sc).slice(0, 300)}`,
+        );
+      }
     }
 
     // 2n. keygen against THIS server's home — which already has a real identity
@@ -895,7 +1002,8 @@ async function run(tmp) {
         `estimate(size_bytes)=0, estimate(turbo, sdk ${turboSdkInstalled ? 'installed' : 'missing'})=ok, ` +
         `schedule_install gate=ERR_CONFIRM_REQUIRED, schedule_install no_load=ok, ` +
         `schedule_status.next_run=${schedSc.next_run}, resource==tool=yes, ` +
-        `prompt=restore-runbook(${promptText.length}ch), keygen(pre-existing)=refused\n`,
+        `prompt=restore-runbook(${promptText.length}ch), keygen(pre-existing)=refused, ` +
+        `unknown-arg refused by all ${EXPECTED_MCP_TOOLS.length} tools (near miss named)\n`,
     );
   } finally {
     try {

@@ -110,8 +110,31 @@ async function captureEnv(): Promise<Record<string, string>> {
   const captured: Record<string, string> = {};
   for (const v of ENV_CAPTURE_VARS) {
     const raw = process.env[v];
-    if (!raw) continue;
-    if (v === 'CIPHER_BRAIN_PIN_RECIPIENTS') {
+    // `undefined` (genuinely unset) is the ONLY case worth dropping. An explicitly EMPTY
+    // value is baked in verbatim, because the two are not interchangeable: config.ts
+    // deliberately keeps CIPHER_BRAIN_PIN_RECIPIENTS='' distinct from unset so snapshot()
+    // can fail CLOSED on it (#101 — a broken cron/systemd template that renders an empty
+    // pin must not silently disable the recipient allowlist). A falsy `!raw` guard here
+    // collapsed those two cases, so `schedule install` run with an empty pin generated a
+    // runner carrying no pin at all — and since that runner exports
+    // CIPHER_BRAIN_NO_CONFIG_FILE=1 (#286), $CIPHER_BRAIN_HOME/config.env could not put it
+    // back either: the interactive path failed closed while the unattended one ran with no
+    // allowlist. Baking '' verbatim keeps snapshot() the single place that decides what an
+    // empty pin means, and makes the scheduled run hit that very same check.
+    if (raw === undefined) continue;
+    if (raw === '') {
+      // Nothing to resolve — resolve('') returns the install-time cwd, which would invent a
+      // path where the operator supplied none.
+      //
+      // Baking '' is deliberately NOT special-cased to the pin: every OTHER name in
+      // ENV_CAPTURE_VARS is consumed in config.ts as `readEnv(...) || <default>`, so an
+      // empty export is already run-time identical to no export at all for them, and
+      // keeping the rule uniform means the next variable whose empty value MEANS something
+      // is handled correctly by default rather than re-introducing #101's collapse. A new
+      // variable added here that distinguishes '' from unset at run time inherits that
+      // distinction — check its config.ts fallback if it must not.
+      captured[v] = '';
+    } else if (v === 'CIPHER_BRAIN_PIN_RECIPIENTS') {
       // File-first, exactly like keys.ts's resolvePinnedRecipients: if the value names
       // an existing file, it's a path — resolve it. Otherwise it's an inline age1... list
       // (or a not-yet-existing path — either way, resolve() would only mangle it), leave

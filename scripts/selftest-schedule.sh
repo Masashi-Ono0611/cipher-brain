@@ -31,10 +31,12 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # CIPHER_BRAIN_PIN_RECIPIENTS: an operator's own allowlist is baked in, the real run in
 # (a5.4) encrypts to this script's throwaway key, the snapshot is refused, and the failure
 # reads as "successful run (ping e2e) exited non-zero" — nothing points at the environment.
-# Cleared as a CLASS rather than by naming the variables that happen to hurt today: every
-# one of the 25 is bakeable, and the next one to bite would arrive with the same
-# unhelpful symptom. Sections that need one of these set it themselves, right where they
-# assert on it.
+# Cleared as a CLASS rather than by naming the variables that happen to hurt today. Which
+# ones can be baked is a property of ENV_CAPTURE_VARS (11 of the 25 declared names, right
+# now) and that list grows — #276 was a variable missing from it. A test that enumerated
+# the dangerous ones would be a second copy of that list, drifting from the real one, and
+# the next variable to bite would arrive with the same unhelpful symptom. Sections that
+# need one of these set it themselves, right where they assert on it.
 for _leaked in $(env | sed -n 's/^\(CIPHER_BRAIN_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_leaked"; done
 unset _leaked
 export CIPHER_BRAIN_HOME="$TMP/home"
@@ -65,11 +67,12 @@ if [ "$OS" != "Darwin" ] && ! command -v crontab > /dev/null 2>&1; then HAS_CRON
 SRC="$TMP/brain-src"; mkdir -p "$SRC"
 echo "a-thought" > "$SRC/note.txt"
 # Guarded, and the output kept, because an unguarded `> /dev/null 2>&1` here fails in the
-# worst possible way: `set -e` ends the script at the very first command that produces any
-# output, so the whole run is a bare non-zero exit with an EMPTY log and nothing naming
-# keygen. (Hit while writing the environment fix above — a worktree without dependencies
-# installed makes this exact line fail, and the symptom is indistinguishable from the
-# script never starting.)
+# worst possible way. `set -e` ends the script the moment this returns non-zero; it is the
+# first command in the file that can fail, nothing has echoed yet, and its own diagnostics
+# went to /dev/null — so the entire run is a bare non-zero exit with an EMPTY log and
+# nothing naming keygen. (Hit while writing the environment fix above: a worktree without
+# dependencies installed makes this exact line fail, and the symptom is indistinguishable
+# from the script never starting.)
 cb keygen > "$TMP/keygen.log" 2>&1 \
   || { echo "[FAIL] keygen (fixture setup) exited non-zero"; cat "$TMP/keygen.log"; exit 1; }
 

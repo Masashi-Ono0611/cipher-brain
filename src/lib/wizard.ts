@@ -104,8 +104,8 @@ interface BackupKey {
 // (https://support.1password.com/emergency-kit/ — a single printable sheet carrying
 // what you need to get back in, kept physically). This used to say
 // "Bitwarden-emergency-kit style", which credited the wrong project: Bitwarden's
-// Emergency Access is a different mechanism entirely — a time-delayed grant to a
-// trusted contact, not a document (docs/prior-art.md carries both).
+// Emergency Access is a different mechanism entirely — an approval-or-time-delayed
+// grant to a trusted contact, not a document (docs/prior-art.md carries both).
 // Plain text was chosen over HTML->PDF deliberately (see issue #68 / cli.ts's file-header comment on
 // the INLINE-vs-external Bun.build split) — zero new dependencies, greppable, and
 // printable from any editor. Content mirrors MANAGEMENT.md's "Key recovery" section:

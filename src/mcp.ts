@@ -951,6 +951,13 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
       }
     } else if (!isStr(file)) {
       throw new ToolError('ERR_INVALID_INPUT', 'file must be a string path');
+    } else if (!(await exists(file))) {
+      // A caller-supplied path that does not exist is bad INPUT, not a server fault.
+      // Left unchecked it falls through to the library, whose plain Error structuredErr()
+      // can only report as ERR_INTERNAL (#293) — which tells an agent the server
+      // malfunctioned, and invites a retry, when the fix is to correct the argument.
+      // estimate_cost already pre-checks exactly this way, with this same message.
+      throw new ToolError('ERR_INVALID_INPUT', `no such file: ${file}`);
     }
     if (!target) throw new ToolError('ERR_INTERNAL', 'no target file resolved for verify');
     // The pin (explicit or read from locator_file) is ALSO handed to verify() so
@@ -1086,6 +1093,11 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
       };
     } else if (!isStr(file)) {
       throw new ToolError('ERR_INVALID_INPUT', 'file must be a string path');
+    } else if (!(await exists(file))) {
+      // Same as verify_restore above (#293): a missing caller-supplied path is bad
+      // input. Checked BEFORE the pin branch below, so a nonexistent file reports what
+      // is actually wrong rather than failing later inside the pin/decrypt path.
+      throw new ToolError('ERR_INVALID_INPUT', `no such file: ${file}`);
     } else if (effectivePin) {
       // Unlike a pulled artifact (pinned above by pull() itself), a directly-given
       // `file` never passes through that check — apply the SAME pin here so file

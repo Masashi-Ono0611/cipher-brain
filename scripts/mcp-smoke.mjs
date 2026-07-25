@@ -582,6 +582,30 @@ async function run(tmp) {
       throw new Error(`estimate_cost(file) result unexpected: ${JSON.stringify(estSc).slice(0, 300)}`);
     }
 
+    // 2i-b. #293: a nonexistent caller-supplied `file` is bad INPUT, and every tool
+    // that takes one must say so with the same code. verify_restore used to let the
+    // miss fall through to the library, whose plain Error structuredErr() can only
+    // report as ERR_INTERNAL — telling an agent the server broke, and inviting a
+    // retry that can only fail the same way. Asserted across BOTH tools together,
+    // since the defect was the disagreement between them, not either one alone.
+    const missingPath = join(tmp, 'definitely-not-here.age');
+    for (const [id, name, args] of [
+      [21, 'verify_restore', { file: missingPath }],
+      [22, 'estimate_cost', { file: missingPath, backend: 'file' }],
+    ]) {
+      send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
+      const res = await waitFor(id);
+      const sc = res.result?.structuredContent;
+      if (res.result?.isError !== true || sc?.code !== 'ERR_INVALID_INPUT') {
+        throw new Error(
+          `${name} on a missing file must report ERR_INVALID_INPUT, got ${JSON.stringify(res.result).slice(0, 300)}`,
+        );
+      }
+      if (!/^no such file: /.test(sc?.message ?? '')) {
+        throw new Error(`${name} on a missing file has an unexpected message: ${JSON.stringify(sc).slice(0, 200)}`);
+      }
+    }
+
     // 2i-ii. estimate_cost via size_bytes (the CLI `estimate` command's alternative —
     // it always sizes a real --in file, so this argument shape is MCP-only) exercises
     // the same shared estimateCost() (src/lib/estimate.ts) the file-arg call above did,

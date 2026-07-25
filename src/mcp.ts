@@ -202,6 +202,17 @@ function assertWithinHome(p: string): void {
   }
 }
 
+// The PRESENCE half of the backend rule — the part no schema keyword states and the
+// dispatcher's central enum check (#308) therefore cannot enforce. Four of its five call
+// sites need a backend to be THERE: estimate_cost and schedule_install declare it
+// `required` (a keyword nothing enforces at runtime), and verify_restore/restore_now need
+// one only when a `locator` is given, which is a conditional no schema can express.
+//
+// Its membership test is deliberately NOT the duplication #305 removed: the schemas'
+// `enum:` and this function read the SAME `BACKENDS` constant, so there is no second list
+// to drift. On snapshot_now — the one site where the value is optional, and so the one
+// the central check now fully covers at runtime — it stays because it is also the
+// assertion that narrows `backend` to a string for the rest of that handler.
 function requireBackend(value: unknown, what: string): asserts value is string {
   if (typeof value !== 'string' || !BACKENDS.includes(value)) {
     throw new ToolError(
@@ -783,6 +794,81 @@ function assertDeclaredArgs(tool: Tool, args: ToolArgs): void {
       (declared.length > 0 ? `it accepts only: ${declared.join(', ')}. ` : 'it takes no arguments. ') +
       'Refused rather than ignored: a discarded field would look to the caller like it was honored.',
   );
+}
+
+// #308: the same sentence one level in. #300 closed the case where a field a tool does
+// not DECLARE was accepted and discarded; a declared one could still be, whenever the
+// branch the handler takes never consults it. `backend` declares
+// enum: ["file","arweave","turbo"] on five tools, but whether a value outside that set
+// was refused depended on which branch the REST of the arguments selected:
+//
+//   estimate_cost  {file, backend: "nonsense"} -> refused (its handler consults backend)
+//   verify_restore {file, backend: "nonsense"} -> PASS, verdict returned, value ignored
+//
+// Same field, same declared enum, opposite answers — because verify_restore's local-file
+// branch never needs a backend, so the handler's own check never ran. The caller asked to
+// verify through a backend they named and was told PASS by a code path that never touched
+// it.
+//
+// Checked HERE for the same reason assertDeclaredArgs is: the constraint is already
+// published in the tool's own schema, so enforcing it once against that schema covers
+// every tool and every branch — instead of a branch-relevance rule that each future
+// handler has to remember (direction 2 of the issue, and the one it calls the worst of
+// the three). It costs no dependency: an enum is a literal array already sitting in the
+// schema and membership is `includes`.
+//
+// Deliberately enum ONLY. Validating a declared `type` centrally is the part that would
+// need a real JSON Schema validator — a fourth runtime dependency for a tool that has
+// three — so the per-handler isStr/isBool checks stay exactly where they are; #305 was
+// right to decline that half, and it is untouched here.
+//
+// Being no validator, it reads exactly ONE shape, which is the shape all ten schemas use:
+// a top-level property's own `enum`, of primitive literals. It does NOT descend into
+// `items`, a nested object's properties, or allOf/anyOf/oneOf, and it compares by value —
+// so an object/array literal, which JSON Schema compares STRUCTURALLY and `includes`
+// would compare by reference, is out of scope too (multi-model review finding). Neither
+// gap can arrive unnoticed: scripts/mcp-smoke.mjs walks every advertised schema and FAILS
+// on an enum in either shape, so adding one is a deliberate step that says "extend this
+// function first" rather than a field the server quietly stops enforcing — which is the
+// bug this issue is about.
+//
+// What this does NOT do, on purpose: a value the enum PERMITS but the chosen branch
+// cannot use is still accepted and ignored. verify_restore {file, backend: "file"} names
+// a legal backend on a branch that fetches nothing, and still returns PASS. That is
+// branch relevance, a different question from the one the schema answers, and it is left
+// open rather than half-closed.
+//
+// An ABSENT field is skipped, not defaulted: `required` is a separate keyword this does
+// not read, and the handlers that need a backend enforce their own presence rule — some
+// conditionally ("required with locator"), which no schema keyword states. A field with
+// no `enum` is untouched. The near-miss suggestion is offered only when the value and the
+// candidates are strings, since that is the only case where "did you mean" can mean
+// anything; both it and the phrasing come from src/lib/suggest.ts, the same helper the
+// unknown-argument refusal above uses.
+function assertDeclaredEnums(tool: Tool, args: ToolArgs): void {
+  const properties = (tool.inputSchema.properties ?? {}) as Record<string, { enum?: unknown[] } | undefined>;
+  for (const [key, value] of Object.entries(args)) {
+    if (value === undefined) continue;
+    const allowed = properties[key]?.enum;
+    if (!Array.isArray(allowed) || allowed.length === 0) continue;
+    if (allowed.includes(value)) continue;
+    const near =
+      typeof value === 'string'
+        ? nearestName(
+            value,
+            allowed.filter((v): v is string => typeof v === 'string'),
+          )
+        : undefined;
+    throw new ToolError(
+      'ERR_INVALID_INPUT',
+      `${tool.name} got an unrecognized value for ${key}: ${JSON.stringify(value)}` +
+        `${near ? ` (${didYouMean(near)})` : ''} — it accepts only: ` +
+        `${allowed.map((v) => JSON.stringify(v)).join(', ')}. ` +
+        'Refused rather than ignored: the tool publishes that set for every call, so a value outside it is ' +
+        'refused whichever branch this call would have taken — being ignored on one of them is exactly what ' +
+        'used to make an unusable value look honored.',
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1500,6 +1586,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
     const tool = TOOLS_BY_NAME.get(name);
     if (!tool) return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
     assertDeclaredArgs(tool, args);
+    // #308: names first, then the VALUES those names carry — a declared field whose
+    // schema pins an `enum` is checked against it here, for every tool, before dispatch,
+    // so a bad value is refused whether or not the branch taken would have read it.
+    assertDeclaredEnums(tool, args);
     switch (name) {
       case 'snapshot_now':
         return await handleSnapshotNow(args);

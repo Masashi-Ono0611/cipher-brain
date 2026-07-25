@@ -33,6 +33,16 @@
 //      shared tool list asserting every advertised tool refuses an
 //      undeclared argument, so a tool added later is covered without
 //      anyone remembering to add a test for it;
+//      the out-of-enum refusal (#308): the reproduction that was filed —
+//      verify_restore {file, backend:"nonsense"}, which used to return
+//      isError:false with a PASS verdict because its local-file branch never
+//      consulted the backend — plus the near-miss suggestion for a value one
+//      letter off (backend "fille" → "did you mean file?"), a GENERIC pass
+//      over every field that DECLARES an enum in the tools/list response,
+//      so a tool added later with a new enum field is covered the same way,
+//      and a walk of every advertised schema that FAILS on an enum in a
+//      shape the dispatcher's check does not read (nested, or a
+//      non-primitive literal) rather than letting it ship unenforced;
 //      the spend gate: snapshot_now with
 //      backend=turbo and no confirm_paid must be refused with
 //      ERR_CONFIRM_REQUIRED — even with CIPHER_BRAIN_YES set in the
@@ -979,6 +989,137 @@ async function run(tmp) {
       }
     }
 
+    // 2m-v. #308 — the same failure one level in, and the reproduction that issue was
+    // filed on. `backend` declares enum: ["file","arweave","turbo"], but whether a value
+    // outside it was refused used to depend on which BRANCH the rest of the arguments
+    // selected: estimate_cost consults the backend and refused, while verify_restore
+    // {file, backend:"nonsense"} took the local-file branch, never needed one, and
+    // returned a clean PASS — a verdict its caller reads as "verified through the backend
+    // I named". The check is now in the dispatcher, derived from the same schema, so it
+    // runs whatever branch the call would have taken.
+    send({
+      jsonrpc: '2.0',
+      id: 60,
+      method: 'tools/call',
+      params: { name: 'verify_restore', arguments: { file: outAge, backend: 'nonsense' } },
+    });
+    const badEnum = await waitFor(60);
+    const badEnumSc = badEnum.result?.structuredContent;
+    if (badEnum.result?.isError !== true || badEnumSc?.code !== 'ERR_INVALID_INPUT') {
+      throw new Error(
+        'verify_restore accepted a backend outside its declared enum on the file branch: ' +
+          JSON.stringify(badEnum.result).slice(0, 400),
+      );
+    }
+    if (!(badEnumSc.message ?? '').includes('backend') || !(badEnumSc.message ?? '').includes('nonsense')) {
+      throw new Error(
+        `verify_restore rejection names neither the field nor the value it refused: ${JSON.stringify(badEnumSc).slice(0, 300)}`,
+      );
+    }
+
+    // The refusal reaches for the SAME "did you mean" helper (src/lib/suggest.ts) as the
+    // unknown-argument refusal above and the CLI's own #277 hint, so a value one letter
+    // off is told which declared one it was near rather than only that it was wrong.
+    send({
+      jsonrpc: '2.0',
+      id: 61,
+      method: 'tools/call',
+      params: { name: 'verify_restore', arguments: { file: outAge, backend: 'fille' } },
+    });
+    const nearEnum = await waitFor(61);
+    const nearEnumSc = nearEnum.result?.structuredContent;
+    if (nearEnum.result?.isError !== true || !(nearEnumSc?.message ?? '').includes('did you mean file?')) {
+      throw new Error(
+        `verify_restore backend="fille" was not answered with the near miss: ${JSON.stringify(nearEnum.result).slice(0, 300)}`,
+      );
+    }
+
+    // Generic over every field that DECLARES an enum, read out of the tools/list response
+    // rather than named here — same discipline as 2m-iv, so a tool added later with a new
+    // enum field is covered by a test written before it existed. The value is refused in
+    // the dispatcher before any handler runs, so no other argument is needed to reach it.
+    const enumFields = [];
+    for (const tool of list.result?.tools ?? []) {
+      for (const [field, spec] of Object.entries(tool.inputSchema?.properties ?? {})) {
+        if (Array.isArray(spec?.enum) && spec.enum.length > 0) enumFields.push([tool.name, field, spec.enum]);
+      }
+    }
+    // Asserted, not assumed: with no enum anywhere the loop below would pass vacuously
+    // and report coverage it never exercised. If a schema legitimately drops its last
+    // enum, this failing is the deliberate step that says so.
+    if (enumFields.length === 0) {
+      throw new Error('no advertised tool declares an enum — the generic enum check below would prove nothing');
+    }
+
+    // The dispatcher's check is deliberately not a JSON Schema validator (#308): it reads
+    // ONE shape — a top-level property's own `enum`, of primitive literals compared by
+    // value. Both loops above see only that same shape, so an enum declared any OTHER way
+    // would be unenforced AND untested, which is #308's own failure mode wearing a new
+    // hat. Walk every advertised schema and refuse to be green with one: an enum nested
+    // under items / a sub-object / allOf|anyOf|oneOf is not read at all, and an object or
+    // array literal is compared by reference where JSON Schema compares structurally, so
+    // it could refuse a value the schema permits. Either is a deliberate step — extend
+    // assertDeclaredEnums first — not something a new tool can slip past.
+    const enumsFoundBelowProperty = [];
+    const walkForEnums = (node, path) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (const [i, child] of node.entries()) walkForEnums(child, `${path}[${i}]`);
+        return;
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (key === 'enum') enumsFoundBelowProperty.push(`${path}.enum`);
+        else walkForEnums(child, `${path}.${key}`);
+      }
+    };
+    const isPrimitiveLiteral = (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
+    const unenforceable = [];
+    for (const tool of list.result?.tools ?? []) {
+      const schema = tool.inputSchema ?? {};
+      for (const [key, child] of Object.entries(schema)) {
+        if (key !== 'properties') walkForEnums(child, `${tool.name}.${key}`);
+      }
+      for (const [field, spec] of Object.entries(schema.properties ?? {})) {
+        for (const [key, child] of Object.entries(spec ?? {})) {
+          if (key !== 'enum') walkForEnums(child, `${tool.name}.${field}.${key}`);
+          else if (!Array.isArray(child) || !child.every(isPrimitiveLiteral)) {
+            unenforceable.push(
+              `${tool.name}.${field}.enum (non-primitive literal — compared by reference, not structurally)`,
+            );
+          }
+        }
+      }
+    }
+    unenforceable.push(...enumsFoundBelowProperty.map((p) => `${p} (not a top-level property's own enum)`));
+    if (unenforceable.length > 0) {
+      throw new Error(
+        `advertised enum(s) the dispatcher does not enforce: ${unenforceable.join(', ')} — assertDeclaredEnums ` +
+          "reads a top-level property's own enum of primitive literals and nothing else. Extend it (or drop the " +
+          'enum from the schema) rather than publishing a constraint the server ignores.',
+      );
+    }
+    const enumProbe = 'zz_not_a_declared_enum_value';
+    for (const [i, [toolName, field, allowed]] of enumFields.entries()) {
+      if (allowed.includes(enumProbe)) {
+        throw new Error(`${toolName}.${field} actually declares the probe value ${enumProbe} — pick another`);
+      }
+      const id = 70 + i;
+      send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: toolName, arguments: { [field]: enumProbe } } });
+      const res = await waitFor(id);
+      const sc = res.result?.structuredContent;
+      if (res.result?.isError !== true || sc?.code !== 'ERR_INVALID_INPUT') {
+        throw new Error(
+          `${toolName} does not reject a value outside ${field}'s declared enum — its handler can still be reached ` +
+            `with a value tools/list says is not allowed: ${JSON.stringify(res.result).slice(0, 300)}`,
+        );
+      }
+      if (!(sc.message ?? '').includes(field) || !(sc.message ?? '').includes(enumProbe)) {
+        throw new Error(
+          `${toolName} rejected an out-of-enum ${field} without naming the field and the value: ${JSON.stringify(sc).slice(0, 300)}`,
+        );
+      }
+    }
+
     // 2n. keygen against THIS server's home — which already has a real identity
     // (written by the CLI-driven keygen at the top of this run, not by the tool
     // itself) — must refuse rather than silently re-key a brain snapshots already
@@ -1003,7 +1144,8 @@ async function run(tmp) {
         `schedule_install gate=ERR_CONFIRM_REQUIRED, schedule_install no_load=ok, ` +
         `schedule_status.next_run=${schedSc.next_run}, resource==tool=yes, ` +
         `prompt=restore-runbook(${promptText.length}ch), keygen(pre-existing)=refused, ` +
-        `unknown-arg refused by all ${EXPECTED_MCP_TOOLS.length} tools (near miss named)\n`,
+        `unknown-arg refused by all ${EXPECTED_MCP_TOOLS.length} tools (near miss named), ` +
+        `out-of-enum value refused on all ${enumFields.length} declared enum field(s)\n`,
     );
   } finally {
     try {

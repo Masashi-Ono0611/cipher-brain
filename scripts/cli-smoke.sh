@@ -215,12 +215,15 @@ grep -Fq 'error: unknown command: definitelynotacommand' "$TMP/unknown-cmd.err" 
   || { echo "[FAIL] unknown command did not name the offending command on stderr"; cat "$TMP/unknown-cmd.err"; exit 1; }
 grep -Fq "cipher-brain <command> --help" "$TMP/unknown-cmd.err" \
   || { echo "[FAIL] unknown command did not point at --help"; cat "$TMP/unknown-cmd.err"; exit 1; }
-# the advertised list must actually name every command the help documents, and the
-# whole reply must stay short (it is derived from HELP, so a drift would show up here)
-for want in init keygen wallet snapshot restore verify push pull estimate schedule; do
-  grep -Eq "^valid commands: .*\b$want\b" "$TMP/unknown-cmd.err" \
-    || { echo "[FAIL] '$want' missing from the valid-commands line"; cat "$TMP/unknown-cmd.err"; exit 1; }
-done
+# The advertised list is DERIVED from HELP's section headers, so compare it as a SET
+# against the real command surface — catching both a command that stopped being listed
+# and a bogus entry the derivation picked up (e.g. a non-command header). Sorted, so
+# reordering HELP's sections is not a false failure; `\b` is avoided since word-boundary
+# support differs between GNU and BSD grep (multi-model review finding).
+LISTED=$(sed -n 's/^valid commands: //p' "$TMP/unknown-cmd.err" | tr ',' '\n' | tr -d ' ' | sort | tr '\n' ' ')
+EXPECTED=$(printf '%s\n' init keygen wallet snapshot restore verify push pull estimate schedule | sort | tr '\n' ' ')
+[ "$LISTED" = "$EXPECTED" ] \
+  || { echo "[FAIL] valid-commands list is [$LISTED], expected [$EXPECTED]"; cat "$TMP/unknown-cmd.err"; exit 1; }
 UNKNOWN_LINES=$(wc -l < "$TMP/unknown-cmd.err" | tr -d ' ')
 [ "$UNKNOWN_LINES" -le 5 ] \
   || { echo "[FAIL] the unknown-command reply is $UNKNOWN_LINES lines — the whole help is being dumped again"; exit 1; }

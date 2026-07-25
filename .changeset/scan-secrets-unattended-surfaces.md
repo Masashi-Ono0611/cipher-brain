@@ -25,10 +25,14 @@ snapshot or schedule used to record the mode in the manifest while scanning zero
 components. Being told a snapshot was scanned when it was not is worse than being
 told it was not scanned.
 
-Relatedly, a value-taking flag left without a value (`--scan-secrets` as the last
-argument, but equally `--out`, `--recipient`, `--max-spend`) is now an error
-naming the flag. It used to read as "flag omitted", which for an optional flag
-meant silently doing nothing — the same failure mode as the bug above.
+Relatedly, a value-taking flag whose value is missing is now an error naming the
+flag — both when it is the last argument (`… --scan-secrets`) and when the next
+argument is another recognized flag that it would otherwise have swallowed
+(`--out --scan-secrets deny`, which used to write an *unscanned* snapshot to a
+file named `--scan-secrets`). It used to read as "flag omitted", which for an
+optional flag meant silently doing nothing — the same failure mode as the bug
+above. This applies to every value flag, not just `--scan-secrets`. A value that
+merely starts with dashes but names no flag is still accepted.
 
 The default is unchanged and still **off on every surface** — this adds the
 ability to ask for the scan, not a new policy. Asking for it on a machine without

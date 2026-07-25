@@ -793,9 +793,17 @@ export type ScheduleStatusReport = {
     readonly at: string;
     readonly backend: string;
     /**
-     * #307: the gitleaks mode this schedule's runner actually snapshots with, or null
-     * when it does not scan. Reported because "is my unattended nightly gated?" is
+     * #307: the gitleaks mode CONFIGURED into this schedule's runner at install time, or
+     * null when it does not scan. Reported because "is my unattended nightly gated?" is
      * otherwise only answerable by reading the generated shell script.
+     *
+     * It is the configured intent, NOT a health check: this says the runner passes
+     * `--scan-secrets <mode>`, not that gitleaks is still resolvable from wherever the
+     * runner will look for it tonight (multi-model review). That stays fail-closed at run
+     * time — a gitleaks that has since disappeared makes the run FAIL rather than skip the
+     * scan — so the honest reading is "configured", which is how the printed line words
+     * it. Surfacing scanner health as well would mean a new field on this shared object
+     * (CLI --json, the MCP tool AND the resource all serve it), so it is left out here.
      */
     readonly scan_secrets: ScanSecretsMode | null;
   };
@@ -890,9 +898,14 @@ async function status(o: CliOptions): Promise<void> {
 
   console.log(`configured: daily at ${r.configured.at}, backend ${r.configured.backend}`);
   console.log(`runner: ${r.runner}`);
+  // "configured", deliberately, not "enabled": this reads schedule.json, so it reports what
+  // the runner was built to pass, not that gitleaks is still resolvable tonight. Claiming
+  // the latter from a file read would be the same kind of unearned assurance #307 is about
+  // (multi-model review). The run itself stays fail-closed either way, which is what the
+  // parenthetical tells the reader.
   console.log(
     r.configured.scan_secrets
-      ? `secret scan: gitleaks --scan-secrets ${r.configured.scan_secrets}`
+      ? `secret scan: configured --scan-secrets ${r.configured.scan_secrets} (each run re-checks gitleaks and FAILS if it is missing — this line is the configured mode, not a health check)`
       : 'secret scan: off (re-run install with --scan-secrets warn|deny to gate this nightly)',
   );
   console.log(

@@ -94,22 +94,45 @@ const VALUE_FLAGS = new Set([
   'ping_url_fail',
 ]);
 
+// The repeatable array flags, which the loop in parseArgs dispatches on BEFORE the
+// VALUE_FLAGS set is consulted — listed here so "is this token a flag?" can be answered
+// for all of them, not just the ones in that set.
+const REPEATABLE_FLAGS = new Set(['--dir', '--pg-table', '--pg-exclude-table-data', '--recipient']);
+
 function parseArgs(argv: string[]): CliOptions {
   const o: CliOptions = { dirs: [], tables: [], recipients: [] };
   const rec = o as unknown as Record<string, string | boolean | undefined>;
-  // A value-taking flag in the LAST argv position reads its value off the end of the
-  // array, i.e. `undefined` — which then looks exactly like "the flag was never passed"
-  // to every reader downstream. For a REQUIRED flag that surfaces as a confusing but safe
-  // "--x required"; for an OPTIONAL one it is silent: `schedule install … --scan-secrets`
-  // (mode omitted) used to exit 0 and write a runner with no scan at all, which is the
-  // same "asked for a gate, got none" failure #307 is about. Refuse the moment the value
-  // is missing, naming the flag, for every value-taking flag rather than only the one
-  // that exposed it (multi-model review, #307). Only the last-position case is treated as
-  // missing: `--scan-secrets --out x.age` consumes "--out" as the value and is already
-  // caught by that flag's own validation, whereas rejecting any value that starts with
-  // "--" would refuse legitimate values.
+  // A value-taking flag whose value is MISSING used to read its value off the end of the
+  // array (or off the next flag), i.e. `undefined` — which then looks exactly like "the
+  // flag was never passed" to every reader downstream. For a REQUIRED flag that surfaces
+  // as a confusing but safe "--x required"; for an OPTIONAL one it is silent, which is the
+  // same "asked for a gate, got none" failure #307 is about. Two shapes, both found by
+  // multi-model review, both refused here by naming the flag:
+  //
+  //   snapshot --dir src --out --scan-secrets deny   -> --out swallowed "--scan-secrets",
+  //                                                     scan_secrets stayed undefined, and
+  //                                                     the snapshot ran UNSCANNED into a
+  //                                                     file literally named --scan-secrets
+  //   schedule install … --scan-secrets              -> exit 0, runner with no scan at all
+  //
+  // "Looks like a flag" is judged by RECOGNIZED flag names only (the same BOOL/VALUE sets
+  // the loop below dispatches on), not by a leading "--": a value that merely starts with
+  // dashes but names no flag this CLI has is still accepted, and a path that genuinely
+  // begins with "--" can be written "./--name".
+  const isKnownFlagToken = (t: string): boolean => {
+    if (!t.startsWith('--')) return false;
+    if (REPEATABLE_FLAGS.has(t)) return true;
+    const k = t.slice(2).replace(/-/g, '_');
+    return BOOL_FLAGS.has(k) || VALUE_FLAGS.has(k);
+  };
   const valueAt = (i: number, flag: string): string => {
     if (i >= argv.length) throw new Error(`${flag} requires a value (run 'cipher-brain --help' for the expected form)`);
+    if (isKnownFlagToken(argv[i]))
+      throw new Error(
+        `${flag} requires a value, but the next argument is another flag (${argv[i]}) — ` +
+          `it was NOT consumed as ${flag}'s value. Give ${flag} its value, or write "./${argv[i]}" if you really ` +
+          `meant a path by that name.`,
+      );
     return argv[i];
   };
   for (let i = 0; i < argv.length; i++) {

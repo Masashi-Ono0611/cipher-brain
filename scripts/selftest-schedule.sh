@@ -389,8 +389,12 @@ if (cfg.scan_secrets !== 'deny') throw new Error('schedule.json scan_secrets = '
 if (cfg.gitleaks_dir !== process.argv[2]) throw new Error('schedule.json gitleaks_dir = ' + JSON.stringify(cfg.gitleaks_dir) + ', expected ' + process.argv[2]);
 " "$CONFIG" "$FAKE_GITLEAKS_DIR" || { echo "[FAIL] schedule.json did not record the scan mode / resolved gitleaks dir"; exit 1; }
 cb schedule status > "$TMP/status-scan.log" 2>&1 || { echo "[FAIL] status (scan-enabled schedule) exited non-zero"; cat "$TMP/status-scan.log"; exit 1; }
-grep -q 'secret scan: gitleaks --scan-secrets deny' "$TMP/status-scan.log" \
+grep -q 'secret scan: configured --scan-secrets deny' "$TMP/status-scan.log" \
   || { echo "[FAIL] status does not report that this schedule scans"; cat "$TMP/status-scan.log"; exit 1; }
+# It must say "configured", not imply a health check it did not perform: status reads
+# schedule.json, so it cannot know gitleaks is still resolvable tonight (multi-model review).
+grep -q 'not a health check' "$TMP/status-scan.log" \
+  || { echo "[FAIL] status states the scan mode as if it had verified gitleaks is still available"; cat "$TMP/status-scan.log"; exit 1; }
 echo "[PASS] --scan-secrets deny is threaded into the runner's snapshot line, gitleaks is resolved+baked onto the runner PATH, and status reports it"
 
 echo "== (a6b) the baked runner ACTUALLY refuses a leaky source when it runs, with gitleaks reachable ONLY via the baked PATH (#307 end-to-end) =="

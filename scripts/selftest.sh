@@ -932,7 +932,22 @@ set -e
 printf '%s' "$NOVAL_OUT_ERR" | grep -q -- '--out requires a value' || { echo "[FAIL] a trailing --out does not name itself"; echo "$NOVAL_OUT_ERR"; exit 1; }
 [ "$NOVAL_REC_RC" != "0" ] || { echo "[FAIL] a trailing --recipient was accepted"; exit 1; }
 printf '%s' "$NOVAL_REC_ERR" | grep -q -- '--recipient requires a value' || { echo "[FAIL] a trailing --recipient (a repeatable array flag) does not name itself"; echo "$NOVAL_REC_ERR"; exit 1; }
-echo "[PASS] a dangling value flag (--scan-secrets/--out/--recipient) is refused by name, not read as an omitted flag"
+# The nastier shape (multi-model review round 2): the value is not missing off the END of
+# argv, it is EATEN by the preceding flag. `--out --scan-secrets deny` used to parse as
+# out="--scan-secrets", scan_secrets=undefined, _="deny" — an UNSCANNED snapshot written to
+# a file literally named "--scan-secrets", from a command line that asked for deny.
+set +e
+EATEN_ERR=$(cd "$TMP" && CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out --scan-secrets deny 2>&1); EATEN_RC=$?
+set -e
+[ "$EATEN_RC" != "0" ] || { echo "[FAIL] '--out --scan-secrets deny' was accepted — the snapshot ran with the gate silently off"; echo "$EATEN_ERR"; exit 1; }
+printf '%s' "$EATEN_ERR" | grep -q -- '--out requires a value, but the next argument is another flag' || { echo "[FAIL] the swallowed-value refusal does not explain which flag ate which"; echo "$EATEN_ERR"; exit 1; }
+test ! -e "$TMP/--scan-secrets" || { echo "[FAIL] a swallowed --scan-secrets still produced a snapshot file named after the flag"; exit 1; }
+# A value that merely LOOKS flag-ish but names no flag this CLI has is still accepted —
+# the check is on recognized flag names, not on a leading "--".
+CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/--not-a-flag.age" > /dev/null 2>&1 \
+  || { echo "[FAIL] a legitimate value that starts with dashes was refused"; exit 1; }
+test -f "$TMP/--not-a-flag.age" || { echo "[FAIL] the dash-leading --out value did not produce its file"; exit 1; }
+echo "[PASS] a value flag is refused when its value is missing OR eaten by the next recognized flag, while a dash-leading non-flag value still works"
 
 if ! command -v gitleaks >/dev/null 2>&1; then
   echo "[SKIP] --scan-secrets warn/deny tests: no \`gitleaks\` binary on PATH (install it — https://github.com/gitleaks/gitleaks — to exercise this; CI installs it via the .github/workflows/ci.yml step, see #215)"

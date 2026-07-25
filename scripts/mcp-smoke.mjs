@@ -647,6 +647,46 @@ async function run(tmp) {
     }
     if (verPinnedSc?.warning !== undefined)
       throw new Error(`verify_restore(locator_file) unexpected warning: ${JSON.stringify(verPinnedSc.warning)}`);
+    // #312: everything pull() said now reaches the caller. It used to be captured and
+    // dropped, which is what made the case below invisible rather than merely quiet.
+    if (!Array.isArray(verPinnedSc?.pulled?.log) || !verPinnedSc.pulled.log.some((l) => /pulled /.test(l))) {
+      throw new Error(
+        `verify_restore(locator_file) did not surface its pull output: ${JSON.stringify(verPinnedSc?.pulled?.log)}`,
+      );
+    }
+    // A signature that WAS recorded but could NOT be fetched must not come back looking
+    // like an artifact that was never signed. pull()'s sidecar fetch is best-effort by
+    // design (#214), so the visible result of a DELETED .minisig is verify() reporting
+    // "unsigned (legacy) artifact" and a PASS — true of a pre-#214 backup, false here.
+    // Point field 6 (sig_locator) of the save-locator file at something unfetchable and
+    // assert the result says so; the ciphertext itself still verifies.
+    const sigProbeFile = join(tmp, 'sig-gap-locator.tsv');
+    const locFields = (await readFile(locatorFile, 'utf8')).trim().split('\t');
+    while (locFields.length < 5) locFields.push('');
+    locFields[5] = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.age';
+    await writeFile(sigProbeFile, `${locFields.join('\t')}\n`);
+    send({
+      jsonrpc: '2.0',
+      id: 78,
+      method: 'tools/call',
+      params: { name: 'verify_restore', arguments: { locator_file: sigProbeFile } },
+    });
+    const sigGap = await waitFor(78);
+    const sigGapSc = sigGap.result?.structuredContent;
+    if (sigGap.result?.isError)
+      throw new Error(
+        `verify_restore(unfetchable signature) should still verify the ciphertext: ${JSON.stringify(sigGapSc).slice(0, 400)}`,
+      );
+    if (sigGapSc?.signature?.fetched !== false || !sigGapSc?.signature?.expected_locator) {
+      throw new Error(
+        `verify_restore did not report that a RECORDED signature could not be fetched — the caller cannot tell this from an unsigned artifact: ${JSON.stringify(sigGapSc).slice(0, 500)}`,
+      );
+    }
+    if (!(sigGapSc?.pulled?.log ?? []).some((l) => /could not fetch the authenticity signature/.test(l))) {
+      throw new Error(
+        `the reason the signature could not be fetched is still being dropped: ${JSON.stringify(sigGapSc?.pulled?.log)}`,
+      );
+    }
 
     // 2f. negative control: an explicitly WRONG sha256 pin must fail CLOSED —
     // an error result with NO verdict field, never a PASS.

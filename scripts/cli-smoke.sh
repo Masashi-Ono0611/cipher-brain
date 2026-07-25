@@ -277,4 +277,24 @@ node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend nosuchba
   || { echo "[FAIL] the error path writes to stdout even without --json"; cat "$TMP/err-nojson.out"; exit 1; }
 echo "[PASS] dist --json error path: {error, code: CB-E013, exit_code} on stdout, stderr unchanged, no stdout without --json"
 
+### (m) restore names the --out it ignored instead of just demanding --out-dir (#277)
+# --out is the destination flag on snapshot/pull/wallet create, so typing it on restore
+# is the natural mistake; parseArgs accepts it globally and restore never reads it.
+node "$DIST" restore --in "$CIPHER_BRAIN_HOME/recipient.txt" --out "$TMP/nope" > "$TMP/m.out" 2> "$TMP/m.err"
+M_RC=$?
+[ "$M_RC" != "0" ] || { echo "[FAIL] restore with --out instead of --out-dir exited 0"; exit 1; }
+grep -Fq -- 'did you mean --out-dir?' "$TMP/m.err" \
+  || { echo "[FAIL] restore --out did not name the ignored flag"; cat "$TMP/m.err"; exit 1; }
+[ ! -s "$TMP/m.out" ] || { echo "[FAIL] restore wrote to stdout on the error path"; cat "$TMP/m.out"; exit 1; }
+# and with NEITHER flag the message stays the plain one — the hint must not fire
+# on the unrelated case of simply forgetting a destination
+node "$DIST" restore --in "$CIPHER_BRAIN_HOME/recipient.txt" > /dev/null 2> "$TMP/m2.err"
+M2_RC=$?
+[ "$M2_RC" != "0" ] || { echo "[FAIL] restore without a destination exited 0"; exit 1; }
+# match the WHOLE line, not a substring: a message that merely contains the old text
+# plus new trailing prose would slip past a substring check
+grep -qx -- 'error: --out-dir <dir> required' "$TMP/m2.err" \
+  || { echo "[FAIL] restore without a destination no longer emits exactly 'error: --out-dir <dir> required'"; cat "$TMP/m2.err"; exit 1; }
+echo "[PASS] dist restore: --out is named as ignored with a --out-dir hint; the plain error is unchanged without it"
+
 echo "CLI SMOKE: PASS"

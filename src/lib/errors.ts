@@ -23,10 +23,15 @@
 // site — that's the whole point (it's what lets every throw site stay untouched), but it
 // also means rewording the underlying message can silently stop a pattern from matching,
 // with no compiler or test to catch it for a code whose scenario isn't exercised by
-// scripts/selftest*.sh. Each entry's `source` comment below is the mitigation: it points
-// at the exact file the pattern's substring is copied from, so editing that message is
-// the trigger to `grep -rn <old substring> src/lib/errors.ts` and update the pattern in
-// the SAME change — treat `source` as a live reference, not a stale note.
+// scripts/selftest*.sh. Two things mitigate it. Each entry's `source` comment below
+// points at the exact file the pattern's substring is copied from, so editing that
+// message is the trigger to `grep -rn <old substring> src/lib/errors.ts` and update the
+// pattern in the SAME change — treat `source` as a live reference, not a stale note.
+// And since #295 that is no longer only a convention: `origin` (below) marks which
+// entries we write the text for, and scripts/selftest-error-codes.mjs — part of
+// `npm run verify` — fails when one of those patterns no longer matches anything in
+// src/. It cannot prove a code still ATTACHES at runtime, but it does catch the case
+// this warning is about: a reworded throw site leaving a pattern behind.
 
 export interface ErrorCodeEntry {
   /** Stable, never-reused identifier — this repo's equivalent of ERR_NGROK_xxx. */
@@ -41,6 +46,31 @@ export interface ErrorCodeEntry {
    * reworded message and this pattern change together instead of silently drifting apart.
    */
   readonly source: string;
+  /**
+   * Who writes the text this pattern matches — and therefore whether a test can check
+   * it (#295). The header comment above notes that rewording a message can silently
+   * stop a pattern matching, with nothing to catch it; the reason that check did not
+   * exist is that two different kinds of entry were indistinguishable except in the
+   * prose of `source`.
+   *
+   * - 'ours'     — every alternative is copied from a throw site in src/. If someone
+   *                rewords one of those messages without touching this table, the code
+   *                stops attaching. scripts/selftest-error-codes.mjs asserts all of
+   *                them still match, which is the check that was missing.
+   * - 'upstream' — the substring is a DEPENDENCY's own wording (arweave,
+   *                @ardrive/turbo-sdk, node), which we never write and cannot assert
+   *                against src/. Its risk is real but different: an upstream release
+   *                can reword it, and no check of ours would see that either way. Not
+   *                asserted — but now visibly unasserted rather than silently so.
+   * - 'mixed'    — the pattern deliberately spans both, so only the 'ours' half is
+   *                assertable. CB-E006 is the case that forced this third value:
+   *                "exceeds CIPHER_BRAIN_MAX_SPEND" is ours, "insufficient
+   *                balance/funds" is the SDKs'. The selftest requires at least one
+   *                alternative to be present in src/ — enough to catch our half being
+   *                reworded away, without failing on the upstream half that is
+   *                correctly absent.
+   */
+  readonly origin: 'ours' | 'upstream' | 'mixed';
 }
 
 // The doc anchor every annotated message points readers at. Keep in sync with the
@@ -56,36 +86,42 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     code: 'CB-E001',
     title: 'integrity pin mismatch — fetched bytes do not match --sha256',
     pattern: /sha256 mismatch: fetched/,
+    origin: 'ours',
     source: 'src/lib/pushpull.ts (pull, "sha256 mismatch: fetched …")',
   },
   {
     code: 'CB-E002',
     title: 'age decrypt failed (wrong identity, or corrupt/truncated ciphertext)',
     pattern: /age decrypt failed:/,
+    origin: 'ours',
     source: 'src/lib/crypt.ts (decryptToChild, "age decrypt failed: …")',
   },
   {
     code: 'CB-E003',
     title: 'cannot unwrap a passphrase-protected identity (wrong passphrase?)',
     pattern: /\(wrong passphrase\?\)/,
+    origin: 'ours',
     source: 'src/lib/crypt.ts (unwrapTextFile, "could not unwrap … (wrong passphrase?)")',
   },
   {
     code: 'CB-E004',
     title: 'storage object not yet retrievable (upload not yet propagated)',
     pattern: /not mined \/ not found \/ not yet seeded/,
+    origin: 'ours',
     source: 'src/lib/backends/arweave.ts (get, RetryableError "… not mined / not found / not yet seeded")',
   },
   {
     code: 'CB-E005',
     title: 'recipient rejected by the CIPHER_BRAIN_PIN_RECIPIENTS allowlist',
     pattern: /is NOT in CIPHER_BRAIN_PIN_RECIPIENTS/,
+    origin: 'ours',
     source: 'src/lib/snapshot.ts (snapshot, "… is NOT in CIPHER_BRAIN_PIN_RECIPIENTS")',
   },
   {
     code: 'CB-E006',
     title: 'spend cap exceeded, or wallet balance insufficient (paid backend)',
     pattern: /exceeds CIPHER_BRAIN_MAX_SPEND|insufficient (?:balance|funds)/i,
+    origin: 'mixed',
     source:
       'src/lib/backends/arweave.ts + src/lib/backends/turbo.ts ("… exceeds CIPHER_BRAIN_MAX_SPEND=…"); ' +
       '"insufficient balance/funds" also matches the arweave/turbo-sdk packages’ own thrown wording',
@@ -94,18 +130,21 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     code: 'CB-E007',
     title: 'paid backend upload needs explicit spend consent (--yes)',
     pattern: /spends real funds/,
+    origin: 'ours',
     source: 'src/lib/pushpull.ts (push, "… uploading to a permanent Arweave store spends real funds — …")',
   },
   {
     code: 'CB-E008',
     title: 'refusing to push non-ciphertext to storage',
     pattern: /not age ciphertext \(header mismatch\)/,
+    origin: 'ours',
     source: 'src/lib/pushpull.ts (push, "… is not age ciphertext (header mismatch) — …")',
   },
   {
     code: 'CB-E009',
     title: 'refusing to overwrite an existing output (no-clobber)',
     pattern: /already exists — refusing to overwrite/,
+    origin: 'ours',
     source:
       'src/lib/pushpull.ts (push/pull) + src/lib/snapshot.ts (snapshot), "… already exists — refusing to overwrite …"',
   },
@@ -113,6 +152,7 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     code: 'CB-E010',
     title: 'locator rejected — outside the store, or the wrong shape (possible path traversal)',
     pattern: /locator is outside FILE_DIR|does not match the expected <sha256>\.age shape/,
+    origin: 'ours',
     source:
       'src/lib/backends/file.ts (get, "locator is outside FILE_DIR" / "does not match the expected <sha256>.age shape")',
   },
@@ -120,6 +160,7 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     code: 'CB-E011',
     title: 'Arweave JWK wallet missing or unreadable',
     pattern: /needs CIPHER_BRAIN_AR_WALLET|cannot read JWK wallet at/,
+    origin: 'ours',
     source:
       'src/lib/backends/arweave.ts + src/lib/backends/turbo.ts ("… needs CIPHER_BRAIN_AR_WALLET …" / "cannot read JWK wallet at …")',
   },
@@ -127,30 +168,35 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     code: 'CB-E012',
     title: 'optional storage SDK dependency not installed',
     pattern: /run: npm install (?:@ardrive\/turbo-sdk|arweave)\b/,
+    origin: 'ours',
     source: 'src/lib/backends/turbo.ts + src/lib/backends/arweave.ts (SdkMissingError, "… run: npm install …")',
   },
   {
     code: 'CB-E013',
     title: 'unknown --backend name',
     pattern: /unknown backend:/,
+    origin: 'ours',
     source: 'src/lib/backends/index.ts (backendFor) + src/lib/estimate.ts (estimateCost), "unknown backend: …"',
   },
   {
     code: 'CB-E014',
     title: 'schedule automation not installed, or crontab write failed',
     pattern: /schedule not installed \(no |crontab write failed/,
+    origin: 'ours',
     source: 'src/lib/schedule.ts ("schedule not installed (no …" / "crontab write failed: …")',
   },
   {
     code: 'CB-E015',
     title: 'identity file not found (cannot decrypt)',
     pattern: /cannot decrypt without the private key/,
+    origin: 'ours',
     source: 'src/lib/restore.ts (restoreImpl, "no identity at … — cannot decrypt without the private key")',
   },
   {
     code: 'CB-E016',
     title: 'minisign authenticity signature failed to verify — refusing to decrypt (#214)',
     pattern: /signature (?:does not verify|verification failed)/,
+    origin: 'ours',
     source:
       'src/lib/restore.ts (restoreImpl) + src/lib/minisign.ts (verifyDetached), "… signature does not verify …" / "… signature verification failed …"',
   },

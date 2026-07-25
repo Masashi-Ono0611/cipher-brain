@@ -185,7 +185,15 @@ function runnerBody(cfg: ScheduleConfig): string {
   // Environment the trigger will NOT have (launchd/cron start with a bare env):
   // bake the values that were in effect at install time so the unattended run
   // resolves the same keys/stores the operator tested with.
-  const envLines = [`export CIPHER_BRAIN_HOME=${shq(cfg.home)}`];
+  const envLines = [
+    `export CIPHER_BRAIN_HOME=${shq(cfg.home)}`,
+    // #286: everything this runner needs was baked in at install time, below. Tell
+    // the CLI not to read $CIPHER_BRAIN_HOME/config.env as well — without this, each
+    // scheduled invocation would re-read it, so editing that file could retune an
+    // already-installed schedule, or (with an unknown key in it) stop the schedule
+    // outright. `schedule install` exists to pin what the operator tested.
+    'export CIPHER_BRAIN_NO_CONFIG_FILE=1',
+  ];
   // Users with large brains are expected to set TMPDIR so snapshot() (mkdtempSync) stages
   // plaintext on a disk with enough room — bake it in too, or a scheduled run silently
   // falls back to the system temp dir even though install was run with TMPDIR set.

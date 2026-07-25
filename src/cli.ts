@@ -450,11 +450,14 @@ Config file: every setting below can also live in $CIPHER_BRAIN_HOME/config.env 
      file. CIPHER_BRAIN_HOME is the one exception: this file is found INSIDE it, so it cannot
      set it (a file that tries is warned about, not silently obeyed). An unknown CIPHER_BRAIN_*
      key is an ERROR rather than a no-op — a "CIPHER_BRAIN_MAXSPEND" typo would otherwise
-     silently drop your spend cap; keys outside the CIPHER_BRAIN_ namespace are left alone.
+     silently drop your spend cap. ONLY CIPHER_BRAIN_* settings are applied: any other key in
+     the file (TMPDIR, a proxy variable, ...) is read but never put into the environment, so
+     the file cannot reach through into the processes cipher-brain spawns.
      Secrets are allowed (it warns if the file is group/other-readable — chmod 600 it).
-     'schedule install' still BAKES the values in effect at install time into the runner, so
-     editing this file does not change what an already-installed nightly run does; re-run
-     install to pick changes up. 'schedule status' names the file it loaded.
+     'schedule install' BAKES the values in effect at install time into the runner AND makes
+     that runner skip this file, so editing it never retunes — or breaks — an already-
+     installed nightly run; re-run install to pick changes up. 'schedule status' names the
+     file it loaded.
 Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_PG_BIN (dir of pg_dump/pg_restore).
      CIPHER_BRAIN_SCHEDULE_DIR (schedule artifacts/logs dir; default $CIPHER_BRAIN_HOME/schedule).
      CIPHER_BRAIN_LAUNCHD_DIR (macOS only: where 'schedule install' writes the launchd plist;

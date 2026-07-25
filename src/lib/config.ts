@@ -44,6 +44,7 @@ const ENV_NAMES = [
   'CIPHER_BRAIN_MAX_SPEND',
   'CIPHER_BRAIN_PIPE_TIMEOUT',
   'CIPHER_BRAIN_PULL_RETRY_MS',
+  'CIPHER_BRAIN_NO_CONFIG_FILE', // set by the generated nightly runner so a scheduled run uses only baked values (#286)
 ] as const;
 
 export type EnvName = (typeof ENV_NAMES)[number];
@@ -79,16 +80,27 @@ export interface LoadedConfigFile {
 // `schedule status`.
 function loadConfigFile(home: string): { file: LoadedConfigFile | null; error: Error | null } {
   const path = join(home, 'config.env');
+  // The generated nightly runner sets this (#286): its values were baked in at install
+  // time, and re-reading the file at run time would mean an edit could retune — or
+  // break — an already-installed schedule, which is exactly the guarantee `schedule
+  // install` exists to provide.
+  if (process.env.CIPHER_BRAIN_NO_CONFIG_FILE === '1') return { file: null, error: null };
   if (!existsSync(path)) return { file: null, error: null }; // by far the common case — never an error
 
-  let keys: string[];
+  // ONE read. An earlier version parsed the file for validation and then called
+  // process.loadEnvFile() to apply it, which had two problems: the file could change
+  // between the two reads (so unvalidated content could be applied), and loadEnvFile
+  // applies the WHOLE file — a stray TMPDIR or HTTP_PROXY in it would silently reach
+  // every child process we spawn, and an in-file CIPHER_BRAIN_HOME would land in the
+  // environment despite the warning saying it is ignored (multi-model review findings).
+  let parsed: Record<string, string>;
   try {
-    keys = Object.keys(parseEnv(readFileSync(path, 'utf8')));
+    parsed = parseEnv(readFileSync(path, 'utf8')) as Record<string, string>;
   } catch (e) {
     return { file: null, error: new Error(`config file ${path} could not be parsed: ${(e as Error)?.message ?? e}`) };
   }
 
-  const ours = keys.filter((k) => k.startsWith('CIPHER_BRAIN_'));
+  const ours = Object.keys(parsed).filter((k) => k.startsWith('CIPHER_BRAIN_'));
   const unknown = ours.filter((k) => !(ENV_NAMES as readonly string[]).includes(k));
   if (unknown.length) {
     return {
@@ -97,7 +109,7 @@ function loadConfigFile(home: string): { file: LoadedConfigFile | null; error: E
         `config file ${path}: unknown setting(s) ${unknown.join(', ')} — ` +
           `cipher-brain reads no such variable, so this would have no effect (a typo in e.g. ` +
           `CIPHER_BRAIN_MAX_SPEND would silently remove your spend cap). Run 'cipher-brain --help' ` +
-          `for the settings it does read. Keys outside the CIPHER_BRAIN_ namespace are left alone.`,
+          `for the settings it does read. Keys outside the CIPHER_BRAIN_ namespace are ignored entirely.`,
       ),
     };
   }
@@ -108,8 +120,20 @@ function loadConfigFile(home: string): { file: LoadedConfigFile | null; error: E
     );
   }
   warnIfLooseKeyPermsSync(path, 'config file');
-  process.loadEnvFile(path);
-  return { file: { path, variables: ours }, error: null };
+
+  // Apply ONLY our own validated settings, and only where the environment has not
+  // already spoken — explicit env > file, the same precedence Node's own loader uses,
+  // written out here because we are no longer handing it the whole file.
+  // CIPHER_BRAIN_HOME is excluded outright: it was resolved before this ran, so letting
+  // it into the environment would mean child processes disagreeing with this one.
+  const applied: string[] = [];
+  for (const k of ours) {
+    if (k === 'CIPHER_BRAIN_HOME') continue;
+    if (process.env[k] !== undefined) continue;
+    process.env[k] = parsed[k];
+    applied.push(k);
+  }
+  return { file: { path, variables: applied }, error: null };
 }
 
 // Resolved from the environment ALONE, before the file is loaded — see loadConfigFile.

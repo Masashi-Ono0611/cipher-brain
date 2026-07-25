@@ -121,7 +121,43 @@ grep -q "export CIPHER_BRAIN_FILE_DIR='$BAKESTORE'" "$H/sched/nightly.sh" \
   || { echo "[FAIL] the runner did not bake the file-derived CIPHER_BRAIN_FILE_DIR"; sed -n '1,40p' "$H/sched/nightly.sh"; exit 1; }
 echo "[PASS] a value that came from the config file is baked into the runner like any other"
 
+echo "== (g2) a FOREIGN key in the file is not applied to the environment at all =="
+# The docs say keys outside the CIPHER_BRAIN_ namespace are ignored. They were not:
+# an earlier version handed the whole file to process.loadEnvFile(), so a stray TMPDIR
+# or proxy variable reached every child process we spawn (multi-model review finding).
+# TMPDIR is the observable — `schedule install` bakes it into the runner when set, so if
+# the file's value had been applied it would appear there.
+H="$(new_home foreignenv)"
+write_cfg "$H" "TMPDIR=$TMP/foreign-tmp" "CIPHER_BRAIN_FILE_DIR=$TMP/store-fk" "CIPHER_BRAIN_SCHEDULE_DIR=$H/sched" "CIPHER_BRAIN_LAUNCHD_DIR=$H/agents"
+mkdir -p "$H/agents"
+export CIPHER_BRAIN_HOME="$H"
+node "$CLI" keygen >/dev/null 2>&1
+node "$CLI" schedule install --dir "$SRC" --backend file --no-load >/dev/null 2>&1 \
+  || { echo "[FAIL] schedule install failed with a foreign key in the config file"; exit 1; }
+if grep -q "export TMPDIR='$TMP/foreign-tmp'" "$H/sched/nightly.sh"; then
+  echo "[FAIL] a foreign key (TMPDIR) from the config file was applied to the environment"; exit 1
+fi
+echo "[PASS] a foreign key is parsed, reported as not ours, and never applied"
+
+echo "== (g3) an installed schedule does NOT re-read the config file =="
+# The runner bakes install-time values, so it must also pin itself against the file:
+# otherwise editing config.env would retune an installed schedule, and an unknown key
+# in it would STOP the schedule — both contradicting what --help and MANAGEMENT.md say.
+grep -q '^export CIPHER_BRAIN_NO_CONFIG_FILE=1$' "$H/sched/nightly.sh" \
+  || { echo "[FAIL] the runner does not pin itself against \$CIPHER_BRAIN_HOME/config.env"; exit 1; }
+write_cfg "$H" "CIPHER_BRAIN_TOTALLY_BOGUS=1"   # would refuse every normal invocation
+CIPHER_BRAIN_NO_CONFIG_FILE=1 node "$CLI" --version >/dev/null 2>&1 \
+  || { echo "[FAIL] a runner-style invocation was broken by an unrelated edit to config.env"; exit 1; }
+node "$CLI" --version >/dev/null 2>&1 \
+  && { echo "[FAIL] the same bogus file was accepted for a NORMAL invocation"; exit 1; }
+echo "[PASS] the runner is immune to later edits of config.env; normal invocations are not"
+
 echo "== (h) schedule status names the file it loaded =="
+H="$(new_home statusrep)"
+write_cfg "$H" "CIPHER_BRAIN_FILE_DIR=$TMP/store-status" "CIPHER_BRAIN_SCHEDULE_DIR=$H/sched" "CIPHER_BRAIN_LAUNCHD_DIR=$H/agents"
+mkdir -p "$H/agents"; export CIPHER_BRAIN_HOME="$H"
+node "$CLI" keygen >/dev/null 2>&1
+node "$CLI" schedule install --dir "$SRC" --backend file --no-load >/dev/null 2>&1
 node "$CLI" schedule status 2>/dev/null | grep -q "config file: $H/config.env" \
   || { echo "[FAIL] schedule status did not report the loaded config file"; exit 1; }
 node "$CLI" schedule status --json 2>/dev/null | node -e '

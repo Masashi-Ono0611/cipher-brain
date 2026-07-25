@@ -538,9 +538,10 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       --remote value itself).
       Storage sees ciphertext only.
       arweave/turbo are paid permanent stores — require --yes or CIPHER_BRAIN_YES=1;
-      both print a native-unit cost estimate (winston/winc) plus an approximate USD
-      line before uploading. Preview the same estimate beforehand without pushing
-      anything via "cipher-brain estimate".
+      both print a native-unit cost estimate (winston/winc) before uploading, plus an
+      approximate USD line when a USD/AR rate is fetchable — a rate failure drops that
+      line only, never the native estimate. Preview the same estimate beforehand
+      without pushing anything via "cipher-brain estimate".
       --backend rclone --remote <rclone-remote-name>:<path> shells out to the
       rclone binary (rclone copyto <in> <remote>), delegating auth/protocol for
       any of rclone's 70+ supported providers to your own rclone config — cipher-
@@ -684,8 +685,9 @@ Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes
 
 `push`/`pull` are storage primitives over a pluggable backend (`--backend` is
 required — there is no default). Paid pushes print a cost estimate before
-uploading — both turbo (winc) and arweave (winston) show an approximate USD line
-alongside the native unit. Preview that same estimate WITHOUT pushing anything via
+uploading — both turbo (winc) and arweave (winston) show the native unit, plus an
+approximate USD line when a USD/AR rate is fetchable (a rate failure drops that
+line only, never the native estimate). Preview that same estimate WITHOUT pushing anything via
 `cipher-brain estimate --in <file.age> --backend <backend>` (also exposed as the
 `estimate_cost` MCP tool — see below); `push --skip-unchanged` skips a paid
 re-upload when the snapshot's plaintext content digest (the `<out>.digest`
@@ -808,7 +810,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
 | `restore_now` | **writes files, can clobber a DB** (no spend) | pull by locator (or a local file / `locator_file`, same dual-mode input as `verify_restore`) + decrypt + extract into `out_dir` — the actual restore `verify_restore` stops short of. Requires `confirm_write: true` before any work happens; when `pg` is given, `pg_restore --clean --if-exists` also DROPS and replaces objects in that database, the same `--yes` consent the CLI's `restore --pg` requires |
-| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free); turbo/arweave add an approximate `usd_estimate` when a USD/AR rate is fetchable — a direct HTTP call to Turbo's public rate endpoint (#170), so it works with or without `@ardrive/turbo-sdk` installed. Same computation as `cipher-brain estimate` (`src/lib/estimate.ts`) |
+| `estimate_cost` | read-only | upload cost for a size: turbo (winc, via the optional `@ardrive/turbo-sdk`), arweave (winston, gateway `/price`), file (free). All seven fields are always present, `null` where they do not apply (#268) — never test for a key to decide whether a value exists. For turbo/arweave, `usd_estimate` carries an approximate USD figure when a USD/AR rate is fetchable — a direct HTTP call to Turbo's public rate endpoint (#170), so it works with or without `@ardrive/turbo-sdk` installed — and is `null` on any rate failure. Same computation as `cipher-brain estimate` (`src/lib/estimate.ts`) |
 | `schedule_install` | **writes a real system file, can commit to ongoing spend** (no spend by itself) | register the nightly snapshot+push (a launchd plist or crontab entry), the MCP equivalent of `cipher-brain schedule install` (issue #174 follow-up). `arweave`/`turbo` require `max_spend` (a positive integer cap on every unattended run); always requires `confirm_install: true` before any write happens. `no_load: true` writes the artifacts without registering the trigger |
 | `schedule_status` | read-only | the same report as `cipher-brain schedule status`: configured time/backend, trigger registration state, last run log + its final rc line, next scheduled run |
 | `keygen` | **writes a keypair** (no spend) | generate a fresh age identity/recipient keypair at `<CIPHER_BRAIN_HOME>/{identity.age,recipient.txt}` — first-run setup for a shell-less agent. `pq: true` generates a post-quantum HYBRID keypair (ML-KEM-768 + X25519) instead of plain X25519. Refuses if one already exists unless `force: true` (destructive — discards the old identity) |

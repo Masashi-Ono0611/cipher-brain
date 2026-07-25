@@ -433,10 +433,13 @@ const ESTIMATE_COST_TOOL: Tool = {
     'given size to a backend would cost: turbo → Turbo upload cost in winc via @ardrive/turbo-sdk ' +
     '(<100KB is free; a clear note is returned when that optional dependency is not installed); ' +
     'arweave → network price in winston from the gateway /price endpoint; file → free ' +
-    '(local disk), returned with a zero-cost note. For turbo/arweave an ' +
-    'approximate usd_estimate field is included when a USD/AR rate is fetchable — a direct HTTP ' +
-    'call to the public Turbo rate endpoint, so it works with or without @ardrive/turbo-sdk ' +
-    'installed (omitted on any rate failure — the native estimate never fails because of it).',
+    '(local disk), returned with a zero-cost note. All seven fields (backend, size_bytes, cost, ' +
+    'unit, approx_ar, usd_estimate, note) are ALWAYS present — null, never absent, where they do ' +
+    'not apply (#268), so do not test for a key to decide whether a value exists. For ' +
+    'turbo/arweave, usd_estimate carries an approximate USD figure when a USD/AR rate is ' +
+    'fetchable — a direct HTTP call to the public Turbo rate endpoint, so it works with or ' +
+    'without @ardrive/turbo-sdk installed — and is null on any rate failure; the native estimate ' +
+    'in cost/unit never fails because of it.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1143,7 +1146,7 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
       throw new ToolError('ERR_INVALID_INPUT', 'size_bytes must be a non-negative number');
     size = Math.ceil(sizeBytes);
   }
-  // The actual price computation (file/turbo/arweave, incl. the optional usd_estimate)
+  // The actual price computation (file/turbo/arweave, incl. the nullable usd_estimate)
   // lives in src/lib/estimate.ts — the SAME function the CLI `estimate` command calls,
   // so this math is never re-implemented per surface (#159).
   return structuredOk({ ...(await estimateCost(backend, size)) });

@@ -319,9 +319,10 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       --remote value itself).
       Storage sees ciphertext only.
       arweave/turbo are paid permanent stores — require --yes or CIPHER_BRAIN_YES=1;
-      both print a native-unit cost estimate (winston/winc) plus an approximate USD
-      line before uploading. Preview the same estimate beforehand without pushing
-      anything via "cipher-brain estimate".
+      both print a native-unit cost estimate (winston/winc) before uploading, plus an
+      approximate USD line when a USD/AR rate is fetchable — a rate failure drops that
+      line only, never the native estimate. Preview the same estimate beforehand
+      without pushing anything via "cipher-brain estimate".
       --backend rclone --remote <rclone-remote-name>:<path> shells out to the
       rclone binary (rclone copyto <in> <remote>), delegating auth/protocol for
       any of rclone's 70+ supported providers to your own rclone config — cipher-

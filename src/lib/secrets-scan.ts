@@ -20,15 +20,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GITLEAKS_BIN } from './config.js';
 import { run } from './proc.js';
+import { setActiveScanReportDir } from './signal-guard.js';
 import { errMsg } from './util.js';
 
-export type ScanSecretsMode = 'warn' | 'deny';
+// `off` exists because the scan is no longer opt-in (#301): when gitleaks is resolvable
+// and no mode was named, snapshot() defaults to `warn`. A user who does not want that
+// needs a way to say so that is not "uninstall gitleaks", and it has to be a MODE rather
+// than a separate boolean flag so every surface that already carries the mode — the CLI
+// flag, the baked-in nightly runner, the MCP enum — carries the opt-out too.
+export type ScanSecretsMode = 'warn' | 'deny' | 'off';
+
+// The two modes that actually scan. `off` is a decision, not a way of scanning, so the
+// reporting path below cannot be handed one.
+export type ActiveScanMode = Exclude<ScanSecretsMode, 'off'>;
 
 // The accepted values, as data — every surface that offers the scan (the CLI's
 // --scan-secrets, `schedule install`'s baked-in runner, and the MCP snapshot_now
 // schema's `enum`) reads THIS, so an advertised enum can never drift from what
 // snapshot() actually accepts (#307).
-export const SCAN_SECRETS_MODES: readonly ScanSecretsMode[] = ['warn', 'deny'];
+export const SCAN_SECRETS_MODES: readonly ScanSecretsMode[] = ['warn', 'deny', 'off'];
 
 export const isScanSecretsMode = (v: unknown): v is ScanSecretsMode =>
   typeof v === 'string' && (SCAN_SECRETS_MODES as readonly string[]).includes(v);
@@ -55,7 +65,10 @@ export const SCAN_SECRETS_INSTALL_HINT =
 // interpolated into the script, so a path with spaces or shell metacharacters cannot be
 // re-parsed; `command -v` answers for an absolute path too (it echoes it back only when
 // it is executable), so one call covers both the bare-name and the pinned-path case.
-async function gitleaksAvailable(): Promise<boolean> {
+// Exported since #301: snapshot() asks this to decide whether the IMPLICIT default can
+// scan, where an unresolvable scanner is a plain "no" rather than the error
+// assertGitleaksAvailable() raises for an explicit request.
+export async function gitleaksAvailable(): Promise<boolean> {
   try {
     const r = await run('sh', ['-c', 'command -v "$1"', 'sh', GITLEAKS_BIN]);
     return r.out.trim().length > 0;
@@ -80,6 +93,11 @@ export async function assertGitleaksAvailable(): Promise<void> {
 export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
   const reportDir = await mkdtemp(join(tmpdir(), 'cipher-brain-gitleaks-'));
   const reportPath = join(reportDir, 'report.json');
+  // Registered for the SAME reason snapshot() registers its stage dir: the finally below
+  // does not run when a signal tears the process down mid-scan. Cleared in that finally so
+  // a LATER signal cannot try to remove a path that is already gone (or, worse, one a
+  // subsequent scan has since reused).
+  setActiveScanReportDir(reportDir);
   try {
     await run(GITLEAKS_BIN, [
       'dir',
@@ -115,6 +133,7 @@ export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
       .map(([rule_id, count]) => ({ rule_id, count }))
       .sort((a, b) => a.rule_id.localeCompare(b.rule_id));
   } finally {
+    setActiveScanReportDir(null);
     await rm(reportDir, { recursive: true, force: true });
   }
 }
@@ -122,7 +141,7 @@ export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
 // warn: log and proceed. deny: refuse the whole snapshot. `label` is the manifest
 // component name (e.g. "obsidian.tar.gz") — identifies WHICH source without ever
 // surfacing the finding's own file path.
-export function reportSecretFindings(label: string, findings: SecretFinding[], mode: ScanSecretsMode): void {
+export function reportSecretFindings(label: string, findings: SecretFinding[], mode: ActiveScanMode): void {
   if (findings.length === 0) return;
   const total = findings.reduce((n, f) => n + f.count, 0);
   const summary = findings.map((f) => `${f.rule_id}×${f.count}`).join(', ');

@@ -15,10 +15,12 @@ import { resolveProfilePaths } from './profiles.js';
 import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.js';
 import {
   assertGitleaksAvailable,
+  gitleaksAvailable,
   scanForSecrets,
   reportSecretFindings,
   isScanSecretsMode,
-  type ScanSecretsMode,
+  SCAN_SECRETS_MODES,
+  type ActiveScanMode,
   type SecretFinding,
 } from './secrets-scan.js';
 import type { CliOptions } from './types.js';
@@ -339,10 +341,16 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // plaintext before it is archived+encrypted. Validated AND gitleaks-availability-checked
   // here, before any pg_dump/tar/staging work below — the same fail-fast posture the
   // --out parent dir / recipient checks below already follow.
-  let scanMode: ScanSecretsMode | undefined;
+  // Captured BEFORE the write-back at the end of this block: every later decision that
+  // turns on "did the caller ASK for this gate" must read THIS, not o.scan_secrets, which
+  // by then reports what actually ran.
+  const scanExplicit = o.scan_secrets !== undefined;
+  let scanMode: ActiveScanMode | undefined;
   if (o.scan_secrets !== undefined) {
     if (!isScanSecretsMode(o.scan_secrets))
-      throw new Error(`--scan-secrets must be "warn" or "deny" (got ${JSON.stringify(o.scan_secrets)})`);
+      throw new Error(
+        `--scan-secrets must be ${SCAN_SECRETS_MODES.map((m) => `"${m}"`).join(', ')} (got ${JSON.stringify(o.scan_secrets)})`,
+      );
     // The scan runs per --dir/--profile component (see the staging loop below), so with
     // no such source there is nothing for it to look at: a --pg-only snapshot would
     // scan ZERO components while the manifest — and, since #307, the MCP result and
@@ -352,15 +360,44 @@ export async function snapshot(o: CliOptions): Promise<void> {
     // feature, not something to fake by staying quiet here. Checked BEFORE
     // assertGitleaksAvailable() below so the answer does not depend on whether gitleaks
     // happens to be installed.
-    if (o.dirs.length === 0)
-      throw new Error(
-        `--scan-secrets ${o.scan_secrets} has nothing to scan: it covers --dir/--profile staged plaintext, and this ` +
-          `snapshot has no --dir or --profile source (a --pg dump is not scanned). Add the source you meant to gate, ` +
-          `or drop --scan-secrets — refusing rather than reporting a scan that would inspect no component.`,
-      );
-    scanMode = o.scan_secrets;
-    await assertGitleaksAvailable();
+    // `off` is the explicit opt-out (#301) — it asks for NO scan, so none of the refusals
+    // above it apply: there is nothing to be wrong about. It still has to be said out loud
+    // rather than inferred, which is the whole point of it being a mode.
+    if (o.scan_secrets !== 'off') {
+      if (o.dirs.length === 0)
+        throw new Error(
+          `--scan-secrets ${o.scan_secrets} has nothing to scan: it covers --dir/--profile staged plaintext, and this ` +
+            `snapshot has no --dir or --profile source (a --pg dump is not scanned). Add the source you meant to gate, ` +
+            `or drop --scan-secrets — refusing rather than reporting a scan that would inspect no component.`,
+        );
+      scanMode = o.scan_secrets;
+      await assertGitleaksAvailable();
+    }
+  } else if (o.dirs.length > 0 && (await gitleaksAvailable())) {
+    // #301: the scan is no longer opt-in. cipher-brain's primary backends are un-deletable,
+    // and the project's answer to "forget this one snapshot" is that there isn't one — so
+    // the one PREVENTIVE measure it has cannot stay switched off by default.
+    //
+    // Two deliberate narrowings keep this from becoming a new requirement rather than a new
+    // default. It only engages when there is a --dir/--profile source to look at (the same
+    // condition the explicit path refuses on), and only when a scanner is already
+    // resolvable — a machine without gitleaks keeps behaving exactly as it did, with no
+    // error and no new dependency. Note this is the ONLY path allowed to skip quietly:
+    // nobody asked for a gate here, so nobody is being told one ran. An EXPLICIT request
+    // that cannot scan still refuses (#307/#314), and that asymmetry is the point.
+    scanMode = 'warn';
+    console.error(
+      `scanning staged sources for secrets before they are sealed (--scan-secrets defaults to warn now that ` +
+        `gitleaks is installed; pass --scan-secrets deny to refuse instead, or --scan-secrets off to skip). ` +
+        `Anything pushed to arweave/turbo cannot be deleted afterwards.`,
+    );
   }
+  // Resolve the EFFECTIVE mode back onto the options object, the same way pull() fills its
+  // resolved locator/backend/sha256 back in. Callers that report what happened — the MCP
+  // snapshot_now result — otherwise echo their own input, which since #301 is no longer the
+  // same thing: an omitted scan_secrets now means "warn ran" as often as it means "nothing
+  // ran", and reporting null for both is exactly the ambiguity this default must not create.
+  o.scan_secrets = scanMode ?? 'off';
   // #252: an EXPLICITLY-named --sign-identity that doesn't exist is a configuration
   // error (see the signing block far below) — checked HERE, fail-fast, before any
   // staging/ciphertext work, not after the ciphertext + digest/fingerprint sidecars
@@ -628,6 +665,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
       await mkdir(extractDir);
       let contentDigest: string;
       let secretsScan: SecretFinding[] | undefined;
+      let secretsScanError: string | undefined;
       try {
         await run('tar', ['-xzf', archivePath, '-C', extractDir, '-p'], { timeoutMs: PIPE_TIMEOUT_MS });
         contentDigest = await contentDigestOfPath(join(extractDir, basename(abs)));
@@ -642,8 +680,28 @@ export async function snapshot(o: CliOptions): Promise<void> {
         // unwinding out through this function's own try/finally (stage cleanup still
         // runs); warn just logs and falls through.
         if (scanMode) {
-          secretsScan = await scanForSecrets(join(extractDir, basename(abs)));
-          reportSecretFindings(name, secretsScan, scanMode);
+          try {
+            secretsScan = await scanForSecrets(join(extractDir, basename(abs)));
+          } catch (e) {
+            // A DEFAULT must never fail a snapshot that would otherwise have succeeded
+            // (#301). Found by the existing #267 test: a dangling top-level symlink is a
+            // source snapshot deliberately archives as a symlink entry, and `gitleaks dir`
+            // stats it and exits 1 — so switching the default on turned a working snapshot
+            // into a hard error, on a source the tool supports on purpose. When the caller
+            // ASKED for the gate the old fail-closed behaviour is exactly right and stays;
+            // when the gate is merely the default, an unusable scanner degrades to a
+            // warning and the snapshot proceeds unscanned, which is what it did before
+            // this default existed. It is loud about being unscanned — the failure mode to
+            // avoid is not "no scan", it is "no scan, reported as a scan".
+            if (scanExplicit) throw e;
+            console.error(
+              `⚠  the default secret scan could not run on "${name}" (${errMsg(e)}) — snapshotting it UNSCANNED. ` +
+                `Pass --scan-secrets deny to make this a refusal instead, or --scan-secrets off to stop trying.`,
+            );
+            secretsScan = undefined;
+            secretsScanError = errMsg(e);
+          }
+          if (secretsScan) reportSecretFindings(name, secretsScan, scanMode);
         }
       } finally {
         // must not leak into the snapshot: the final encryptToFile below tars stage/. whole
@@ -656,7 +714,12 @@ export async function snapshot(o: CliOptions): Promise<void> {
         content_digest: contentDigest,
         captured_at: new Date().toISOString(),
         ...(ig ? { cipherbrainignore: true, excluded_count: excludedCount } : {}),
-        ...(scanMode ? { secrets_scan: secretsScan ?? [] } : {}),
+        // An empty array means "scanned, found nothing". A scan that could not RUN must
+        // never produce it — the durable artifact would then claim a clean component that
+        // was never inspected, which is the same lie the console was careful to avoid
+        // (multi-model review finding). The error takes its place instead.
+        ...(scanMode && !secretsScanError ? { secrets_scan: secretsScan ?? [] } : {}),
+        ...(secretsScanError ? { secrets_scan_error: secretsScanError } : {}),
       }); // skew vs the DB is now detectable on restore
     }
     // Combined content digest = sha256 over each component's (declared identity, kind,

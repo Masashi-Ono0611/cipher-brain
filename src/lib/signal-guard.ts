@@ -15,6 +15,7 @@ let ACTIVE_STAGE: string | null = null;
 let ACTIVE_OUT_PART: string | null = null; // the partial ${out}.part being written; erased on signal so no stray ciphertext lingers
 let ACTIVE_RESTORE_OUT_DIR: string | null = null; // restore()'s --out-dir while a tar extract is in flight
 let ACTIVE_RESTORE_OUT_DIR_PREEXISTED = false; // whether restore() created out-dir itself (safe to erase) or it was already there (must not be destroyed)
+let ACTIVE_SCAN_REPORT_DIR: string | null = null; // secrets-scan's gitleaks report temp dir while a scan is in flight
 let SIGNAL_GUARD_INSTALLED = false;
 
 // ESM live bindings are read-only from the importing side, so the module that owns a
@@ -24,6 +25,16 @@ export const setActiveStage = (v: string | null): void => {
 };
 export const setActiveOutPart = (v: string | null): void => {
   ACTIVE_OUT_PART = v;
+};
+// scanForSecrets()'s own temp dir, holding gitleaks' JSON report while a scan is in
+// flight. It leans on a finally-block exactly like the stage dir does, and a signal
+// skips it exactly the same way — which stopped being hypothetical when #301 made the
+// scan run by default, so the window now exists on an ordinary snapshot rather than only
+// when someone asked for the gate. The report is redacted (rule IDs, no match text), so
+// this is tidiness rather than plaintext exposure; it is registered here anyway because
+// "a temp dir the finally would have removed" is precisely what this module is for.
+export const setActiveScanReportDir = (v: string | null): void => {
+  ACTIVE_SCAN_REPORT_DIR = v;
 };
 // restore() calls this right after it creates/confirms --out-dir and before the tar
 // child starts extracting into it, then clears it (v=null) once the extract settles
@@ -64,6 +75,12 @@ export function installStageSignalGuard(): void {
           rmSync(ACTIVE_OUT_PART, { force: true });
         } catch {}
         ACTIVE_OUT_PART = null;
+      }
+      if (ACTIVE_SCAN_REPORT_DIR) {
+        try {
+          rmSync(ACTIVE_SCAN_REPORT_DIR, { recursive: true, force: true });
+        } catch {}
+        ACTIVE_SCAN_REPORT_DIR = null;
       }
       if (ACTIVE_RESTORE_OUT_DIR) {
         if (!ACTIVE_RESTORE_OUT_DIR_PREEXISTED) {

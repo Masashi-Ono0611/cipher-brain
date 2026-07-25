@@ -332,6 +332,36 @@ async function run(tmp) {
     // Both unattended surfaces, not just the one: snapshot_now takes a snapshot directly,
     // schedule_install bakes one into a nightly. Asserted from the same loop so a future
     // surface cannot be added with a differently-spelled enum.
+    // Whether THIS machine can scan at all decides what the #301 default resolves to, so
+    // it is probed once rather than assumed. `command -v` is the same check the CLI makes.
+    const gitleaksOnPath =
+      spawnSync('sh', ['-c', 'command -v "$1"', 'sh', process.env.CIPHER_BRAIN_GITLEAKS_BIN || 'gitleaks'], {
+        encoding: 'utf8',
+      }).stdout?.trim().length > 0;
+    // Ask the built CLI what --scan-secrets accepts, by handing it something it must
+    // reject: the refusal quotes every valid mode. A parse that finds none is a hard
+    // failure, never an empty expectation that would make the comparison below vacuous.
+    const scanProbe = spawnSync(
+      'node',
+      [
+        join(ROOT, 'dist', 'cli.mjs'),
+        'snapshot',
+        '--dir',
+        ROOT,
+        '--out',
+        join(ROOT, 'never-written.age'),
+        '--scan-secrets',
+        '__invalid__',
+      ],
+      { encoding: 'utf8' },
+    );
+    const scanProbeText = `${scanProbe.stdout ?? ''}${scanProbe.stderr ?? ''}`;
+    const cliScanModes = [...(scanProbeText.split('(got')[0].match(/"([a-z]+)"/g) ?? [])].map((q) => q.slice(1, -1));
+    if (cliScanModes.length === 0) {
+      throw new Error(
+        `could not read the accepted --scan-secrets modes out of the CLI refusal: ${scanProbeText.slice(0, 300)}`,
+      );
+    }
     for (const toolName of ['snapshot_now', 'schedule_install']) {
       const tool = (list.result?.tools ?? []).find((t) => t.name === toolName);
       const scanProp = tool?.inputSchema?.properties?.scan_secrets;
@@ -340,9 +370,15 @@ async function run(tmp) {
           `${toolName} does not advertise scan_secrets (#307) — properties: ${Object.keys(tool?.inputSchema?.properties ?? {}).join(', ')}`,
         );
       }
-      if (scanProp.type !== 'string' || JSON.stringify(scanProp.enum) !== JSON.stringify(['warn', 'deny'])) {
+      // The expected list is NOT written out here. It is read back out of the CLI's own
+      // refusal, which enumerates exactly what snapshot() accepts — so this asserts the two
+      // surfaces agree rather than asserting both against a third hand-written copy that
+      // would itself need maintaining (the defect class #276/#290/#300 keep producing).
+      // Adding a mode to SCAN_SECRETS_MODES therefore needs no edit here; a mode that
+      // reaches only ONE of the two surfaces fails this.
+      if (scanProp.type !== 'string' || JSON.stringify(scanProp.enum) !== JSON.stringify(cliScanModes)) {
         throw new Error(
-          `${toolName}.scan_secrets schema unexpected: ${JSON.stringify(scanProp).slice(0, 300)} (want type string, enum ["warn","deny"])`,
+          `${toolName}.scan_secrets schema unexpected: ${JSON.stringify(scanProp).slice(0, 300)} (the CLI accepts ${JSON.stringify(cliScanModes)})`,
         );
       }
     }
@@ -406,12 +442,16 @@ async function run(tmp) {
       throw new Error(`snapshot_now sha256 unexpected: ${JSON.stringify(snapSc.sha256)}`);
     if (!(Number.isInteger(snapSc.size_bytes) && snapSc.size_bytes > 0))
       throw new Error(`snapshot_now size_bytes unexpected: ${JSON.stringify(snapSc.size_bytes)}`);
-    // #307: the result says, honestly, that nothing was scanned — the default is off on
-    // this surface exactly as it is on the CLI, and that has to be readable rather than
-    // inferred from a missing field.
-    if (snapSc.scan_secrets !== null)
+    // #307 + #301: the result reports the mode that actually RAN, not the caller's input.
+    // Omitting scan_secrets no longer means "nothing scanned" — it means whatever the CLI
+    // default resolves to here, which is `warn` when gitleaks is installed and `off` when
+    // it is not. Asserting a fixed value would either bake in one machine's toolchain or
+    // re-assert the pre-#301 contract; asserting agreement with the CLI's own default is
+    // the invariant that actually matters.
+    const expectedDefaultScan = gitleaksOnPath ? 'warn' : 'off';
+    if (snapSc.scan_secrets !== expectedDefaultScan)
       throw new Error(
-        `snapshot_now without scan_secrets should report scan_secrets:null, got ${JSON.stringify(snapSc.scan_secrets)}`,
+        `snapshot_now without scan_secrets should report the effective default (${expectedDefaultScan} — gitleaks ${gitleaksOnPath ? 'is' : 'is not'} resolvable here), got ${JSON.stringify(snapSc.scan_secrets)}`,
       );
 
     // 2b-2. #307: an invalid mode is REFUSED, and refused BEFORE any work. The generic
@@ -895,11 +935,11 @@ async function run(tmp) {
     if (schedInstallSc?.backend !== 'file' || schedInstallSc?.at !== '03:30' || schedInstallSc?.no_load !== true) {
       throw new Error(`schedule_install result unexpected: ${JSON.stringify(schedInstallSc).slice(0, 300)}`);
     }
-    // #307: an install that was not asked to scan says so, rather than leaving the caller
-    // to infer it from an absent field.
-    if (schedInstallSc?.scan_secrets !== null) {
+    // #301: same as snapshot_now above — install resolves and BAKES an effective mode even
+    // when none was asked for, so the result reports what the nightly will really do.
+    if (schedInstallSc?.scan_secrets !== expectedDefaultScan) {
       throw new Error(
-        `schedule_install without scan_secrets should report scan_secrets:null, got ${JSON.stringify(schedInstallSc?.scan_secrets)}`,
+        `schedule_install without scan_secrets should report the effective baked mode (${expectedDefaultScan}), got ${JSON.stringify(schedInstallSc?.scan_secrets)}`,
       );
     }
 

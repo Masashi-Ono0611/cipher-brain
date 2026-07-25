@@ -87,7 +87,12 @@ cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-a.log"
 [ -x "$RUNNER" ] || { echo "[FAIL] runner missing or not executable: $RUNNER"; exit 1; }
 [ -f "$CONFIG" ] || { echo "[FAIL] schedule.json not written"; exit 1; }
 grep -q '^set -euo pipefail$' "$RUNNER" || { echo "[FAIL] runner lacks set -euo pipefail"; exit 1; }
-grep -q -- "snapshot --dir '$SRC' --out" "$RUNNER" || { echo "[FAIL] runner lacks the composed snapshot flags"; exit 1; }
+grep -q -- "snapshot --dir '$SRC' " "$RUNNER" || { echo "[FAIL] runner lacks the composed snapshot flags"; exit 1; }
+grep -q -- '--out "$OUT"' "$RUNNER" || { echo "[FAIL] runner's snapshot line has no --out"; exit 1; }
+# #301: an install that named no mode still bakes the EFFECTIVE one, so the nightly cannot
+# start scanning — or stop — because of what lands on the scheduler's PATH months later.
+grep -qE -- "--scan-secrets '(warn|deny|off)'" "$RUNNER" \
+  || { echo "[FAIL] the runner carries no explicit --scan-secrets, so it would re-derive a default at run time"; grep -n 'snapshot ' "$RUNNER"; exit 1; }
 grep -q -- "push --in \"\$OUT\" --backend 'file' --skip-unchanged --save-locator" "$RUNNER" || { echo "[FAIL] runner lacks the composed push flags (--backend/--skip-unchanged/--save-locator, #100)"; exit 1; }
 grep -q -- 'SHA=$(cut -f3 ' "$RUNNER" || { echo "[FAIL] runner does not read the index SHA256 back from the save-locator file's 3rd field (#100 — re-hashing \$OUT would break the index on a skip)"; exit 1; }
 if grep -q 'sha256_of' "$RUNNER"; then echo "[FAIL] runner still contains the retired sha256_of \$OUT helper (#100)"; exit 1; fi
@@ -483,15 +488,37 @@ fi
 grep -q 'nothing to scan' "$TMP/install-scan-nosrc.log" || { echo "[FAIL] the no-source refusal does not say the scan would have no component to look at"; cat "$TMP/install-scan-nosrc.log"; exit 1; }
 echo "[PASS] install refuses a bad --scan-secrets mode, a dangling --scan-secrets, a source-less --scan-secrets, and a gitleaks it cannot resolve"
 
-echo "== (a6d) an install WITHOUT --scan-secrets is unchanged: no scan flag, no PATH line, status says off (#307) =="
-cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-noscan.log" 2>&1 \
-  || { echo "[FAIL] reinstall without --scan-secrets exited non-zero"; cat "$TMP/install-noscan.log"; exit 1; }
-if grep -q -- '--scan-secrets' "$RUNNER"; then echo "[FAIL] a runner installed WITHOUT --scan-secrets still carries the flag"; grep -n 'snapshot ' "$RUNNER"; exit 1; fi
-if grep -q 'export PATH=' "$RUNNER"; then echo "[FAIL] a runner installed WITHOUT --scan-secrets rewrites PATH"; exit 1; fi
-if grep -qi 'gitleaks' "$RUNNER"; then echo "[FAIL] a runner installed WITHOUT --scan-secrets mentions gitleaks"; exit 1; fi
+echo "== (a6d) #301: an install WITHOUT --scan-secrets resolves the EFFECTIVE mode now and bakes it in, both ways =="
+# Replaces the pre-#301 assertion that omitting the flag left the runner untouched. The
+# point of baking it either way is that the nightly's behaviour is decided at install time,
+# in this environment, rather than re-derived at 03:30 from whatever is on the scheduler's
+# PATH by then. Both branches are FORCED here rather than left to whatever the host has, so
+# this proves the rule on every machine.
+PATH="$FAKE_GITLEAKS_DIR:$PATH" cb schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-noscan.log" 2>&1 \
+  || { echo "[FAIL] reinstall without --scan-secrets (gitleaks resolvable) exited non-zero"; cat "$TMP/install-noscan.log"; exit 1; }
+grep -q -- "--scan-secrets 'warn'" "$RUNNER" \
+  || { echo "[FAIL] with gitleaks resolvable, an install naming no mode did not bake the warn default"; grep -n 'snapshot ' "$RUNNER"; exit 1; }
+grep -q 'CIPHER_BRAIN_GITLEAKS_BIN=' "$RUNNER" \
+  || { echo "[FAIL] the defaulted scan did not pin the scanner it resolved"; exit 1; }
+grep -q 'defaults to warn' "$TMP/install-noscan.log" \
+  || { echo "[FAIL] install did not say that the mode it baked came from the default"; cat "$TMP/install-noscan.log"; exit 1; }
+cb schedule status > "$TMP/status-defscan.log" 2>&1 || { echo "[FAIL] status (defaulted-scan schedule) exited non-zero"; exit 1; }
+grep -q 'secret scan: configured --scan-secrets warn' "$TMP/status-defscan.log" \
+  || { echo "[FAIL] status does not report the defaulted mode as configured"; cat "$TMP/status-defscan.log"; exit 1; }
+
+# ISOLATED_PATH_DIR holds only `sh`, so gitleaks is guaranteed unresolvable. The default
+# must then bake `off` — NOT leave the flag out, which is what would let a gitleaks that
+# appears later silently change what the nightly does.
+PATH="$ISOLATED_PATH_DIR" "$NODE_BIN" "${BIN_DEV_ARGS[@]}" "$BIN" schedule install --backend file --dir "$SRC" --no-load > "$TMP/install-offscan.log" 2>&1 \
+  || { echo "[FAIL] reinstall without --scan-secrets (no gitleaks) exited non-zero — an absent scanner must not fail an install that did not ask for one"; cat "$TMP/install-offscan.log"; exit 1; }
+grep -q -- "--scan-secrets 'off'" "$RUNNER" \
+  || { echo "[FAIL] with no gitleaks, the install did not bake an explicit off"; grep -n 'snapshot ' "$RUNNER"; exit 1; }
+if grep -qi 'gitleaks' "$RUNNER"; then echo "[FAIL] an off runner still pins/mentions gitleaks"; exit 1; fi
+grep -q 'secret scan: OFF' "$TMP/install-offscan.log" \
+  || { echo "[FAIL] install did not say the schedule will not scan"; cat "$TMP/install-offscan.log"; exit 1; }
 cb schedule status > "$TMP/status-noscan.log" 2>&1 || { echo "[FAIL] status (no-scan schedule) exited non-zero"; exit 1; }
 grep -q 'secret scan: off' "$TMP/status-noscan.log" || { echo "[FAIL] status does not report that this schedule does NOT scan"; cat "$TMP/status-noscan.log"; exit 1; }
-echo "[PASS] omitting --scan-secrets leaves the generated runner exactly as before, and status says so"
+echo "[PASS] omitting --scan-secrets bakes the resolved effective mode (warn + pinned scanner, or off) instead of leaving the nightly to decide later"
 
 echo "== (b) paid backend: refused without --max-spend, spend lines written with it =="
 if cb schedule install --backend turbo --dir "$SRC" --no-load > "$TMP/turbo-refuse.log" 2>&1; then

@@ -950,14 +950,13 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
     size_bytes: size,
     sha256: digest,
     pushed: false,
-    // Reporting the mode is honest rather than decorative: reaching this line means
-    // snapshot() RETURNED, and when scan_secrets was set snapshot() cannot return
-    // without having resolved gitleaks (assertGitleaksAvailable throws otherwise) and
-    // scanned every source it scans (the dirs/profile staged plaintext — same coverage as
-    // the CLI flag; a pg dump is not scanned on either surface). So `null` means "no scan
-    // was requested or run", and a mode means the scan really ran in that mode — never a
-    // request that was quietly dropped.
-    scan_secrets: scanSecrets ?? null,
+    // The EFFECTIVE mode, read back off the options object snapshot() resolved it onto —
+    // not `scanSecrets`, which is only what the CALLER passed. Since #301 an omitted
+    // scan_secrets means "warn ran" as often as it means "nothing ran", so echoing the
+    // input would report null for both and leave an agent unable to tell a scanned
+    // snapshot from an unscanned one (multi-model review finding). Reaching this line
+    // means snapshot() returned, so a mode here means the scan really ran in that mode.
+    scan_secrets: snapOpts.scan_secrets ?? null,
     log: [...snap.out, ...snap.err],
   };
 
@@ -1449,10 +1448,11 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
     at: at || '03:30',
     no_load: Boolean(noLoad),
     ...(maxSpend ? { max_spend: maxSpend } : {}),
-    // Reaching this line means install() succeeded, and with the mode set it cannot
-    // succeed without having resolved gitleaks and baked the flag into the runner — so
-    // this reports what the installed nightly will really do, not what was asked for.
-    scan_secrets: scanSecrets ?? null,
+    // The EFFECTIVE mode install() resolved and baked, read back off the options object —
+    // not the caller's input, which install() now fills in when it was omitted (#301).
+    // Reaching this line means install() succeeded, so this reports what the installed
+    // nightly will really do.
+    scan_secrets: installOpts.scan_secrets ?? null,
     log: [...res.out, ...res.err],
   });
 }

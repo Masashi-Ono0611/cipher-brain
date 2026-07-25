@@ -300,8 +300,11 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
   cipher-brain restore --in <file.age> --out-dir <dir> [--identity <file>] [--pg <conn>] [--yes] [--no-expand-components]
                         [--sign-recipient <file>] [--require-signature]
       Decrypt with the PRIVATE identity. Extraction never clobbers a file already
-      present in --out-dir (--keep-old-files: an existing file is left untouched,
-      the rest of the archive still extracts around it).
+      present in --out-dir: an existing file is left untouched, the rest of the
+      archive still extracts around it, and the collision itself is not an error.
+      That is restore's own behavior, not a flag you pass — it uses tar's own
+      --skip-old-files on GNU tar and --keep-old-files on bsdtar, which are those
+      two tars' spellings of the same thing.
       Every --dir/--profile component's staged tarball is then auto-expanded into
       "<out-dir>/expanded/<NNN>-<encoded source path>/", keyed to the component's
       ORIGINAL absolute source path (from manifest.json) rather than its on-disk name —

@@ -51,9 +51,11 @@ const nearEnough = (a: string, b: string): number => Math.max(1, Math.floor(Math
  * it is) even though the callers' own acceptance is case-sensitive — the suggestion
  * exists to explain a rejection, not to widen what is accepted.
  *
- * A candidate that merely EXTENDS the input (`out` → `out_dir`) also counts, whatever
- * the edit distance: that is #277's own case, where the wrong name is a real flag
- * elsewhere rather than a misspelling. Distance wins over the prefix rule when both
+ * A candidate that EXTENDS the input (`out` → `out_dir`) also counts, whatever the
+ * edit distance: that is #277's own case, where the wrong name is a real flag
+ * elsewhere rather than a misspelling. Only that direction — a candidate that is a
+ * prefix OF the input would make `outgoing` suggest `out`, which is not a near miss
+ * at all (multi-model review finding). Distance wins over the prefix rule when both
  * find something, and ties keep the caller's declaration order, so the answer is
  * deterministic.
  */
@@ -70,12 +72,9 @@ export function nearestName(input: string, candidates: Iterable<string>): string
     }
   }
   if (best) return best;
-  // Nothing was close enough to be a misspelling — fall back to the "you named a
-  // real thing, just not this one's" case. Guarded on a non-empty input, or the
-  // empty-string key every candidate trivially starts with would get a suggestion.
+  // Nothing was close enough to be a misspelling — fall back to the "you named a real
+  // field, just not this one's" case. Guarded on a non-empty input, or the empty-string
+  // key every candidate trivially starts with would get a suggestion.
   if (needle.length === 0) return undefined;
-  return list.find((c) => {
-    const lower = c.toLowerCase();
-    return lower !== needle && (lower.startsWith(needle) || needle.startsWith(lower));
-  });
+  return list.find((c) => c.length > needle.length && c.toLowerCase().startsWith(needle));
 }

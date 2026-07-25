@@ -756,6 +756,12 @@ const TOOLS_BY_NAME = new Map(ALL_TOOLS.map((t) => [t.name, t]));
 //
 // Absent `arguments` and `{}` are the same thing (the dispatcher defaults one to the
 // other): both name no fields at all, so neither can be naming a wrong one.
+//
+// `additionalProperties` itself is deliberately NOT consulted: all ten schemas set it
+// false, and reading it would mean a tool added later without that line — the easiest
+// line to forget — silently opted out of the check. A tool that genuinely wants
+// open-ended arguments has to change this function, which is a decision someone makes
+// on purpose rather than one they can omit by accident.
 function assertDeclaredArgs(tool: Tool, args: ToolArgs): void {
   const declared = Object.keys(tool.inputSchema.properties ?? {});
   const unknown = Object.keys(args).filter((k) => !declared.includes(k));
@@ -1477,11 +1483,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
     // #300: one check, derived from the tool's own advertised inputSchema, applying to
     // every tool including any added later — so `additionalProperties: false` means at
     // runtime what tools/list says it means. Runs BEFORE dispatch, so no handler can
-    // start work on a call carrying a field it will not read. The switch below is still
-    // the list of tools that can actually be invoked: a name absent from TOOLS_BY_NAME
-    // is unknown, and one present in both places is dispatched.
+    // start work on a call carrying a field it will not read.
+    //
+    // A name that is not in ALL_TOOLS is answered HERE and never reaches the switch —
+    // otherwise a future case added to the switch but forgotten in ALL_TOOLS would be
+    // both invisible in tools/list and reachable with entirely unvalidated arguments,
+    // which is the hole this whole change is about, one level up (multi-model review
+    // finding). Being unlisted therefore means uncallable, not unchecked.
     const tool = TOOLS_BY_NAME.get(name);
-    if (tool) assertDeclaredArgs(tool, args);
+    if (!tool) return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
+    assertDeclaredArgs(tool, args);
     switch (name) {
       case 'snapshot_now':
         return await handleSnapshotNow(args);
@@ -1503,8 +1514,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
         return await handleWalletCreate(args);
       case 'wallet_address':
         return await handleWalletAddress(args);
+      // Unreachable via the guard above for any name outside ALL_TOOLS; what lands here
+      // is a tool this server ADVERTISES and cannot dispatch, which is a wiring bug on
+      // our side rather than a caller mistake — and ERR_INTERNAL is the honest way to
+      // say so. scripts/mcp-smoke.mjs calls every advertised tool, so it fires in CI.
       default:
-        return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
+        return structuredErr(new ToolError('ERR_INTERNAL', `${name} is advertised in tools/list but not dispatched`));
     }
   } catch (err) {
     return structuredErr(err);

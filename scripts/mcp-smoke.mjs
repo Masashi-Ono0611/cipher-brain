@@ -924,21 +924,33 @@ async function run(tmp) {
     // arriving over MCP, which used to be answered with a bare "out_dir is required"
     // that never mentioned the `out` it had thrown away. Both surfaces phrase it
     // through the same helper (src/lib/suggest.ts), so they cannot drift apart.
-    send({
-      jsonrpc: '2.0',
-      id: 41,
-      method: 'tools/call',
-      params: { name: 'restore_now', arguments: { file: outAge, out: join(tmp, 'nope'), confirm_write: true } },
-    });
-    const nearMiss = await waitFor(41);
-    const nearMissSc = nearMiss.result?.structuredContent;
-    if (nearMiss.result?.isError !== true || nearMissSc?.code !== 'ERR_INVALID_INPUT') {
-      throw new Error(`restore_now accepted a stray "out": ${JSON.stringify(nearMiss.result).slice(0, 300)}`);
-    }
-    if (!/did you mean out_dir\?/.test(nearMissSc?.message ?? '')) {
-      throw new Error(
-        `restore_now rejection does not suggest the near miss: ${JSON.stringify(nearMissSc?.message).slice(0, 300)}`,
-      );
+    //
+    // All three ways a name goes wrong, since they take different paths through that
+    // helper and a test of only the first would leave the other two unexercised
+    // (multi-model review finding): a real field of another tool that EXTENDS this
+    // one's (out → out_dir, the prefix rule), an ordinary misspelling (forcee → force,
+    // edit distance), and a case slip (Wallet → wallet — rejected, because JSON keys
+    // are case-sensitive and so is the check, but still explained rather than just
+    // refused).
+    for (const [id, toolName, strayArgs, expected] of [
+      [41, 'restore_now', { file: outAge, out: join(tmp, 'nope'), confirm_write: true }, 'did you mean out_dir?'],
+      [42, 'keygen', { forcee: true }, 'did you mean force?'],
+      [43, 'wallet_address', { Wallet: '/nope' }, 'did you mean wallet?'],
+    ]) {
+      send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: toolName, arguments: strayArgs } });
+      const nearMiss = await waitFor(id);
+      const nearMissSc = nearMiss.result?.structuredContent;
+      if (nearMiss.result?.isError !== true || nearMissSc?.code !== 'ERR_INVALID_INPUT') {
+        throw new Error(
+          `${toolName} accepted ${JSON.stringify(strayArgs)}: ${JSON.stringify(nearMiss.result).slice(0, 300)}`,
+        );
+      }
+      if (!(nearMissSc.message ?? '').includes(expected)) {
+        throw new Error(
+          `${toolName} rejection does not suggest the near miss (${expected}): ` +
+            `${JSON.stringify(nearMissSc?.message).slice(0, 300)}`,
+        );
+      }
     }
 
     // 2m-iv. The point of #300 is that this must not need remembering: the check is

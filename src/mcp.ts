@@ -1206,6 +1206,52 @@ async function handleLastSnapshotStatus(args: ToolArgs): Promise<CallToolResult>
   return structuredOk({ latest, sources, defaulted_to: defaulted ? locatorFile : undefined });
 }
 
+// pull()'s own line, verbatim (src/lib/pushpull.ts). Matched rather than inferred: see below.
+const SIG_FETCH_FAILED = 'could not fetch the authenticity signature';
+
+// A URL's userinfo is a credential, and CIPHER_BRAIN_AR_GATEWAYS can legitimately carry one
+// (`https://user:token@gateway`). pull() prints a failing gateway's URL, which was fine when
+// that text only reached the operator's own stderr and is not fine now that it is returned
+// to an MCP client (multi-model review finding). The scratch tmpdir path in "pulled <x> -> <y>"
+// is left as-is: it names a directory this call created and then deleted, and it is the only
+// way to read the rest of the log's paths.
+const redactUserinfo = (line: string): string => line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]*@/gi, '$1<redacted>@');
+
+// An artifact whose authenticity sidecar could not be fetched is not the same thing as one
+// that was never signed — and verify() cannot tell them apart, because it only ever sees the
+// local directory (#312). The caller of BOTH pull and verify can.
+//
+// This matters beyond tidiness: pull()'s sidecar fetch is best-effort by design (#214 — a
+// signature it cannot retrieve must warn and continue, never fail the pull), so the visible
+// result of a DELETED .minisig is verify() reporting "unsigned (legacy) artifact,
+// authenticity not checked" plus a PASS verdict. That sentence is true of a pre-#214 backup
+// and false here.
+//
+// Keyed on pull's OWN warning rather than on "sig_locator was recorded and the file is
+// missing", which review showed infers too much in two directions. It over-fires: the
+// arweave/turbo read promotes a body only if isAgeCiphertext() passes, and a minisign
+// sidecar is plaintext, so a perfectly intact signature in that storage can never be
+// fetched — the missing-file inference would cry downgrade on every signed arweave pull
+// (tracked separately; the sidecar round-trip is only exercised on the file backend today).
+// And it claims too much: a recorded sig_locator proves a sidecar OBJECT was pushed, not
+// that it holds a valid signature over this ciphertext. Matching the warning reports only
+// what actually happened, and carries pull's own reason with it.
+function signatureGap(pullLog: string[], sigLocator: unknown): Record<string, unknown> | undefined {
+  const line = pullLog.find((l) => l.includes(SIG_FETCH_FAILED));
+  if (!line) return undefined;
+  return {
+    fetched: false,
+    ...(isStr(sigLocator) ? { expected_locator: sigLocator } : {}),
+    reason: redactUserinfo(line),
+    note:
+      'a signature sidecar was recorded for this artifact and could not be fetched, so authenticity was NOT ' +
+      'checked. Any "unsigned (legacy) artifact" line in the checks/log below describes a different situation ' +
+      'and does not apply here. Read `reason` before concluding anything: a deleted .minisig (the downgrade an ' +
+      'attacker gets without forging a signature) and a storage backend that cannot serve sidecars both land ' +
+      'here, and they are not the same problem.',
+  };
+}
+
 async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
   const { locator, file, backend, identity, sha256: pin, locator_file: locatorFile } = args;
   const given = [locator, file, locatorFile].filter((v) => v !== undefined).length;
@@ -1235,6 +1281,7 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
   let effectivePin: string | undefined = isStr(pin) ? pin : undefined;
   let tdir: string | null = null;
   let pulled: Record<string, unknown> | undefined;
+  let signature: Record<string, unknown> | undefined;
   let warning: string | undefined;
   try {
     if (file === undefined) {
@@ -1258,12 +1305,22 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
         tables: [],
         recipients: [],
       };
-      await captureCall(() => pull(pullOpts));
+      const pullRes = await captureCall(() => pull(pullOpts));
+      // err before out: pull's narrative (retries, progress, warnings) goes to stderr, and the
+      // single stdout line is the resolved locator it prints last — concatenating out first
+      // would put the end of the story at the top (multi-model review finding).
+      const pullLog = [...pullRes.err, ...pullRes.out].map(redactUserinfo);
       effectivePin = pullOpts.sha256;
+      signature = signatureGap(pullLog, pullOpts.sig_locator);
       pulled = {
         backend: pullOpts.backend,
         locator: pullOpts.locator,
         sha256_pin: effectivePin ?? null,
+        // Everything pull() said, which used to be collected and dropped (#312): the retry
+        // lines behind `wait`, the `sha256 OK: <hash>` confirmation, the transfer progress
+        // added in #283, and — the reason this is a bug rather than a nicety — the warning
+        // naming WHY an authenticity signature could not be fetched.
+        log: pullLog,
         ...(locatorFile !== undefined ? { locator_file: locatorFile } : {}),
       };
       if (!effectivePin && pullOpts.backend && NON_CONTENT_ADDRESSED_BACKENDS.has(pullOpts.backend)) {
@@ -1299,6 +1356,9 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
       restorable_proven: verdict === 'PASS', // PARTIAL ≠ PASS: decryptability was not proven
       checks: res.out,
       ...(pulled ? { pulled } : {}),
+      // Named separately rather than folded into `warning` (which is about integrity pins,
+      // a different question) so a caller can branch on it without parsing prose.
+      ...(signature ? { signature } : {}),
       ...(warning ? { warning } : {}),
       ...(verdict === 'PARTIAL'
         ? {
@@ -1385,6 +1445,7 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
   let effectivePin: string | undefined = isStr(pin) ? pin : undefined;
   let tdir: string | null = null;
   let pulled: Record<string, unknown> | undefined;
+  let signature: Record<string, unknown> | undefined;
   try {
     if (file === undefined) {
       if (locator !== undefined) {
@@ -1407,12 +1468,22 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
         tables: [],
         recipients: [],
       };
-      await captureCall(() => pull(pullOpts));
+      const pullRes = await captureCall(() => pull(pullOpts));
+      // err before out: pull's narrative (retries, progress, warnings) goes to stderr, and the
+      // single stdout line is the resolved locator it prints last — concatenating out first
+      // would put the end of the story at the top (multi-model review finding).
+      const pullLog = [...pullRes.err, ...pullRes.out].map(redactUserinfo);
       effectivePin = pullOpts.sha256;
+      signature = signatureGap(pullLog, pullOpts.sig_locator);
       pulled = {
         backend: pullOpts.backend,
         locator: pullOpts.locator,
         sha256_pin: effectivePin ?? null,
+        // Everything pull() said, which used to be collected and dropped (#312): the retry
+        // lines behind `wait`, the `sha256 OK: <hash>` confirmation, the transfer progress
+        // added in #283, and — the reason this is a bug rather than a nicety — the warning
+        // naming WHY an authenticity signature could not be fetched.
+        log: pullLog,
         ...(locatorFile !== undefined ? { locator_file: locatorFile } : {}),
       };
     } else if (!isStr(file)) {
@@ -1453,6 +1524,7 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
     return structuredOk({
       out_dir: outDir,
       ...(pulled ? { pulled } : {}),
+      ...(signature ? { signature } : {}),
       pg_restored: Boolean(pg),
       log: [...res.out, ...res.err],
     });

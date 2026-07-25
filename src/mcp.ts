@@ -916,10 +916,11 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
   if (pg !== undefined && !isStr(pg)) throw new ToolError('ERR_INVALID_INPUT', 'pg must be a string connection URI');
   if (locatorFile !== undefined && !isStr(locatorFile))
     throw new ToolError('ERR_INVALID_INPUT', 'locator_file must be a string path');
-  // The advertised `enum` is a hint to the client, not something the server may
-  // assume was honored — reject a bad mode HERE rather than letting it reach
-  // snapshot(), so the caller gets the structured ERR_INVALID_INPUT this server
-  // contracts for instead of a stringly-typed CLI error.
+  // #308's assertDeclaredEnums now refuses a bad mode before dispatch, reading the same
+  // SCAN_SECRETS_MODES this schema advertises — so this is not the check that stops one.
+  // It stays for the reason requireBackend stays on this same handler: it is the assertion
+  // that narrows `scan_secrets` from ToolArgs' unknown to a mode for the CliOptions handoff
+  // below. Both read one constant, so neither can drift from the schema or each other.
   if (scanSecrets !== undefined && !isScanSecretsMode(scanSecrets))
     throw new ToolError(
       'ERR_INVALID_INPUT',
@@ -1405,8 +1406,8 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
   if (pingUrl !== undefined && !isStr(pingUrl)) throw new ToolError('ERR_INVALID_INPUT', 'ping_url must be a string');
   if (pingUrlFail !== undefined && !isStr(pingUrlFail))
     throw new ToolError('ERR_INVALID_INPUT', 'ping_url_fail must be a string');
-  // Same reasoning as snapshot_now's own check: the advertised `enum` is a client hint,
-  // so the value that arrives still has to be verified here.
+  // Same as snapshot_now's: assertDeclaredEnums (#308) is what refuses a bad mode; this is
+  // the narrowing assertion for the CliOptions handoff below.
   if (scanSecrets !== undefined && !isScanSecretsMode(scanSecrets))
     throw new ToolError(
       'ERR_INVALID_INPUT',

@@ -414,8 +414,10 @@ async function run(tmp) {
         `snapshot_now without scan_secrets should report scan_secrets:null, got ${JSON.stringify(snapSc.scan_secrets)}`,
       );
 
-    // 2b-2. #307: an invalid mode is REFUSED, not passed through (the advertised enum is
-    // a client hint; the server may not assume it was honored). No gitleaks needed.
+    // 2b-2. #307: an invalid mode is REFUSED, and refused BEFORE any work. The generic
+    // enum pass (#308, further down) covers the refusal for every enum field including
+    // this one; what it does not assert is the no-artifact half, which for a gate whose
+    // whole job is to stop a snapshot is the part worth pinning here. No gitleaks needed.
     const badScanOut = join(tmp, 'badscan.age');
     send({
       jsonrpc: '2.0',

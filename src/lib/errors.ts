@@ -62,15 +62,22 @@ export interface ErrorCodeEntry {
    *                against src/. Its risk is real but different: an upstream release
    *                can reword it, and no check of ours would see that either way. Not
    *                asserted — but now visibly unasserted rather than silently so.
-   * - 'mixed'    — the pattern deliberately spans both, so only the 'ours' half is
-   *                assertable. CB-E006 is the case that forced this third value:
-   *                "exceeds CIPHER_BRAIN_MAX_SPEND" is ours, "insufficient
-   *                balance/funds" is the SDKs'. The selftest requires at least one
-   *                alternative to be present in src/ — enough to catch our half being
-   *                reworded away, without failing on the upstream half that is
-   *                correctly absent.
+   * - 'mixed'    — the pattern deliberately spans both. CB-E006 is the case that forced
+   *                this third value: "exceeds CIPHER_BRAIN_MAX_SPEND" is ours,
+   *                "insufficient balance/funds" is the SDKs'. Such an entry must ALSO
+   *                list the alternatives we write in `assertLiterals`, and the selftest
+   *                requires every one of those to be present. Merely requiring "one of
+   *                the alternatives" would let the upstream half — which could start
+   *                appearing under src/ for an unrelated reason — hold the check up
+   *                while our half rotted away.
    */
   readonly origin: 'ours' | 'upstream' | 'mixed';
+  /**
+   * Required when origin is 'mixed': the alternatives of `pattern` that WE write, which
+   * scripts/selftest-error-codes.mjs then requires to be present in src/. Not used at
+   * runtime.
+   */
+  readonly assertLiterals?: readonly string[];
 }
 
 // The doc anchor every annotated message points readers at. Keep in sync with the
@@ -122,6 +129,11 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     title: 'spend cap exceeded, or wallet balance insufficient (paid backend)',
     pattern: /exceeds CIPHER_BRAIN_MAX_SPEND|insufficient (?:balance|funds)/i,
     origin: 'mixed',
+    // The half WE write, named explicitly so the selftest checks it. "any one
+    // alternative is present" would be too weak: the upstream wording could start
+    // appearing under src/ for an unrelated reason and hold the check up while this
+    // one rotted away (multi-model review finding).
+    assertLiterals: ['exceeds CIPHER_BRAIN_MAX_SPEND'],
     source:
       'src/lib/backends/arweave.ts + src/lib/backends/turbo.ts ("… exceeds CIPHER_BRAIN_MAX_SPEND=…"); ' +
       '"insufficient balance/funds" also matches the arweave/turbo-sdk packages’ own thrown wording',

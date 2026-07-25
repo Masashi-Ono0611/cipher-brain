@@ -33,6 +33,13 @@
 //      shared tool list asserting every advertised tool refuses an
 //      undeclared argument, so a tool added later is covered without
 //      anyone remembering to add a test for it;
+//      the out-of-enum refusal (#308): the reproduction that was filed —
+//      verify_restore {file, backend:"nonsense"}, which used to return
+//      isError:false with a PASS verdict because its local-file branch never
+//      consulted the backend — plus the near-miss suggestion for a value one
+//      letter off (backend "fille" → "did you mean file?"), and a GENERIC pass
+//      over every field that DECLARES an enum in the tools/list response,
+//      so a tool added later with a new enum field is covered the same way;
 //      the spend gate: snapshot_now with
 //      backend=turbo and no confirm_paid must be refused with
 //      ERR_CONFIRM_REQUIRED — even with CIPHER_BRAIN_YES set in the
@@ -979,6 +986,89 @@ async function run(tmp) {
       }
     }
 
+    // 2m-v. #308 — the same failure one level in, and the reproduction that issue was
+    // filed on. `backend` declares enum: ["file","arweave","turbo"], but whether a value
+    // outside it was refused used to depend on which BRANCH the rest of the arguments
+    // selected: estimate_cost consults the backend and refused, while verify_restore
+    // {file, backend:"nonsense"} took the local-file branch, never needed one, and
+    // returned a clean PASS — a verdict its caller reads as "verified through the backend
+    // I named". The check is now in the dispatcher, derived from the same schema, so it
+    // runs whatever branch the call would have taken.
+    send({
+      jsonrpc: '2.0',
+      id: 60,
+      method: 'tools/call',
+      params: { name: 'verify_restore', arguments: { file: outAge, backend: 'nonsense' } },
+    });
+    const badEnum = await waitFor(60);
+    const badEnumSc = badEnum.result?.structuredContent;
+    if (badEnum.result?.isError !== true || badEnumSc?.code !== 'ERR_INVALID_INPUT') {
+      throw new Error(
+        'verify_restore accepted a backend outside its declared enum on the file branch: ' +
+          JSON.stringify(badEnum.result).slice(0, 400),
+      );
+    }
+    if (!(badEnumSc.message ?? '').includes('backend') || !(badEnumSc.message ?? '').includes('nonsense')) {
+      throw new Error(
+        `verify_restore rejection names neither the field nor the value it refused: ${JSON.stringify(badEnumSc).slice(0, 300)}`,
+      );
+    }
+
+    // The refusal reaches for the SAME "did you mean" helper (src/lib/suggest.ts) as the
+    // unknown-argument refusal above and the CLI's own #277 hint, so a value one letter
+    // off is told which declared one it was near rather than only that it was wrong.
+    send({
+      jsonrpc: '2.0',
+      id: 61,
+      method: 'tools/call',
+      params: { name: 'verify_restore', arguments: { file: outAge, backend: 'fille' } },
+    });
+    const nearEnum = await waitFor(61);
+    const nearEnumSc = nearEnum.result?.structuredContent;
+    if (nearEnum.result?.isError !== true || !(nearEnumSc?.message ?? '').includes('did you mean file?')) {
+      throw new Error(
+        `verify_restore backend="fille" was not answered with the near miss: ${JSON.stringify(nearEnum.result).slice(0, 300)}`,
+      );
+    }
+
+    // Generic over every field that DECLARES an enum, read out of the tools/list response
+    // rather than named here — same discipline as 2m-iv, so a tool added later with a new
+    // enum field is covered by a test written before it existed. The value is refused in
+    // the dispatcher before any handler runs, so no other argument is needed to reach it.
+    const enumFields = [];
+    for (const tool of list.result?.tools ?? []) {
+      for (const [field, spec] of Object.entries(tool.inputSchema?.properties ?? {})) {
+        if (Array.isArray(spec?.enum) && spec.enum.length > 0) enumFields.push([tool.name, field, spec.enum]);
+      }
+    }
+    // Asserted, not assumed: with no enum anywhere the loop below would pass vacuously
+    // and report coverage it never exercised. If a schema legitimately drops its last
+    // enum, this failing is the deliberate step that says so.
+    if (enumFields.length === 0) {
+      throw new Error('no advertised tool declares an enum — the generic enum check below would prove nothing');
+    }
+    const enumProbe = 'zz_not_a_declared_enum_value';
+    for (const [i, [toolName, field, allowed]] of enumFields.entries()) {
+      if (allowed.includes(enumProbe)) {
+        throw new Error(`${toolName}.${field} actually declares the probe value ${enumProbe} — pick another`);
+      }
+      const id = 70 + i;
+      send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: toolName, arguments: { [field]: enumProbe } } });
+      const res = await waitFor(id);
+      const sc = res.result?.structuredContent;
+      if (res.result?.isError !== true || sc?.code !== 'ERR_INVALID_INPUT') {
+        throw new Error(
+          `${toolName} does not reject a value outside ${field}'s declared enum — its handler can still be reached ` +
+            `with a value tools/list says is not allowed: ${JSON.stringify(res.result).slice(0, 300)}`,
+        );
+      }
+      if (!(sc.message ?? '').includes(field) || !(sc.message ?? '').includes(enumProbe)) {
+        throw new Error(
+          `${toolName} rejected an out-of-enum ${field} without naming the field and the value: ${JSON.stringify(sc).slice(0, 300)}`,
+        );
+      }
+    }
+
     // 2n. keygen against THIS server's home — which already has a real identity
     // (written by the CLI-driven keygen at the top of this run, not by the tool
     // itself) — must refuse rather than silently re-key a brain snapshots already
@@ -1003,7 +1093,8 @@ async function run(tmp) {
         `schedule_install gate=ERR_CONFIRM_REQUIRED, schedule_install no_load=ok, ` +
         `schedule_status.next_run=${schedSc.next_run}, resource==tool=yes, ` +
         `prompt=restore-runbook(${promptText.length}ch), keygen(pre-existing)=refused, ` +
-        `unknown-arg refused by all ${EXPECTED_MCP_TOOLS.length} tools (near miss named)\n`,
+        `unknown-arg refused by all ${EXPECTED_MCP_TOOLS.length} tools (near miss named), ` +
+        `out-of-enum value refused on all ${enumFields.length} declared enum field(s)\n`,
     );
   } finally {
     try {

@@ -841,6 +841,18 @@ by accident; misspelling an *optional* one — `confirm_paid`, `sha256`, `identi
 `no_load` — used to be discarded silently, so the call looked like it had been
 honored as asked (#300).
 
+**A value outside a field's declared `enum` is an error too**, on every tool and
+whichever branch the call would have taken (#308). `backend` declares
+`["file","arweave","turbo"]`; a value outside that set used to be refused only where
+the handler happened to consult it, so `estimate_cost {file, backend: "nonsense"}`
+errored while `verify_restore {file, backend: "nonsense"}` returned a clean `PASS`
+from a code path that never touched the backend it was given. The check is now
+derived from the same published schema as the one above, so it applies to any enum
+any tool declares later, and a near miss is named (`backend: "fille"` → *did you mean
+file?*). A value the enum **permits** but the chosen branch does not use — e.g.
+`verify_restore {file, backend: "file"}`, where the artifact is already local — is
+still accepted and ignored; that is branch relevance, not something the schema states.
+
 Claude Code config (`.mcp.json`):
 
 ```json

@@ -202,4 +202,47 @@ if ! diff -q "$TMP/help-unknown.txt" "$TMP/help-full-now.txt" >/dev/null; then
 fi
 echo "[PASS] dist <command> --help: scoped to that command, keeps the Env block, unknown command falls back to full help"
 
+# (j) estimate --json (#268): all seven documented keys are ALWAYS present, whichever
+# backend was asked about — the free ones used to drop unit/approx_ar/usd_estimate
+# entirely, so `est.unit` was undefined and the caller could not tell "no unit" from
+# "you asked wrong".
+for JSON_BACKEND in file rclone turbo; do
+  node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend "$JSON_BACKEND" --json \
+    > "$TMP/est-$JSON_BACKEND.json" 2>/dev/null \
+    || { echo "[FAIL] estimate --backend $JSON_BACKEND --json exited non-zero"; exit 1; }
+  MISSING=$(node -e '
+    const fs = require("node:fs");
+    const o = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const want = ["backend", "size_bytes", "cost", "unit", "approx_ar", "usd_estimate", "note"];
+    console.log(want.filter((k) => !(k in o)).join(","));
+  ' "$TMP/est-$JSON_BACKEND.json")
+  [ -z "$MISSING" ] \
+    || { echo "[FAIL] estimate --backend $JSON_BACKEND --json is missing key(s): $MISSING"; cat "$TMP/est-$JSON_BACKEND.json"; exit 1; }
+done
+echo "[PASS] dist estimate --json: all seven documented keys present for file/rclone/turbo (null, not absent, when N/A)"
+
+# (k) --json on the ERROR path (#270): stdout carries {error, code, exit_code} instead
+# of nothing, so a JSON caller never has to scrape prose off stderr. `code` is the
+# CB-E0xx identifier when the failure matches a known pattern.
+node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend nosuchbackend --json \
+  > "$TMP/err.json" 2> "$TMP/err.txt"
+ERR_RC=$?
+[ "$ERR_RC" != "0" ] || { echo "[FAIL] estimate with a bogus backend exited 0"; exit 1; }
+ERR_CODE=$(node -e '
+  const fs = require("node:fs");
+  const o = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  if (typeof o.error !== "string" || !o.error) throw new Error("no error string");
+  if (typeof o.exit_code !== "number") throw new Error("no exit_code");
+  console.log(o.code === null ? "null" : o.code);
+' "$TMP/err.json") || { echo "[FAIL] --json error output is not a well-formed error object"; cat "$TMP/err.json"; exit 1; }
+[ "$ERR_CODE" = "CB-E013" ] \
+  || { echo "[FAIL] the --json error object reported code '$ERR_CODE', expected CB-E013"; cat "$TMP/err.json"; exit 1; }
+grep -Fq 'unknown backend' "$TMP/err.txt" \
+  || { echo "[FAIL] stderr no longer carries the human-readable error"; cat "$TMP/err.txt"; exit 1; }
+# and WITHOUT --json, stdout on the error path stays empty exactly as before
+node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend nosuchbackend > "$TMP/err-nojson.out" 2>/dev/null
+[ ! -s "$TMP/err-nojson.out" ] \
+  || { echo "[FAIL] the error path writes to stdout even without --json"; cat "$TMP/err-nojson.out"; exit 1; }
+echo "[PASS] dist --json error path: {error, code: CB-E013, exit_code} on stdout, stderr unchanged, no stdout without --json"
+
 echo "CLI SMOKE: PASS"

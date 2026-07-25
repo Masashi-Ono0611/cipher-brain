@@ -202,4 +202,31 @@ if ! diff -q "$TMP/help-unknown.txt" "$TMP/help-full-now.txt" >/dev/null; then
 fi
 echo "[PASS] dist <command> --help: scoped to that command, keeps the Env block, unknown command falls back to full help"
 
+# (j) an unknown command (#269): everything on stderr, stdout EMPTY, exit 2, and a
+# short answer — the command list + where to read more — instead of ~26 KB of help.
+# stdout emptiness is the load-bearing part: `LOC=$(cipher-brain psh …)` used to
+# capture the entire reference into the variable.
+node "$DIST" definitelynotacommand > "$TMP/unknown-cmd.out" 2> "$TMP/unknown-cmd.err"
+UNKNOWN_RC=$?
+[ "$UNKNOWN_RC" = "2" ] || { echo "[FAIL] unknown command exited $UNKNOWN_RC, expected 2"; exit 1; }
+[ ! -s "$TMP/unknown-cmd.out" ] \
+  || { echo "[FAIL] unknown command wrote $(wc -c < "$TMP/unknown-cmd.out") bytes to stdout, expected none"; exit 1; }
+grep -Fq 'error: unknown command: definitelynotacommand' "$TMP/unknown-cmd.err" \
+  || { echo "[FAIL] unknown command did not name the offending command on stderr"; cat "$TMP/unknown-cmd.err"; exit 1; }
+grep -Fq "cipher-brain <command> --help" "$TMP/unknown-cmd.err" \
+  || { echo "[FAIL] unknown command did not point at --help"; cat "$TMP/unknown-cmd.err"; exit 1; }
+# The advertised list is DERIVED from HELP's section headers, so compare it as a SET
+# against the real command surface — catching both a command that stopped being listed
+# and a bogus entry the derivation picked up (e.g. a non-command header). Sorted, so
+# reordering HELP's sections is not a false failure; `\b` is avoided since word-boundary
+# support differs between GNU and BSD grep (multi-model review finding).
+LISTED=$(sed -n 's/^valid commands: //p' "$TMP/unknown-cmd.err" | tr ',' '\n' | tr -d ' ' | sort | tr '\n' ' ')
+EXPECTED=$(printf '%s\n' init keygen wallet snapshot restore verify push pull estimate schedule | sort | tr '\n' ' ')
+[ "$LISTED" = "$EXPECTED" ] \
+  || { echo "[FAIL] valid-commands list is [$LISTED], expected [$EXPECTED]"; cat "$TMP/unknown-cmd.err"; exit 1; }
+UNKNOWN_LINES=$(wc -l < "$TMP/unknown-cmd.err" | tr -d ' ')
+[ "$UNKNOWN_LINES" -le 5 ] \
+  || { echo "[FAIL] the unknown-command reply is $UNKNOWN_LINES lines — the whole help is being dumped again"; exit 1; }
+echo "[PASS] dist <unknown command>: exit 2, stdout empty, a ${UNKNOWN_LINES}-line stderr reply listing every valid command"
+
 echo "CLI SMOKE: PASS"

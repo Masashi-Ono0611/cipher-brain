@@ -762,6 +762,13 @@ const TOOLS_BY_NAME = new Map(ALL_TOOLS.map((t) => [t.name, t]));
 // line to forget — silently opted out of the check. A tool that genuinely wants
 // open-ended arguments has to change this function, which is a decision someone makes
 // on purpose rather than one they can omit by accident.
+//
+// One key still never gets here, and cannot: the SDK parses `arguments` through a zod
+// record, which strips a literal `__proto__` before any handler runs (verified against
+// the built server — `constructor`/`toString` DO reach this check and are refused).
+// Left as it is on purpose. Stripping that key is the SDK defending against prototype
+// pollution, and unlike the fields this issue is about, `__proto__` cannot be a request
+// anyone meant to make — nothing is silently not-honored by dropping it.
 function assertDeclaredArgs(tool: Tool, args: ToolArgs): void {
   const declared = Object.keys(tool.inputSchema.properties ?? {});
   const unknown = Object.keys(args).filter((k) => !declared.includes(k));

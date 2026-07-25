@@ -485,6 +485,22 @@ function cliVersion(): string {
 // Returns null when `cmd` names no section, so the caller can fall back to the
 // full HELP (an unknown command with --help is better answered by everything
 // than by nothing).
+// Every command word HELP documents, in the order it documents them (issue #269).
+// Derived from the same section headers helpForCommand() slices on, so the list an
+// unknown command is answered with cannot drift from the reference itself.
+// The capture is positively shaped like a command word ([a-z][a-z0-9-]*) rather than
+// "anything that isn't a flag" — `--version` and `<command> --help` have their own
+// sections up top but are a flag and a placeholder, and a future header of some other
+// shape (`cipher-brain [options] …`) must not be advertised as a command either
+// (multi-model review finding). `wallet create`, `schedule status` etc. collapse to
+// their first word, which is what a user types and what helpForCommand() matches on.
+function commandNames(): string[] {
+  const names = HELP.split('\n')
+    .map((line) => line.match(/^ {2}cipher-brain ([a-z][a-z0-9-]*)/)?.[1])
+    .filter((name): name is string => name !== undefined);
+  return [...new Set(names)];
+}
+
 function helpForCommand(cmd: string): string | null {
   const lines = HELP.split('\n');
   const isSectionStart = (line: string) => /^ {2}cipher-brain \S/.test(line);
@@ -602,10 +618,29 @@ async function main(): Promise<void> {
     case '-V':
       console.log(cliVersion());
       return;
-    default:
-      console.error(`unknown command: ${cmd}\n`);
-      console.log(HELP);
+    // issue #269: this is an ERROR path, so all of it goes to stderr and stdout stays
+    // empty — the HELP-on-stdout rule two cases up exists so `cipher-brain --help |
+    // grep …` works, which is a REQUEST for the help, not a failure to parse a
+    // command. Dumping ~26 KB of help on stdout here meant `LOC=$(cipher-brain psh …)`
+    // captured the whole reference into the variable instead of nothing.
+    // And it is now a short answer rather than the whole reference: since #262,
+    // `<command> --help` prints one section, so the useful reply to a typo is the
+    // list of real commands plus where to read more — not 300 lines to scroll back
+    // through with no indication of which one was meant.
+    default: {
+      console.error(`error: unknown command: ${cmd}`);
+      // Guard the derived list: if a future HELP edit ever changed the section-header
+      // shape enough that nothing matches, "valid commands: " with nothing after it
+      // would be worse than not printing the line at all (multi-model review finding).
+      // cli-smoke also asserts the list matches the real command set on every run.
+      const names = commandNames();
+      if (names.length > 0) console.error(`valid commands: ${names.join(', ')}`);
+      console.error(
+        `run 'cipher-brain --help' for the full reference, or 'cipher-brain <command> --help' for one command`,
+      );
       process.exitCode = 2;
+      return;
+    }
   }
 }
 

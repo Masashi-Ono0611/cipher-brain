@@ -973,5 +973,54 @@ else
   echo "[PASS] --scan-secrets fails fast (before any pg_dump/tar work) with an actionable error when gitleaks cannot be resolved"
 fi
 
+echo "== #267: a missing path is reported the same way by every command, and never as a decrypt failure =="
+# One mistyped path, five commands. Before #267 this produced three different answers:
+# push/estimate said "no such file", verify and snapshot --dir leaked the raw Node
+# errno text, and restore reported "age decrypt failed: … [CB-E002]" — a code
+# MANAGEMENT.md documents as "wrong identity, or a corrupt/truncated artifact", i.e.
+# it sent a typo straight into a key audit.
+MISSING_IN="$TMP/definitely-not-here.age"
+MISSING_DIR="$TMP/definitely-not-a-dir"
+test ! -e "$MISSING_IN" || { echo "[FAIL] the fixture path exists — the test would prove nothing"; exit 1; }
+check_missing_path() { # <label> <expected substring> <cb args...>
+  local label="$1" expect="$2"; shift 2
+  set +e
+  local out; out=$(cb "$@" 2>&1 >/dev/null); local rc=$?
+  set -e
+  [ "$rc" != "0" ] || { echo "[FAIL] $label exited 0 for a path that does not exist"; echo "$out"; exit 1; }
+  printf '%s' "$out" | grep -q "$expect" \
+    || { echo "[FAIL] $label did not report '$expect'"; echo "$out"; exit 1; }
+  # The raw Node errno text and the misleading decrypt code must both be gone.
+  # `if` (not `grep -q … && { … }`): a NON-match is the passing case here, and a
+  # non-matching `a && b` list returns non-zero, which under `set -e` would abort
+  # this function mid-check instead of passing it — see rules/shell-ops.
+  if printf '%s' "$out" | grep -q 'ENOENT'; then
+    echo "[FAIL] $label still leaks the raw Node ENOENT string"; echo "$out"; exit 1
+  fi
+  if printf '%s' "$out" | grep -q 'CB-E002'; then
+    echo "[FAIL] $label blames a missing path on age decryption (CB-E002)"; echo "$out"; exit 1
+  fi
+  return 0
+}
+check_missing_path "verify --in"   "no such file: $MISSING_IN"            verify --in "$MISSING_IN"
+check_missing_path "estimate --in" "no such file: $MISSING_IN"            estimate --in "$MISSING_IN" --backend file
+check_missing_path "push --in"     "no such file: $MISSING_IN"            push --in "$MISSING_IN" --backend file
+check_missing_path "restore --in"  "no such file: $MISSING_IN"            restore --in "$MISSING_IN" --out-dir "$TMP/missing-restore-out"
+check_missing_path "snapshot --dir" "no such snapshot source: $MISSING_DIR" snapshot --out "$TMP/missing.age" --dir "$MISSING_DIR"
+# --dry-run resolves sources on its own path; it must fail the same way
+check_missing_path "snapshot --dry-run --dir" "no such snapshot source: $MISSING_DIR" snapshot --dry-run --dir "$MISSING_DIR"
+test ! -e "$TMP/missing.age" || { echo "[FAIL] snapshot wrote --out despite a missing source"; exit 1; }
+test ! -e "$TMP/missing-restore-out" || { echo "[FAIL] restore created --out-dir despite a missing --in"; exit 1; }
+echo "[PASS] verify/estimate/push/restore/snapshot all name the missing path, with no raw ENOENT and no CB-E002 misdiagnosis"
+
+# The check must NOT follow symlinks: a DANGLING top-level symlink is a source
+# snapshot deliberately archives (as a symlink entry), so an access()-based check
+# here would break it. Guards the requirePath-vs-requireFile distinction.
+ln -s "$TMP/target-that-does-not-exist" "$TMP/dangling-source"
+cb snapshot --out "$TMP/dangling.age" --dir "$TMP/dangling-source" >/dev/null 2>&1 \
+  || { echo "[FAIL] a dangling top-level symlink source was rejected — #267's check must not follow symlinks"; exit 1; }
+test -s "$TMP/dangling.age" || { echo "[FAIL] the dangling-symlink snapshot produced no artifact"; exit 1; }
+echo "[PASS] a dangling top-level symlink source still snapshots (the missing-path check does not follow symlinks)"
+
 echo
 echo "SELFTEST PASS"

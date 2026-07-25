@@ -7,7 +7,7 @@ import { AGE_MAGIC, CIPHER_YES, IDENTITY, PIPE_TIMEOUT_MS, SIGN_RECIPIENT, pgToo
 import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
 import { checkArtifactSignature } from './minisign.js';
-import { exists, sha256, readHead, fmtBytes, redactPgConn, errMsg } from './util.js';
+import { exists, requireFile, sha256, readHead, fmtBytes, redactPgConn, errMsg } from './util.js';
 import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
 import { moodForVerdict, printMascot } from './ui.js';
 import type { CliOptions } from './types.js';
@@ -324,6 +324,10 @@ export async function restore(o: CliOptions): Promise<void> {
 async function restoreImpl(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.out_dir) throw new Error('--out-dir <dir> required');
+  // #267: before ANY decrypt work, so a missing --in never reaches the age call and
+  // gets reported as "age decrypt failed … [CB-E002]" (i.e. "wrong identity, or a
+  // corrupt artifact") when the file simply is not there.
+  await requireFile(o.in);
   // pg_restore --clean --if-exists below DROPS and replaces objects in the target
   // database — an irreversible operation. Same consent gate as push's paid-backend
   // guard (pushpull.ts): require --yes or CIPHER_BRAIN_YES=1 up front, before any
@@ -456,6 +460,7 @@ async function restoreImpl(o: CliOptions): Promise<void> {
 // snapshot is restorable by you.
 export async function verify(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
+  await requireFile(o.in); // #267: before stat(), so a typo is not a raw ENOENT
   const sz = (await stat(o.in)).size;
   const head = await readHead(o.in, 64);
   const isAge = head.startsWith(AGE_MAGIC);

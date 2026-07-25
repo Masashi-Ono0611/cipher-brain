@@ -8,7 +8,7 @@ import ignore, { type Ignore } from 'ignore';
 import { RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, SIGN_IDENTITY, pgTool } from './config.js';
 import { run } from './proc.js';
 import { newEncrypter, encryptToFile } from './crypt.js';
-import { exists, fmtBytes, sha256, errMsg, redactPgConn } from './util.js';
+import { exists, fmtBytes, requirePath, sha256, errMsg, redactPgConn } from './util.js';
 import { recipientEntries, resolvePinnedRecipients } from './keys.js';
 import { loadSignIdentity, signDetached } from './minisign.js';
 import { resolveProfilePaths } from './profiles.js';
@@ -308,6 +308,12 @@ export async function snapshot(o: CliOptions): Promise<void> {
   if (o.profile) o.dirs = [...(await resolveProfilePaths(o)), ...o.dirs];
   if (!o.pg && o.dirs.length === 0)
     throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
+  // #267: check every source path up front — before the --dry-run branch, before
+  // --out is even required, and long before pg_dump or any staging — so a mistyped
+  // --dir names itself instead of surfacing several steps later as a raw
+  // "ENOENT: no such file or directory, lstat '<path>'". requirePath (not exists())
+  // so a dangling top-level symlink, which snapshot archives on purpose, still passes.
+  for (const d of o.dirs) await requirePath(resolve(d), 'snapshot source');
   // #216: --dry-run previews --dir/--profile .cipherbrainignore filtering WITHOUT
   // staging, encrypting or writing anything — checked HERE, before the --out
   // requirement AND the --scan-secrets validation below, since a preview has no

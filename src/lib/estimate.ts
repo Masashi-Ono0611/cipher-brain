@@ -5,17 +5,33 @@
 import { stat } from 'node:fs/promises';
 import { AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS, AR_USD_RATE_URL } from './config.js';
 import { requireFile, errMsg, fmtBytes } from './util.js';
+import { printJson } from './ui.js';
 import type { CliOptions } from './types.js';
 
+// Every field is REQUIRED and nullable rather than optional (#268): a `--json`
+// consumer — the whole point of #211 — gets one stable object shape, so
+// `est.unit === null` reads as "this backend prices in no native unit" instead of
+// looking like a bug in the caller. These keys used to be dropped entirely for the
+// free backends and for turbo-without-the-SDK, which contradicted --help's
+// "field-for-field identical to what estimate_cost returns" and was already
+// inconsistent with `cost`, which has always been emitted as null when unknown.
 export interface CostEstimate {
   backend: string;
   size_bytes: number;
   cost: string | null; // native units (winc/winston), "0" for file, or null when unavailable
-  unit?: 'winc' | 'winston';
-  approx_ar?: number;
-  usd_estimate?: number;
+  unit: 'winc' | 'winston' | null; // null: no native unit for this backend, or the query failed
+  approx_ar: number | null;
+  usd_estimate: number | null; // null when the USD/AR rate could not be fetched
   note: string;
 }
+
+// What the per-backend branches below actually build: the priced ones set unit/
+// approx_ar (and usd_estimate when a rate was fetchable), the free and
+// unavailable ones set none of them. estimateCost() normalizes every branch's
+// result to the full CostEstimate shape in ONE place, so a future backend branch
+// cannot forget a key and quietly reintroduce the drifting shape #268 fixed.
+type PartialCostEstimate = Omit<CostEstimate, 'unit' | 'approx_ar' | 'usd_estimate'> &
+  Partial<Pick<CostEstimate, 'unit' | 'approx_ar' | 'usd_estimate'>>;
 
 // Current USD price of 1 AR via a plain, unauthenticated GET against Turbo's public
 // rate endpoint (AR_USD_RATE_URL — no @ardrive/turbo-sdk involved, #170: that SDK is an
@@ -51,6 +67,22 @@ export const usdApprox = (nativeAmount: bigint | number, rate: number): string =
 // this; the CLI estimate() below validates too), so it is rejected explicitly
 // rather than silently falling through to the arweave branch.
 export async function estimateCost(backend: string, sizeBytes: number): Promise<CostEstimate> {
+  const e = await estimateCostFor(backend, sizeBytes);
+  // The single normalization point described on PartialCostEstimate above. Written
+  // out key by key rather than spread over defaults so the emitted JSON also comes
+  // out in the order --help and the estimate_cost tool description list the fields.
+  return {
+    backend: e.backend,
+    size_bytes: e.size_bytes,
+    cost: e.cost,
+    unit: e.unit ?? null,
+    approx_ar: e.approx_ar ?? null,
+    usd_estimate: e.usd_estimate ?? null,
+    note: e.note,
+  };
+}
+
+async function estimateCostFor(backend: string, sizeBytes: number): Promise<PartialCostEstimate> {
   if (backend === 'file') {
     return {
       backend,
@@ -180,8 +212,13 @@ export function formatEstimate(e: CostEstimate): string[] {
     lines.push('cost: unavailable');
   } else {
     lines.push(`cost: ${e.cost}${e.unit ? ` ${e.unit}` : ''}`);
-    if (e.approx_ar !== undefined) lines.push(`approx: ~${e.approx_ar.toFixed(8)} AR`);
-    if (e.usd_estimate !== undefined) {
+    // `!= null` (loose, so it covers undefined too) since #268 made these
+    // required-and-nullable: a hand-built CostEstimate from JS that still omits them
+    // must not reach .toFixed() on undefined. The human-readable report omits the
+    // line entirely when there is no number, exactly as it did when the key was
+    // absent — this rendering is unchanged, byte for byte.
+    if (e.approx_ar != null) lines.push(`approx: ~${e.approx_ar.toFixed(8)} AR`);
+    if (e.usd_estimate != null) {
       lines.push(`approx: ~$${e.usd_estimate.toFixed(e.usd_estimate >= 0.01 ? 2 : 6)} USD`);
     }
   }
@@ -206,6 +243,6 @@ export async function estimate(o: CliOptions): Promise<void> {
   if (!st.isFile())
     throw new Error(`${o.in} is not a regular file (cannot size a directory/special file for an estimate)`);
   const result = await estimateCost(o.backend, st.size);
-  if (o.json) console.log(JSON.stringify(result));
+  if (o.json) printJson(result);
   else for (const line of formatEstimate(result)) console.log(line);
 }

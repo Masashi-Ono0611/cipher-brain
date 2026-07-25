@@ -9,7 +9,7 @@ import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from '.
 import { checkArtifactSignature } from './minisign.js';
 import { exists, requireFile, sha256, readHead, fmtBytes, redactPgConn, errMsg } from './util.js';
 import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
-import { moodForVerdict, printMascot } from './ui.js';
+import { moodForVerdict, printMascot, printJson } from './ui.js';
 import type { CliOptions } from './types.js';
 
 // GNU tar's --keep-old-files, unlike bsdtar's identically-named flag, treats an
@@ -584,21 +584,19 @@ export async function verify(o: CliOptions): Promise<void> {
   // can never disagree with either the human-readable report above or the MCP
   // verify_restore tool (#211).
   if (o.json) {
-    console.log(
-      JSON.stringify({
-        file: o.in,
-        size_bytes: sz,
-        checks: {
-          age_header: isAge,
-          sha256_match: hashOk, // null when --sha256 was not passed (check skipped, not failed)
-          signature: sigOk === null ? 'skip' : sigOk ? 'pass' : 'fail', // #214: 'skip' when unsigned or no signing pubkey on this box
-          wrong_key_rejected: wrongKeyCheckSkipped ? 'skip' : wrongKeyRejected, // #214: 'skip' when the authenticity signature above already failed
-          positive_control: positiveSkipped ? 'skip' : positiveOk ? 'pass' : 'fail',
-        },
-        verdict,
-        exit_code: process.exitCode ?? 0,
-      }),
-    );
+    printJson({
+      file: o.in,
+      size_bytes: sz,
+      checks: {
+        age_header: isAge,
+        sha256_match: hashOk, // null when --sha256 was not passed (check skipped, not failed)
+        signature: sigOk === null ? 'skip' : sigOk ? 'pass' : 'fail', // #214: 'skip' when unsigned or no signing pubkey on this box
+        wrong_key_rejected: wrongKeyCheckSkipped ? 'skip' : wrongKeyRejected, // #214: 'skip' when the authenticity signature above already failed
+        positive_control: positiveSkipped ? 'skip' : positiveOk ? 'pass' : 'fail',
+      },
+      verdict,
+      exit_code: process.exitCode ?? 0,
+    });
   }
   // Human-facing decoration only (mascot faced for the verdict) — see printMascot in
   // ui.ts for why this is EPIPE-safe against a caller piping/grepping verify's output

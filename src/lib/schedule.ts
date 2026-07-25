@@ -34,6 +34,7 @@ import { homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { HOME } from './config.js';
 import { exists } from './util.js';
+import { printJson } from './ui.js';
 import type { CliOptions } from './types.js';
 
 export const SCHEDULE_DIR = process.env.CIPHER_BRAIN_SCHEDULE_DIR || join(HOME, 'schedule');
@@ -695,23 +696,21 @@ async function status(o: CliOptions): Promise<void> {
     // stdout instead of the human-readable report below — never a re-implementation,
     // so this can never disagree with either the human-readable report or the MCP
     // schedule_status tool.
-    console.log(
-      JSON.stringify({
-        configured: { at: cfg.at, backend: cfg.backend },
-        runner: cfg.runner,
-        ping: cfg.ping_url ? { url: cfg.ping_url, fail_url: cfg.ping_url_fail } : null,
-        trigger: {
-          type: cfg.trigger.type,
-          ...(triggerPath !== undefined ? { path: triggerPath } : {}),
-          ...(triggerEntry !== undefined ? { entry: triggerEntry } : {}),
-          loaded: loadedYesNo,
-          legacy,
-          ...(legacyNote !== undefined ? { legacy_note: legacyNote } : {}),
-        },
-        last_run: last ? { log: last.name, rc_line: last.rcLine } : null,
-        next_run: nextRun,
-      }),
-    );
+    printJson({
+      configured: { at: cfg.at, backend: cfg.backend },
+      runner: cfg.runner,
+      ping: cfg.ping_url ? { url: cfg.ping_url, fail_url: cfg.ping_url_fail } : null,
+      trigger: {
+        type: cfg.trigger.type,
+        ...(triggerPath !== undefined ? { path: triggerPath } : {}),
+        ...(triggerEntry !== undefined ? { entry: triggerEntry } : {}),
+        loaded: loadedYesNo,
+        legacy,
+        ...(legacyNote !== undefined ? { legacy_note: legacyNote } : {}),
+      },
+      last_run: last ? { log: last.name, rc_line: last.rcLine } : null,
+      next_run: nextRun,
+    });
     return;
   }
 

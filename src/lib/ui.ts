@@ -97,3 +97,27 @@ export function printMascot(mood: Mood): void {
   installEpipeGuard();
   console.error(mascot(mood).join('\n'));
 }
+
+// ---------- machine-readable stdout (--json, #211/#270) ----------
+//
+// Every --json document a command prints goes through printJson(), and NOTHING
+// else writes JSON to stdout. That makes "has this run already produced its JSON
+// document?" a fact the top-level error handler can ask (hasWrittenJson), instead
+// of an invariant maintained by hoping — #270 appends an error object to stdout on
+// failure, and a command that had already printed its own document would otherwise
+// leave two JSON values on stdout, which no consumer can parse as one.
+//
+// Today no --json command can throw after printing (each prints last and returns),
+// so this guard never fires; it exists so that stops being something a future
+// command has to remember (multi-model review finding).
+let jsonWritten = false;
+
+/** True once printJson() has written a command's own JSON document to stdout. */
+export const hasWrittenJson = (): boolean => jsonWritten;
+
+/** Print one JSON document to stdout — the single writer, see the note above. */
+export function printJson(value: unknown): void {
+  jsonWritten = true;
+  installEpipeGuard();
+  console.log(JSON.stringify(value));
+}

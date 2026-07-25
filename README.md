@@ -526,7 +526,11 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       (file, size_bytes, checks: {age_header, sha256_match, signature, wrong_key_rejected,
       positive_control}, verdict, exit_code) — the SAME checks computed above, so it
       never disagrees with the human-readable report or the MCP verify_restore tool.
-      The exit code is unchanged either way.
+      The exit code is unchanged either way. If the command ERRORS instead (#270 —
+      a missing file, an unreadable identity), stdout carries an error object
+      ({error, code, exit_code}) rather than nothing, so a --json caller never has to
+      fall back to scraping stderr; "code" is the CB-E0xx identifier when the failure
+      matches a known one (MANAGEMENT.md#error-codes), null otherwise.
 
   cipher-brain push --in <file.age> --backend <file|arweave|turbo|rclone> [--remote <name>:<path>] [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
       Upload ciphertext to storage. Prints ONLY the locator to stdout
@@ -591,7 +595,10 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       --json prints the same CostEstimate object as one JSON line on stdout
       (backend, size_bytes, cost, unit, approx_ar, usd_estimate, note) instead of
       the human-readable report — field-for-field identical to what estimate_cost
-      returns.
+      returns. All seven keys are ALWAYS present (#268): a backend with no native
+      unit, or a query that could not run, reports null rather than dropping the key,
+      so the object shape does not depend on which backend was asked about. On an
+      ERROR, stdout carries {error, code, exit_code} instead (#270 — see verify).
 
   cipher-brain pull (--locator <id> --backend <…> | --remote <name>:<path> --backend rclone | --from-locator-file <path>) --out <file.age> [--wait <seconds>] [--sha256 <hex>] [--sig-locator <id>] [--force]
       Fetch ciphertext by locator into --out. --from-locator-file reads the locator, its
@@ -647,7 +654,9 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       --json prints one JSON object to stdout instead of the human-readable report
       (configured, runner, ping, trigger: {type, loaded, legacy, ...}, last_run,
       next_run) — the SAME state read above, so it never disagrees with the
-      human-readable report or the MCP schedule_status tool.
+      human-readable report or the MCP schedule_status tool. "not installed" is an
+      ordinary state to poll for, not an exception, so it too answers in JSON on
+      stdout ({error, code: "CB-E014", exit_code}) instead of prose on stderr (#270).
 
   cipher-brain schedule uninstall
       Unregister the trigger and remove the generated runner/plist/cron entry (idempotent;

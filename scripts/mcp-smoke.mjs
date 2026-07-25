@@ -770,10 +770,27 @@ async function run(tmp) {
     if (body?.mimeType !== 'application/json' || typeof body?.text !== 'string') {
       throw new Error(`resources/read returned no JSON body: ${JSON.stringify(resRead).slice(0, 300)}`);
     }
-    if (JSON.stringify(JSON.parse(body.text)) !== JSON.stringify(schedSc)) {
+    // Compare everything EXCEPT next_run, which is derived from the clock at call time:
+    // two calls either side of a minute boundary legitimately differ, and asserting
+    // strict equality here would be a flaky test rather than a real guarantee
+    // (multi-model review finding). Both must still HAVE a well-formed next_run.
+    const resObj = JSON.parse(body.text);
+    const withoutNextRun = (o) => {
+      const { next_run, ...rest } = o ?? {};
+      return JSON.stringify(rest);
+    };
+    if (withoutNextRun(resObj) !== withoutNextRun(schedSc)) {
       throw new Error(
         `the schedule status RESOURCE and TOOL disagree — one contract, two answers:\n  resource=${body.text.slice(0, 300)}\n  tool=${JSON.stringify(schedSc).slice(0, 300)}`,
       );
+    }
+    for (const [what, v] of [
+      ['resource', resObj?.next_run],
+      ['tool', schedSc?.next_run],
+    ]) {
+      if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(v)) {
+        throw new Error(`${what} next_run is missing or malformed: ${JSON.stringify(v)}`);
+      }
     }
 
     // 2l-c. #285: the restore-runbook prompt. Its text is MANAGEMENT.md's section,
@@ -796,10 +813,47 @@ async function run(tmp) {
         `restore-runbook prompt does not look like the MANAGEMENT.md section: ${promptText.slice(0, 200)}`,
       );
     }
-    // The runbook is also read a SECOND way (src-direct dev runs read MANAGEMENT.md,
-    // shipped builds use the inlined constant). Record the text so the caller can prove
-    // the two paths agree — see the dev-vs-dist comparison at the end of this file.
-    process.env.__CB_SMOKE_RUNBOOK_LEN = String(promptText.length);
+    // The runbook has TWO read paths — a shipped build uses the constant scripts/build.ts
+    // inlined, while src-direct dev runs read MANAGEMENT.md — and a fallback nobody
+    // compares is a fallback that can quietly serve something else. So actually compare
+    // them: drive the SRC-DIRECT server too and require the same text. (An earlier
+    // version of this comment claimed the comparison happened when it did not —
+    // multi-model review finding.)
+    const devChild = spawn(process.execPath, [join(ROOT, 'bin', 'cipher-brain-mcp.mjs')], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        CIPHER_BRAIN_HOME: home,
+        NODE_OPTIONS: `--experimental-strip-types --import ${join(ROOT, 'scripts', 'dev-cli-loader.mjs')}`,
+      },
+    });
+    try {
+      const dev = makeRpcClient(devChild);
+      dev.send({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'ci-smoke-dev', version: '0.0.0' },
+        },
+      });
+      await dev.waitFor(1);
+      dev.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      await wait(100);
+      dev.send({ jsonrpc: '2.0', id: 2, method: 'prompts/get', params: { name: 'restore-runbook' } });
+      const devGet = await dev.waitFor(2);
+      const devText = devGet.result?.messages?.[0]?.content?.text;
+      if (devText !== promptText) {
+        throw new Error(
+          'the restore-runbook prompt differs between the shipped (inlined) and src-direct (MANAGEMENT.md) read paths — ' +
+            `dist=${promptText.length}ch dev=${typeof devText === 'string' ? `${devText.length}ch` : JSON.stringify(devGet)}`,
+        );
+      }
+    } finally {
+      devChild.kill();
+    }
 
     // 2m. schedule_status must REJECT unexpected arguments rather than silently
     // ignore them (the tool takes none — a stray field could otherwise mask a

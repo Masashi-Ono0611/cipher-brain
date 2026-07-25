@@ -1383,7 +1383,9 @@ const server = new Server(
 // It serves the SAME object scheduleStatusReport() returns to the tool and to the CLI's
 // `schedule status --json`. That is the whole reason this was safe to add: a resource
 // that built its own view would be a third description of one contract, which is the
-// bug class this repo has spent the week removing (#276, #280, #290, #293).
+// bug class this repo has spent the week removing (#276, #280, #290, #293). The two are
+// not byte-identical — this side is pretty-printed JSON text, and next_run is derived
+// from the clock at call time — but neither can describe the state differently.
 const SCHEDULE_STATUS_URI = 'cipher-brain://schedule/status';
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => ({

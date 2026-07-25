@@ -55,9 +55,19 @@ export function restoreRunbook(): string {
     return cached;
   }
 
-  // Dev path: src/lib/runbook.ts -> repo root.
-  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-  const path = join(repoRoot, 'MANAGEMENT.md');
+  // Dev path ONLY. From a bundled dist/mcp.mjs, `../..` resolves ABOVE the package, so
+  // an unrelated MANAGEMENT.md sitting in a parent directory could be served as the
+  // restore runbook — a wrong recovery procedure is worse than none (multi-model review
+  // finding). So refuse unless this module is genuinely the source file it claims to be.
+  const here = fileURLToPath(import.meta.url);
+  if (!here.endsWith(join('src', 'lib', 'runbook.ts'))) {
+    throw new Error(
+      `restore runbook unavailable: this build has no inlined copy, and ${here} is not the source tree, ` +
+        `so there is no trustworthy MANAGEMENT.md to fall back to. A shipped build must have it inlined ` +
+        `by scripts/build.ts.`,
+    );
+  }
+  const path = join(dirname(here), '..', '..', 'MANAGEMENT.md');
   let text: string;
   try {
     text = extractSection(readFileSync(path, 'utf8'), RUNBOOK_HEADING);

@@ -4,9 +4,9 @@
 
 The MCP server now exposes a resource and a prompt, not just tools.
 
-`cipher-brain://schedule/status` serves the installed schedule's state as JSON — the
-same object the `schedule_status` tool returns, so a client can attach it rather
-than relying on the model to think to fetch it. The `restore-runbook` prompt
+`cipher-brain://schedule/status` serves the installed schedule's state as JSON, built
+by the same function the `schedule_status` tool uses, so a client can attach it
+rather than relying on the model to think to fetch it. The `restore-runbook` prompt
 returns the restore procedure verbatim from `MANAGEMENT.md`, so an agent no longer
 reconstructs it from prose.
 

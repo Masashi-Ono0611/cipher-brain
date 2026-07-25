@@ -896,7 +896,7 @@ having to think to ask.
 
 | Kind | Name | What it is |
 |---|---|---|
-| resource | `cipher-brain://schedule/status` | The installed schedule's state, as JSON — **byte-identical to the `schedule_status` tool's result**. Useful pinned into a conversation: "is the nightly backup still armed" is a thing you want visible, not something to remember to check. |
+| resource | `cipher-brain://schedule/status` | The installed schedule's state, as JSON — the **same object** the `schedule_status` tool returns, from one function, so they cannot describe the state differently (`next_run` is computed from the clock at call time, so two reads can legitimately differ by a minute). Useful pinned into a conversation: "is the nightly backup still armed" is a thing you want visible, not something to remember to check. |
 | prompt | `restore-runbook` | The restore procedure — pull, verify *before* trusting, then decrypt into a scratch target. Its text is [`MANAGEMENT.md`](MANAGEMENT.md)'s "Restore runbook" section, inlined at build time, so it cannot drift from the documentation. |
 
 Only these two, deliberately. `last_snapshot_status` takes optional path arguments and

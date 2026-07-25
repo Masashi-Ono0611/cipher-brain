@@ -24,6 +24,19 @@ BIN="$ROOT/bin/cipher-brain.mjs"
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+# Start from a CLEAN CIPHER_BRAIN_* environment. This script is not merely reading
+# configuration — `schedule install` BAKES whatever it can see into the generated runner
+# (captureEnv), so a value exported in whoever-runs-this's own shell becomes part of the
+# fixtures, and the REAL runner invocations below then execute against it. Observed with
+# CIPHER_BRAIN_PIN_RECIPIENTS: an operator's own allowlist is baked in, the real run in
+# (a5.4) encrypts to this script's throwaway key, the snapshot is refused, and the failure
+# reads as "successful run (ping e2e) exited non-zero" — nothing points at the environment.
+# Cleared as a CLASS rather than by naming the variables that happen to hurt today: every
+# one of the 25 is bakeable, and the next one to bite would arrive with the same
+# unhelpful symptom. Sections that need one of these set it themselves, right where they
+# assert on it.
+for _leaked in $(env | sed -n 's/^\(CIPHER_BRAIN_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_leaked"; done
+unset _leaked
 export CIPHER_BRAIN_HOME="$TMP/home"
 export CIPHER_BRAIN_SCHEDULE_DIR="$TMP/sched"
 export CIPHER_BRAIN_LAUNCHD_DIR="$TMP/launchagents"
@@ -51,7 +64,14 @@ if [ "$OS" != "Darwin" ] && ! command -v crontab > /dev/null 2>&1; then HAS_CRON
 
 SRC="$TMP/brain-src"; mkdir -p "$SRC"
 echo "a-thought" > "$SRC/note.txt"
-cb keygen > /dev/null 2>&1
+# Guarded, and the output kept, because an unguarded `> /dev/null 2>&1` here fails in the
+# worst possible way: `set -e` ends the script at the very first command that produces any
+# output, so the whole run is a bare non-zero exit with an EMPTY log and nothing naming
+# keygen. (Hit while writing the environment fix above — a worktree without dependencies
+# installed makes this exact line fail, and the symptom is indistinguishable from the
+# script never starting.)
+cb keygen > "$TMP/keygen.log" 2>&1 \
+  || { echo "[FAIL] keygen (fixture setup) exited non-zero"; cat "$TMP/keygen.log"; exit 1; }
 
 echo "== (a0) --help documents the CIPHER_BRAIN_LAUNCHD_DIR escape hatch (#182: it existed in code but was undocumented) =="
 cb --help > "$TMP/help.txt" 2>&1 || { echo "[FAIL] --help exited non-zero"; cat "$TMP/help.txt"; exit 1; }
@@ -173,8 +193,10 @@ PINRUNNER="$PINSCHED/nightly.sh"
 CIPHER_BRAIN_HOME="$PINHOME" cb keygen > /dev/null 2>&1 || { echo "[FAIL] keygen for the empty-pin home exited non-zero"; exit 1; }
 # Control: with the var genuinely UNSET, it is still dropped (no pin configured) — proving
 # the assertion below is about '' specifically, not about baking the name unconditionally.
-# `unset` in a subshell, not just "we never set it": whoever runs this script may well have
-# a real CIPHER_BRAIN_PIN_RECIPIENTS exported, which would otherwise leak in and false-FAIL.
+# `unset` in a subshell rather than relying on "we never set it": the script-wide clean
+# slate at the top already guarantees nothing ambient is in scope, but this case is
+# specifically ABOUT unset-versus-empty, so it states which one it means locally instead
+# of depending on a distant line to be read.
 (unset CIPHER_BRAIN_PIN_RECIPIENTS
  CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_SCHEDULE_DIR="$PINSCHED" CIPHER_BRAIN_FILE_DIR="$PINSTORE" CIPHER_BRAIN_LAUNCHD_DIR="$PINLAUNCHD" \
    cb schedule install --backend file --dir "$PINSRC" --no-load) > "$TMP/install-a3d-unset.log" 2>&1 \

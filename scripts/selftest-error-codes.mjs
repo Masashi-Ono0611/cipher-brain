@@ -7,12 +7,21 @@
 // "with no compiler or test to catch it". Only two of the sixteen codes are exercised
 // end-to-end anywhere (CB-E013 in cli-smoke.sh, CB-E016 in selftest-minisign.sh).
 //
-// This asserts the structural half of the contract: for every entry whose text WE
-// write, the literal it looks for is still present somewhere under src/. It does NOT
-// prove the code attaches at runtime — a message could move between files, or a pattern
-// could match something unintended — but it does catch the failure this is about:
-// someone edits a throw site, the substring changes, and a code stops attaching with
-// nothing to notice.
+// What this asserts, stated narrowly because it is easy to overclaim: for every entry
+// whose text WE write, the literal the pattern looks for still appears somewhere in the
+// text of src/**.ts. Precisely:
+//
+//   - It catches the LAST occurrence of a literal disappearing from the source.
+//   - It does NOT catch one of several occurrences being reworded. Some literals are
+//     thrown from two files (CB-E006's is in both arweave.ts and turbo.ts); either site
+//     can rot while the other keeps this green.
+//   - It does NOT distinguish a real throw site from a comment or an unrelated string —
+//     `includes()` over file text is all it does.
+//   - It does NOT prove the code still ATTACHES at runtime; only two codes are
+//     exercised end-to-end anywhere (CB-E013, CB-E016).
+//
+// It is a cheap tripwire for the specific accident the header of errors.ts warns about,
+// not a proof of correctness. Its value is that today there is nothing at all.
 //
 // Entries marked origin:'upstream' are skipped BY DESIGN and reported as skipped, not
 // silently passed: their wording belongs to a dependency (arweave, @ardrive/turbo-sdk),
@@ -81,12 +90,16 @@ function literals(patternSrc) {
   }
   const out = [];
   for (const branch of variants.flatMap((v) => v.split('|'))) {
+    // NOT trimmed: whitespace at the edge of an alternative is part of what the regex
+    // requires. CB-E014's first alternative ends in a space ("schedule not installed
+    // (no "), and trimming it left the checker searching for "…(no" — a prefix of
+    // "…(nothing configured)", so rewording the message that way would have PASSED here
+    // while no longer matching the regex (multi-model review finding).
     const s = branch
       .replace(/\\([().?[\]/\-+])/g, '$1') // escaped punctuation -> the character itself
-      .replace(/\\b/g, '')
-      .trim();
+      .replace(/\\b/g, '');
     if (/[\\^$*{}]/.test(s)) return null; // a construct this checker does not model
-    if (s) out.push(s);
+    if (s.trim()) out.push(s); // an all-whitespace branch carries no information
   }
   return out.length ? out : null;
 }
@@ -128,6 +141,20 @@ for (const { code, pattern, origin, assertLiterals } of entries) {
   if (origin === 'mixed') {
     if (!assertLiterals?.length) {
       fail(`${code} (origin: mixed) must list the alternatives we write in \`assertLiterals\` — see errors.ts`);
+    }
+    // Each asserted literal must actually BE one of the pattern's alternatives.
+    // Without this an entry could list any string that happens to exist in src/ and
+    // pass while asserting nothing about the pattern (multi-model review finding).
+    const alternatives = literals(pattern);
+    if (!alternatives) {
+      fail(`${code}: cannot extract literals from /${pattern}/ to validate assertLiterals against`);
+    }
+    const bogus = assertLiterals.filter((l) => !alternatives.some((a) => a.trim() === l.trim()));
+    if (bogus.length) {
+      fail(
+        `${code} (origin: mixed) lists ${JSON.stringify(bogus)} in assertLiterals, but that is not an alternative of /${pattern}/.\n` +
+          `        assertLiterals must name the pattern's OWN alternatives — otherwise it asserts something unrelated.`,
+      );
     }
     const missing = assertLiterals.filter((l) => !inSrc(l));
     if (missing.length) {

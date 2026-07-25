@@ -194,7 +194,10 @@ function buildRecoveryKit(k: KitInputs): string {
   lines.push(k.savedLocatorLine);
   lines.push('END SAVE-LOCATOR LINE');
   lines.push('');
-  lines.push('--- CIPHER_BRAIN_PIN_RECIPIENTS (add to your shell rc, e.g. ~/.zshrc or ~/.bashrc) ---');
+  // The kit is a sheet of paper someone acts on later, possibly on a different machine —
+  // so it names the config file the way README/MANAGEMENT.md do ($CIPHER_BRAIN_HOME-
+  // relative), not this machine's resolved path, which would not be the right one there.
+  lines.push('--- CIPHER_BRAIN_PIN_RECIPIENTS (add to $CIPHER_BRAIN_HOME/config.env; shell rc: prefix "export ") ---');
   lines.push(
     k.pinRecipientsLine ?? '(skipped during init — see MANAGEMENT.md / "cipher-brain help" for what this does)',
   );
@@ -515,24 +518,39 @@ export async function init(_o: CliOptions): Promise<void> {
       }
 
       // ---------- 5. recipient pin suggestion (CIPHER_BRAIN_PIN_RECIPIENTS) ----------
+      // The config file (#286) — not a shell rc — is what this step points at. init still
+      // does not WRITE it (that is a separate consent question: this wizard has never
+      // persisted a setting on the user's behalf, and a file that may hold secrets is not
+      // the place to start doing it silently), so the suggestion stays a suggestion.
+      const configFilePath = join(HOME, 'config.env');
       console.log('\n== 5/7: recipient pin (optional, recommended) ==');
       console.log(
-        'CIPHER_BRAIN_PIN_RECIPIENTS is an env var snapshot reads at run time: when set, it refuses to encrypt\n' +
+        'CIPHER_BRAIN_PIN_RECIPIENTS is a setting snapshot reads at run time: when set, it refuses to encrypt\n' +
           'to any recipient NOT on the list — so a tampered recipient.txt, or an injected extra --recipient, can\n' +
-          'never silently re-key your snapshots to an attacker. It is not something init can "turn on" for you\n' +
-          'persistently (it is read from the environment at snapshot time, not a file init controls) — the most\n' +
-          'this wizard can do is suggest the exact line to add to your shell rc file yourself.',
+          'never silently re-key your snapshots to an attacker. init does not write the setting for you, but it\n' +
+          'can suggest the exact line. The place to put it is the config file, which the CLI and the MCP server\n' +
+          `both read:\n  ${configFilePath}   (one KEY=value per line; chmod 600 — it may hold secrets)\n` +
+          'A shell rc (~/.zshrc / ~/.bashrc) also works, but only for the interactive shells you open yourself.\n' +
+          'launchd/cron start the unattended nightly run with a bare environment, and "schedule install" bakes\n' +
+          'in whatever is in effect when you run it — so a value in the config file reaches the nightly run this\n' +
+          'setting most exists to protect, while one in a shell rc reaches it only if install happened to run\n' +
+          'from a shell that had sourced it. (Adding it after "schedule install"? Re-run install to pick it up.)',
       );
       let pinRecipientsLine: string | null = null;
-      if (await askYesNo(rl, 'Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line for your shell rc file?', true)) {
+      if (await askYesNo(rl, 'Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line for the config file?', true)) {
         const primaryPub = (await readFile(RECIPIENT, 'utf8')).trim();
-        const defaultLine = `export CIPHER_BRAIN_PIN_RECIPIENTS="${[primaryPub, backup?.recipient].filter(Boolean).join(' ')}"`;
+        const defaultLine = `CIPHER_BRAIN_PIN_RECIPIENTS="${[primaryPub, backup?.recipient].filter(Boolean).join(' ')}"`;
         pinRecipientsLine = await askLine(
           rl,
           `Suggested line (edit or press Enter to accept):\n${defaultLine}\n> `,
           defaultLine,
         );
-        console.log(`\nAdd this to your shell rc (~/.zshrc / ~/.bashrc), then open a new shell:\n${pinRecipientsLine}`);
+        console.log(
+          `\nAdd this line to ${configFilePath} (create the file if it does not exist yet, then chmod 600 it):\n` +
+            `${pinRecipientsLine}\n` +
+            'For a shell rc instead, prefix it with "export " and open a new shell — but see the note above about\n' +
+            'the unattended nightly run.',
+        );
       } else {
         console.log('Skipping the recipient pin suggestion.');
       }

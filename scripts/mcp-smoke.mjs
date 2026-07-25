@@ -37,9 +37,12 @@
 //      verify_restore {file, backend:"nonsense"}, which used to return
 //      isError:false with a PASS verdict because its local-file branch never
 //      consulted the backend — plus the near-miss suggestion for a value one
-//      letter off (backend "fille" → "did you mean file?"), and a GENERIC pass
+//      letter off (backend "fille" → "did you mean file?"), a GENERIC pass
 //      over every field that DECLARES an enum in the tools/list response,
-//      so a tool added later with a new enum field is covered the same way;
+//      so a tool added later with a new enum field is covered the same way,
+//      and a walk of every advertised schema that FAILS on an enum in a
+//      shape the dispatcher's check does not read (nested, or a
+//      non-primitive literal) rather than letting it ship unenforced;
 //      the spend gate: snapshot_now with
 //      backend=turbo and no confirm_paid must be refused with
 //      ERR_CONFIRM_REQUIRED — even with CIPHER_BRAIN_YES set in the
@@ -1046,6 +1049,54 @@ async function run(tmp) {
     // enum, this failing is the deliberate step that says so.
     if (enumFields.length === 0) {
       throw new Error('no advertised tool declares an enum — the generic enum check below would prove nothing');
+    }
+
+    // The dispatcher's check is deliberately not a JSON Schema validator (#308): it reads
+    // ONE shape — a top-level property's own `enum`, of primitive literals compared by
+    // value. Both loops above see only that same shape, so an enum declared any OTHER way
+    // would be unenforced AND untested, which is #308's own failure mode wearing a new
+    // hat. Walk every advertised schema and refuse to be green with one: an enum nested
+    // under items / a sub-object / allOf|anyOf|oneOf is not read at all, and an object or
+    // array literal is compared by reference where JSON Schema compares structurally, so
+    // it could refuse a value the schema permits. Either is a deliberate step — extend
+    // assertDeclaredEnums first — not something a new tool can slip past.
+    const enumsFoundBelowProperty = [];
+    const walkForEnums = (node, path) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (const [i, child] of node.entries()) walkForEnums(child, `${path}[${i}]`);
+        return;
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (key === 'enum') enumsFoundBelowProperty.push(`${path}.enum`);
+        else walkForEnums(child, `${path}.${key}`);
+      }
+    };
+    const isPrimitiveLiteral = (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
+    const unenforceable = [];
+    for (const tool of list.result?.tools ?? []) {
+      const schema = tool.inputSchema ?? {};
+      for (const [key, child] of Object.entries(schema)) {
+        if (key !== 'properties') walkForEnums(child, `${tool.name}.${key}`);
+      }
+      for (const [field, spec] of Object.entries(schema.properties ?? {})) {
+        for (const [key, child] of Object.entries(spec ?? {})) {
+          if (key !== 'enum') walkForEnums(child, `${tool.name}.${field}.${key}`);
+          else if (!Array.isArray(child) || !child.every(isPrimitiveLiteral)) {
+            unenforceable.push(
+              `${tool.name}.${field}.enum (non-primitive literal — compared by reference, not structurally)`,
+            );
+          }
+        }
+      }
+    }
+    unenforceable.push(...enumsFoundBelowProperty.map((p) => `${p} (not a top-level property's own enum)`));
+    if (unenforceable.length > 0) {
+      throw new Error(
+        `advertised enum(s) the dispatcher does not enforce: ${unenforceable.join(', ')} — assertDeclaredEnums ` +
+          "reads a top-level property's own enum of primitive literals and nothing else. Extend it (or drop the " +
+          'enum from the schema) rather than publishing a constraint the server ignores.',
+      );
     }
     const enumProbe = 'zz_not_a_declared_enum_value';
     for (const [i, [toolName, field, allowed]] of enumFields.entries()) {

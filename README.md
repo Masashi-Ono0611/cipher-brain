@@ -847,11 +847,15 @@ whichever branch the call would have taken (#308). `backend` declares
 the handler happened to consult it, so `estimate_cost {file, backend: "nonsense"}`
 errored while `verify_restore {file, backend: "nonsense"}` returned a clean `PASS`
 from a code path that never touched the backend it was given. The check is now
-derived from the same published schema as the one above, so it applies to any enum
-any tool declares later, and a near miss is named (`backend: "fille"` → *did you mean
-file?*). A value the enum **permits** but the chosen branch does not use — e.g.
-`verify_restore {file, backend: "file"}`, where the artifact is already local — is
-still accepted and ignored; that is branch relevance, not something the schema states.
+derived from the same published schema as the one above, and a near miss is named
+(`backend: "fille"` → *did you mean file?*). Two things it deliberately does not do,
+since it is a few lines against the schema rather than a JSON Schema validator: it
+reads a top-level property's own `enum` of plain literals — every enum this server
+declares — and nothing nested or structural (`scripts/mcp-smoke.mjs` fails the build
+on an enum in any other shape, rather than letting one go unenforced); and a value the
+enum **permits** but the chosen branch does not use — e.g. `verify_restore
+{file, backend: "file"}`, where the artifact is already local — is still accepted and
+ignored, because that is branch relevance rather than something the schema states.
 
 Claude Code config (`.mcp.json`):
 

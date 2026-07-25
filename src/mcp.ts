@@ -29,15 +29,20 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
   type Tool,
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { HOME, IDENTITY, RECIPIENT, CONFIG_FILE_ERROR } from './lib/config.js';
+import { restoreRunbook } from './lib/runbook.js';
 import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
 import { push, pull } from './lib/pushpull.js';
-import { schedule } from './lib/schedule.js';
+import { schedule, scheduleStatusReport } from './lib/schedule.js';
 import { estimateCost } from './lib/estimate.js';
 import { keygenAt } from './lib/keys.js';
 import { wallet } from './lib/wallet.js';
@@ -1267,12 +1272,12 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
   });
 }
 
-// schedule() (src/lib/schedule.ts, the SAME function the CLI's `schedule status`
-// subcommand dispatches to via `case 'schedule': return schedule(o)`) has no
-// return value — its report is entirely console.log lines. Re-parsing that text
-// into structured fields here would be exactly the re-implemented logic the
-// module comment at the top of this file rules out, so it is captured and
-// returned verbatim instead (one array entry per line, in print order).
+// scheduleStatusReport() (src/lib/schedule.ts) is the SAME function the CLI's
+// `schedule status --json` prints and the cipher-brain://schedule/status resource
+// serves (#285). This used to capture schedule()'s console output and return it as
+// `{ report: [lines] }`, because that function had no return value — so the tool
+// handed back prose an agent had to parse. One object now, three surfaces, no
+// re-implementation and no text round-trip.
 async function handleScheduleStatus(args: ToolArgs): Promise<CallToolResult> {
   // The low-level Server does not enforce the advertised inputSchema
   // (additionalProperties: false) at runtime, so a stray/misunderstood field
@@ -1282,8 +1287,7 @@ async function handleScheduleStatus(args: ToolArgs): Promise<CallToolResult> {
   const unexpected = Object.keys(args);
   if (unexpected.length > 0)
     throw new ToolError('ERR_INVALID_INPUT', `schedule_status takes no arguments — got: ${unexpected.join(', ')}`);
-  const res = await captureCall(() => schedule({ _: 'status', dirs: [], tables: [], recipients: [] }));
-  return structuredOk({ report: res.out });
+  return structuredOk(await scheduleStatusReport());
 }
 
 // keygenAt() (src/lib/keys.ts) is the SAME generation logic `cipher-brain keygen`
@@ -1360,7 +1364,83 @@ async function handleWalletAddress(args: ToolArgs): Promise<CallToolResult> {
 // Server bootstrap
 // ─────────────────────────────────────────────────────────────────────────────
 
-const server = new Server({ name: SERVER_NAME, version: SERVER_VERSION }, { capabilities: { tools: {} } });
+// #285: tools are MODEL-controlled (the LLM decides to invoke one); resources are
+// APPLICATION-controlled (the client attaches them). The schedule's state is a document
+// a user may want pinned rather than something the model should have to think to fetch,
+// and the restore runbook is a procedure agents keep reconstructing from prose — so both
+// of those primitives are declared, alongside the ten tools.
+const server = new Server(
+  { name: SERVER_NAME, version: SERVER_VERSION },
+  { capabilities: { tools: {}, resources: {}, prompts: {} } },
+);
+
+// ─── resources (#285) ──────────────────────────────────────────────────────────
+// One resource, and only one on purpose. `schedule_status` is the single status tool
+// that takes NO arguments, so it maps to a fixed URI; `last_snapshot_status` takes
+// optional locator_file/index_file paths and would need a URI template, which is a
+// separate decision rather than a detail of this one.
+//
+// It serves the SAME object scheduleStatusReport() returns to the tool and to the CLI's
+// `schedule status --json`. That is the whole reason this was safe to add: a resource
+// that built its own view would be a third description of one contract, which is the
+// bug class this repo has spent the week removing (#276, #280, #290, #293). The two are
+// not byte-identical — this side is pretty-printed JSON text, and next_run is derived
+// from the clock at call time — but neither can describe the state differently.
+const SCHEDULE_STATUS_URI = 'cipher-brain://schedule/status';
+
+server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+  resources: [
+    {
+      uri: SCHEDULE_STATUS_URI,
+      name: 'Schedule status',
+      description:
+        'The installed nightly schedule: when it runs, which backend, which config file supplied ' +
+        'settings, whether the launchd/cron trigger is actually registered, the last run’s result ' +
+        'and the next run time. Read-only. Identical to the schedule_status tool’s result — this is ' +
+        'the same state offered as something a client can attach rather than something the model has ' +
+        'to think to ask for. Errors if no schedule is installed.',
+      mimeType: 'application/json',
+    },
+  ],
+}));
+
+server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  const { uri } = request.params;
+  if (uri !== SCHEDULE_STATUS_URI) throw new ToolError('ERR_INVALID_INPUT', `no such resource: ${uri}`);
+  return {
+    contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(await scheduleStatusReport(), null, 2) }],
+  };
+});
+
+// ─── prompts (#285) ────────────────────────────────────────────────────────────
+// The restore procedure, which an agent would otherwise reconstruct from prose every
+// time. Its text is MANAGEMENT.md's "## Restore runbook" section — inlined at build
+// time for a shipped build, read from the repo in dev (src/lib/runbook.ts). No copy of
+// it lives in the source tree.
+const RESTORE_PROMPT = 'restore-runbook';
+
+server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+  prompts: [
+    {
+      name: RESTORE_PROMPT,
+      title: 'Restore a cipher-brain snapshot',
+      description:
+        'The documented procedure for getting a snapshot back on a machine that holds an identity: ' +
+        'pull the ciphertext, verify it before trusting it, then decrypt into a SCRATCH target. ' +
+        'Verbatim from MANAGEMENT.md so it cannot drift from the documentation.',
+      arguments: [],
+    },
+  ],
+}));
+
+server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  const { name } = request.params;
+  if (name !== RESTORE_PROMPT) throw new ToolError('ERR_INVALID_INPUT', `no such prompt: ${name}`);
+  return {
+    description: 'cipher-brain restore runbook (from MANAGEMENT.md)',
+    messages: [{ role: 'user' as const, content: { type: 'text' as const, text: restoreRunbook() } }],
+  };
+});
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: ALL_TOOLS }));
 

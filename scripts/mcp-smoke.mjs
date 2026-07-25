@@ -732,20 +732,127 @@ async function run(tmp) {
 
     // 2l. schedule_status — thin wrapper over the SAME schedule() the CLI's `schedule
     // status` dispatches to; asserts against the schedule_install call just above,
-    // verbatim report lines rather than re-parsed fields (matching handleScheduleStatus's
+    // the structured report (#285) — the same object the resource and the CLI --json serve
     // "no re-implemented logic" design).
     send({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'schedule_status', arguments: {} } });
     const sched = await waitFor(10);
     const schedSc = sched.result?.structuredContent;
     if (sched.result?.isError) throw new Error(`schedule_status failed: ${JSON.stringify(schedSc).slice(0, 500)}`);
-    if (!Array.isArray(schedSc?.report) || schedSc.report.length === 0) {
-      throw new Error(`schedule_status report missing/empty: ${JSON.stringify(schedSc)}`);
+    // #285: this returns the STRUCTURED report now, not captured console lines.
+    if (schedSc?.configured?.at !== '03:30' || schedSc?.configured?.backend !== 'file') {
+      throw new Error(`schedule_status.configured unexpected: ${JSON.stringify(schedSc)}`);
     }
-    if (!schedSc.report.some((l) => l === 'configured: daily at 03:30, backend file')) {
-      throw new Error(`schedule_status report missing the configured line: ${JSON.stringify(schedSc.report)}`);
+    if (typeof schedSc?.next_run !== 'string' || !schedSc.next_run) {
+      throw new Error(`schedule_status.next_run missing: ${JSON.stringify(schedSc)}`);
     }
-    if (!schedSc.report.some((l) => /^next run: /.test(l))) {
-      throw new Error(`schedule_status report missing the next-run line: ${JSON.stringify(schedSc.report)}`);
+    if (!schedSc?.trigger?.type || !('loaded' in (schedSc.trigger ?? {}))) {
+      throw new Error(`schedule_status.trigger missing: ${JSON.stringify(schedSc)}`);
+    }
+
+    // 2l-b. #285: the cipher-brain://schedule/status RESOURCE must serve byte-identical
+    // state to the tool. That equality is the whole safety argument for adding a second
+    // surface at all — if these can differ, this is a third description of one contract,
+    // which is the bug class #276/#280/#290/#293 were.
+    send({ jsonrpc: '2.0', id: 30, method: 'resources/list', params: {} });
+    const resList = await waitFor(30);
+    const uris = (resList.result?.resources ?? []).map((r) => r.uri);
+    if (JSON.stringify(uris) !== JSON.stringify(['cipher-brain://schedule/status'])) {
+      throw new Error(`resources/list unexpected: ${JSON.stringify(resList)}`);
+    }
+    send({
+      jsonrpc: '2.0',
+      id: 31,
+      method: 'resources/read',
+      params: { uri: 'cipher-brain://schedule/status' },
+    });
+    const resRead = await waitFor(31);
+    const body = resRead.result?.contents?.[0];
+    if (body?.mimeType !== 'application/json' || typeof body?.text !== 'string') {
+      throw new Error(`resources/read returned no JSON body: ${JSON.stringify(resRead).slice(0, 300)}`);
+    }
+    // Compare everything EXCEPT next_run, which is derived from the clock at call time:
+    // two calls either side of a minute boundary legitimately differ, and asserting
+    // strict equality here would be a flaky test rather than a real guarantee
+    // (multi-model review finding). Both must still HAVE a well-formed next_run.
+    const resObj = JSON.parse(body.text);
+    const withoutNextRun = (o) => {
+      const { next_run, ...rest } = o ?? {};
+      return JSON.stringify(rest);
+    };
+    if (withoutNextRun(resObj) !== withoutNextRun(schedSc)) {
+      throw new Error(
+        `the schedule status RESOURCE and TOOL disagree — one contract, two answers:\n  resource=${body.text.slice(0, 300)}\n  tool=${JSON.stringify(schedSc).slice(0, 300)}`,
+      );
+    }
+    for (const [what, v] of [
+      ['resource', resObj?.next_run],
+      ['tool', schedSc?.next_run],
+    ]) {
+      if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(v)) {
+        throw new Error(`${what} next_run is missing or malformed: ${JSON.stringify(v)}`);
+      }
+    }
+
+    // 2l-c. #285: the restore-runbook prompt. Its text is MANAGEMENT.md's section,
+    // inlined at build time; a build that inlined NOTHING would otherwise look like a
+    // working feature while handing an agent no procedure at all.
+    send({ jsonrpc: '2.0', id: 32, method: 'prompts/list', params: {} });
+    const promptList = await waitFor(32);
+    const promptNames = (promptList.result?.prompts ?? []).map((p) => p.name);
+    if (JSON.stringify(promptNames) !== JSON.stringify(['restore-runbook'])) {
+      throw new Error(`prompts/list unexpected: ${JSON.stringify(promptList)}`);
+    }
+    send({ jsonrpc: '2.0', id: 33, method: 'prompts/get', params: { name: 'restore-runbook' } });
+    const promptGet = await waitFor(33);
+    const promptText = promptGet.result?.messages?.[0]?.content?.text;
+    if (typeof promptText !== 'string' || promptText.length < 200) {
+      throw new Error(`restore-runbook prompt is empty or too short: ${JSON.stringify(promptGet).slice(0, 300)}`);
+    }
+    if (!promptText.startsWith('## Restore runbook') || !/cipher-brain pull --locator/.test(promptText)) {
+      throw new Error(
+        `restore-runbook prompt does not look like the MANAGEMENT.md section: ${promptText.slice(0, 200)}`,
+      );
+    }
+    // The runbook has TWO read paths — a shipped build uses the constant scripts/build.ts
+    // inlined, while src-direct dev runs read MANAGEMENT.md — and a fallback nobody
+    // compares is a fallback that can quietly serve something else. So actually compare
+    // them: drive the SRC-DIRECT server too and require the same text. (An earlier
+    // version of this comment claimed the comparison happened when it did not —
+    // multi-model review finding.)
+    const devChild = spawn(process.execPath, [join(ROOT, 'bin', 'cipher-brain-mcp.mjs')], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        CIPHER_BRAIN_HOME: home,
+        NODE_OPTIONS: `--experimental-strip-types --import ${join(ROOT, 'scripts', 'dev-cli-loader.mjs')}`,
+      },
+    });
+    try {
+      const dev = makeRpcClient(devChild);
+      dev.send({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'ci-smoke-dev', version: '0.0.0' },
+        },
+      });
+      await dev.waitFor(1);
+      dev.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      await wait(100);
+      dev.send({ jsonrpc: '2.0', id: 2, method: 'prompts/get', params: { name: 'restore-runbook' } });
+      const devGet = await dev.waitFor(2);
+      const devText = devGet.result?.messages?.[0]?.content?.text;
+      if (devText !== promptText) {
+        throw new Error(
+          'the restore-runbook prompt differs between the shipped (inlined) and src-direct (MANAGEMENT.md) read paths — ' +
+            `dist=${promptText.length}ch dev=${typeof devText === 'string' ? `${devText.length}ch` : JSON.stringify(devGet)}`,
+        );
+      }
+    } finally {
+      devChild.kill();
     }
 
     // 2m. schedule_status must REJECT unexpected arguments rather than silently
@@ -787,7 +894,8 @@ async function run(tmp) {
         `restore_now gate=ERR_CONFIRM_REQUIRED, restore_now round-trip content=ok, estimate(file)=0, ` +
         `estimate(size_bytes)=0, estimate(turbo, sdk ${turboSdkInstalled ? 'installed' : 'missing'})=ok, ` +
         `schedule_install gate=ERR_CONFIRM_REQUIRED, schedule_install no_load=ok, ` +
-        `schedule_status.report.length=${schedSc.report.length}, keygen(pre-existing)=refused\n`,
+        `schedule_status.next_run=${schedSc.next_run}, resource==tool=yes, ` +
+        `prompt=restore-runbook(${promptText.length}ch), keygen(pre-existing)=refused\n`,
     );
   } finally {
     try {

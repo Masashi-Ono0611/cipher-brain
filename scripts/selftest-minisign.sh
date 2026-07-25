@@ -331,6 +331,18 @@ grep -q 'SKIPPED' "$TMP/sk6.out" \
   && echo "[PASS] a legacy 6-field signed line pushes (unknown != unchanged) and is upgraded to 7 fields" \
   || { echo "[FAIL] the re-push did not upgrade the legacy line to 7 fields"; cat "$TMP/sk-loc-legacy.tsv"; exit 1; }
 
+# (6) a sidecar that EXISTS but does not parse is unknown, not "unsigned" — skipping on
+# it would silently accept a corrupt signature sitting next to unchanged content and
+# never re-push it (multi-model review finding on #250). Reuses the unsigned baseline
+# locator from (1)/(2), where a skip is otherwise guaranteed to fire.
+cut -f1-5 "$TMP/sk-loc.tsv" >"$TMP/sk-loc-unsigned.tsv" # a 5-field line = previous push unsigned
+sk snapshot --dir "$SK_SRC" --out "$TMP/sk7.age" --no-sign >/dev/null
+printf 'not a minisig at all\n' >"$TMP/sk7.age.minisig"
+sk push --in "$TMP/sk7.age" --backend file --save-locator "$TMP/sk-loc-unsigned.tsv" --skip-unchanged >"$TMP/sk7.out" 2>&1
+grep -q 'SKIPPED' "$TMP/sk7.out" \
+  && { echo "[FAIL] an unparseable .minisig was treated as 'unsigned' and skipped"; cat "$TMP/sk7.out"; exit 1; }
+echo "[PASS] a present-but-unparseable .minisig counts as unknown signing state, never as unsigned"
+
 if ! command -v minisign >/dev/null 2>&1; then
   echo "[SKIP] real \`minisign\` binary interop: no \`minisign\` on PATH — install it (brew/apt) to exercise CLI<->binary wire-format interop"
 else

@@ -231,13 +231,14 @@ function parseMinisigText(text: string): ParsedMinisig {
   return { sigAlg, keyId: Buffer.from(keyId), signature: Buffer.from(signature), trustedComment, globalSignature };
 }
 
-// The key id of the keypair that produced a detached signature, as lowercase hex
-// (issue #250). Read out of the *.minisig blob itself — never off the local signing
-// key — so it describes the ARTIFACT that was (or is about to be) pushed, not
-// whatever key happens to sit in $CIPHER_BRAIN_HOME right now. push
-// --skip-unchanged records it alongside the locator and compares it on the next
-// run, so enabling signing, or rotating the signing key, is a change that forces a
-// re-push even when the plaintext and recipients are identical.
+// The key id a detached signature CLAIMS it was made with, as lowercase hex (issue
+// #250) — the unverified 8 bytes in the *.minisig packet, not proof of who signed
+// it. Read out of the sidecar itself rather than off the local signing key, so it
+// describes the ARTIFACT that was (or is about to be) pushed, not whatever key
+// happens to sit in $CIPHER_BRAIN_HOME right now. push --skip-unchanged records it
+// alongside the locator and compares it on the next run, so enabling signing, or
+// rotating the signing key, is a change that forces a re-push even when the
+// plaintext and recipients are identical.
 //
 // This makes NO authenticity claim: an attacker who forges a .minisig controls the
 // key id in it too. It is a change detector for the operator's own local state, in

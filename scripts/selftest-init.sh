@@ -145,7 +145,7 @@ LOCFILE="$WIZ_CB_HOME/latest-locator.tsv"
 [ -f "$LOCFILE" ] || { echo "[FAIL] --save-locator file not written by the wizard's push"; exit 1; }
 [ "$(awk -F'\t' '{print NF; exit}' "$LOCFILE")" = "7" ] || { echo "[FAIL] locator file is not 7 tab-separated fields (signing was enabled, so a sig_locator field (#214) and a sign_key_id field (#250) are both expected)"; cat "$LOCFILE"; exit 1; }
 [ "$(awk -F'\t' '{print $2; exit}' "$LOCFILE")" = "file" ] || { echo "[FAIL] locator file backend != file"; exit 1; }
-echo "[PASS] push wrote a 6-field --save-locator file (ciphertext + signature locator) for the file backend"
+echo "[PASS] push wrote a 7-field --save-locator file (ciphertext + signature locator + signing key id) for the file backend"
 
 SNAP="$(find "$WIZ_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
 [ -n "$SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found under CIPHER_BRAIN_HOME"; exit 1; }

@@ -71,18 +71,27 @@ export class PushLocatorWriteError extends Error {
   }
 }
 
-// The signing key id for the artifact being pushed: read out of the "<in>.minisig"
-// sidecar snapshot writes when a signing identity is present (#214). null means
-// "this artifact carries no signature" — a KNOWN state, not an unknown one, which
-// is what lets --skip-unchanged tell "still unsigned, as before" apart from
-// "signing was just enabled" (#250). Never throws, mirroring contentDigestFor: an
-// unreadable or malformed sidecar degrades to null, and a null on either side of
-// the comparison below simply means the skip does not fire.
-async function signKeyIdFor(o: CliOptions): Promise<string | null> {
+// The signing state of the artifact being pushed (#250). THREE distinct outcomes,
+// not two — collapsing them would be a real bug (multi-model review finding):
+//   { signed: false }        no "<in>.minisig" at all. A KNOWN state, and the one
+//                            that lets --skip-unchanged tell "still unsigned, as
+//                            before" apart from "signing was just enabled".
+//   { keyId }                a sidecar that parses, carrying its claimed key id.
+//   null                     a sidecar EXISTS but could not be read or parsed.
+//                            Genuinely unknown — the caller must never skip on it,
+//                            or a corrupt signature next to unchanged content would
+//                            be silently accepted as "unsigned, same as last time"
+//                            and never re-pushed.
+// Never throws: an unreadable/malformed sidecar is reported as unknown, not raised,
+// so it degrades the optimization rather than failing the push.
+type SigningState = { signed: false } | { signed: true; keyId: string };
+async function signingStateFor(o: CliOptions): Promise<SigningState | null> {
+  const sigPath = `${o.in}.minisig`;
+  if (!(await exists(sigPath))) return { signed: false };
   try {
-    return await signatureKeyIdHex(`${o.in}.minisig`);
+    return { signed: true, keyId: await signatureKeyIdHex(sigPath) };
   } catch {
-    return null;
+    return null; // present but unreadable/malformed — unknown, never "unsigned"
   }
 }
 
@@ -169,7 +178,7 @@ export async function push(o: CliOptions): Promise<boolean> {
     if (!o.force) {
       const cur = await contentDigestFor(o);
       const curRecipients = await recipientsFingerprintFor(o);
-      const curSignKeyId = await signKeyIdFor(o);
+      const curSigning = await signingStateFor(o);
       const prev = await readSavedLocatorLine(o.save_locator);
       const contentUnchanged = !!(
         cur &&
@@ -190,11 +199,15 @@ export async function push(o: CliOptions): Promise<boolean> {
       // skipping exactly as it did. The 7th field only has to answer the narrower
       // "signed by WHICH key", and its absence on a signed previous push (a 6-field
       // line written between #214 and #250) is genuinely unknown: don't skip, then
-      // the re-push records it and the next run compares normally.
+      // the re-push records it and the next run compares normally. A curSigning of
+      // null is the same kind of unknown on the current side (a sidecar that exists
+      // but does not parse) and likewise never skips.
       const prevSigned = !!prev?.sigLocator;
-      const signingUnchanged = curSignKeyId
-        ? prevSigned && !!prev?.signKeyId && prev.signKeyId.toLowerCase() === curSignKeyId
-        : !prevSigned;
+      const signingUnchanged = !curSigning
+        ? false
+        : curSigning.signed
+          ? prevSigned && !!prev?.signKeyId && prev.signKeyId.toLowerCase() === curSigning.keyId
+          : !prevSigned;
       if (contentUnchanged && recipientsUnchanged && signingUnchanged && prev) {
         console.error(
           `SKIPPED: content, recipients and signing unchanged (digest ${cur}) — already pushed to ${o.backend} as ${prev.locator} (--force to push anyway)`,
@@ -303,7 +316,8 @@ export async function push(o: CliOptions): Promise<boolean> {
       const digest = await sha256(o.in);
       const contentDigest = await contentDigestFor(o);
       const recipientsFingerprint = await recipientsFingerprintFor(o);
-      const signKeyId = sigLocator ? await signKeyIdFor(o) : null;
+      const writtenSigning = sigLocator ? await signingStateFor(o) : null;
+      const signKeyId = writtenSigning?.signed ? writtenSigning.keyId : null;
       const optional = [contentDigest ?? '', recipientsFingerprint ?? '', sigLocator ?? '', signKeyId ?? ''];
       while (optional.length > 0 && optional[optional.length - 1] === '') optional.pop();
       const fields = [locator, o.backend, digest, ...optional];

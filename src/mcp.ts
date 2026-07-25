@@ -48,6 +48,7 @@ import { keygenAt } from './lib/keys.js';
 import { wallet } from './lib/wallet.js';
 import { exists, requireFile, MissingPathError, sha256, errMsg } from './lib/util.js';
 import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
+import { didYouMean, nearestName } from './lib/suggest.js';
 import type { CliOptions } from './lib/types.js';
 
 const SERVER_NAME = 'cipher-brain-mcp';
@@ -728,6 +729,49 @@ const ALL_TOOLS: Tool[] = [
   WALLET_ADDRESS_TOOL,
 ];
 
+const TOOLS_BY_NAME = new Map(ALL_TOOLS.map((t) => [t.name, t]));
+
+// #300: every schema above advertises `additionalProperties: false`, but the
+// low-level Server does not enforce the advertised inputSchema at runtime — so a
+// field a handler does not destructure was simply DISCARDED, and the call went ahead
+// as if it had never been asked for. That fails OPEN precisely where it hurts: a
+// misspelled REQUIRED field errors by accident (the real name is then missing), while
+// a misspelled OPTIONAL one — which here is where the safety and scoping arguments
+// live (confirm_paid, sha256, identity, no_load, pg) — silently changed nothing. A
+// `no_laod: true` on schedule_install registered a REAL trigger where the caller
+// meant a preview; a stray field on schedule_status would have reported the server's
+// own schedule as if it were the one asked about; a snapshot_now that named a
+// safety gate it misspelled reported plain success.
+//
+// Checked HERE, once, against each tool's own declared `properties` — the contract it
+// already publishes — rather than in ten handlers. Two of them used to carry a
+// hand-written copy of this check and eight did not, which is the same enumeration
+// drift #276/#290/#293 removed elsewhere; a per-handler rule is one every future tool
+// has to remember, and the eleventh would forget it again.
+//
+// Case-SENSITIVE, deliberately: JSON object keys are, `properties` is, and an agent
+// sending `Out` for `out` has a bug worth hearing about rather than a spelling the
+// server should quietly accept. The near-miss suggestion below is case-insensitive,
+// so such a call is still told exactly what it got wrong.
+//
+// Absent `arguments` and `{}` are the same thing (the dispatcher defaults one to the
+// other): both name no fields at all, so neither can be naming a wrong one.
+function assertDeclaredArgs(tool: Tool, args: ToolArgs): void {
+  const declared = Object.keys(tool.inputSchema.properties ?? {});
+  const unknown = Object.keys(args).filter((k) => !declared.includes(k));
+  if (unknown.length === 0) return;
+  const named = unknown.map((k) => {
+    const near = nearestName(k, declared);
+    return near ? `${k} (${didYouMean(near)})` : k;
+  });
+  throw new ToolError(
+    'ERR_INVALID_INPUT',
+    `${tool.name} got unrecognized argument(s): ${named.join(', ')} — ` +
+      (declared.length > 0 ? `it accepts only: ${declared.join(', ')}. ` : 'it takes no arguments. ') +
+      'Refused rather than ignored: a discarded field would look to the caller like it was honored.',
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1186,30 +1230,13 @@ async function handleEstimateCost(args: ToolArgs): Promise<CallToolResult> {
 // captured log verbatim plus an echo of the args that were actually consented
 // to, rather than re-parsing/re-deriving the written config (same "no
 // re-implemented logic" approach as handleScheduleStatus below).
-const SCHEDULE_INSTALL_KEYS = new Set([
-  'backend',
-  'dirs',
-  'pg',
-  'recipients',
-  'at',
-  'max_spend',
-  'no_load',
-  'ping_url',
-  'ping_url_fail',
-  'confirm_install',
-]);
-
+//
+// This tool's key set used to be enumerated here a SECOND time, to reject a stray
+// `no_laod` before it could register a real trigger where a preview was meant. The
+// dispatcher now derives that check from the advertised schema for every tool
+// (assertDeclaredArgs, #300), so the duplicate list is gone rather than left to drift
+// from the schema it copied.
 async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
-  // Unlike most handlers here, a stray/misspelled key is not just a wasted call —
-  // this tool's whole safety story rests on no_load/confirm_install being read
-  // correctly (a `no_laod: true` typo would otherwise silently register a REAL
-  // trigger where the caller intended a preview). The advertised inputSchema's
-  // additionalProperties: false is NOT enforced by the low-level Server at
-  // runtime, so check explicitly (same discipline as handleScheduleStatus below).
-  const unexpected = Object.keys(args).filter((k) => !SCHEDULE_INSTALL_KEYS.has(k));
-  if (unexpected.length > 0) {
-    throw new ToolError('ERR_INVALID_INPUT', `schedule_install got unrecognized argument(s): ${unexpected.join(', ')}`);
-  }
   const {
     backend,
     dirs = [],
@@ -1278,15 +1305,14 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
 // `{ report: [lines] }`, because that function had no return value — so the tool
 // handed back prose an agent had to parse. One object now, three surfaces, no
 // re-implementation and no text round-trip.
-async function handleScheduleStatus(args: ToolArgs): Promise<CallToolResult> {
-  // The low-level Server does not enforce the advertised inputSchema
-  // (additionalProperties: false) at runtime, so a stray/misunderstood field
-  // (e.g. a client expecting a schedule_dir override) would otherwise be
-  // silently discarded and this would report the server's own configured
-  // schedule instead of failing loud.
-  const unexpected = Object.keys(args);
-  if (unexpected.length > 0)
-    throw new ToolError('ERR_INVALID_INPUT', `schedule_status takes no arguments — got: ${unexpected.join(', ')}`);
+//
+// This handler used to reject stray arguments itself, because a field like a
+// schedule_dir override a client imagined would otherwise be discarded and this would
+// answer about the server's OWN configured schedule as if that were the one asked
+// about. That reasoning was always true of every tool here, not just this one — it is
+// now stated once and enforced for all of them in assertDeclaredArgs (#300), which is
+// why this takes no `args` at all.
+async function handleScheduleStatus(): Promise<CallToolResult> {
   return structuredOk(await scheduleStatusReport());
 }
 
@@ -1448,6 +1474,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
   const name = request.params.name;
   const args: ToolArgs = request.params.arguments ?? {};
   try {
+    // #300: one check, derived from the tool's own advertised inputSchema, applying to
+    // every tool including any added later — so `additionalProperties: false` means at
+    // runtime what tools/list says it means. Runs BEFORE dispatch, so no handler can
+    // start work on a call carrying a field it will not read. The switch below is still
+    // the list of tools that can actually be invoked: a name absent from TOOLS_BY_NAME
+    // is unknown, and one present in both places is dispatched.
+    const tool = TOOLS_BY_NAME.get(name);
+    if (tool) assertDeclaredArgs(tool, args);
     switch (name) {
       case 'snapshot_now':
         return await handleSnapshotNow(args);
@@ -1462,7 +1496,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
       case 'schedule_install':
         return await handleScheduleInstall(args);
       case 'schedule_status':
-        return await handleScheduleStatus(args);
+        return await handleScheduleStatus();
       case 'keygen':
         return await handleKeygen(args);
       case 'wallet_create':

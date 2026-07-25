@@ -831,6 +831,16 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 | `wallet_create` | **writes a wallet** (no spend) | generate a fresh Arweave JWK wallet (default `<CIPHER_BRAIN_HOME>/wallet.json`, `out` overrides). Refuses if one already exists at the target path unless `force: true` (destructive — discards spend authority over any funds already sent to it) |
 | `wallet_address` | read-only | derive and show the Arweave address for a JWK wallet file (the address to fund before pushing to `arweave`/`turbo`) |
 
+**An argument a tool does not declare is an error**, not a no-op — the same rule
+`config.env` follows for an unknown `CIPHER_BRAIN_*` key, and for the same reason.
+Every tool above advertises `additionalProperties: false`; the server enforces that
+against the schema it published, names the field it refused, and suggests the near
+miss (`restore_now {out}` → *did you mean out_dir?*, the same hint
+`cipher-brain restore --out` gives). Misspelling a *required* field only ever failed
+by accident; misspelling an *optional* one — `confirm_paid`, `sha256`, `identity`,
+`no_load` — used to be discarded silently, so the call looked like it had been
+honored as asked (#300).
+
 Claude Code config (`.mcp.json`):
 
 ```json
@@ -850,7 +860,9 @@ a real `snapshot_now` round-trip on the `file` backend, `schedule_status` agains
 refuses without `confirm_paid`, a real `restore_now` round-trip (pull by locator +
 decrypt + extract, content asserted on disk) that refuses without `confirm_write`,
 and a real `keygen` → `wallet_create` → `wallet_address` round-trip (plus the
-no-clobber-unless-`force` refusal) against an isolated `CIPHER_BRAIN_HOME`.
+no-clobber-unless-`force` refusal) against an isolated `CIPHER_BRAIN_HOME`. It also
+walks the whole advertised tool list asserting each one refuses an undeclared
+argument, so a tool added later is covered without anyone remembering to.
 
 ## Acknowledgements
 

@@ -5,16 +5,18 @@
 //   - scripts/tarball-smoke.mjs — only in publish.yml's final gate, on a v* tag push
 //
 // They used to each carry their own inline copy. The release-only one went stale at
-// four tools while the server grew to ten, and because publish.yml runs on tags alone
-// — and no tag has been pushed (npm publish is still #144) — nothing could catch it
-// until a release failed (#290). One list, imported by both, removes the drift rather
-// than asking anyone to remember two files.
+// four tools while the server grew to ten. Because publish.yml runs on tags alone, and
+// no tag has ever been pushed (the registry release is still #144), no run of this
+// gate had happened since — the mismatch was found by reproducing it locally (#290),
+// not by a failed release. One list, imported by both, removes the drift rather than
+// asking anyone to remember two files.
 //
-// NOT derived from src/mcp.ts on purpose: tarball-smoke's whole value is driving the
-// PACKED, INSTALLED artifact, and checking that against the source it was built from
-// would assert nothing about packaging. This is an independently maintained
-// expectation, which is what makes it a real gate — when a tool is added or removed
-// on purpose, updating this file is the deliberate step that says so.
+// NOT derived from src/mcp.ts on purpose. A source-derived list would still catch some
+// packed-vs-source divergence, so that is not the argument; the argument is that this
+// list independently states the INTENDED public tool surface. Deriving it would let the
+// expectation move whenever the source moves, which is exactly what a gate must not do —
+// when a tool is added or removed on purpose, editing this file is the deliberate step
+// that says so.
 //
 // Sorted, because both callers compare against a sorted tools/list response.
 export const EXPECTED_MCP_TOOLS = [

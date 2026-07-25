@@ -952,10 +952,25 @@ derived from the same published schema as the one above, and a near miss is name
 since it is a few lines against the schema rather than a JSON Schema validator: it
 reads a top-level property's own `enum` of plain literals — every enum this server
 declares — and nothing nested or structural (`scripts/mcp-smoke.mjs` fails the build
-on an enum in any other shape, rather than letting one go unenforced); and a value the
-enum **permits** but the chosen branch does not use — e.g. `verify_restore
-{file, backend: "file"}`, where the artifact is already local — is still accepted and
-ignored, because that is branch relevance rather than something the schema states.
+on an enum in any other shape, rather than letting one go unenforced); and it says nothing
+about which fields a given call will actually *use*, which is the next check.
+
+**A declared field the chosen branch will never read is refused too** (#308). `verify_restore
+{file, backend}` takes the local-file branch, fetches nothing, and used to return `PASS` —
+a verdict from a code path that never touched the backend it was named. `snapshot_now`
+without a `backend` was worse in consequence: `locator_file` and `confirm_paid` only reach
+the push step, so a caller asking for the durable recovery pointer got a clean exit and no
+file.
+
+This was never a new rule — the server already refused three cases of it, each written by
+hand where someone noticed (`locator_file` with `backend`, `ping_url_fail` without
+`ping_url`, `max_spend` on a free backend). What was missing is anything that made the
+question get *asked*. Each tool now declares which of its fields are branch-dependent,
+**with an empty declaration being a real answer**, and the dispatcher refuses to serve a
+tool that has no declaration at all — so adding a tool forces the decision instead of
+defaulting to silence, and `scripts/mcp-smoke.mjs` turns a forgotten one into a failing
+build. Cases already handled inside `src/lib/` stay there: `schedule install`'s three are
+shared with the CLI, which needs them just as much.
 
 Claude Code config (`.mcp.json`):
 

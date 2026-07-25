@@ -864,6 +864,121 @@ function assertDeclaredArgs(tool: Tool, args: ToolArgs): void {
 // candidates are strings, since that is the only case where "did you mean" can mean
 // anything; both it and the phrasing come from src/lib/suggest.ts, the same helper the
 // unknown-argument refusal above uses.
+/**
+ * #308 direction 2 — a DECLARED field whose value is legal but whose branch will never
+ * read it.
+ *
+ * `assertDeclaredArgs` refuses names the schema does not declare, and `assertDeclaredEnums`
+ * refuses values an enum does not permit. Neither can catch the third shape: a real field
+ * carrying a real value into a code path that does not consult it. `verify_restore {file,
+ * backend}` takes the local-file branch, fetches nothing, and returns PASS — a verdict from
+ * a path that never touched the backend the caller named.
+ *
+ * This is NOT a new discipline. The codebase already refuses three cases of exactly this,
+ * each written by hand where it was noticed: `locator_file` with `backend` (the backend
+ * comes from the file), `ping_url_fail` without `ping_url`, and `max_spend` on a free
+ * backend. What was missing is that nothing made the question get ASKED for a tool nobody
+ * happened to think about — so the answers were inconsistent rather than wrong.
+ *
+ * Hence a declaration per tool, EMPTY BEING A REAL ANSWER, plus a dispatcher that refuses
+ * to run a tool with no entry at all (see assertBranchDeclared). Adding a tool therefore
+ * forces the decision instead of defaulting to "ignore silently", and the existing
+ * every-tool pass in scripts/mcp-smoke.mjs turns a forgotten one into a CI failure.
+ *
+ * Cases already refused inside a handler or inside lib/ are deliberately LEFT THERE rather
+ * than moved here: schedule.ts's three are shared with the CLI, which needs them just as
+ * much, and each has a message specific enough to be worth keeping.
+ */
+interface BranchIrrelevance {
+  /** The declared field that this branch will not read. */
+  field: string;
+  /** Why the branch cannot use it — surfaced verbatim to the caller. */
+  because: string;
+}
+
+// verify_restore and restore_now take EXACTLY ONE of locator / file / locator_file, and
+// their handlers say so. A call naming two of them has no valid branch at all, so answering
+// it with "backend is irrelevant on this branch" would name the smaller problem and hide the
+// real one (multi-model review finding). Claim irrelevance only when the local-file branch
+// is the unambiguous choice; otherwise stay quiet and let the handler's own
+// exactly-one-source refusal answer.
+function localFileBranch(a: ToolArgs, verb: string): BranchIrrelevance[] {
+  const unambiguous = a.file !== undefined && a.locator === undefined && a.locator_file === undefined;
+  return unambiguous
+    ? [{ field: 'backend', because: `a local file is ${verb} in place, with no fetch for a backend to serve` }]
+    : [];
+}
+
+const BRANCH_IRRELEVANT: Record<string, (args: ToolArgs) => BranchIrrelevance[]> = {
+  // No backend means no push, and both of these only ever reach the push step.
+  // `locator_file` is the durable recovery pointer, so dropping it silently costs the
+  // caller the one artifact that makes the snapshot findable later (measured on main: the
+  // file is simply never written, and the result does not mention it).
+  snapshot_now: (a) => [
+    ...(a.backend === undefined
+      ? [
+          {
+            field: 'locator_file',
+            because: 'nothing is pushed without a backend, and the locator is only written by the push',
+          },
+        ]
+      : []),
+    // Keyed on "is there a PAID upload", not merely "is there a backend" — `file` is free,
+    // so its push never consults the consent flag either (multi-model review finding). The
+    // CLI already applies the same rule to --max-spend, which it refuses on a free backend.
+    ...(!(typeof a.backend === 'string' && PAID_BACKENDS.has(a.backend))
+      ? [
+          {
+            field: 'confirm_paid',
+            because: 'nothing is spent on this call — confirm_paid only gates a push to arweave or turbo',
+          },
+        ]
+      : []),
+  ],
+  // The local-file branch verifies bytes already on this machine; it fetches nothing, so a
+  // backend cannot participate in the verdict it returns.
+  verify_restore: (a) => localFileBranch(a, 'verified'),
+  restore_now: (a) => localFileBranch(a, 'restored'),
+  // Both sources are read when both are given, and either alone is a complete request.
+  last_snapshot_status: () => [],
+  // `backend` prices both the file and the size_bytes branch.
+  estimate_cost: () => [],
+  // Its three cases (ping_url_fail without ping_url, max_spend on a free backend, and the
+  // paid-backend cap requirement) live in src/lib/schedule.ts, shared with the CLI.
+  schedule_install: () => [],
+  schedule_status: () => [],
+  keygen: () => [],
+  wallet_create: () => [],
+  wallet_address: () => [],
+};
+
+// A tool with no entry above has not been considered, and "not considered" must not read as
+// "nothing to declare" — that is precisely how this issue's case survived #305 and #310.
+// ERR_INTERNAL rather than ERR_INVALID_INPUT: the caller did nothing wrong.
+function assertBranchDeclared(name: string): void {
+  // Object.hasOwn, not `in`: `in` walks the prototype chain, so a tool named `constructor`
+  // or `toString` would report a declaration it does not have — and TOOLS_BY_NAME is a Map,
+  // which happily holds such a name (multi-model review finding).
+  if (!Object.hasOwn(BRANCH_IRRELEVANT, name)) {
+    throw new ToolError(
+      'ERR_INTERNAL',
+      `${name} has no branch-relevance declaration (#308) — add an entry to BRANCH_IRRELEVANT in src/mcp.ts, using an empty array if no declared field is branch-dependent`,
+    );
+  }
+}
+
+function assertBranchRelevance(name: string, args: ToolArgs): void {
+  const declare = Object.hasOwn(BRANCH_IRRELEVANT, name) ? BRANCH_IRRELEVANT[name] : () => [];
+  const ignored = declare(args).filter((r) => args[r.field] !== undefined);
+  if (ignored.length === 0) return;
+  const list = ignored.map((r) => `${r.field} (${r.because})`).join('; ');
+  throw new ToolError(
+    'ERR_INVALID_INPUT',
+    `${name} cannot use ${ignored.map((r) => r.field).join(', ')} on this call: ${list}. Refused rather than ignored: ` +
+      `a field that is silently dropped looks to the caller exactly like one that was honored.`,
+  );
+}
+
 function assertDeclaredEnums(tool: Tool, args: ToolArgs): void {
   const properties = (tool.inputSchema.properties ?? {}) as Record<string, { enum?: unknown[] } | undefined>;
   for (const [key, value] of Object.entries(args)) {
@@ -1644,11 +1759,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
     // finding). Being unlisted therefore means uncallable, not unchecked.
     const tool = TOOLS_BY_NAME.get(name);
     if (!tool) return structuredErr(new ToolError('ERR_INVALID_INPUT', `Unknown tool: ${name}`));
+    // Before anything else, and deliberately before the argument checks: a tool nobody has
+    // answered the branch-relevance question for must not serve a call at all (#308). Put
+    // last it would be unreachable for exactly the calls the every-tool CI pass makes,
+    // which is what turns a forgotten declaration into a red build rather than a quiet gap.
+    assertBranchDeclared(name);
     assertDeclaredArgs(tool, args);
     // #308: names first, then the VALUES those names carry — a declared field whose
     // schema pins an `enum` is checked against it here, for every tool, before dispatch,
     // so a bad value is refused whether or not the branch taken would have read it.
     assertDeclaredEnums(tool, args);
+    // #308 direction 2: names, then values, then whether the branch this call selects will
+    // actually READ the fields it carries. Last of the three because a field that is
+    // undeclared or out-of-enum is wrong on its own terms, and should be reported that way
+    // rather than as irrelevant.
+    assertBranchRelevance(name, args);
     switch (name) {
       case 'snapshot_now':
         return await handleSnapshotNow(args);

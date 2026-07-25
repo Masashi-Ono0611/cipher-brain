@@ -1171,6 +1171,16 @@ async function run(tmp) {
       send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: toolName, arguments: { [probe]: 'x' } } });
       const res = await waitFor(id);
       const sc = res.result?.structuredContent;
+      // Checked FIRST: a missing branch-relevance declaration answers with ERR_INTERNAL, so
+      // the ERR_INVALID_INPUT assertion below would throw before this ever ran and report a
+      // puzzling "does not reject an undeclared argument" for a tool that rejects it fine
+      // (multi-model review finding). Order it here and the failure says what to add.
+      if (sc?.message?.includes('branch-relevance declaration')) {
+        throw new Error(
+          `${toolName} has no branch-relevance declaration (#308) — add it to BRANCH_IRRELEVANT in src/mcp.ts, ` +
+            `with an empty array if no declared field of this tool is branch-dependent: ${sc.message}`,
+        );
+      }
       if (res.result?.isError !== true || sc?.code !== 'ERR_INVALID_INPUT') {
         throw new Error(
           `${toolName} does not reject an undeclared argument — its handler can still be reached with a field ` +
@@ -1180,6 +1190,40 @@ async function run(tmp) {
       if (!sc.message?.includes(probe)) {
         throw new Error(
           `${toolName} rejected an undeclared argument without naming it: ${JSON.stringify(sc).slice(0, 300)}`,
+        );
+      }
+    }
+
+    // 2m-iv-b. #308 direction 2: a DECLARED field, a LEGAL value, and a branch that will
+    // never read it. Both reproductions were measured on main before the fix — the first
+    // is the one this issue was filed on, the second is worse in consequence because the
+    // dropped field is the durable recovery pointer.
+    for (const [i, probeCase] of [
+      {
+        tool: 'verify_restore',
+        args: { file: join(tmp, 'never.age'), backend: 'turbo' },
+        field: 'backend',
+        was: 'returned verdict PASS from the local-file branch, having fetched nothing',
+      },
+      {
+        tool: 'snapshot_now',
+        args: {
+          dirs: [],
+          recipients: ['age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqsxxxxxx'],
+          out: join(tmp, 'never.age'),
+          locator_file: join(tmp, 'never.tsv'),
+        },
+        field: 'locator_file',
+        was: 'exited clean without pushing, and never wrote the locator file it was handed',
+      },
+    ].entries()) {
+      const id = 80 + i;
+      send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: probeCase.tool, arguments: probeCase.args } });
+      const res = await waitFor(id);
+      const sc = res.result?.structuredContent;
+      if (res.result?.isError !== true || sc?.code !== 'ERR_INVALID_INPUT' || !sc.message?.includes(probeCase.field)) {
+        throw new Error(
+          `${probeCase.tool} did not refuse ${probeCase.field} on a branch that cannot read it (before #308 it ${probeCase.was}): ${JSON.stringify(res.result).slice(0, 400)}`,
         );
       }
     }

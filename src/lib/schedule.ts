@@ -530,7 +530,11 @@ async function install(o: CliOptions): Promise<void> {
     // gate covers --dir/--profile staged plaintext, so a --pg-only schedule would report
     // scanning in `schedule status` while every nightly scanned zero components. Refused
     // HERE too, rather than left to fail once a night, unattended, in a log nobody reads.
-    if (o.dirs.length === 0 && !o.profile) {
+    // `off` asks for NO scan, so nothing about a source-less schedule is wrong for it —
+    // refusing here would leave a --pg-only schedule unable to record the opt-out at all,
+    // while `snapshot --scan-secrets off` accepts it (multi-model review finding: the two
+    // surfaces must not disagree about what a mode means).
+    if (o.scan_secrets !== 'off' && o.dirs.length === 0 && !o.profile) {
       throw new Error(
         `--scan-secrets ${o.scan_secrets} has nothing to scan: it covers --dir/--profile staged plaintext, and this ` +
           `schedule has no --dir or --profile source (a --pg dump is not scanned). Add the source you meant to gate, ` +
@@ -573,8 +577,22 @@ async function install(o: CliOptions): Promise<void> {
   // perfectly reasonable interactive setting and a useless baked one, and a stale
   // absolute path in it is worse still — install would exit 0 promising a gate that can
   // never run. Whatever it says is resolved through the same check the default gets.
+  //
+  // #301 made the scan default to `warn` when gitleaks is resolvable, and that default is
+  // resolved HERE rather than left to the runner. A nightly that re-derives its own default
+  // at 03:30, from a bare launchd/cron PATH, would decide whether to scan based on what
+  // happens to be installed months later — the exact class of runner-depends-on-PATH
+  // failure #307 closed. So the effective mode is computed once, now, and baked in
+  // explicitly; `off` is baked too, so "this schedule does not scan" is a recorded decision
+  // rather than the absence of one.
+  let effectiveScan: ScanSecretsMode | undefined = o.scan_secrets;
+  if (effectiveScan === undefined) {
+    const hasScannableSource = o.dirs.length > 0 || !!o.profile;
+    effectiveScan =
+      hasScannableSource && resolveGitleaksBin(readEnv('CIPHER_BRAIN_GITLEAKS_BIN') || 'gitleaks') ? 'warn' : 'off';
+  }
   let gitleaksBin: string | null = null;
-  if (o.scan_secrets !== undefined) {
+  if (effectiveScan !== 'off') {
     const configured = readEnv('CIPHER_BRAIN_GITLEAKS_BIN') || 'gitleaks';
     gitleaksBin = resolveGitleaksBin(configured);
     if (!gitleaksBin) {
@@ -588,7 +606,19 @@ async function install(o: CliOptions): Promise<void> {
     console.error(
       `resolved gitleaks -> ${gitleaksBin} (baked into the runner as CIPHER_BRAIN_GITLEAKS_BIN — launchd/cron do not inherit PATH, and a different gitleaks on theirs must not silently take its place)`,
     );
+    if (o.scan_secrets === undefined)
+      console.error(
+        `secret scan: --scan-secrets defaults to ${effectiveScan} and is baked into the runner — reinstall with --scan-secrets deny to refuse a leaking nightly, or --scan-secrets off to skip the scan`,
+      );
+  } else if (o.scan_secrets === undefined) {
+    console.error(
+      `secret scan: OFF for this schedule (no gitleaks resolvable here${o.dirs.length === 0 && !o.profile ? ', and no --dir/--profile source to scan' : ''}) — baked in as such so the nightly cannot start scanning, or stop, because of what lands on PATH later`,
+    );
   }
+  // Same write-back snapshot() does: callers that report the outcome (the MCP
+  // schedule_install result) must not echo an omitted input as "no scan" when install just
+  // resolved and baked one.
+  o.scan_secrets = effectiveScan;
   const at = o.at || '03:30';
   const { hour, minute } = parseAt(at);
   // The one thing this feature must never create: unattended spending without a cap.
@@ -660,10 +690,11 @@ async function install(o: CliOptions): Promise<void> {
     // above: it must still name the same file when the runner is invoked from a
     // different cwd by launchd/cron).
     recipients: o.recipients.map((r) => (r.startsWith('age1') ? r : resolve(r))),
-    // Validated (and gitleaks resolved into the env for captureEnv) above; absent entirely
-    // when the flag was not passed, so an install without it generates the exact same
-    // runner as before.
-    ...(isScanSecretsMode(o.scan_secrets) ? { scan_secrets: o.scan_secrets } : {}),
+    // Validated, and (since #301) resolved to an effective mode above whether or not the
+    // flag was passed — always recorded, so the runner never re-derives a default from
+    // whatever PATH it inherits at 03:30 and `schedule status` reports a decision that was
+    // actually made rather than an absence.
+    scan_secrets: effectiveScan,
     save_locator: resolve(o.save_locator || join(HOME, 'latest-locator.tsv')),
     index_file: resolve(o.index_file || join(SCHEDULE_DIR, 'index.tsv')),
     ...(o.max_spend ? { max_spend: String(o.max_spend) } : {}),
@@ -940,9 +971,17 @@ async function status(o: CliOptions): Promise<void> {
   // (multi-model review). The run itself stays fail-closed either way, which is what the
   // parenthetical tells the reader.
   console.log(
-    r.configured.scan_secrets
+    r.configured.scan_secrets && r.configured.scan_secrets !== 'off'
       ? `secret scan: configured --scan-secrets ${r.configured.scan_secrets} (each run re-checks gitleaks and FAILS if it is missing — this line is the configured mode, not a health check)`
-      : 'secret scan: off (re-run install with --scan-secrets warn|deny to gate this nightly)',
+      : r.configured.scan_secrets === 'off'
+        ? 'secret scan: off (re-run install with --scan-secrets warn|deny to gate this nightly)'
+        : // No mode recorded at all means this schedule was installed BEFORE #301, when
+          // omitting the flag left the runner with no --scan-secrets. Such a runner asks the
+          // upgraded snapshot() to pick a default at run time, from the scheduler's own bare
+          // PATH — the one thing baking the mode exists to prevent. Nothing here can rewrite
+          // an already-installed runner, so say so instead of printing a confident "off"
+          // that this status cannot actually guarantee (multi-model review finding).
+          'secret scan: off, but NOT pinned — this schedule predates the baked-in mode, so its runner carries no --scan-secrets and each nightly decides from whatever PATH it inherits. Re-run `schedule install` to pin it (add --scan-secrets warn|deny|off to choose).',
   );
   console.log(
     r.config_file

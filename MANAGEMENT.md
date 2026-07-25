@@ -183,10 +183,15 @@ a query string or a trailing slash), so a schedule that silently stops running a
 gets noticed even if nobody runs `schedule status`. Both are best-effort (10s timeout,
 never affects the run's own outcome).
 
-**The unattended run can carry the secret-scanning gate too.** Add
-`--scan-secrets warn|deny` and the generated runner's `snapshot` line carries it, so the
-nightly gets the same [gitleaks](https://github.com/gitleaks/gitleaks) check an
-interactive `snapshot --scan-secrets` does — which matters most here, because this is the
+**The unattended run carries the secret-scanning gate too, by default.** The generated
+runner's `snapshot` line always carries an explicit `--scan-secrets`, whether or not you
+passed one: install resolves the same default the interactive command uses (`warn` when
+there is a `--dir`/`--profile` source and [gitleaks](https://github.com/gitleaks/gitleaks)
+is resolvable, `off` otherwise) and bakes the result in (#301). That is deliberate — a
+runner that re-derived its own default at 03:30, from a bare `launchd`/`cron` `PATH`,
+would start or stop scanning based on what happened to get installed months later. Pass
+`--scan-secrets deny` to refuse a leaking nightly outright, or `off` to record that this
+schedule does not scan. It matters most here, because this is the
 run nobody is watching when it pushes to a write-once store. Install resolves `gitleaks`
 at that moment and *pins* the absolute path into the runner as
 `CIPHER_BRAIN_GITLEAKS_BIN` (`launchd`/`cron` do not inherit your `PATH`, the same reason

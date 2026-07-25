@@ -219,7 +219,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
 
   cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]...
                          [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...
-                         [--recipient <pubkey|file>]... [--dry-run] [--scan-secrets warn|deny]
+                         [--recipient <pubkey|file>]... [--dry-run] [--scan-secrets warn|deny|off]
                          [--no-sign] [--sign-identity <file>]
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
       A ".cipherbrainignore" file (gitignore-compatible syntax; the "ignore" npm package
@@ -271,14 +271,20 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
                                      absent entirely.
       Both are additive to --pg-table and to each other; omit them and --pg behaves exactly
       as before (a full pg_dump, no filtering).
-      --scan-secrets warn|deny (#215) runs gitleaks (must be on PATH — install via
+      --scan-secrets warn|deny|off (#215) runs gitleaks (install via
       https://github.com/gitleaks/gitleaks) over each --dir/--profile source's staged
       plaintext BEFORE it is archived+encrypted — Arweave/Turbo are write-once,
       un-deletable backends, so an accidentally-committed API key/token/password can
-      never be scrubbed after the fact. Default (flag omitted): no scan, unchanged
-      behavior. warn: log any findings (rule ID + count only — never the matched
+      never be scrubbed after the fact. DEFAULT (#301): warn, whenever there is a
+      --dir/--profile source AND gitleaks is resolvable; otherwise nothing scans,
+      nothing errors, and no new dependency appears. This is the only path that may
+      skip quietly — you did not ask for a gate, so nothing claims one ran. An
+      EXPLICIT --scan-secrets that cannot scan always refuses instead.
+      warn: log any findings (rule ID + count only — never the matched
       secret, file path, or line) and proceed. deny: refuse the whole snapshot if
-      any component has findings. Drop a .gitleaks.toml into a scanned source to
+      any component has findings. off: do not scan, said out loud — the way to turn
+      the default off without uninstalling gitleaks.
+      Drop a .gitleaks.toml into a scanned source to
       customize/allowlist rules, same as you would for a git repo. It covers
       --dir/--profile sources only — a --pg dump is not scanned — so a snapshot with
       neither is REFUSED rather than reporting a scan that inspected no component.
@@ -458,7 +464,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
                                 [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>]
                                 [--save-locator <path>] [--index-file <path>]
                                 [--ping-url <url>] [--ping-url-fail <url>]
-                                [--scan-secrets warn|deny]
+                                [--scan-secrets warn|deny|off]
       Make the nightly snapshot+push unattended. Writes a runner script
       ($CIPHER_BRAIN_HOME/schedule/nightly.sh) composing the snapshot/push pipeline from
       the SAME flags those commands take — dated outputs, --save-locator, an index.tsv
@@ -479,9 +485,13 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       (default: <url>/fail — a plain string append, not URL-aware: pass --ping-url-fail
       explicitly if your ping URL has a query string or a trailing slash); it requires
       --ping-url to also be set.
-      --scan-secrets warn|deny bakes snapshot's gitleaks gate (see 'snapshot' above) into
-      the generated runner, so the unattended nightly — the run nobody is watching — is
-      gated too. Install RESOLVES gitleaks now and PINS the absolute path into the runner
+      --scan-secrets warn|deny|off bakes snapshot's gitleaks gate (see 'snapshot' above)
+      into the generated runner, so the unattended nightly — the run nobody is watching —
+      is gated too. The EFFECTIVE mode is always baked, including when you pass nothing:
+      install resolves the same default snapshot would (warn if there is a --dir/--profile
+      source and gitleaks is resolvable, otherwise off) and writes it in explicitly, so the
+      nightly cannot start scanning — or stop — because of what lands on PATH months later.
+      Install RESOLVES gitleaks now and PINS the absolute path into the runner
       as CIPHER_BRAIN_GITLEAKS_BIN (launchd/cron do not inherit your PATH, same reason
       --pg bakes CIPHER_BRAIN_PG_BIN; pinning rather than extending PATH so a different
       gitleaks on the scheduler's PATH cannot take its place), and REFUSES to install if
@@ -535,7 +545,15 @@ Storage: CIPHER_BRAIN_FILE_DIR (file);
          turbo: CIPHER_BRAIN_AR_WALLET (JWK signer) + optional CIPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
          rclone: CIPHER_BRAIN_RCLONE_BIN (path to the rclone binary; default 'rclone' on PATH) — the remote itself is whatever --remote <name>:<path> names in your own 'rclone config'.
 Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the arweave/turbo cost estimate (winston/winc).
-Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes or CIPHER_BRAIN_YES=1.`;
+Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes or CIPHER_BRAIN_YES=1.
+Permanence: there is NO delete, at any granularity (#301). cipher-brain has no forget/prune/delete
+     command and will not grow one: arweave/turbo are write-once, and destroying your identity does
+     not help either — the backup recipient you were told to keep (and the printable recovery kit, if
+     it carries one) still decrypts everything. Recoverability was chosen over erasability on purpose.
+     What IS parked is ciphertext, so a secret that reaches a snapshot is not published — it is sealed
+     to your key, and stays exposed only to whatever might compromise that key later. That is the
+     whole reason --scan-secrets now defaults to warn: the only workable answer is to not seal the
+     secret in the first place. Before a paid push, assume you are deciding forever.`;
 
 // The version reported by `--version` (issue #261). Read from package.json at
 // runtime rather than copied into a constant here, which would be a second place

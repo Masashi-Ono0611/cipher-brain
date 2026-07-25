@@ -894,9 +894,9 @@ set +e
 BADMODE_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/badmode.age" --scan-secrets bogus 2>&1); BADMODE_RC=$?
 set -e
 [ "$BADMODE_RC" != "0" ] || { echo "[FAIL] --scan-secrets bogus was accepted"; exit 1; }
-printf '%s' "$BADMODE_ERR" | grep -q 'must be "warn" or "deny"' || { echo "[FAIL] wrong error for --scan-secrets bogus"; echo "$BADMODE_ERR"; exit 1; }
+printf '%s' "$BADMODE_ERR" | grep -q 'must be "warn", "deny", "off"' || { echo "[FAIL] wrong error for --scan-secrets bogus"; echo "$BADMODE_ERR"; exit 1; }
 test ! -e "$TMP/badmode.age" || { echo "[FAIL] --scan-secrets bogus still produced an output file"; exit 1; }
-echo "[PASS] --scan-secrets rejects anything other than warn/deny, before any --out is created"
+echo "[PASS] --scan-secrets rejects anything other than warn/deny/off, before any --out is created"
 
 echo "== #307: --scan-secrets with NO --dir/--profile source is refused (it would scan zero components while the manifest claimed the mode was in effect) =="
 # Needs no gitleaks: the refusal is checked BEFORE assertGitleaksAvailable() precisely so
@@ -982,10 +982,40 @@ else
   CLEAN_SRC="$TMP/clean-secrets-src"; mkdir -p "$CLEAN_SRC"
   printf 'nothing secret here\n' > "$CLEAN_SRC/note.txt"
 
-  echo "== #215: default (no --scan-secrets) is unchanged — a snapshot with a secret still succeeds silently =="
-  CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/nosca.age" >/dev/null
-  test -f "$TMP/nosca.age" || { echo "[FAIL] default (no --scan-secrets) snapshot did not produce an output file"; exit 1; }
-  echo "[PASS] omitting --scan-secrets leaves existing behavior unchanged (no scan, no refusal)"
+  echo "== #301: the DEFAULT scans — omitting --scan-secrets now warns rather than sealing a secret in silence =="
+  # This assertion is the whole point of #301 and replaces the pre-#301 one, which asserted
+  # the opposite ("succeeds silently"). Reached only inside the gitleaks-present branch,
+  # which is exactly the condition the default keys off.
+  DEF_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/nosca.age" 2>&1)
+  test -f "$TMP/nosca.age" || { echo "[FAIL] the default-scanning snapshot did not produce an output file — warn must not refuse"; echo "$DEF_ERR"; exit 1; }
+  printf '%s' "$DEF_ERR" | grep -qi "gitleaks found" || { echo "[FAIL] no --scan-secrets flag and a planted secret: nothing was reported, so the default did not scan"; echo "$DEF_ERR"; exit 1; }
+  printf '%s' "$DEF_ERR" | grep -q "AKIAABCDEFGHIJKLMNOP" && { echo "[FAIL] the dummy secret value leaked into the default scan's output"; echo "$DEF_ERR"; exit 1; }
+  echo "[PASS] omitting --scan-secrets scans and warns (default = warn when a source and gitleaks are both present)"
+
+  echo "== #301: --scan-secrets off is the way to turn that default off, and it is silent =="
+  OFF_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/off.age" --scan-secrets off 2>&1)
+  test -f "$TMP/off.age" || { echo "[FAIL] --scan-secrets off did not produce an output file"; echo "$OFF_ERR"; exit 1; }
+  printf '%s' "$OFF_ERR" | grep -qi "gitleaks found" && { echo "[FAIL] --scan-secrets off still scanned — it is supposed to be the opt-out"; echo "$OFF_ERR"; exit 1; }
+  # `off` asks for NO scan, so the "nothing to scan" refusal that guards warn/deny must not
+  # fire for it: refusing to not-scan a --pg-only snapshot would be nonsense.
+  set +e
+  OFFPG_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/offpg.age" --scan-secrets off 2>&1)
+  set -e
+  printf '%s' "$OFFPG_ERR" | grep -q 'nothing to scan' && { echo "[FAIL] --scan-secrets off with no scannable source hit the warn/deny 'nothing to scan' refusal"; echo "$OFFPG_ERR"; exit 1; }
+  echo "[PASS] --scan-secrets off skips the scan, and is not subject to the refusals that only make sense for warn/deny"
+
+  echo "== #301: the IMPLICIT default may skip quietly when no scanner resolves, but an EXPLICIT request still refuses =="
+  # The asymmetry is load-bearing (#307/#314): nobody asked for a gate on the first call, so
+  # nothing claims one ran; the second call asked, so it must not come back successful.
+  QUIET_ERR=$(CIPHER_BRAIN_GITLEAKS_BIN=/nonexistent/gitleaks CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/quiet.age" 2>&1)
+  test -f "$TMP/quiet.age" || { echo "[FAIL] the default turned an absent gitleaks into a failure — it must be a no-op"; echo "$QUIET_ERR"; exit 1; }
+  printf '%s' "$QUIET_ERR" | grep -qi "gitleaks found" && { echo "[FAIL] a scan reported findings with no resolvable scanner"; echo "$QUIET_ERR"; exit 1; }
+  set +e
+  ASKED_ERR=$(CIPHER_BRAIN_GITLEAKS_BIN=/nonexistent/gitleaks CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/asked.age" --scan-secrets warn 2>&1); ASKED_RC=$?
+  set -e
+  [ "$ASKED_RC" != "0" ] || { echo "[FAIL] an EXPLICIT --scan-secrets warn with no resolvable gitleaks exited 0 — the caller asked for a gate and got none"; echo "$ASKED_ERR"; exit 1; }
+  test ! -e "$TMP/asked.age" || { echo "[FAIL] the refused explicit request still wrote a snapshot"; exit 1; }
+  echo "[PASS] no scanner: the implicit default no-ops silently, an explicit --scan-secrets refuses (the asymmetry #307 established)"
 
   echo "== #215: --scan-secrets warn proceeds despite a finding, and records rule ID + count (never the secret) in the manifest =="
   WARN_SNAP="$TMP/warn.age"
@@ -1095,6 +1125,37 @@ cb snapshot --out "$TMP/dangling.age" --dir "$TMP/dangling-source" >/dev/null 2>
   || { echo "[FAIL] a dangling top-level symlink source was rejected — #267's check must not follow symlinks"; exit 1; }
 test -s "$TMP/dangling.age" || { echo "[FAIL] the dangling-symlink snapshot produced no artifact"; exit 1; }
 echo "[PASS] a dangling top-level symlink source still snapshots (the missing-path check does not follow symlinks)"
+# #301: and it must still snapshot with the DEFAULT scan on. `gitleaks dir` stats that
+# dangling link and exits 1, so a default that failed closed would turn a supported source
+# into a hard error. The default degrades to a loud "UNSCANNED" warning; an EXPLICIT
+# request on the same source still refuses. This pair is the tripwire for that asymmetry.
+if command -v gitleaks >/dev/null 2>&1; then
+  DANGDEF_ERR=$(cb snapshot --out "$TMP/dangling-default.age" --dir "$TMP/dangling-source" 2>&1) \
+    || { echo "[FAIL] the default scan turned a dangling-symlink source into a snapshot failure"; echo "$DANGDEF_ERR"; exit 1; }
+  test -s "$TMP/dangling-default.age" || { echo "[FAIL] the dangling-symlink snapshot produced no artifact under the default scan"; exit 1; }
+  printf '%s' "$DANGDEF_ERR" | grep -q 'UNSCANNED' \
+    || { echo "[FAIL] the default scan skipped silently instead of saying the component went UNSCANNED"; echo "$DANGDEF_ERR"; exit 1; }
+  # The console said UNSCANNED; the DURABLE artifact must not disagree. An empty
+  # secrets_scan array would read as "scanned, found nothing" forever after.
+  DANGDEF_OUT="$TMP/dangling-default-restored"
+  cb restore --in "$TMP/dangling-default.age" --out-dir "$DANGDEF_OUT" >/dev/null 2>&1 \
+    || { echo "[FAIL] could not restore the default-scan dangling snapshot to inspect its manifest"; exit 1; }
+  node -e "
+    const m = JSON.parse(require('node:fs').readFileSync('$DANGDEF_OUT/manifest.json', 'utf8'));
+    const c = m.components.find((x) => /dangling/.test(x.name));
+    if (!c) { console.error('no dangling component in manifest'); process.exit(1); }
+    if (Array.isArray(c.secrets_scan)) { console.error('manifest records secrets_scan ' + JSON.stringify(c.secrets_scan) + ' for a component whose scan could not run — that reads as a clean scan'); process.exit(1); }
+    if (typeof c.secrets_scan_error !== 'string' || c.secrets_scan_error.length === 0) { console.error('manifest does not record WHY the component went unscanned: ' + JSON.stringify(c)); process.exit(1); }
+  " || { echo "[FAIL] the manifest of a default-scanned-but-unscannable component is not honest about it"; exit 1; }
+  set +e
+  DANGEXP_ERR=$(cb snapshot --out "$TMP/dangling-explicit.age" --dir "$TMP/dangling-source" --scan-secrets warn 2>&1); DANGEXP_RC=$?
+  set -e
+  [ "$DANGEXP_RC" != "0" ] || { echo "[FAIL] an EXPLICIT --scan-secrets warn on an unscannable source exited 0"; echo "$DANGEXP_ERR"; exit 1; }
+  test ! -e "$TMP/dangling-explicit.age" || { echo "[FAIL] the refused explicit scan still wrote a snapshot"; exit 1; }
+  echo "[PASS] a scanner error degrades the DEFAULT to a loud unscanned warning, while an EXPLICIT --scan-secrets still fails closed"
+else
+  echo "[SKIP] #301 default-scan degradation on a dangling symlink: no gitleaks on PATH"
+fi
 
 # An UNREADABLE path is not a missing one: relabelling EACCES as "no such file" would
 # be the same misdiagnosis this issue is about, one level down, so requireFile only

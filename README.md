@@ -120,7 +120,7 @@ an X25519 backup, or vice versa — either identity restores) and with
 `CIPHER_BRAIN_PIN_RECIPIENTS`.
 
 A different risk lives in the plaintext sources themselves, not the crypto:
-`snapshot --scan-secrets warn|deny` runs [gitleaks](https://github.com/gitleaks/gitleaks)
+`snapshot --scan-secrets warn|deny|off` runs [gitleaks](https://github.com/gitleaks/gitleaks)
 over each `--dir`/`--profile` source's staged plaintext *before* it is
 archived+encrypted, and `deny` refuses the whole snapshot if a component has
 findings. Because Arweave/Turbo are write-once, un-deletable backends, an
@@ -128,13 +128,20 @@ accidentally-committed API key/token/password can never be scrubbed out after
 the fact — the ciphertext sealing it stays parked there permanently, exposed
 to whatever might compromise the identity down the line.
 
+**It defaults to `warn`** (#301) whenever there is a `--dir`/`--profile` source and
+gitleaks is resolvable. On a machine without gitleaks nothing scans, nothing errors,
+and no new dependency appears — that implicit skip is the one path allowed to stay
+quiet, because nobody asked for a gate and nothing claims one ran. An *explicit*
+`--scan-secrets` that cannot scan still refuses. `off` turns the default off out
+loud, which is the point: it is a decision you record, not the absence of one.
+
 The gate is reachable from every surface that can take a snapshot, not just the
-interactive one (#307): `schedule install --scan-secrets warn|deny` bakes it into
+interactive one (#307): `schedule install --scan-secrets warn|deny|off` bakes it into
 the unattended nightly (and refuses to install if gitleaks cannot be resolved,
 rather than registering a schedule that cannot scan), and the MCP `snapshot_now`
-and `schedule_install` tools take the same `scan_secrets` field. It is **off by
-default everywhere** — the unattended surfaces match the CLI rather than quietly
-applying a stricter policy of their own. It scans `--dir`/`--profile` staged
+and `schedule_install` tools take the same `scan_secrets` field. `schedule install`
+bakes the **effective** mode even when you pass nothing, so a nightly never re-derives
+a default from whatever is on `PATH` at 03:30 months later. It scans `--dir`/`--profile` staged
 plaintext, so asking for it with no such source (a `--pg`-only snapshot, whose
 dump it does not scan) is **refused**: a caller told a scan ran when it inspected
 nothing is worse off than one told it did not run at all.
@@ -145,6 +152,29 @@ reads files as they are and does not look **inside archives**, so a zip/tar sour
 scanned only as opaque bytes, and a secret inside it is not found even though the
 run reports the mode. Extract such an export and snapshot the directory if you
 want the gate to cover its contents.
+
+### There is no delete
+
+cipher-brain has no `forget`, `prune` or `delete` command, and will not grow one
+(#301). Once a snapshot is pushed to `arweave`/`turbo` it is parked permanently, and
+destroying your identity is not an escape hatch either: the backup recipient this
+project tells you to keep — and the printable recovery kit, if it carries one — still
+decrypts everything. **Recoverability was chosen over erasability, deliberately.** A
+per-snapshot key would buy [cryptographic erase](https://csrc.nist.gov/pubs/sp/800/88/r2/final)
+at the cost of the recovery story this tool exists for, and that trade was declined.
+
+What is parked is *ciphertext*. A secret that reaches a snapshot is not published — it
+is sealed to your key, and stays exposed only to whatever might compromise that key
+later. That is the honest shape of the risk, and it is exactly why the one preventive
+measure now runs by default rather than on request: the only workable answer is to not
+seal the secret in the first place.
+
+The naming discipline is borrowed from [restic](https://restic.readthedocs.io/), whose
+docs are explicit that `forget` alone removes nothing and that `prune` is the separate
+step that does. A command that *sounds* like deletion while the ciphertext stays public
+would be worse than not having one. The position itself is
+[Perkeep's](https://perkeep.org/doc/principles) — a permanent store is allowed to say it
+does not delete, as long as it says so before you push rather than after you leak.
 
 ## Install
 
@@ -426,7 +456,7 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
 
   cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]...
                          [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...
-                         [--recipient <pubkey|file>]... [--dry-run] [--scan-secrets warn|deny]
+                         [--recipient <pubkey|file>]... [--dry-run] [--scan-secrets warn|deny|off]
                          [--no-sign] [--sign-identity <file>]
       Bundle a pg_dump and/or directories, encrypt to the PUBLIC recipient(s).
       A ".cipherbrainignore" file (gitignore-compatible syntax; the "ignore" npm package
@@ -478,14 +508,20 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
                                      absent entirely.
       Both are additive to --pg-table and to each other; omit them and --pg behaves exactly
       as before (a full pg_dump, no filtering).
-      --scan-secrets warn|deny (#215) runs gitleaks (must be on PATH — install via
+      --scan-secrets warn|deny|off (#215) runs gitleaks (install via
       https://github.com/gitleaks/gitleaks) over each --dir/--profile source's staged
       plaintext BEFORE it is archived+encrypted — Arweave/Turbo are write-once,
       un-deletable backends, so an accidentally-committed API key/token/password can
-      never be scrubbed after the fact. Default (flag omitted): no scan, unchanged
-      behavior. warn: log any findings (rule ID + count only — never the matched
+      never be scrubbed after the fact. DEFAULT (#301): warn, whenever there is a
+      --dir/--profile source AND gitleaks is resolvable; otherwise nothing scans,
+      nothing errors, and no new dependency appears. This is the only path that may
+      skip quietly — you did not ask for a gate, so nothing claims one ran. An
+      EXPLICIT --scan-secrets that cannot scan always refuses instead.
+      warn: log any findings (rule ID + count only — never the matched
       secret, file path, or line) and proceed. deny: refuse the whole snapshot if
-      any component has findings. Drop a .gitleaks.toml into a scanned source to
+      any component has findings. off: do not scan, said out loud — the way to turn
+      the default off without uninstalling gitleaks.
+      Drop a .gitleaks.toml into a scanned source to
       customize/allowlist rules, same as you would for a git repo. It covers
       --dir/--profile sources only — a --pg dump is not scanned — so a snapshot with
       neither is REFUSED rather than reporting a scan that inspected no component.
@@ -665,7 +701,7 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
                                 [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>]
                                 [--save-locator <path>] [--index-file <path>]
                                 [--ping-url <url>] [--ping-url-fail <url>]
-                                [--scan-secrets warn|deny]
+                                [--scan-secrets warn|deny|off]
       Make the nightly snapshot+push unattended. Writes a runner script
       ($CIPHER_BRAIN_HOME/schedule/nightly.sh) composing the snapshot/push pipeline from
       the SAME flags those commands take — dated outputs, --save-locator, an index.tsv
@@ -686,9 +722,13 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       (default: <url>/fail — a plain string append, not URL-aware: pass --ping-url-fail
       explicitly if your ping URL has a query string or a trailing slash); it requires
       --ping-url to also be set.
-      --scan-secrets warn|deny bakes snapshot's gitleaks gate (see 'snapshot' above) into
-      the generated runner, so the unattended nightly — the run nobody is watching — is
-      gated too. Install RESOLVES gitleaks now and PINS the absolute path into the runner
+      --scan-secrets warn|deny|off bakes snapshot's gitleaks gate (see 'snapshot' above)
+      into the generated runner, so the unattended nightly — the run nobody is watching —
+      is gated too. The EFFECTIVE mode is always baked, including when you pass nothing:
+      install resolves the same default snapshot would (warn if there is a --dir/--profile
+      source and gitleaks is resolvable, otherwise off) and writes it in explicitly, so the
+      nightly cannot start scanning — or stop — because of what lands on PATH months later.
+      Install RESOLVES gitleaks now and PINS the absolute path into the runner
       as CIPHER_BRAIN_GITLEAKS_BIN (launchd/cron do not inherit your PATH, same reason
       --pg bakes CIPHER_BRAIN_PG_BIN; pinning rather than extending PATH so a different
       gitleaks on the scheduler's PATH cannot take its place), and REFUSES to install if
@@ -743,6 +783,14 @@ Storage: CIPHER_BRAIN_FILE_DIR (file);
          rclone: CIPHER_BRAIN_RCLONE_BIN (path to the rclone binary; default 'rclone' on PATH) — the remote itself is whatever --remote <name>:<path> names in your own 'rclone config'.
 Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the arweave/turbo cost estimate (winston/winc).
 Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes or CIPHER_BRAIN_YES=1.
+Permanence: there is NO delete, at any granularity (#301). cipher-brain has no forget/prune/delete
+     command and will not grow one: arweave/turbo are write-once, and destroying your identity does
+     not help either — the backup recipient you were told to keep (and the printable recovery kit, if
+     it carries one) still decrypts everything. Recoverability was chosen over erasability on purpose.
+     What IS parked is ciphertext, so a secret that reaches a snapshot is not published — it is sealed
+     to your key, and stays exposed only to whatever might compromise that key later. That is the
+     whole reason --scan-secrets now defaults to warn: the only workable answer is to not seal the
+     secret in the first place. Before a paid push, assume you are deciding forever.
 ```
 
 <!-- HELP-END -->
@@ -872,7 +920,7 @@ node dist/mcp.mjs        # bundled build (npm run build), or: bin/cipher-brain-m
 
 | Tool | Money | What it does |
 |---|---|---|
-| `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP). `scan_secrets: "warn"\|"deny"` runs the same gitleaks gate as the CLI `--scan-secrets` (#307) — off by default, like the CLI, and requires at least one `dirs` entry (it does not scan a `pg` dump); the result reports the mode that actually ran (`null` when none did), and a call asking for a scan on a machine without gitleaks fails rather than silently skipping it |
+| `snapshot_now` | **can spend** (paid backend) | snapshot + optional push. `arweave`/`turbo` require `confirm_paid: true` (the `--yes` guard; the `CIPHER_BRAIN_YES` env escape hatch is not honored over MCP). `scan_secrets: "warn"\|"deny"\|"off"` runs the same gitleaks gate as the CLI `--scan-secrets` (#307) — and defaults the same way (#301): `warn` when there is at least one `dirs` entry and gitleaks is resolvable, nothing otherwise. An explicit mode other than `off` requires at least one `dirs` entry (it does not scan a `pg` dump); the result reports the mode that actually ran (`null` when none did), and a call asking for a scan on a machine without gitleaks fails rather than silently skipping it |
 | `last_snapshot_status` | read-only | latest locator/backend/sha256/timestamp/age from a save-locator file and/or `index.tsv` |
 | `verify_restore` | read-only | pull by locator (or a local file) + verify; honest `PASS`/`FAIL`/`PARTIAL` verdict mirroring the CLI exit codes |
 | `restore_now` | **writes files, can clobber a DB** (no spend) | pull by locator (or a local file / `locator_file`, same dual-mode input as `verify_restore`) + decrypt + extract into `out_dir` — the actual restore `verify_restore` stops short of. Requires `confirm_write: true` before any work happens; when `pg` is given, `pg_restore --clean --if-exists` also DROPS and replaces objects in that database, the same `--yes` consent the CLI's `restore --pg` requires |

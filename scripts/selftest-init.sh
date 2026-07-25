@@ -130,6 +130,18 @@ CIPHER_BRAIN_HOME="$WIZ_CB_HOME" CIPHER_BRAIN_FILE_DIR="$WIZ_STORE" HOME="$WIZ_H
 grep -q 'cipher-brain init: complete' "$TMP/wizard.log" || { echo "[FAIL] wizard log lacks its own completion marker"; cat "$TMP/wizard.log"; exit 1; }
 echo "[PASS] scripted stdin sequence drove init end-to-end: keygen -> backup key(yes) -> signing key(yes) -> passphrase(skip) -> pin(skip) -> profile(none) -> snapshot -> push"
 
+echo "== (d2) step 5/7 points the recipient pin at the config file, not a shell rc (issue #299) =="
+# #286 introduced $CIPHER_BRAIN_HOME/config.env, which made one sentence of this step
+# FALSE: it told the reader the pin "is read from the environment at snapshot time, not
+# a file init controls". Grep the literal, so a reintroduction fails here instead of
+# shipping a wrong instruction onto a new user's first run. The step's explanation is
+# printed before its y/n prompt, so test (d)'s pin-skip transcript already contains it.
+grep -qF "$WIZ_CB_HOME/config.env" "$TMP/wizard.log" || { echo "[FAIL] step 5 does not name \$CIPHER_BRAIN_HOME/config.env as the place to persist the pin"; cat "$TMP/wizard.log"; exit 1; }
+if grep -qF 'not a file init controls' "$TMP/wizard.log"; then echo "[FAIL] step 5 still claims no file controls this setting — config.env (#286) does"; cat "$TMP/wizard.log"; exit 1; fi
+if grep -qF 'add to your shell rc file yourself' "$TMP/wizard.log"; then echo "[FAIL] step 5 still offers a shell rc as the only place to persist the pin"; cat "$TMP/wizard.log"; exit 1; fi
+grep -qF 'unattended nightly run with a bare environment' "$TMP/wizard.log" || { echo "[FAIL] step 5 does not explain why a shell rc misses the unattended run the pin exists to protect"; cat "$TMP/wizard.log"; exit 1; }
+echo "[PASS] step 5 names \$CIPHER_BRAIN_HOME/config.env, explains why the unattended run needs it, and no longer claims init controls no such file"
+
 [ -f "$WIZ_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity was not written"; exit 1; }
 [ -f "$WIZ_CB_HOME/recipient.txt" ] || { echo "[FAIL] primary recipient was not written"; exit 1; }
 grep -q '^AGE-SECRET-KEY-1' "$WIZ_CB_HOME/identity.age" || { echo "[FAIL] primary identity is not a plain unwrapped age identity (passphrase step should have been skipped)"; exit 1; }
@@ -189,6 +201,10 @@ echo "== (f) passphrase=yes path completes end-to-end (readline/promptHidden int
 # (recipient-pin, profile, directory, backend, kit path) must still be answered by
 # this scripted driver, which only works if the wizard's later rl.question() calls
 # are actually receiving input again.
+#
+# This is also the ONE run in this file that answers YES to the recipient-pin
+# suggestion, so the suggested line it prints and the kit section it feeds are
+# actually exercised — see (g2) below (issue #299).
 F_HOME="$TMP/pass-home"; mkdir -p "$F_HOME"
 F_CB_HOME="$TMP/pass-cb-home"
 F_STORE="$TMP/pass-store"
@@ -205,7 +221,8 @@ cat > "$TMP/qa-pass.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "y"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "y"],
+  ["Suggested line (edit or press Enter to accept)", ""],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$F_SRC"],
   ["Backend [file/", ""],
@@ -261,6 +278,21 @@ grep -qF "$F_CB_HOME/identity.age" "$F_KIT_PATH" || { echo "[FAIL] no-backup kit
 grep -q 'cipher-brain keygen' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not explain generating a backup key for real kit-only recovery later"; exit 1; }
 grep -q 'still valid, useful' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not note the save-locator/pin-recipients sections remain valid regardless"; exit 1; }
 echo "[PASS] no-backup kit is honest: no BACKUP IDENTITY block or dependent instructions, explains primary-identity-only recovery + the keygen path to real kit-only recovery later"
+
+echo "== (g2) the accepted pin suggestion, and the kit heading it lands under, both name config.env (issue #299) =="
+# Test (f) is the only run here that answers YES to the pin suggestion, so its
+# transcript and its kit carry the two artifacts the pre-#286 shell-rc advice used to
+# live in: the suggested line itself (which was `export KEY="..."`, shell syntax) and
+# the kit's own heading (which told the reader to put it in ~/.zshrc). config.env takes
+# `KEY=value` lines, so an `export` prefix is not what should be suggested first.
+F_PIN_PUB="$(head -n1 "$F_CB_HOME/recipient.txt")"
+grep -qF "CIPHER_BRAIN_PIN_RECIPIENTS=\"$F_PIN_PUB\"" "$TMP/wizard-pass.log" || { echo "[FAIL] the pin=yes run never printed a suggested line containing this run's own recipient"; cat "$TMP/wizard-pass.log"; exit 1; }
+if grep -qE '^export CIPHER_BRAIN_PIN_RECIPIENTS=' "$TMP/wizard-pass.log"; then echo "[FAIL] the suggested line is still shell-rc syntax (export ...) rather than a config.env KEY=value line"; cat "$TMP/wizard-pass.log"; exit 1; fi
+grep -qF "Add this line to $F_CB_HOME/config.env" "$TMP/wizard-pass.log" || { echo "[FAIL] the pin=yes run does not tell the user which file to add the line to"; cat "$TMP/wizard-pass.log"; exit 1; }
+grep -qF -- '--- CIPHER_BRAIN_PIN_RECIPIENTS (add to $CIPHER_BRAIN_HOME/config.env' "$F_KIT_PATH" || { echo "[FAIL] the printed recovery kit's pin heading does not name config.env"; exit 1; }
+if grep -qF 'add to your shell rc, e.g. ~/.zshrc' "$F_KIT_PATH"; then echo "[FAIL] the printed recovery kit still carries the pre-#286 shell-rc instruction"; exit 1; fi
+grep -qF "CIPHER_BRAIN_PIN_RECIPIENTS=\"$F_PIN_PUB\"" "$F_KIT_PATH" || { echo "[FAIL] the kit does not inline the exact pin line the wizard suggested"; exit 1; }
+echo "[PASS] pin=yes suggests a config.env KEY=value line (no export prefix), names the file to add it to, and the kit heading carries that same instruction onto the printed sheet"
 
 echo "== (h) rollback + clean retry: a failure AFTER identity creation must not brick a retry (P2 fix) =="
 # The primary identity is created in step 1/6, well before later prompts that can

@@ -317,9 +317,23 @@ export async function snapshot(o: CliOptions): Promise<void> {
   for (const d of o.dirs) await requirePath(resolve(d), 'snapshot source');
   // #216: --dry-run previews --dir/--profile .cipherbrainignore filtering WITHOUT
   // staging, encrypting or writing anything — checked HERE, before the --out
-  // requirement AND the --scan-secrets validation below, since a preview has no
-  // output file (no --out needed) and never stages plaintext for gitleaks to scan.
-  if (o.dry_run) return dryRun(o);
+  // requirement below, since a preview has no output file (no --out needed).
+  //
+  // It also never stages plaintext, so gitleaks has nothing to look at: --scan-secrets
+  // is REFUSED with it rather than skipped (#307, multi-model review). Skipping was the
+  // pre-#307 behaviour and it let `--dry-run --scan-secrets deny` exit 0 having scanned
+  // nothing — readable as a clean scan preflight — and `--dry-run --scan-secrets bogus`
+  // exit 0 on a value the real run rejects. Same rule as the no-source case below: never
+  // let a request for the gate come back successful having inspected nothing.
+  if (o.dry_run) {
+    if (o.scan_secrets !== undefined)
+      throw new Error(
+        `--scan-secrets cannot be combined with --dry-run: a dry run stages no plaintext, so there is nothing for ` +
+          `gitleaks to scan and the preview would exit 0 having checked nothing. Drop --dry-run to run the gate for ` +
+          `real, or drop --scan-secrets to preview the .cipherbrainignore filtering.`,
+      );
+    return dryRun(o);
+  }
   if (!o.out) throw new Error('--out <file.age> required');
   // --scan-secrets warn|deny (#215): gitleaks over each --dir/--profile source's staged
   // plaintext before it is archived+encrypted. Validated AND gitleaks-availability-checked

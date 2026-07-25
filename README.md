@@ -482,6 +482,8 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       customize/allowlist rules, same as you would for a git repo. It covers
       --dir/--profile sources only — a --pg dump is not scanned — so a snapshot with
       neither is REFUSED rather than reporting a scan that inspected no component.
+      For the same reason it cannot be combined with --dry-run, which stages no
+      plaintext for gitleaks to look at.
       Authenticity (#214): whenever a signing identity exists (default
       $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
       a different one), snapshot ALSO writes a detached "<out>.minisig" signature over

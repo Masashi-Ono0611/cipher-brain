@@ -916,6 +916,20 @@ set -e
 if printf '%s' "$PGONLY_ERR" | grep -q 'nothing to scan'; then echo "[FAIL] a --pg-only snapshot WITHOUT --scan-secrets was refused by the new check"; echo "$PGONLY_ERR"; exit 1; fi
 echo "[PASS] --scan-secrets is refused when no --dir/--profile source would be scanned, without needing gitleaks, and only when the flag is present"
 
+echo "== #307: --scan-secrets + --dry-run is refused (a dry run stages nothing, so the preview would exit 0 having scanned nothing) =="
+set +e
+DRYSCAN_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run --scan-secrets deny 2>&1); DRYSCAN_RC=$?
+# The pre-#307 shape of the same hole: --dry-run returned before the mode was even
+# validated, so a value the real run rejects also exited 0.
+DRYBAD_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run --scan-secrets bogus 2>&1); DRYBAD_RC=$?
+set -e
+[ "$DRYSCAN_RC" != "0" ] || { echo "[FAIL] --dry-run --scan-secrets deny exited 0 — readable as a clean scan preflight when nothing was scanned"; echo "$DRYSCAN_ERR"; exit 1; }
+printf '%s' "$DRYSCAN_ERR" | grep -q -- 'cannot be combined with --dry-run' || { echo "[FAIL] the --dry-run refusal does not explain the combination"; echo "$DRYSCAN_ERR"; exit 1; }
+[ "$DRYBAD_RC" != "0" ] || { echo "[FAIL] --dry-run --scan-secrets bogus exited 0"; echo "$DRYBAD_ERR"; exit 1; }
+# --dry-run on its own is untouched by this refusal.
+CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run > /dev/null 2>&1 || { echo "[FAIL] a plain --dry-run was broken by the new refusal"; exit 1; }
+echo "[PASS] --scan-secrets with --dry-run is refused (both a valid and an invalid mode), while a plain --dry-run still previews"
+
 echo "== #307: a value-taking flag given with NO value is refused, naming the flag (it used to read as \"flag omitted\" and silently disable the gate) =="
 set +e
 NOVAL_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/noval.age" --scan-secrets 2>&1); NOVAL_RC=$?

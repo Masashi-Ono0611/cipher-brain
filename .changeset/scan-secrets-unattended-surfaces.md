@@ -22,8 +22,9 @@ mode that actually ran or was baked in (`null` when none was).
 Asking for the scan where it would inspect nothing is now **refused** rather than
 reported: the gate covers `--dir`/`--profile` staged plaintext, so a `--pg`-only
 snapshot or schedule used to record the mode in the manifest while scanning zero
-components. Being told a snapshot was scanned when it was not is worse than being
-told it was not scanned.
+components, and `--dry-run --scan-secrets` used to exit 0 having staged nothing to
+scan (not even validating the mode). Being told a snapshot was scanned when it was
+not is worse than being told it was not scanned.
 
 Relatedly, a value-taking flag whose value is missing is now an error naming the
 flag — both when it is the last argument (`… --scan-secrets`) and when the next

@@ -241,9 +241,16 @@ function runnerBody(cfg: ScheduleConfig): string {
   // launchd/cron give as a bare system default that excludes Homebrew's bin. APPEND (not
   // prepend) the install-time directory so gitleaks becomes resolvable without that
   // directory's other binaries shadowing the system tar/curl/... this runner also uses.
-  // This does NOT weaken the fail-closed check: snapshot() still calls
-  // assertGitleaksAvailable() on every run, so a gitleaks that later disappears from this
-  // directory still fails the nightly rather than skipping the scan.
+  //
+  // This makes the directory REACHABLE; it does not pin it. Appending means a gitleaks
+  // that is already on the runner's PATH wins, so what runs tonight is not guaranteed to
+  // be the binary install resolved (multi-model review). That is the same binary an
+  // interactive run would pick and it is still gitleaks, so the trade is deliberate:
+  // pinning would mean teaching secrets-scan.ts to spawn an absolute path, i.e. a new
+  // configuration surface of its own (the CIPHER_BRAIN_PG_BIN treatment), which belongs
+  // in its own change. What is NOT weakened either way is the fail-closed check:
+  // snapshot() calls assertGitleaksAvailable() on every run, so a run that can resolve no
+  // gitleaks at all FAILS rather than skipping the scan.
   if (cfg.scan_secrets && cfg.gitleaks_dir) envLines.push(`export PATH="$PATH:"${shq(cfg.gitleaks_dir)}`);
   // Every CIPHER_BRAIN_* var src/lib/config.ts reads that a snapshot+push run could need,
   // EXCEPT: CIPHER_BRAIN_HOME (baked above unconditionally), CIPHER_BRAIN_YES/MAX_SPEND

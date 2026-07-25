@@ -44,6 +44,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EXPECTED_MCP_TOOLS } from './mcp-expected-tools.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER_PATH = join(ROOT, 'dist', 'mcp.mjs');
@@ -272,18 +273,9 @@ async function run(tmp) {
     send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
     const list = await waitFor(2);
     const names = (list.result?.tools ?? []).map((t) => t.name).sort();
-    const expected = [
-      'estimate_cost',
-      'keygen',
-      'last_snapshot_status',
-      'restore_now',
-      'schedule_install',
-      'schedule_status',
-      'snapshot_now',
-      'verify_restore',
-      'wallet_address',
-      'wallet_create',
-    ];
+    // Shared with scripts/tarball-smoke.mjs (#290): this assertion runs on every PR,
+    // so keeping the list here is what keeps the release-only gate honest too.
+    const expected = EXPECTED_MCP_TOOLS;
     if (JSON.stringify(names) !== JSON.stringify(expected)) {
       throw new Error(`tools/list mismatch: expected ${expected.join(', ')} got ${names.join(', ')}`);
     }

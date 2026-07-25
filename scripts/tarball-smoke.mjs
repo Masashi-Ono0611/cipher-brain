@@ -10,7 +10,7 @@
 //   3. node_modules/.bin/cipher-brain --help (exit 0, non-empty) + a real
 //      keygen inside a temp CIPHER_BRAIN_HOME (identity + recipient created).
 //   4. node_modules/.bin/cipher-brain-mcp driven over stdio: initialize +
-//      tools/list, asserting the four tool names.
+//      tools/list, asserting the tool names in scripts/mcp-expected-tools.mjs.
 //
 // This catches the class of bugs the dev-tree smokes can't see: missing
 // `files` entries, bins that run from a checkout but not from a
@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EXPECTED_MCP_TOOLS } from './mcp-expected-tools.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PKG = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
@@ -143,7 +144,7 @@ log('driving installed MCP bin over stdio (initialize + tools/list)…');
 const mcpBin = path.join(sandbox, 'node_modules', '.bin', 'cipher-brain-mcp');
 if (!fs.existsSync(mcpBin)) fail(`mcp bin not at ${mcpBin}`);
 
-const EXPECTED_TOOLS = ['estimate_cost', 'last_snapshot_status', 'snapshot_now', 'verify_restore'];
+const EXPECTED_TOOLS = EXPECTED_MCP_TOOLS; // shared with mcp-smoke.mjs — see that module (#290)
 const TIMEOUT_MS = 30_000;
 
 const parseFrames = (buf) => {

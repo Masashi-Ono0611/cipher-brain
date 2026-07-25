@@ -173,8 +173,11 @@ PINRUNNER="$PINSCHED/nightly.sh"
 CIPHER_BRAIN_HOME="$PINHOME" cb keygen > /dev/null 2>&1 || { echo "[FAIL] keygen for the empty-pin home exited non-zero"; exit 1; }
 # Control: with the var genuinely UNSET, it is still dropped (no pin configured) — proving
 # the assertion below is about '' specifically, not about baking the name unconditionally.
-CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_SCHEDULE_DIR="$PINSCHED" CIPHER_BRAIN_FILE_DIR="$PINSTORE" CIPHER_BRAIN_LAUNCHD_DIR="$PINLAUNCHD" \
-  cb schedule install --backend file --dir "$PINSRC" --no-load > "$TMP/install-a3d-unset.log" 2>&1 \
+# `unset` in a subshell, not just "we never set it": whoever runs this script may well have
+# a real CIPHER_BRAIN_PIN_RECIPIENTS exported, which would otherwise leak in and false-FAIL.
+(unset CIPHER_BRAIN_PIN_RECIPIENTS
+ CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_SCHEDULE_DIR="$PINSCHED" CIPHER_BRAIN_FILE_DIR="$PINSTORE" CIPHER_BRAIN_LAUNCHD_DIR="$PINLAUNCHD" \
+   cb schedule install --backend file --dir "$PINSRC" --no-load) > "$TMP/install-a3d-unset.log" 2>&1 \
   || { echo "[FAIL] install (pin unset) exited non-zero"; cat "$TMP/install-a3d-unset.log"; exit 1; }
 if grep -q '^export CIPHER_BRAIN_PIN_RECIPIENTS=' "$PINRUNNER"; then echo "[FAIL] runner baked a CIPHER_BRAIN_PIN_RECIPIENTS export even though the var was UNSET at install time"; cat "$PINRUNNER"; exit 1; fi
 CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_SCHEDULE_DIR="$PINSCHED" CIPHER_BRAIN_FILE_DIR="$PINSTORE" CIPHER_BRAIN_LAUNCHD_DIR="$PINLAUNCHD" CIPHER_BRAIN_PIN_RECIPIENTS="" \

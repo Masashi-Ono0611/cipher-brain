@@ -124,8 +124,15 @@ async function captureEnv(): Promise<Record<string, string>> {
     if (raw === undefined) continue;
     if (raw === '') {
       // Nothing to resolve — resolve('') returns the install-time cwd, which would invent a
-      // path where the operator supplied none (and, for the vars config.ts falls back on
-      // with `||`, an empty export is already equivalent to unset at run time).
+      // path where the operator supplied none.
+      //
+      // Baking '' is deliberately NOT special-cased to the pin: every OTHER name in
+      // ENV_CAPTURE_VARS is consumed in config.ts as `readEnv(...) || <default>`, so an
+      // empty export is already run-time identical to no export at all for them, and
+      // keeping the rule uniform means the next variable whose empty value MEANS something
+      // is handled correctly by default rather than re-introducing #101's collapse. A new
+      // variable added here that distinguishes '' from unset at run time inherits that
+      // distinction — check its config.ts fallback if it must not.
       captured[v] = '';
     } else if (v === 'CIPHER_BRAIN_PIN_RECIPIENTS') {
       // File-first, exactly like keys.ts's resolvePinnedRecipients: if the value names

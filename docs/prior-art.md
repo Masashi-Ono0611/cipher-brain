@@ -80,6 +80,7 @@ idea that was considered and declined.
 | [Open Second Brain](https://github.com/itechmeat/open-second-brain) | A comparable second-brain project | A `--profile o2b` that ingests its bank-export bundle | [#206](https://github.com/Masashi-Ono0611/cipher-brain/issues/206) | Open | Accepted, not built |
 | [x402](https://www.x402.org) | Agentic payment rails | Let an agent hold its own means of payment for a paid push | [#187](https://github.com/Masashi-Ono0611/cipher-brain/issues/187) | Open | Under discussion |
 | [Sigstore](https://www.sigstore.dev) | Keyless signing, transparency logs | Considered for release signing alongside npm OIDC provenance | [#186](https://github.com/Masashi-Ono0611/cipher-brain/issues/186), [#66](https://github.com/Masashi-Ono0611/cipher-brain/issues/66) | Closed | Partly shipped (npm OIDC provenance; no Rekor entry) |
+| [rclone](https://rclone.org/flags/) / [restic](https://restic.net) / [Turbo SDK](https://github.com/ardriveapp/turbo-sdk) | Transfer progress reporting | Report upload progress on `push`. The finding was that we need to *build* almost none of it: the Turbo SDK has emitted `onProgress`/`onUploadProgress` since v1.26.0 and we require `^1.42.0`, and rclone has `-P`/`--stats` we can pass through. Only the arweave L1 path has no upstream answer. **The SDK documents no resume API** — resumption is deliberately excluded | [#283](https://github.com/Masashi-Ono0611/cipher-brain/issues/283) | Open | Accepted, not built |
 
 ## Angles already swept
 
@@ -93,7 +94,8 @@ key exchange · threshold recovery · hardware-backed keys · archive extraction
 safety · archival packaging standards · verified gateway reads · supply-chain
 scanning · PII/privacy tooling · FinOps cost reporting · plan-then-apply consent
 · interactive prompt libraries · property-based testing · structured
-logging/tracing · release automation · project-health baselines.
+logging/tracing · release automation · project-health baselines · transfer
+progress reporting.
 
 ## Angles not yet swept
 
@@ -113,9 +115,6 @@ judgement against [`README.md`](../README.md)'s "What cipher-brain isn't".
 - **The MCP surface as a surface.** cipher-brain exposes 10 MCP *tools* and
   nothing else — no resources, no prompts. Whether the other primitives fit here
   has not been examined.
-- **Progress and resumability for large uploads.** A multi-hundred-MB brain
-  currently pushes with no progress output and no resume story. rclone and
-  restic both have well-worn designs.
 - **Configuration files.** Everything is environment variables — 25 distinct
   `CIPHER_BRAIN_*` names, two of them deprecated no-ops — and
   [#276](https://github.com/Masashi-Ono0611/cipher-brain/issues/276) was a bug

@@ -7,7 +7,7 @@ import { AGE_MAGIC, CIPHER_YES, IDENTITY, PIPE_TIMEOUT_MS, SIGN_RECIPIENT, pgToo
 import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
 import { checkArtifactSignature } from './minisign.js';
-import { exists, sha256, readHead, fmtBytes, redactPgConn, errMsg } from './util.js';
+import { exists, requireFile, sha256, readHead, fmtBytes, redactPgConn, errMsg } from './util.js';
 import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
 import { moodForVerdict, printMascot } from './ui.js';
 import type { CliOptions } from './types.js';
@@ -335,6 +335,13 @@ async function restoreImpl(o: CliOptions): Promise<void> {
         `re-run restore with --yes or set CIPHER_BRAIN_YES=1 to confirm`,
     );
   }
+  // #267: deliberately AFTER the consent gate above, not before it — a missing --in
+  // must not demote the irreversible-pg_restore warning to second place (multi-model
+  // review finding). Still before ANY decrypt work, which is the point: a missing
+  // --in used to reach the age call and surface as "age decrypt failed: ENOENT …
+  // [CB-E002]", a code MANAGEMENT.md documents as "wrong identity, or a corrupt/
+  // truncated artifact" — a key audit in answer to a typo.
+  await requireFile(o.in);
   // Authenticity check FIRST (#214), before any decryption or even the age identity
   // check below: age proves confidentiality + tamper detection, but NOT authenticity
   // (a recipient's public key is not secret — anyone holding it can forge ciphertext
@@ -456,6 +463,7 @@ async function restoreImpl(o: CliOptions): Promise<void> {
 // snapshot is restorable by you.
 export async function verify(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
+  await requireFile(o.in); // #267: before stat(), so a typo is not a raw ENOENT
   const sz = (await stat(o.in)).size;
   const head = await readHead(o.in, 64);
   const isAge = head.startsWith(AGE_MAGIC);

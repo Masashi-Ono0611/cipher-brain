@@ -5,7 +5,7 @@ import { mkdir, writeFile, rm, readFile, rename, link, stat } from 'node:fs/prom
 import { dirname, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { AGE_MAGIC, CIPHER_YES } from './config.js';
-import { exists, sleep, sha256, readHead, errMsg, RetryableError } from './util.js';
+import { exists, requireFile, sleep, sha256, readHead, errMsg, RetryableError } from './util.js';
 import { backendFor } from './backends/index.js';
 import { estimateCost, formatEstimate } from './estimate.js';
 import { signatureKeyIdHex } from './minisign.js';
@@ -134,7 +134,7 @@ async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> 
 export async function push(o: CliOptions): Promise<boolean> {
   if (!o.in) throw new Error('--in <file.age> required');
   if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone> required'); // no silent default
-  if (!(await exists(o.in))) throw new Error(`no such file: ${o.in}`);
+  await requireFile(o.in); // #267: one shared check/wording across every command
   // storage must only ever see ciphertext — refuse to push a non-age artifact
   // (e.g. an accidental plaintext path), which would be the last gate before a
   // backend can publish bytes externally.

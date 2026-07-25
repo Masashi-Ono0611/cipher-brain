@@ -1,5 +1,5 @@
 // ---------- utils ----------
-import { access, stat } from 'node:fs/promises';
+import { access, lstat, stat } from 'node:fs/promises';
 import { createReadStream, constants as FS } from 'node:fs';
 import { createHash } from 'node:crypto';
 
@@ -8,6 +8,50 @@ export const exists = (p: string): Promise<boolean> =>
     .then(() => true)
     .catch(() => false);
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// Refuse up front when a path the user pointed at is not there (issue #267).
+// A command that reads a path goes through one of these BEFORE opening it, so a
+// mistyped path always produces the same one-line answer naming the path — never
+// a raw Node errno string (`ENOENT: no such file or directory, stat '…'`), and
+// never an error whose CB-E0xx code claims a different cause. `restore` used to
+// let a missing --in fall through to the decrypt call and surface as
+// "age decrypt failed: ENOENT … [CB-E002]", i.e. "your identity is probably wrong
+// or the artifact is corrupt" — the worst possible answer to a typo, at the worst
+// possible moment. push/estimate already had this check inline; these helpers give
+// the call sites that skipped it the same one, with the same wording.
+//
+// requireFile follows symlinks (access(F_OK)): for an --in that must actually be
+// READ, a dangling symlink is as unusable as a missing file and should say so.
+// Only ENOENT/ENOTDIR (the path, or a directory component of it, is not there)
+// become "no such file" — EACCES, ELOOP and friends are rethrown untouched, since
+// relabelling "permission denied" as "missing" is the same misdiagnosis this issue
+// is about, one level down (multi-model review finding). push/estimate route
+// through here too, so all five commands share one implementation and one wording.
+export async function requireFile(path: string, what = 'file'): Promise<void> {
+  try {
+    await access(path, FS.F_OK);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw e;
+    throw new Error(`no such ${what}: ${path}`);
+  }
+}
+
+// requirePath does NOT follow symlinks — deliberately, and this is not
+// interchangeable with requireFile. A snapshot source may be a directory, a plain
+// file, or a top-level symlink, and a DANGLING symlink is a source snapshot
+// archives on purpose (as a symlink entry — see snapshot.ts's lstat comment);
+// checking it with access() would start rejecting a case that works today.
+// A non-ENOENT failure (EACCES, ELOOP, …) is rethrown untouched rather than
+// relabelled "no such …", which would be the same misdiagnosis this fixes.
+export async function requirePath(path: string, what = 'path'): Promise<void> {
+  try {
+    await lstat(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e;
+    throw new Error(`no such ${what}: ${path}`);
+  }
+}
 
 // Warn (don't refuse) if a secret-bearing key file is group/other-accessible. The age
 // identity is created 0600; an Arweave JWK is a spend-capable bearer credential (a Turbo

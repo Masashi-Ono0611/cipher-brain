@@ -717,7 +717,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
         // An empty array means "scanned, found nothing". A scan that could not RUN must
         // never produce it — the durable artifact would then claim a clean component that
         // was never inspected, which is the same lie the console was careful to avoid
-        // (multi-model review finding). The error takes its place instead.
+        //. The error takes its place instead.
         ...(scanMode && !secretsScanError ? { secrets_scan: secretsScan ?? [] } : {}),
         ...(secretsScanError ? { secrets_scan_error: secretsScanError } : {}),
       }); // skew vs the DB is now detectable on restore

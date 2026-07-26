@@ -457,7 +457,7 @@ function resolvePgDumpDir(): string | null {
 //
 // `nameOrPath` is whatever CIPHER_BRAIN_GITLEAKS_BIN says, or plain "gitleaks" when it
 // says nothing. An EXPLICIT value is resolved and validated too, not trusted as-is
-// (multi-model review): a bare name there is exactly as unusable to launchd/cron as the
+//: a bare name there is exactly as unusable to launchd/cron as the
 // default is, and a path that does not exist is worse — install would exit 0 having
 // promised a gate the nightly can never run. `command -v` answers for both shapes and
 // only echoes a path back when it is executable, so one call validates and absolutises.
@@ -573,7 +573,7 @@ async function install(o: CliOptions): Promise<void> {
   // warning, never a silently unscanned schedule.
   //
   // Unlike the --pg branch, an EXPLICIT CIPHER_BRAIN_GITLEAKS_BIN is validated rather
-  // than passed through (multi-model review): `CIPHER_BRAIN_GITLEAKS_BIN=gitleaks` is a
+  // than passed through: `CIPHER_BRAIN_GITLEAKS_BIN=gitleaks` is a
   // perfectly reasonable interactive setting and a useless baked one, and a stale
   // absolute path in it is worse still — install would exit 0 promising a gate that can
   // never run. Whatever it says is resolved through the same check the default gets.
@@ -657,7 +657,7 @@ async function install(o: CliOptions): Promise<void> {
   // In the CLI the two are equivalent (one process, one install), but the MCP server is
   // long-lived: a process.env left mutated by one schedule_install call would still be
   // there for the next one, which would then read a stale absolute path as if the
-  // operator had configured it (multi-model review). Nothing outside this call sees it.
+  // operator had configured it. Nothing outside this call sees it.
   const capturedEnv = await captureEnv();
   if (gitleaksBin) capturedEnv.CIPHER_BRAIN_GITLEAKS_BIN = gitleaksBin;
 
@@ -866,7 +866,7 @@ export type ScheduleStatusReport = {
      *
      * It is the configured intent, NOT a health check: this says the runner passes
      * `--scan-secrets <mode>`, not that gitleaks is still resolvable from wherever the
-     * runner will look for it tonight (multi-model review). That stays fail-closed at run
+     * runner will look for it tonight. That stays fail-closed at run
      * time — a gitleaks that has since disappeared makes the run FAIL rather than skip the
      * scan — so the honest reading is "configured", which is how the printed line words
      * it. Surfacing scanner health as well would mean a new field on this shared object
@@ -968,7 +968,7 @@ async function status(o: CliOptions): Promise<void> {
   // "configured", deliberately, not "enabled": this reads schedule.json, so it reports what
   // the runner was built to pass, not that gitleaks is still resolvable tonight. Claiming
   // the latter from a file read would be the same kind of unearned assurance #307 is about
-  // (multi-model review). The run itself stays fail-closed either way, which is what the
+  //. The run itself stays fail-closed either way, which is what the
   // parenthetical tells the reader.
   console.log(
     r.configured.scan_secrets && r.configured.scan_secrets !== 'off'
@@ -980,7 +980,7 @@ async function status(o: CliOptions): Promise<void> {
           // upgraded snapshot() to pick a default at run time, from the scheduler's own bare
           // PATH — the one thing baking the mode exists to prevent. Nothing here can rewrite
           // an already-installed runner, so say so instead of printing a confident "off"
-          // that this status cannot actually guarantee (multi-model review finding).
+          // that this status cannot actually guarantee.
           'secret scan: off, but NOT pinned — this schedule predates the baked-in mode, so its runner carries no --scan-secrets and each nightly decides from whatever PATH it inherits. Re-run `schedule install` to pin it (add --scan-secrets warn|deny|off to choose).',
   );
   console.log(

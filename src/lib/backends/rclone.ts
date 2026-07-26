@@ -81,7 +81,7 @@ export function parseRcloneLogLine(line: string): RcloneLogLine {
     // `object` names the path/remote the message is about, and JSON-log mode is the only
     // reason it is a separate field rather than part of the sentence. Dropping it loses
     // WHICH file failed — "directory not found" instead of "Local file system at
-    // /nope: directory not found" (multi-model review finding).
+    // /nope: directory not found".
     const obj = typeof frame.object === 'string' && frame.object.trim() !== '' ? `${frame.object.trim()}: ` : '';
     return { msg: `${obj}${frame.msg.trim()}` };
   }
@@ -105,7 +105,7 @@ export function parseRcloneLogLine(line: string): RcloneLogLine {
 // original message. Replacing unconditionally would let a routine notice — "Config file
 // not found - using defaults" arrives on almost every run — stand in for
 // "rclone timed out after 3600000ms", which is a different problem with a different fix
-// (multi-model review finding).
+//.
 async function runRclone(subcommand: string, positionals: string[], progress?: ProgressReporter): Promise<void> {
   const msgs: string[] = [];
   const onStderrLine = progress

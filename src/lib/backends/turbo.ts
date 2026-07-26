@@ -134,7 +134,7 @@ export function turboBackend(): StorageBackend {
       // i.e. at that step's first event. Sharing one start time across steps looked
       // tidier and was wrong: the SDK's counters restart per step, so an upload that
       // begins after 90s of signing would be divided by 91s and report a rate an order
-      // of magnitude too low with an ETA to match (multi-model review finding). The
+      // of magnitude too low with an ETA to match. The
       // cost of getting this right is that each step's FIRST line has no rate yet,
       // which is the honest answer — at that instant nothing has been observed moving.
       const reporters = new Map<string, ReturnType<typeof progressReporter>>();

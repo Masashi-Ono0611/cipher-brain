@@ -18,7 +18,7 @@
 // failure pattern turns out to be common enough to deserve one; nothing else needs to
 // change.
 //
-// Trade-off this design accepts (multi-model review finding): a `pattern` is matched
+// Trade-off this design accepts: a `pattern` is matched
 // against MUTABLE human-readable text, not a typed error/explicit metadata at the throw
 // site — that's the whole point (it's what lets every throw site stay untouched), but it
 // also means rewording the underlying message can silently stop a pattern from matching,
@@ -132,7 +132,7 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     // The half WE write, named explicitly so the selftest checks it. "any one
     // alternative is present" would be too weak: the upstream wording could start
     // appearing under src/ for an unrelated reason and hold the check up while this
-    // one rotted away (multi-model review finding).
+    // one rotted away.
     assertLiterals: ['exceeds CIPHER_BRAIN_MAX_SPEND'],
     source:
       'src/lib/backends/arweave.ts + src/lib/backends/turbo.ts ("… exceeds CIPHER_BRAIN_MAX_SPEND=…"); ' +

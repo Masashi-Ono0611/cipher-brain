@@ -55,7 +55,7 @@ const nearEnough = (a: string, b: string): number => Math.max(1, Math.floor(Math
  * edit distance: that is #277's own case, where the wrong name is a real flag
  * elsewhere rather than a misspelling. Only that direction — a candidate that is a
  * prefix OF the input would make `outgoing` suggest `out`, which is not a near miss
- * at all (multi-model review finding). Distance wins over the prefix rule when both
+ * at all. Distance wins over the prefix rule when both
  * find something, and ties keep the caller's declaration order, so the answer is
  * deterministic.
  */

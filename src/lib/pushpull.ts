@@ -72,7 +72,7 @@ export class PushLocatorWriteError extends Error {
 }
 
 // The signing state of the artifact being pushed (#250). THREE distinct outcomes,
-// not two — collapsing them would be a real bug (multi-model review finding):
+// not two — collapsing them would be a real bug:
 //   { signed: false }        no "<in>.minisig" at all. A KNOWN state, and the one
 //                            that lets --skip-unchanged tell "still unsigned, as
 //                            before" apart from "signing was just enabled".

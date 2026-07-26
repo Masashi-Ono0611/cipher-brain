@@ -109,7 +109,7 @@ export function printMascot(mood: Mood): void {
 //
 // Today no --json command can throw after printing (each prints last and returns),
 // so this guard never fires; it exists so that stops being something a future
-// command has to remember (multi-model review finding).
+// command has to remember.
 let jsonWritten = false;
 
 /** True once printJson() has written a command's own JSON document to stdout. */

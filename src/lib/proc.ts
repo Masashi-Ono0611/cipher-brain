@@ -61,7 +61,7 @@ export function run(cmd: string, args: string[], { input, timeoutMs, onStderrLin
     // Decoded through StringDecoder rather than String(chunk): a multi-byte character
     // straddling a chunk boundary would otherwise be mangled into replacement characters
     // — measured on a split UTF-8 "€" — and these lines carry paths and error text
-    // (multi-model review finding).
+    //.
     const decoder = new StringDecoder('utf8');
     let pending = '';
     p.stderr?.on('data', (d) => {

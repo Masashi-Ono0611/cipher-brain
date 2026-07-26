@@ -590,7 +590,7 @@ function cliVersion(): string {
 // "anything that isn't a flag" — `--version` and `<command> --help` have their own
 // sections up top but are a flag and a placeholder, and a future header of some other
 // shape (`cipher-brain [options] …`) must not be advertised as a command either
-// (multi-model review finding). `wallet create`, `schedule status` etc. collapse to
+//. `wallet create`, `schedule status` etc. collapse to
 // their first word, which is what a user types and what helpForCommand() matches on.
 function commandNames(): string[] {
   const names = HELP.split('\n')
@@ -634,31 +634,24 @@ function helpForCommand(cmd: string): string | null {
 }
 
 /**
- * #277 — a flag ANOTHER command accepts, passed to one that never reads it.
+ * #277 — a flag ANOTHER command accepts, passed to one that never reads it. #253 made an
+ * unrecognized `--flag` an error; that check is global, so `restore --out ./x` is still a
+ * real flag with a real value, stored and never read, because restore's destination is
+ * `--out-dir`.
  *
- * #253 made an unrecognized `--flag` an error instead of storing it on the options object
- * where nothing would ever read it. That validation is global, so the same bug class
- * survives one scope down: `restore --out ./x` is a real flag with a real value, stored and
- * then never read, because restore's destination is `--out-dir`. The user gets
- * "--out-dir <dir> required" and no hint that the thing they typed was seen and discarded.
+ * Same shape as #308 took for MCP: each command declares which flags it will NOT read,
+ * EMPTY IS A REAL ANSWER, and a command with no declaration fails the build —
+ * scripts/cli-smoke.sh compares the dispatch switch's case labels against this table.
  *
- * The shape of the answer is the one taken for the MCP surface in #308: each command
- * declares which flags it will NOT read, an EMPTY DECLARATION IS A REAL ANSWER, and a
- * command with no declaration at all refuses to run. That last part is what stops this
- * being a rule everyone has to remember — scripts/cli-smoke.sh walks the same command list
- * the unknown-command error prints and fails the build on a missing entry.
+ * A deny-list, not an allow-list. An allow-list cannot be derived from HELP (the usage
+ * lines are abbreviated), and a hand-written one fails in the direction that matters: a
+ * flag missing from it starts REFUSING a valid invocation. A missing deny-list entry only
+ * preserves today's behaviour, so the table can grow instead of having to be right at once.
  *
- * Deliberately a deny-list, not an allow-list. #277 explains why deriving an allow-list
- * from HELP does not work (the usage lines are abbreviated: snapshot's ends in `...`), and
- * a hand-written allow-list has the failure mode that matters most here — a flag missing
- * from it starts REFUSING a valid invocation. A missing deny-list entry only preserves
- * today's behaviour, so the table can grow safely instead of having to be right at once.
- *
- * Every entry below was verified against what the command's implementation actually does
- * with the flag, not inferred from the flag's name. "Does not read" is the user-facing
- * phrasing and "never honors" is the precise one: restore() does touch o.out, but only to
- * build the #279 hint — it never uses it as a destination. That branch is unreachable from
- * the CLI now and is left in place for a direct library caller (multi-model review finding).
+ * Entries record what the command DOES with the flag, not what the flag is called.
+ * "Does not read" is the user-facing phrasing; "never honors" is the precise one — restore()
+ * touches o.out only to build the #279 hint, a branch now unreachable from the CLI and left
+ * for a direct library caller.
  */
 interface FlagIrrelevance {
   flag: string;
@@ -718,7 +711,7 @@ const FLAG_IRRELEVANT: Record<string, FlagIrrelevance[]> = {
   // Reached through the same switch, so the source-level guard in cli-smoke expects an
   // answer from them too. They take no flags and produce no side effects, which is the
   // answer — recorded rather than special-cased, so a future route that DOES take flags
-  // cannot slip through by looking like these (multi-model review finding).
+  // cannot slip through by looking like these.
   help: [],
   '--help': [],
   '-h': [],
@@ -735,7 +728,7 @@ function assertFlagsDeclared(cmd: string | undefined): void {
   // Keyed on commandNames() so a TYPO still gets the friendly "unknown command" reply from
   // the switch's default rather than an internal error. That leaves one gap on its own — a
   // switch case never added to HELP is in neither list — which is why cli-smoke reads the
-  // case labels out of the source and probes each one (multi-model review finding).
+  // case labels out of the source and probes each one.
   if (!commandNames().includes(cmd) && !Object.hasOwn(FLAG_IRRELEVANT, cmd)) return;
   if (!Object.hasOwn(FLAG_IRRELEVANT, cmd)) {
     throw new Error(
@@ -774,7 +767,7 @@ async function main(): Promise<void> {
   // so it applies uniformly to every subcommand (not just the bare
   // `cipher-brain --help` handled by the switch below) and keeps working
   // even if parseArgs() is ever changed to validate/throw on bad input
-  // (multi-model review finding).
+  //.
   if (rest.includes('--help') || rest.includes('-h')) {
     printMascot('neutral');
     console.log((cmd !== undefined && helpForCommand(cmd)) || HELP);
@@ -865,7 +858,7 @@ async function main(): Promise<void> {
       console.error(`error: unknown command: ${cmd}`);
       // Guard the derived list: if a future HELP edit ever changed the section-header
       // shape enough that nothing matches, "valid commands: " with nothing after it
-      // would be worse than not printing the line at all (multi-model review finding).
+      // would be worse than not printing the line at all.
       // cli-smoke also asserts the list matches the real command set on every run.
       const names = commandNames();
       if (names.length > 0) console.error(`valid commands: ${names.join(', ')}`);
@@ -904,7 +897,7 @@ main().catch((e: unknown) => {
   // a command's own document — two values on one stream is not parseable as one. No
   // --json command can currently throw after printing (each prints last and returns),
   // so this is a structural guarantee for future ones rather than a live fix
-  // (multi-model review finding).
+  //.
   if (process.argv.slice(2).includes('--json') && !hasWrittenJson()) {
     console.log(JSON.stringify({ error: message, code: matchErrorCode(message)?.code ?? null, exit_code: 1 }));
   }

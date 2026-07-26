@@ -860,7 +860,7 @@ function assertDeclaredArgs(tool: Tool, args: ToolArgs): void {
 // a top-level property's own `enum`, of primitive literals. It does NOT descend into
 // `items`, a nested object's properties, or allOf/anyOf/oneOf, and it compares by value —
 // so an object/array literal, which JSON Schema compares STRUCTURALLY and `includes`
-// would compare by reference, is out of scope too (multi-model review finding). Neither
+// would compare by reference, is out of scope too. Neither
 // gap can arrive unnoticed: scripts/mcp-smoke.mjs walks every advertised schema and FAILS
 // on an enum in either shape, so adding one is a deliberate step that says "extend this
 // function first" rather than a field the server quietly stops enforcing — which is the
@@ -880,29 +880,19 @@ function assertDeclaredArgs(tool: Tool, args: ToolArgs): void {
 // anything; both it and the phrasing come from src/lib/suggest.ts, the same helper the
 // unknown-argument refusal above uses.
 /**
- * #308 direction 2 — a DECLARED field whose value is legal but whose branch will never
- * read it.
+ * #308 direction 2 — a DECLARED field whose value is legal but whose branch never reads it.
+ * `assertDeclaredArgs` catches undeclared names and `assertDeclaredEnums` catches
+ * out-of-enum values; neither can catch `verify_restore {file, backend}`, which returns
+ * PASS from a path that fetched nothing.
  *
- * `assertDeclaredArgs` refuses names the schema does not declare, and `assertDeclaredEnums`
- * refuses values an enum does not permit. Neither can catch the third shape: a real field
- * carrying a real value into a code path that does not consult it. `verify_restore {file,
- * backend}` takes the local-file branch, fetches nothing, and returns PASS — a verdict from
- * a path that never touched the backend the caller named.
+ * Not a new discipline — three cases of it were already refused by hand where someone
+ * noticed (`locator_file` with `backend`, `ping_url_fail` without `ping_url`, `max_spend`
+ * on a free backend). What was missing is anything that made the question get ASKED. Hence
+ * a declaration per tool, EMPTY BEING A REAL ANSWER, and a dispatcher that refuses a tool
+ * with no entry (assertBranchDeclared) so adding one forces the decision.
  *
- * This is NOT a new discipline. The codebase already refuses three cases of exactly this,
- * each written by hand where it was noticed: `locator_file` with `backend` (the backend
- * comes from the file), `ping_url_fail` without `ping_url`, and `max_spend` on a free
- * backend. What was missing is that nothing made the question get ASKED for a tool nobody
- * happened to think about — so the answers were inconsistent rather than wrong.
- *
- * Hence a declaration per tool, EMPTY BEING A REAL ANSWER, plus a dispatcher that refuses
- * to run a tool with no entry at all (see assertBranchDeclared). Adding a tool therefore
- * forces the decision instead of defaulting to "ignore silently", and the existing
- * every-tool pass in scripts/mcp-smoke.mjs turns a forgotten one into a CI failure.
- *
- * Cases already refused inside a handler or inside lib/ are deliberately LEFT THERE rather
- * than moved here: schedule.ts's three are shared with the CLI, which needs them just as
- * much, and each has a message specific enough to be worth keeping.
+ * Cases already handled in a handler or in lib/ stay there: schedule.ts's three are shared
+ * with the CLI, which needs them just as much.
  */
 interface BranchIrrelevance {
   /** The declared field that this branch will not read. */
@@ -914,7 +904,7 @@ interface BranchIrrelevance {
 // verify_restore and restore_now take EXACTLY ONE of locator / file / locator_file, and
 // their handlers say so. A call naming two of them has no valid branch at all, so answering
 // it with "backend is irrelevant on this branch" would name the smaller problem and hide the
-// real one (multi-model review finding). Claim irrelevance only when the local-file branch
+// real one. Claim irrelevance only when the local-file branch
 // is the unambiguous choice; otherwise stay quiet and let the handler's own
 // exactly-one-source refusal answer.
 function localFileBranch(a: ToolArgs, verb: string): BranchIrrelevance[] {
@@ -939,7 +929,7 @@ const BRANCH_IRRELEVANT: Record<string, (args: ToolArgs) => BranchIrrelevance[]>
         ]
       : []),
     // Keyed on "is there a PAID upload", not merely "is there a backend" — `file` is free,
-    // so its push never consults the consent flag either (multi-model review finding). The
+    // so its push never consults the consent flag either. The
     // CLI already applies the same rule to --max-spend, which it refuses on a free backend.
     ...(!(typeof a.backend === 'string' && PAID_BACKENDS.has(a.backend))
       ? [
@@ -973,7 +963,7 @@ const BRANCH_IRRELEVANT: Record<string, (args: ToolArgs) => BranchIrrelevance[]>
 function assertBranchDeclared(name: string): void {
   // Object.hasOwn, not `in`: `in` walks the prototype chain, so a tool named `constructor`
   // or `toString` would report a declaration it does not have — and TOOLS_BY_NAME is a Map,
-  // which happily holds such a name (multi-model review finding).
+  // which happily holds such a name.
   if (!Object.hasOwn(BRANCH_IRRELEVANT, name)) {
     throw new ToolError(
       'ERR_INTERNAL',
@@ -1084,7 +1074,7 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
     // not `scanSecrets`, which is only what the CALLER passed. Since #301 an omitted
     // scan_secrets means "warn ran" as often as it means "nothing ran", so echoing the
     // input would report null for both and leave an agent unable to tell a scanned
-    // snapshot from an unscanned one (multi-model review finding). Reaching this line
+    // snapshot from an unscanned one. Reaching this line
     // means snapshot() returned, so a mode here means the scan really ran in that mode.
     scan_secrets: snapOpts.scan_secrets ?? null,
     log: [...snap.out, ...snap.err],
@@ -1227,7 +1217,7 @@ const SIG_FETCH_FAILED = 'could not fetch the authenticity signature';
 // A URL's userinfo is a credential, and CIPHER_BRAIN_AR_GATEWAYS can legitimately carry one
 // (`https://user:token@gateway`). pull() prints a failing gateway's URL, which was fine when
 // that text only reached the operator's own stderr and is not fine now that it is returned
-// to an MCP client (multi-model review finding). The scratch tmpdir path in "pulled <x> -> <y>"
+// to an MCP client. The scratch tmpdir path in "pulled <x> -> <y>"
 // is left as-is: it names a directory this call created and then deleted, and it is the only
 // way to read the rest of the log's paths.
 const redactUserinfo = (line: string): string => line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]*@/gi, '$1<redacted>@');
@@ -1337,7 +1327,7 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
       const pullRes = await captureCall(() => pull(pullOpts));
       // err before out: pull's narrative (retries, progress, warnings) goes to stderr, and the
       // single stdout line is the resolved locator it prints last — concatenating out first
-      // would put the end of the story at the top (multi-model review finding).
+      // would put the end of the story at the top.
       const pullLog = [...pullRes.err, ...pullRes.out].map(redactUserinfo);
       effectivePin = pullOpts.sha256;
       signature = signatureGap(pullLog, pullOpts.sig_locator);
@@ -1511,7 +1501,7 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
       const pullRes = await captureCall(() => pull(pullOpts));
       // err before out: pull's narrative (retries, progress, warnings) goes to stderr, and the
       // single stdout line is the resolved locator it prints last — concatenating out first
-      // would put the end of the story at the top (multi-model review finding).
+      // would put the end of the story at the top.
       const pullLog = [...pullRes.err, ...pullRes.out].map(redactUserinfo);
       effectivePin = pullOpts.sha256;
       signature = signatureGap(pullLog, pullOpts.sig_locator);
@@ -1583,7 +1573,7 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
       // A refusal under require_signature throws, so the structured result below — and with
       // it the `signature` object #312 added — never gets built. The caller would then read
       // restore()'s generic "no signature found" wording for a case where this server KNOWS
-      // a recorded sidecar failed to fetch, and knows why (multi-model review finding).
+      // a recorded sidecar failed to fetch, and knows why.
       // Carry that diagnosis onto the error rather than losing it.
       if (!signature) throw e;
       throw new ToolError(

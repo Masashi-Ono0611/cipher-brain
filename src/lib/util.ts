@@ -25,7 +25,7 @@ export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 // Only ENOENT/ENOTDIR (the path, or a directory component of it, is not there)
 // become "no such file" — EACCES, ELOOP and friends are rethrown untouched, since
 // relabelling "permission denied" as "missing" is the same misdiagnosis this issue
-// is about, one level down (multi-model review finding). push/estimate route
+// is about, one level down. push/estimate route
 // through here too, so all five commands share one implementation and one wording.
 // Thrown by requireFile/requirePath for the one condition they translate. The CLI does
 // not care — errMsg() renders it exactly like the plain Error it replaces — but the MCP

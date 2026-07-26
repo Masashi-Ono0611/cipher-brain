@@ -120,7 +120,7 @@ export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
     // itself exited 0 (only proves the scan ran, not that the report is trustworthy), so a
     // truncated write / disk-full / permissions hiccup here would otherwise let --scan-secrets
     // deny silently proceed as if the source were clean. Fail closed: surface it as a real
-    // error instead (multi-model review finding).
+    // error instead.
     let raw: GitleaksRawFinding[];
     try {
       raw = JSON.parse(await readFile(reportPath, 'utf8')) as GitleaksRawFinding[];

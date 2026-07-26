@@ -38,6 +38,7 @@ import { estimate } from './lib/estimate.js';
 import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
 import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
+import { didYouMean } from './lib/suggest.js';
 import { hasWrittenJson, printMascot } from './lib/ui.js';
 import { printFounderNote, printWisdomQuote } from './lib/wisdom.js';
 import type { CliOptions } from './lib/types.js';
@@ -632,6 +633,134 @@ function helpForCommand(cmd: string): string | null {
   ].join('\n');
 }
 
+/**
+ * #277 — a flag ANOTHER command accepts, passed to one that never reads it.
+ *
+ * #253 made an unrecognized `--flag` an error instead of storing it on the options object
+ * where nothing would ever read it. That validation is global, so the same bug class
+ * survives one scope down: `restore --out ./x` is a real flag with a real value, stored and
+ * then never read, because restore's destination is `--out-dir`. The user gets
+ * "--out-dir <dir> required" and no hint that the thing they typed was seen and discarded.
+ *
+ * The shape of the answer is the one taken for the MCP surface in #308: each command
+ * declares which flags it will NOT read, an EMPTY DECLARATION IS A REAL ANSWER, and a
+ * command with no declaration at all refuses to run. That last part is what stops this
+ * being a rule everyone has to remember — scripts/cli-smoke.sh walks the same command list
+ * the unknown-command error prints and fails the build on a missing entry.
+ *
+ * Deliberately a deny-list, not an allow-list. #277 explains why deriving an allow-list
+ * from HELP does not work (the usage lines are abbreviated: snapshot's ends in `...`), and
+ * a hand-written allow-list has the failure mode that matters most here — a flag missing
+ * from it starts REFUSING a valid invocation. A missing deny-list entry only preserves
+ * today's behaviour, so the table can grow safely instead of having to be right at once.
+ *
+ * Every entry below was verified against what the command's implementation actually does
+ * with the flag, not inferred from the flag's name. "Does not read" is the user-facing
+ * phrasing and "never honors" is the precise one: restore() does touch o.out, but only to
+ * build the #279 hint — it never uses it as a destination. That branch is unreachable from
+ * the CLI now and is left in place for a direct library caller (multi-model review finding).
+ */
+interface FlagIrrelevance {
+  flag: string;
+  because: string;
+  /** The flag the user probably meant, when there is an obvious one. */
+  instead?: string;
+}
+
+const FLAG_IRRELEVANT: Record<string, FlagIrrelevance[]> = {
+  // restore's destination is --out-dir; src/lib/restore.ts's restore() never reads o.out.
+  // The single highest-traffic instance, since --out means the output on snapshot, pull and
+  // wallet create — restore is the one command that spells it differently.
+  restore: [{ flag: 'out', because: 'restore extracts into a directory', instead: '--out-dir' }],
+  // verify() reads neither: it inspects --in in place and writes nothing.
+  verify: [
+    { flag: 'out', because: 'verify writes nothing — it inspects --in in place' },
+    { flag: 'out_dir', because: 'verify writes nothing — it inspects --in in place' },
+  ],
+  // src/lib/keys.ts reads neither o.out nor o.backend: keygen writes to the paths under
+  // CIPHER_BRAIN_HOME and never touches storage.
+  keygen: [
+    { flag: 'out', because: 'keygen writes to the identity/recipient paths under CIPHER_BRAIN_HOME' },
+    { flag: 'backend', because: 'keygen never touches a storage backend' },
+  ],
+  // estimate.ts reads o.backend but never o.yes: pricing spends nothing, so there is no
+  // consent to give.
+  estimate: [
+    { flag: 'yes', because: 'estimate only prices an upload — it never spends, so there is nothing to confirm' },
+  ],
+  // The CLI's snapshot does NOT push (unlike the MCP snapshot_now tool, which takes a
+  // backend and pushes): snapshot() reads neither o.backend nor o.locator, so both are
+  // accepted and dropped today. Pipe it into `push` to upload.
+  snapshot: [
+    {
+      flag: 'backend',
+      because: 'the CLI snapshot does not push — run `push --in <file.age> --backend <name>` after it',
+    },
+    { flag: 'locator', because: 'a locator names an artifact already in storage; snapshot produces a local file' },
+  ],
+  // init's implementation is `init(_o)` — it ignores the options bag entirely and asks
+  // interactively instead, so every flag is unread. The four here are the ones a user is
+  // most likely to reach for; the rest are left undeclared on purpose (see the deny-list
+  // reasoning above: a missing entry preserves today's behaviour, a wrong one breaks a
+  // valid call).
+  init: [
+    { flag: 'out', because: 'init is an interactive wizard — it asks for paths rather than taking them as flags' },
+    { flag: 'backend', because: 'init is an interactive wizard — it asks which backend to configure' },
+    { flag: 'yes', because: 'init is interactive by definition; there is no unattended path to consent to' },
+    { flag: 'force', because: 'init never overwrites — it detects what already exists and asks' },
+  ],
+  // Empty is an answer, not an omission. These were checked and have no flag that another
+  // command accepts and they silently ignore.
+  push: [],
+  pull: [],
+  schedule: [],
+  wallet: [],
+  // Reached through the same switch, so the source-level guard in cli-smoke expects an
+  // answer from them too. They take no flags and produce no side effects, which is the
+  // answer — recorded rather than special-cased, so a future route that DOES take flags
+  // cannot slip through by looking like these (multi-model review finding).
+  help: [],
+  '--help': [],
+  '-h': [],
+  '--version': [],
+  '-V': [],
+};
+
+// A command with no entry has not been considered, and "not considered" must not read as
+// "nothing to declare" — that is exactly how #277's cases survived #253. Guarded against
+// the SAME derived list the unknown-command reply prints, so adding a command to HELP
+// without answering this question fails cli-smoke rather than shipping.
+function assertFlagsDeclared(cmd: string | undefined): void {
+  if (cmd === undefined) return;
+  // Keyed on commandNames() so a TYPO still gets the friendly "unknown command" reply from
+  // the switch's default rather than an internal error. That leaves one gap on its own — a
+  // switch case never added to HELP is in neither list — which is why cli-smoke reads the
+  // case labels out of the source and probes each one (multi-model review finding).
+  if (!commandNames().includes(cmd) && !Object.hasOwn(FLAG_IRRELEVANT, cmd)) return;
+  if (!Object.hasOwn(FLAG_IRRELEVANT, cmd)) {
+    throw new Error(
+      `internal: ${cmd} has no flag-relevance declaration (#277) — add an entry to FLAG_IRRELEVANT in src/cli.ts, using [] if no flag another command accepts is ignored by this one`,
+    );
+  }
+}
+
+function assertFlagsRelevant(cmd: string | undefined, o: CliOptions): void {
+  if (cmd === undefined || !Object.hasOwn(FLAG_IRRELEVANT, cmd)) return;
+  const rec = o as unknown as Record<string, unknown>;
+  const ignored = FLAG_IRRELEVANT[cmd].filter((r) => rec[r.flag] !== undefined);
+  if (ignored.length === 0) return;
+  // The near-miss suggestion comes from the same helper #305's MCP refusal and restore's own
+  // #279 hint use, so a user who typed --out on restore reads the same sentence they did
+  // before this check existed — the refusal moved earlier, the help did not get worse.
+  const named = ignored
+    .map((r) => `--${r.flag.replace(/_/g, '-')} (${r.because}${r.instead ? ` — ${didYouMean(r.instead)}` : ''})`)
+    .join('; ');
+  throw new Error(
+    `${cmd} does not read ${ignored.map((r) => `--${r.flag.replace(/_/g, '-')}`).join(', ')}: ${named}. ` +
+      `Refused rather than ignored: a flag that is silently dropped looks exactly like one that was honored.`,
+  );
+}
+
 async function main(): Promise<void> {
   // #286: the config file refused to load. config.ts records rather than throws (a
   // module-body throw escapes main().catch and prints a raw stack trace), so this is
@@ -652,6 +781,8 @@ async function main(): Promise<void> {
     return;
   }
   const o = parseArgs(rest);
+  assertFlagsDeclared(cmd);
+  assertFlagsRelevant(cmd, o);
   switch (cmd) {
     case 'init':
       // A note from the person who built this, right after the wizard's own

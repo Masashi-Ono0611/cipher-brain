@@ -337,7 +337,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
     return dryRun(o);
   }
   if (!o.out) throw new Error('--out <file.age> required');
-  // --scan-secrets warn|deny (#215): gitleaks over each --dir/--profile source's staged
+  // --scan-secrets warn|deny|off (#215/#301): gitleaks over each --dir/--profile source's staged
   // plaintext before it is archived+encrypted. Validated AND gitleaks-availability-checked
   // here, before any pg_dump/tar/staging work below — the same fail-fast posture the
   // --out parent dir / recipient checks below already follow.

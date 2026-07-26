@@ -277,14 +277,55 @@ node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend nosuchba
   || { echo "[FAIL] the error path writes to stdout even without --json"; cat "$TMP/err-nojson.out"; exit 1; }
 echo "[PASS] dist --json error path: {error, code: CB-E013, exit_code} on stdout, stderr unchanged, no stdout without --json"
 
-### (m) restore names the --out it ignored instead of just demanding --out-dir (#277)
+### (m) restore REFUSES the --out it does not read, naming the flag and the near miss (#277)
 # --out is the destination flag on snapshot/pull/wallet create, so typing it on restore
-# is the natural mistake; parseArgs accepts it globally and restore never reads it.
+# is the natural mistake. It used to be accepted globally and never read, then answered
+# with a hint from inside restore(); since #277 the dispatcher refuses it before restore()
+# runs, and carries the same "did you mean" suggestion so the reply did not get worse.
 node "$DIST" restore --in "$CIPHER_BRAIN_HOME/recipient.txt" --out "$TMP/nope" > "$TMP/m.out" 2> "$TMP/m.err"
 M_RC=$?
 [ "$M_RC" != "0" ] || { echo "[FAIL] restore with --out instead of --out-dir exited 0"; exit 1; }
 grep -Fq -- 'did you mean --out-dir?' "$TMP/m.err" \
   || { echo "[FAIL] restore --out did not name the ignored flag"; cat "$TMP/m.err"; exit 1; }
+grep -Fq -- 'does not read --out' "$TMP/m.err" \
+  || { echo "[FAIL] restore --out was not refused as unread — it is being answered by a downstream check instead"; cat "$TMP/m.err"; exit 1; }
+
+### (m2) #277: every command the SWITCH can dispatch has answered the flag-relevance
+# question. A STATIC comparison of two things read out of src/cli.ts — the dispatch switch's
+# case labels and FLAG_IRRELEVANT's keys — rather than a runtime probe. It has to be static:
+# assertFlagsDeclared() deliberately stays quiet for a name it does not recognise, so that a
+# TYPO still gets the friendly "unknown command" reply instead of an internal error, and a
+# switch case that was never added to HELP is indistinguishable from a typo at run time.
+# That is the exact gap this guard closes (multi-model review finding), and `help` — a real
+# case that HELP does not document — is the proof such a case can exist.
+node -e "
+  const src = require('node:fs').readFileSync('$ROOT/src/cli.ts', 'utf8');
+  const body = src.slice(src.indexOf('switch (cmd) {'));
+  const cases = [...body.matchAll(/^\s*case '([^']+)':/gm)].map((m) => m[1]);
+  const table = src.slice(src.indexOf('const FLAG_IRRELEVANT'));
+  const decls = new Set([...table.slice(0, table.indexOf('\n};')).matchAll(/^  '?([-A-Za-z_]+)'?: \[/gm)].map((m) => m[1]));
+  if (cases.length === 0) { console.error('no case labels found — the dispatch switch changed shape'); process.exit(1); }
+  if (decls.size === 0) { console.error('no declarations parsed — FLAG_IRRELEVANT changed shape'); process.exit(1); }
+  const missing = cases.filter((c) => !decls.has(c));
+  if (missing.length) {
+    console.error('commands the dispatch switch can reach with no flag-relevance declaration (#277): ' + missing.join(', '));
+    console.error('add each to FLAG_IRRELEVANT in src/cli.ts, using [] if no flag another command accepts is ignored by this one');
+    process.exit(1);
+  }
+  console.log('checked ' + cases.length + ' dispatch cases against ' + decls.size + ' declarations');
+" || { echo "[FAIL] a command the dispatch switch can reach has no flag-relevance declaration (#277)"; exit 1; }
+echo "[PASS] every command the dispatch switch can reach has a flag-relevance declaration (#277)"
+
+### (m3) an empty declaration must not become a way to switch the check off: a command that
+# declares [] still has to accept the flags it does read. `push` is the one probed here
+# BECAUSE its declaration is empty — using a command with a non-empty one would prove
+# nothing about that failure mode (multi-model review finding).
+node "$DIST" push --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file > /dev/null 2>&1
+PUSH_RC=$?
+[ "$PUSH_RC" != "2" ] || { echo "[FAIL] push --backend was refused by the relevance check — it is over-firing on an empty declaration"; exit 1; }
+node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file > /dev/null 2>&1 \
+  || { echo "[FAIL] estimate --backend was refused — the relevance check is over-firing"; exit 1; }
+echo "[PASS] a declared-empty command still accepts what it reads, and a non-empty one is unaffected"
 [ ! -s "$TMP/m.out" ] || { echo "[FAIL] restore wrote to stdout on the error path"; cat "$TMP/m.out"; exit 1; }
 # and with NEITHER flag the message stays the plain one — the hint must not fire
 # on the unrelated case of simply forgetting a destination

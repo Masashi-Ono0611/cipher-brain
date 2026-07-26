@@ -1,4 +1,9 @@
-// secrets-scan — opt-in gitleaks integration for `snapshot --scan-secrets warn|deny` (#215).
+// secrets-scan — gitleaks integration for `snapshot --scan-secrets warn|deny|off` (#215).
+//
+// It began as opt-in and stopped being so in #301: with no way to unsay a push to a
+// write-once backend, the one preventive measure could not stay switched off by default.
+// It now defaults to `warn` wherever a --dir/--profile source and a resolvable gitleaks
+// both exist, and `off` is the way to say no out loud.
 //
 // Threat model this closes: the primary storage backends (Arweave/Turbo) are WRITE-ONCE,
 // UN-DELETABLE. Today nothing inspects the CONTENTS of a --dir/--profile source before it

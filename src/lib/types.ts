@@ -48,7 +48,7 @@ export interface CliOptions {
   digest?: string;
   save_locator?: string;
   locator?: string;
-  scan_secrets?: string; // snapshot --scan-secrets warn|deny (gitleaks, #215) — validated in snapshot.ts, not here (parseArgs can't know the enum)
+  scan_secrets?: string; // snapshot --scan-secrets warn|deny|off (gitleaks, #215/#301) — validated in snapshot.ts, not here (parseArgs can't know the enum)
   from_locator_file?: string;
   sign_identity?: string; // keygen/snapshot: signing PRIVATE key path override (default $CIPHER_BRAIN_HOME/sign-identity.key, #214)
   sign_recipient?: string; // snapshot/restore/verify: signing PUBLIC key path override (default $CIPHER_BRAIN_HOME/sign-recipient.pub, #214)

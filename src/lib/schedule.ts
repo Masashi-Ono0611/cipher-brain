@@ -201,7 +201,7 @@ interface ScheduleConfig {
   pg_exclude_table_data?: string[];
   dirs: string[];
   recipients: string[];
-  // --scan-secrets warn|deny (#215/#307): threaded into the generated snapshot command
+  // --scan-secrets warn|deny|off (#215/#307/#301): threaded into the generated snapshot command
   // line, NOT into the env block — it is a flag snapshot takes, not one of the
   // CIPHER_BRAIN_* settings ENV_CAPTURE_VARS bakes. Absent = no scan (unchanged
   // pre-#307 runner, byte for byte).

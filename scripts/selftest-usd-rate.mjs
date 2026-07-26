@@ -15,7 +15,7 @@
 // in-process http.createServer mocks can keep answering requests while it runs —
 // spawnSync would block the event loop and starve them (the reason
 // selftest-arweave-nodeps.mjs runs its mock gateway in a SEPARATE process instead).
-import { mkdtemp, mkdir, writeFile, copyFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -174,6 +174,12 @@ try {
 } finally {
   priceServer.close();
   for (const s of openedServers) s.close();
+  // #328: this dir is an isolated copy of the bundled CLI, not key material — but it was
+  // left behind on every run all the same. Cleanup failure must not replace whatever the
+  // test itself was reporting, so it is swallowed rather than allowed to throw from here.
+  try {
+    await rm(tmp, { recursive: true, force: true });
+  } catch {}
 }
 
 console.log('');

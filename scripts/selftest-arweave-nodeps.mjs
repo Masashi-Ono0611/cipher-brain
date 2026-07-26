@@ -7,7 +7,7 @@
 //
 // The mock gateway runs in a SEPARATE process: the pull is spawnSync (blocking), so an
 // in-process server could not answer it. This script itself imports NO third-party pkg.
-import { mkdtemp, mkdir, writeFile, readFile, copyFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -119,6 +119,13 @@ try {
   fail(`exception: ${e.message}`);
 } finally {
   if (server) server.kill('SIGKILL');
+  // This one really does hold a working age private key — the suite runs `keygen` into it —
+  // and it was left behind on every run, which is what #328 was filed on. Same posture
+  // snapshot() takes with its staged plaintext. Swallowed so a cleanup failure cannot
+  // replace the error the test was actually reporting.
+  try {
+    await rm(tmp, { recursive: true, force: true });
+  } catch {}
 }
 
 console.log('');

@@ -116,5 +116,19 @@ EST_OUT=$(cb estimate --in "$TMP/got.age" --backend rclone)
 echo "$EST_OUT" | grep -q "^cost: 0$" || { echo "[FAIL] estimate --backend rclone did not report cost: 0"; echo "$EST_OUT"; exit 1; }
 echo "[PASS] estimate --backend rclone reports cost: 0"
 
+echo "== verify --level remote --backend rclone with no --sha256 warns (rclone's locator is a mutable path, not a content hash, #332 review) =="
+# rclone's remote:path locator is an operator-chosen destination (src/lib/backends/
+# rclone.ts's own doc comment), not derived from content at all — the SAME
+# "substituted-object-goes-undetected" risk arweave/turbo already warned about, but
+# NON_CONTENT_ADDRESSED_BACKENDS (src/lib/config.ts) did not list rclone until this fix.
+VERIFY_REMOTE_OUT=$(cb verify --level remote --locator "$REMOTE" --backend rclone 2>&1)
+echo "$VERIFY_REMOTE_OUT" | grep -q "VERDICT: PASS" || { echo "[FAIL] verify --level remote --backend rclone did not PASS"; echo "$VERIFY_REMOTE_OUT"; exit 1; }
+echo "$VERIFY_REMOTE_OUT" | grep -q "no sha256 pin was applied" \
+  && echo "[PASS] verify --level remote --backend rclone with no --sha256 warns (locators are not content hashes)" \
+  || { echo "[FAIL] verify --level remote --backend rclone did not warn about the missing sha256 pin"; echo "$VERIFY_REMOTE_OUT"; exit 1; }
+echo "$VERIFY_REMOTE_OUT" | grep -q "rclone" \
+  && echo "[PASS] the warning names rclone specifically (not just a generic backend placeholder)" \
+  || { echo "[FAIL] the missing-pin warning does not mention rclone"; echo "$VERIFY_REMOTE_OUT"; exit 1; }
+
 echo
 echo "STORAGE SELFTEST (rclone backend) PASS"

@@ -47,6 +47,25 @@ export function fileBackend(): StorageBackend {
         throw new Error(`file backend: locator does not match the expected <sha256>.age shape: ${locator}`);
       }
       if (!(await exists(resolved))) throw new Error(`file backend: no object at ${resolved}`);
+      // This backend's whole "content-addressed" claim (the doc comment at the top of
+      // this file, and verify --level remote/drill's NON_CONTENT_ADDRESSED_BACKENDS
+      // warning in src/lib/config.ts, which deliberately does NOT list `file`) is only
+      // as real as this check. Nothing else stops something OTHER than put() — a bug, a
+      // restore of an old FILE_DIR backup over a live one, a FILE_DIR shared with
+      // another process — from landing DIFFERENT bytes under the SAME <sha256>.ext name;
+      // without verifying the object against its own filename here, a caller who passed
+      // no --sha256 (trusting this backend's locator to already BE the hash) would have
+      // the substituted bytes served back as if nothing had changed, and verify --level
+      // remote/drill would report VERDICT: PASS over it (#209 review). Checked BEFORE
+      // copying anywhere `out` might already be trusted.
+      const claimedHash = basename(resolved, extname(resolved));
+      const gotHash = await sha256(resolved);
+      if (gotHash !== claimedHash) {
+        throw new Error(
+          `file backend: object at ${resolved} does not match its own locator hash (expected ${claimedHash}, got ` +
+            `${gotHash}) — this store's content-addressing invariant is violated; refusing to serve it`,
+        );
+      }
       await mkdir(dirname(resolve(out)), { recursive: true });
       await copyFile(resolved, out);
     },

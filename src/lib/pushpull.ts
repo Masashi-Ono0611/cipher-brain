@@ -551,3 +551,56 @@ export async function pull(o: CliOptions): Promise<void> {
     console.error(`removed stale ${sigOut} (this pull has no known signature to replace it with)`);
   }
 }
+
+// pull()'s own line, verbatim — what signatureGap() below matches against pull()'s
+// captured log to tell a deleted/unfetchable signature sidecar apart from an artifact
+// that was simply never signed.
+const SIG_FETCH_FAILED = 'could not fetch the authenticity signature';
+
+// A URL's userinfo is a credential, and CIPHER_BRAIN_AR_GATEWAYS can legitimately carry
+// one (`https://user:token@gateway`). pull() prints a failing gateway's URL to its own
+// stderr, which is fine for an operator's own terminal but not for a caller that turns
+// pull()'s captured log lines into a returned/printed report (the MCP server's
+// `pulled.log`, verify --level remote/drill's `--json` signature field) — redact it there.
+export const redactUserinfo = (line: string): string =>
+  line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]*@/gi, '$1<redacted>@');
+
+// An artifact whose authenticity sidecar could not be FETCHED is not the same thing as
+// one that was never signed — and runFileChecks (src/lib/restore.ts) cannot tell them
+// apart on its own, because it only ever sees the local directory it was handed (#312).
+// Only the caller of BOTH pull() and the file checks can, by keeping pull()'s own log
+// around — which is why this lives beside pull() rather than in either caller: the
+// CLI's `verify --level remote/drill` (src/lib/restore.ts, #209) and the MCP server's
+// verify_restore/restore_now tools (src/mcp.ts) both pull first and then check, and both
+// now share this one implementation instead of drifting apart on what counts as a
+// downgrade.
+//
+// This matters beyond tidiness: pull()'s sidecar fetch is best-effort by design (#214 —
+// a signature it cannot retrieve must warn and continue, never fail the pull), so the
+// visible result of a DELETED .minisig is "unsigned (legacy) artifact, authenticity not
+// checked" plus a PASS verdict — true of a pre-#214 backup, false here.
+//
+// Keyed on pull's OWN warning rather than on "sig_locator was recorded and the file is
+// missing", which review showed infers too much in two directions. It over-fires: the
+// arweave/turbo read promotes a body only if isAgeCiphertext() passes, and a minisign
+// sidecar is plaintext, so a perfectly intact signature in that storage can never be
+// fetched — the missing-file inference would cry downgrade on every signed arweave pull
+// (tracked separately; the sidecar round-trip is only exercised on the file backend
+// today). And it claims too much: a recorded sig_locator proves a sidecar OBJECT was
+// pushed, not that it holds a valid signature over this ciphertext. Matching the warning
+// reports only what actually happened, and carries pull's own reason with it.
+export function signatureGap(pullLog: string[], sigLocator: unknown): Record<string, unknown> | undefined {
+  const line = pullLog.find((l) => l.includes(SIG_FETCH_FAILED));
+  if (!line) return undefined;
+  return {
+    fetched: false,
+    ...(typeof sigLocator === 'string' ? { expected_locator: sigLocator } : {}),
+    reason: redactUserinfo(line),
+    note:
+      'a signature sidecar was recorded for this artifact and could not be fetched, so authenticity was NOT ' +
+      'checked. Any "unsigned (legacy) artifact" line in the checks/log below describes a different situation ' +
+      'and does not apply here. Read `reason` before concluding anything: a deleted .minisig (the downgrade an ' +
+      'attacker gets without forging a signature) and a storage backend that cannot serve sidecars both land ' +
+      'here, and they are not the same problem.',
+  };
+}

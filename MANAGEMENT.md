@@ -347,6 +347,8 @@ cipher-brain pull --locator "<locator>" --backend "$BACKEND" --out restored.age
 
 # 3. confirm it is intact and yours BEFORE trusting it
 cipher-brain verify --in restored.age          # header + your key decrypts it
+# (this is --level quick, the default — see "Verification levels" below for
+# remote/drill, which check the STORAGE side of this same question instead)
 
 # 4. decrypt + rebuild into a SCRATCH database (never straight over a live gbrain)
 # --pg runs pg_restore --clean --if-exists, which DROPS/replaces objects in the
@@ -370,6 +372,57 @@ NEW directories under `--out-dir`, and re-running restore into the same `--out-d
 not clobber a prior expansion (same no-clobber posture as the outer extract). Pass
 `--no-expand-components` to skip this and get only the raw `*.tar.gz` files (the pre-#181
 behavior, still there either way as the fallback).
+
+## Verification levels (`quick` / `remote` / `drill`)
+
+The restore runbook above answers "can I restore *right now*, from a copy I already
+fetched". It does not answer "is the copy still sitting in storage the way I think it
+is" — the failure mode that actually bites backup tools: a snapshot pushed once and
+never looked at again, discovered broken only when it's finally needed, years later
+(#209). `verify --level` (default `quick`, unchanged) adds two deeper, restic/kopia-style
+checks for exactly that gap — each one a strictly slower, more thorough proof than the
+one before:
+
+```sh
+# quick (default): the LOCAL ciphertext only — no network access. Same checks
+# `verify` has always run: age header, wrong-key rejection, and (with the private
+# identity on this box) a positive-control decrypt.
+cipher-brain verify --in snap.age
+
+# remote: re-fetches by locator from the ACTUAL backend and re-runs the same
+# checks against what came back — proving the object is still retrievable and
+# unchanged, not merely that a local copy still parses (restic `check
+# --read-data-subset`'s idea). A fetch failure reports VERDICT: FAIL, not a crash.
+cipher-brain verify --level remote --from-locator-file "$CIPHER_BRAIN_HOME/last-locator.tsv"
+
+# drill: everything remote does, plus an actual decrypt + extract into a scratch
+# directory (the same code path `restore` runs) — the full pull -> decrypt ->
+# extract rehearsal, cleaned up afterward either way. Never runs pg_restore, even
+# with --pg given: a verification drill must not touch a live database.
+cipher-brain verify --level drill --from-locator-file "$CIPHER_BRAIN_HOME/last-locator.tsv"
+```
+
+Suggested cadence, layered on top of the nightly snapshot+push from "Cadence" above —
+`quick` is cheap enough to run every time (folding it into the nightly runner is not
+built in, but a one-line addition to the generated `nightly.sh` does it); `remote` and
+`drill` cost a real fetch (and, for `drill`, a real decrypt) so a coarser schedule is
+the point, not a compromise. `verify` has no `--ping-url` of its own (that flag belongs
+to `schedule install`, baked into the *generated nightly runner* — see "Cadence" above),
+so a verification cron wires its own dead man's switch the same way that runner does:
+`curl` the success URL when the command exits 0, `curl` `<url>/fail` otherwise.
+
+```sh
+# crontab -e (or the launchd equivalent) — weekly remote, monthly drill. Each line
+# is its own dead man's switch (#202's healthchecks.io-style idea, applied by hand
+# here since verify itself has no --ping-url): ping on success, ping .../fail
+# otherwise, so a verification cron that silently stops running gets noticed too.
+0 4 * * 0  cipher-brain verify --level remote --from-locator-file ~/.cipher-brain/last-locator.tsv >>~/.cipher-brain/verify-remote.log 2>&1 && curl -fsS -m 10 https://hc-ping.com/<uuid-remote> || curl -fsS -m 10 https://hc-ping.com/<uuid-remote>/fail
+0 5 1 * *  cipher-brain verify --level drill  --from-locator-file ~/.cipher-brain/last-locator.tsv >>~/.cipher-brain/verify-drill.log  2>&1 && curl -fsS -m 10 https://hc-ping.com/<uuid-drill>  || curl -fsS -m 10 https://hc-ping.com/<uuid-drill>/fail
+```
+
+(`--ping-url` here is the same plain best-effort `curl` idea `schedule install --ping-url`
+bakes into the nightly runner — `verify` does not implement it itself, so the cron line
+pipes to a tool that does, or you wire your own healthcheck around it.)
 
 ## Error codes
 

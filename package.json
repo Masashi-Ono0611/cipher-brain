@@ -94,6 +94,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "age-encryption": "^0.3.0",
     "ignore": "^7.0.6"

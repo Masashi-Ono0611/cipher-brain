@@ -854,16 +854,32 @@ CIPHER_BRAIN_HOME="$PG2_CB_HOME" cb restore --in "$PG2_SNAP" --out-dir "$PG2_RES
 if [ -f "$PG2_RESTORE_DIR/db.dump" ]; then echo "[FAIL] declining the Postgres prompt still produced a db.dump component"; exit 1; fi
 echo "[PASS] declining the gbrain-detected Postgres prompt (auto-detect defaults to yes, but a real 'n' is honored) proceeds without --pg — no db.dump, kit says not included"
 
-echo "== (n) askYesNo re-prompts on an unrecognized answer instead of silently defaulting to no (issue #96) =="
-# "Generate an offline backup keypair now?" defaults to YES (the tool's own main
-# defense against identity loss) — an unrecognized answer like "yeah" must NOT be
-# silently read as "no". Prove it re-prompts, and that the corrected 'n' answer is
-# the one actually honored (not the unrecognized "yeah").
-REPROMPT_HOME="$TMP/reprompt-home"
-cat > "$TMP/qa-reprompt.json" <<JSON
+echo "== (n) the yes/no prompt structurally cannot misread an ambiguous answer as 'no' (issue #96, re-verified post-#230) =="
+# Issue #96's original bug (and this test's original form): a free-text y/n reader
+# that silently coerced any unrecognized answer to false. The OLD askYesNo() (plain
+# node:readline) re-prompted on anything that was not literally y/yes/n/no, and this
+# test drove that re-prompt loop with "yeah".
+#
+# Issue #230 replaced that free-text reader with @clack/prompts' confirm() — a
+# two-option TOGGLE (Yes/No), not parsed text — so there is no longer any "answer
+# string" to misread in the first place: confirm() submits the instant it sees a "y"
+# or "n" keypress (@clack/core's ConfirmPrompt), and any OTHER character just moves
+# the toggle's cursor/highlight, never a value. "Answer 'yeah' as three keypresses
+# and see if it re-prompts" is no longer a meaningful drive-init.mjs scenario against
+# this prompt type: the SAME first "y" keypress that used to start "yeah" now submits
+# true immediately, before the rest of the string is even sent — that is the
+# structural improvement, not a regression to re-test the OLD way.
+#
+# What is still worth proving here: the specific #96 failure mode (a non-explicit
+# answer silently landing as "no" on a prompt whose default is YES — the tool's own
+# main defense against identity loss) cannot happen via the one input path confirm()
+# actually accepts for "no answer at all": a bare Enter, which must still honor the
+# prompt's own default (initialValue: true) rather than silently defaulting to false.
+NODEFAULT_HOME="$TMP/confirm-default-home"
+cat > "$TMP/qa-confirm-default.json" <<JSON
 [
-  ["Generate an offline backup keypair now?", "yeah"],
-  ["Please answer", "n"],
+  ["Generate an offline backup keypair now?", ""],
+  ["Path for the backup keypair", ""],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
@@ -871,14 +887,14 @@ cat > "$TMP/qa-reprompt.json" <<JSON
   ["Directory path(s) to back up", ""]
 ]
 JSON
-if CIPHER_BRAIN_HOME="$REPROMPT_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
-  with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-reprompt.json" --out "$TMP/reprompt.log" \
+if CIPHER_BRAIN_HOME="$NODEFAULT_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-confirm-default.json" --out "$TMP/confirm-default.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
-  echo "[FAIL] init accepted an empty directory list for profile=none (unexpected pass on the re-prompt path)"; cat "$TMP/reprompt.log"; exit 1
+  echo "[FAIL] init accepted an empty directory list for profile=none (unexpected pass)"; cat "$TMP/confirm-default.log"; exit 1
 fi
-grep -qi 'Please answer' "$TMP/reprompt.log" || { echo "[FAIL] an unrecognized answer ('yeah') did not trigger a re-prompt"; cat "$TMP/reprompt.log"; exit 1; }
-grep -qi 'Skipping the backup key' "$TMP/reprompt.log" || { echo "[FAIL] the re-prompted 'n' answer was not honored (backup key generation was not skipped)"; cat "$TMP/reprompt.log"; exit 1; }
-echo "[PASS] an unrecognized yes/no answer re-prompts instead of silently defaulting to 'no', and the corrected answer is the one honored"
+grep -qi 'backup identity written to' "$TMP/confirm-default.log" || { echo "[FAIL] a bare Enter on the backup-keypair prompt did not honor its stated default (Yes) — it should have generated a backup keypair"; cat "$TMP/confirm-default.log"; exit 1; }
+if grep -qi 'Skipping the backup key' "$TMP/confirm-default.log"; then echo "[FAIL] a bare Enter on the backup-keypair prompt was silently read as 'no' — the exact #96 failure mode"; cat "$TMP/confirm-default.log"; exit 1; fi
+echo "[PASS] a bare-Enter answer on the security-relevant backup-keypair prompt honors its stated Yes default (never silently reads as 'no') — confirm()'s toggle UI also makes the OLD free-text misread (#96) structurally unreachable"
 
 echo "== (o) paid backend chosen with no CIPHER_BRAIN_AR_WALLET configured exits CLEANLY before the spend-consent prompt — no rollback (issue #161) =="
 # Before the fix, picking arweave/turbo with no wallet set sailed past the "spends

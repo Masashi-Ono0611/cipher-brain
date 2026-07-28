@@ -66,6 +66,19 @@ async function tarNoClobberFlag(): Promise<string> {
 // bsdtar: "Jan  1  1970", GNU tar: "1970-01-01"). Only after every entry passes
 // validateRestoreEntries() does extraction — into an ISOLATED scratch directory, never
 // straight into --out-dir, see restoreImpl below — even start.
+//
+// One known asymmetry (empirically confirmed, not just claimed): GNU tar's `-tv` line
+// for a hardlink whose target escapes the tree already has the leading `../` stripped
+// by GNU tar ITSELF before restore.ts ever reads the line (with its own
+// "Removing leading '../../' from hard link targets" stderr warning) — so
+// validateRestoreEntries() sees an already-sanitized, in-tree-looking target and never
+// throws its own message for this one case on GNU tar. bsdtar's `-tv` shows the raw,
+// unsanitized target, so validateRestoreEntries() DOES catch it there. This is not a
+// security gap: GNU tar's own extraction then refuses the same entry a second time
+// (the sanitized relative target does not exist in the archive), so the hardlink is
+// never created on either tar flavor — just via a different, tar-owned error message
+// on GNU tar rather than this file's own. scripts/selftest-restore-security.sh's
+// hardlink-escape case accepts either message for exactly this reason.
 
 type RestoreEntryType = 'file' | 'dir' | 'symlink' | 'hardlink' | 'fifo' | 'device' | 'socket' | 'other';
 

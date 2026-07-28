@@ -62,7 +62,9 @@ make_age() {
 # deliberately NOT meant to be called inside a `$(...)` capture (a caller that did would
 # swallow this function's own diagnostic output instead of letting it reach the console).
 assert_restore_rejected() {
-  in_age="$1"; out_dir="$2"; label="$3"; expect_substr="$4"
+  # $5 (optional): a second acceptable substring — see the hardlink-escape call
+  # below for why one case needs this.
+  in_age="$1"; out_dir="$2"; label="$3"; expect_substr="$4"; expect_substr2="${5:-}"
   set +e
   ERR=$(cb restore --in "$in_age" --out-dir "$out_dir" 2>&1); RC=$?
   set -e
@@ -79,12 +81,13 @@ assert_restore_rejected() {
     echo "[FAIL] $label: a restore scratch directory was left behind (not cleaned up on rejection)"
     exit 1
   fi
-  if ! printf '%s' "$ERR" | grep -qi -- "$expect_substr"; then
-    echo "[FAIL] $label: error message did not contain the expected text ('$expect_substr')"
+  if ! printf '%s' "$ERR" | grep -qi -- "$expect_substr" \
+    && { [ -z "$expect_substr2" ] || ! printf '%s' "$ERR" | grep -qi -- "$expect_substr2"; }; then
+    echo "[FAIL] $label: error message did not contain the expected text ('$expect_substr'${expect_substr2:+ or '$expect_substr2'})"
     echo "$ERR"
     exit 1
   fi
-  echo "[PASS] $label: rejected with the expected message, no --out-dir, no scratch dir left behind"
+  echo "[PASS] $label: rejected, no --out-dir, no scratch dir left behind"
 }
 
 echo "== malicious archives are rejected before anything is written =="
@@ -102,7 +105,17 @@ make_age "$TMP/m-device.tar" device "$TMP/m-device.age"
 assert_restore_rejected "$TMP/m-device.age" "$TMP/out-device" "device entry" 'device entry'
 
 make_age "$TMP/m-hardlink.tar" hardlink-escape "$TMP/m-hardlink.age"
-assert_restore_rejected "$TMP/m-hardlink.age" "$TMP/out-hardlink" "hardlink target escapes the tree" 'hardlink target escapes'
+# GNU tar's OWN `-tv` listing already strips a hardlink target's leading `../` (with a
+# `Removing leading '../../' from hard link targets` warning) before restore.ts's own
+# inspection ever sees the line — see restore.ts's big top comment. So on GNU tar
+# (Linux CI, most Linux desktops) validateRestoreEntries() never gets a chance to see
+# the traversal and never throws its own message; the archive instead fails during the
+# real `tar` extraction step itself (GNU tar refuses the now-relative-but-nonexistent
+# hardlink target: "Cannot hard link to ... No such file or directory") -- rejected
+# either way, just via a different, tar-flavor-owned message. bsdtar's `-tv` (macOS)
+# shows the raw unsanitized target, so it IS caught by restore.ts's own check there.
+assert_restore_rejected "$TMP/m-hardlink.age" "$TMP/out-hardlink" "hardlink target escapes the tree" \
+  'hardlink target escapes' 'tar exited'
 
 # The classic tar path-traversal-through-symlink attack (OWASP's page, #218's own
 # citation): a symlink entry named "link" pointing outside the tree, followed by a LATER

@@ -21,8 +21,17 @@
 #       a FAIL naming both paths.
 #   (h) --json prints exactly one JSON document with the documented shape, and it agrees
 #       with the human-readable report's verdict.
-#   (i) doctor never CREATES $CIPHER_BRAIN_HOME (no side effect on a machine with
-#       nothing set up yet — the read-only posture the CLI help promises).
+#   (i) the doctor-state.json bookkeeping file itself never holds key material.
+#   (j) an EXTRA recipient injected into recipient.txt (alongside the real one) is a
+#       FAIL on both identity-recipient-pairing and pin-recipients-primary-included,
+#       not a silent PASS on either (a partial-match check used to let it ride along).
+#   (k) a corrupted identity.age (bad bech32 checksum) FAILs without ever printing the
+#       underlying library error or raw key material — that error embeds the FULL
+#       (corrupt) identity string.
+#   (l) a symlink pre-planted at doctor-state.json is REPLACED by an atomic rename, not
+#       followed and truncated — its original target is left untouched.
+#   (m) an explicitly-configured but missing CIPHER_BRAIN_AR_WALLET is a FAIL, not the
+#       same SKIP an unconfigured wallet gets.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -163,6 +172,100 @@ if grep -qE 'AGE-SECRET-KEY|age1' "$STATE"; then
   echo "[FAIL] doctor-state.json contains what looks like key material — it must hold only check ids/timestamps"; cat "$STATE"; exit 1
 fi
 echo "[PASS] doctor-state.json holds no key material"
+
+echo "== (j) an EXTRA recipient injected into recipient.txt is a FAIL, not a silent PASS (Codex review, #333: a partial-match check let an attacker recipient ride along with the real one) =="
+cp "$CIPHER_BRAIN_HOME/recipient.txt" "$TMP/recipient.txt.bak2"
+PRIMARY_RECIPIENT="$(cat "$CIPHER_BRAIN_HOME/recipient.txt")"
+# A syntactically valid but UNRELATED age1 recipient, same one (g) uses — identityToRecipient()
+# is never asked to derive FROM it, so it only needs to match AGE_PUBKEY_RE's shape.
+EXTRA_RECIPIENT='age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq5s0kwc'
+printf '%s\n%s\n' "$PRIMARY_RECIPIENT" "$EXTRA_RECIPIENT" > "$CIPHER_BRAIN_HOME/recipient.txt"
+RC=0
+CIPHER_BRAIN_PIN_RECIPIENTS="$PRIMARY_RECIPIENT" cb doctor --json > "$TMP/j.json" 2>&1 || RC=$?
+[ "$RC" = "1" ] \
+  || { echo "[FAIL] doctor with an injected extra recipient exited $RC, expected 1"; cat "$TMP/j.json"; exit 1; }
+node -e "
+const j = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+const byId = Object.fromEntries(j.checks.map((c) => [c.id, c]));
+const pairing = byId['identity-recipient-pairing'];
+if (!pairing || pairing.status !== 'fail') {
+  throw new Error('expected identity-recipient-pairing FAIL for an injected extra recipient, got ' + JSON.stringify(pairing));
+}
+if (!pairing.message.includes('$EXTRA_RECIPIENT')) {
+  throw new Error('identity-recipient-pairing message does not name the unexpected recipient: ' + pairing.message);
+}
+const pin = byId['pin-recipients-primary-included'];
+if (!pin || pin.status !== 'warn') {
+  throw new Error('expected pin-recipients-primary-included WARN (not pass) when recipient.txt has an entry outside CIPHER_BRAIN_PIN_RECIPIENTS, got ' + JSON.stringify(pin));
+}
+if (!pin.message.includes('$EXTRA_RECIPIENT')) {
+  throw new Error('pin-recipients-primary-included message does not name the un-allowlisted recipient: ' + pin.message);
+}
+" "$TMP/j.json"
+cp "$TMP/recipient.txt.bak2" "$CIPHER_BRAIN_HOME/recipient.txt"
+echo "[PASS] injected extra recipient: identity-recipient-pairing FAILs naming it, pin-recipients-primary-included WARNs (neither silently PASSes)"
+
+echo "== (k) a corrupted identity.age (bad bech32 checksum) FAILs without ever printing the raw error or key material (Codex review, #333) =="
+cp "$CIPHER_BRAIN_HOME/identity.age" "$TMP/identity.age.bak"
+# age-encryption's bech32 decoder reports a bad checksum by echoing the FULL identity
+# string back in its error ("Invalid checksum in AGE-SECRET-KEY-1...: expected ...") —
+# flip one character well inside the data portion (past the 16-char "AGE-SECRET-KEY-1"
+# prefix) so decoding fails on checksum, not on shape, and confirm that exact library
+# message text never reaches doctor's output.
+node -e "
+const fs = require('node:fs');
+const path = process.argv[1];
+const lines = fs.readFileSync(path, 'utf8').split('\n');
+const idx = lines.findIndex((l) => l.startsWith('AGE-SECRET-KEY-1'));
+if (idx === -1) throw new Error('no AGE-SECRET-KEY-1 line found in ' + path);
+const chars = lines[idx].split('');
+const pos = 20; // inside the bech32 data, well past the 16-char prefix
+chars[pos] = chars[pos] === 'Q' ? 'P' : 'Q';
+lines[idx] = chars.join('');
+fs.writeFileSync(path, lines.join('\n'));
+" "$CIPHER_BRAIN_HOME/identity.age"
+RC=0
+cb doctor > "$TMP/k.log" 2>&1 || RC=$?
+[ "$RC" = "1" ] || { echo "[FAIL] doctor with a corrupted identity.age exited $RC, expected 1"; cat "$TMP/k.log"; exit 1; }
+grep -qF 'does not parse as a valid age identity' "$TMP/k.log" \
+  || { echo "[FAIL] expected a FAIL naming the corrupt identity"; cat "$TMP/k.log"; exit 1; }
+if grep -qE 'AGE-SECRET-KEY-1[A-Za-z0-9]{10,}' "$TMP/k.log"; then
+  echo "[FAIL] doctor's output contains what looks like raw identity key material"; cat "$TMP/k.log"; exit 1
+fi
+if grep -qF 'Invalid checksum' "$TMP/k.log"; then
+  echo "[FAIL] doctor's output leaked the underlying 'Invalid checksum' library error, which embeds the full (corrupt) identity string"; cat "$TMP/k.log"; exit 1
+fi
+cp "$TMP/identity.age.bak" "$CIPHER_BRAIN_HOME/identity.age"
+echo "[PASS] corrupted identity.age: FAIL with a sanitized message, no raw key material or library error text in the output"
+
+echo "== (l) doctor-state.json write is symlink-safe: a pre-planted symlink is REPLACED via atomic rename, never followed to overwrite its target (Codex review, #333) =="
+VICTIM="$TMP/doctor-state-victim.txt"
+printf 'DO-NOT-OVERWRITE\n' > "$VICTIM"
+rm -f "$CIPHER_BRAIN_HOME/doctor-state.json"
+ln -s "$VICTIM" "$CIPHER_BRAIN_HOME/doctor-state.json"
+[ -L "$CIPHER_BRAIN_HOME/doctor-state.json" ] || { echo "[FAIL] test setup: doctor-state.json is not a symlink"; exit 1; }
+cb doctor > "$TMP/l.log" 2>&1 || true # exit code is irrelevant here — only the write's symlink safety is asserted
+[ "$(cat "$VICTIM")" = "DO-NOT-OVERWRITE" ] \
+  || { echo "[FAIL] the pre-planted symlink's target was overwritten by doctor's bookkeeping write — got: $(cat "$VICTIM")"; exit 1; }
+[ ! -L "$CIPHER_BRAIN_HOME/doctor-state.json" ] \
+  || { echo "[FAIL] doctor-state.json is STILL a symlink — the write never replaced it with a real file"; exit 1; }
+[ -f "$CIPHER_BRAIN_HOME/doctor-state.json" ] \
+  || { echo "[FAIL] expected doctor-state.json to now be a real, regular file"; exit 1; }
+node -e "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))" "$CIPHER_BRAIN_HOME/doctor-state.json" \
+  || { echo "[FAIL] doctor-state.json is not valid JSON after the write"; exit 1; }
+echo "[PASS] a pre-planted symlink at doctor-state.json is replaced by a real file via atomic rename; its original target is left untouched"
+
+echo "== (m) CIPHER_BRAIN_AR_WALLET explicitly set to a path with nothing there is a FAIL, not the same SKIP an unconfigured wallet gets (Codex review, #333) =="
+RC=0
+CIPHER_BRAIN_AR_WALLET="$TMP/no-such-wallet.json" cb doctor --json > "$TMP/m.json" 2>&1 || RC=$?
+[ "$RC" = "1" ] || { echo "[FAIL] doctor with a missing explicit CIPHER_BRAIN_AR_WALLET exited $RC, expected 1"; cat "$TMP/m.json"; exit 1; }
+node -e "
+const j = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+const wallet = j.checks.find((c) => c.id === 'wallet-perms');
+if (!wallet || wallet.status !== 'fail') throw new Error('expected wallet-perms FAIL, got ' + JSON.stringify(wallet));
+if (!wallet.message.includes('$TMP/no-such-wallet.json')) throw new Error('wallet-perms message does not name the configured path: ' + wallet.message);
+" "$TMP/m.json"
+echo "[PASS] an explicitly-configured but missing CIPHER_BRAIN_AR_WALLET is a FAIL naming the path"
 
 echo
 echo "all cipher-brain doctor selftests passed"

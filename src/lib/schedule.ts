@@ -804,9 +804,18 @@ async function install(o: CliOptions): Promise<void> {
   }
 }
 
+// A real, checkable (`instanceof`) marker for "nothing installed" — same pattern as
+// util.ts's MissingPathError — so doctor.ts (#333 review) can tell this ONE expected
+// condition apart from any other failure reading the schedule (a corrupt schedule.json,
+// a crontab/launchctl call that itself errored) without matching on message text, which
+// this codebase has been removing elsewhere for the same reason. The message itself is
+// unchanged, so errors.ts's CB-E014 pattern (which matches on `.message`, not the
+// class) still recognizes it.
+export class ScheduleNotInstalledError extends Error {}
+
 async function readConfig(): Promise<ScheduleConfig> {
   if (!(await exists(CONFIG))) {
-    throw new Error(`schedule not installed (no ${CONFIG}) — run: cipher-brain schedule install`);
+    throw new ScheduleNotInstalledError(`schedule not installed (no ${CONFIG}) — run: cipher-brain schedule install`);
   }
   return JSON.parse(await readFile(CONFIG, 'utf8'));
 }

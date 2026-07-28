@@ -464,12 +464,17 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       Read-only environment health check (#201): inspects the EXISTING setup for the
       permission/config problems several past issues were filed for (age identity 0600,
       $CIPHER_BRAIN_HOME 0700, an Arweave JWK wallet's permissions, an identity/recipient
-      pairing mismatch, an empty CIPHER_BRAIN_PIN_RECIPIENTS fail-closing every snapshot,
-      the primary recipient missing from that same allowlist, an offline backup keypair
-      sharing a disk with the primary identity at its default location, and the last
-      scheduled run's outcome) and reports PASS/WARN/FAIL/SKIP per check, each FAIL/WARN
-      paired with the exact command that fixes it. Nothing not yet set up (no wallet, no
-      schedule, ...) is treated as a failure — it SKIPs instead.
+      pairing mismatch (including an unexpected EXTRA recipient in recipient.txt that the
+      identity does not derive), an empty CIPHER_BRAIN_PIN_RECIPIENTS fail-closing every
+      snapshot, any recipient.txt entry missing from that same allowlist (not just the
+      primary one), an offline backup keypair sharing a disk with the primary identity at
+      its default location, and the last scheduled run's outcome) and reports
+      PASS/WARN/FAIL/SKIP per check, each FAIL/WARN paired with the exact command that
+      fixes it. Nothing not yet set up (no wallet, no schedule, ...) is treated as a
+      failure — it SKIPs instead, EXCEPT a path explicitly configured via an environment
+      variable (e.g. CIPHER_BRAIN_AR_WALLET) pointing at nothing, which is a FAIL. A
+      permission-denied path, a symlink loop, or an unexpected file type (e.g. a FIFO) is
+      its own FAIL rather than folded into the same result an absent path gets.
       Keeps a small bookkeeping file ($CIPHER_BRAIN_HOME/doctor-state.json — check ids and
       timestamps only, never key material) between runs so a WARN/FAIL you have already
       seen is marked "known" rather than re-surprising you every time you run this, while

@@ -36,8 +36,10 @@
 // exists: doctor's whole premise is inspecting an EXISTING setup, so it must never
 // create that directory just to leave its own bookkeeping file on a machine that has
 // nothing set up yet (that would also stop being a purely read-only diagnostic).
-import { stat, readFile, writeFile } from 'node:fs/promises';
+import { stat, readFile, writeFile, rename, rm } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { identityToRecipient } from 'age-encryption';
 import {
   HOME,
@@ -53,7 +55,7 @@ import {
 import { exists, errMsg } from './util.js';
 import { recipientEntries, resolvePinnedRecipients } from './keys.js';
 import { WALLET_DEFAULT_PATH } from './wallet.js';
-import { scheduleStatusReport } from './schedule.js';
+import { scheduleStatusReport, ScheduleNotInstalledError } from './schedule.js';
 import { printJson, printMascot, moodForVerdict } from './ui.js';
 import type { CliOptions } from './types.js';
 
@@ -95,21 +97,59 @@ export interface DoctorReport {
 const loosePerms = (mode: number): boolean => (mode & 0o077) !== 0;
 const octal = (mode: number): string => (mode & 0o777).toString(8);
 
+// A doctor-local stat, deliberately NOT util.ts's exists() (access(F_OK)): that helper
+// folds every failure — a genuine ENOENT, but ALSO EACCES ("permission denied" on a
+// parent directory) and ELOOP (a symlink cycle) — into a plain "not there", which is
+// the right posture for its many callers (they just want a yes/no gate before
+// proceeding) but the wrong one for a DIAGNOSTIC whose entire job is to surface exactly
+// those conditions instead of quietly reporting "nothing to check" (Codex review,
+// #333). Only ENOENT/ENOTDIR (nothing at this path, or a path component genuinely is
+// not a directory) mean "not found" here — the same distinction util.ts's own
+// requireFile/requirePath already draw; everything else is rethrown so callers can
+// turn it into a FAIL instead of a false-negative SKIP.
+function statOrNotFound(path: string): Promise<Stats | null> {
+  return stat(path).catch((e) => {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    throw e;
+  });
+}
+
+// A human-readable name for whatever a non-regular-file Stats describes — used when a
+// check refuses to treat something as the plain file it expects (a key, an identity)
+// instead of silently reading it.
+function statKind(st: { isDirectory(): boolean; isFIFO(): boolean; isSocket(): boolean }): string {
+  if (st.isDirectory()) return 'a directory';
+  if (st.isFIFO()) return 'a FIFO/named pipe';
+  if (st.isSocket()) return 'a socket';
+  return 'not a regular file';
+}
+
 async function checkHomeDirPerms(): Promise<DoctorCheck> {
   const id = 'home-dir-perms';
-  if (!(await exists(HOME))) {
+  let st: Stats | null;
+  try {
+    st = await statOrNotFound(HOME);
+  } catch (e) {
+    return {
+      id,
+      status: 'fail',
+      message: `could not check CIPHER_BRAIN_HOME (${HOME}): ${errMsg(e)}`,
+      remediation: `check that every path component of ${HOME} is accessible — a permission-denied parent directory or a symlink loop prevents this check from seeing its real permissions`,
+    };
+  }
+  if (!st) {
     return {
       id,
       status: 'skip',
       message: `no CIPHER_BRAIN_HOME directory yet at ${HOME} — run 'cipher-brain keygen' or 'cipher-brain init' to create one`,
     };
   }
-  const { mode } = await stat(HOME);
-  if (loosePerms(mode)) {
+  if (loosePerms(st.mode)) {
     return {
       id,
       status: 'fail',
-      message: `CIPHER_BRAIN_HOME (${HOME}) is group/other-accessible (mode ${octal(mode)}) — it holds the private identity`,
+      message: `CIPHER_BRAIN_HOME (${HOME}) is group/other-accessible (mode ${octal(st.mode)}) — it holds the private identity`,
       remediation: `chmod 700 ${HOME}`,
     };
   }
@@ -120,16 +160,49 @@ async function checkHomeDirPerms(): Promise<DoctorCheck> {
 // key material that should be 0600, and each already gets a warnIfLooseKeyPerms() call
 // on its own read path (crypt.ts/minisign.ts/wallet.ts); this is the same check, framed
 // as a re-runnable diagnostic instead of a side effect of some other command.
-async function checkKeyPerms(id: string, path: string, label: string): Promise<DoctorCheck> {
-  if (!(await exists(path))) {
-    return { id, status: 'skip', message: `no ${label} at ${path} — nothing to check` };
-  }
-  const { mode } = await stat(path);
-  if (loosePerms(mode)) {
+//
+// explicitPath: true for the ONE case where a missing file is itself a misconfiguration
+// rather than "not set up yet" — the Arweave wallet's path can be EXPLICITLY set via
+// CIPHER_BRAIN_AR_WALLET instead of falling back to WALLET_DEFAULT_PATH, and a user who
+// set it clearly intends to use a wallet there; nothing at that exact path should FAIL,
+// not SKIP with the same wording an unconfigured-and-that-is-fine wallet gets (Codex
+// review, #333).
+async function checkKeyPerms(id: string, path: string, label: string, explicitPath = false): Promise<DoctorCheck> {
+  let st: Stats | null;
+  try {
+    st = await statOrNotFound(path);
+  } catch (e) {
     return {
       id,
       status: 'fail',
-      message: `${label} at ${path} is group/other-accessible (mode ${octal(mode)}) — it is a secret`,
+      message: `could not check ${label} at ${path}: ${errMsg(e)}`,
+      remediation: `check that every path component of ${path} is accessible — a permission-denied parent directory or a symlink loop prevents this check from seeing its real permissions`,
+    };
+  }
+  if (!st) {
+    if (explicitPath) {
+      return {
+        id,
+        status: 'fail',
+        message: `CIPHER_BRAIN_AR_WALLET is set to ${path}, but nothing is there`,
+        remediation: `create the wallet ('cipher-brain wallet create --out ${path}'), fix the CIPHER_BRAIN_AR_WALLET path, or unset it`,
+      };
+    }
+    return { id, status: 'skip', message: `no ${label} at ${path} — nothing to check` };
+  }
+  if (!st.isFile()) {
+    return {
+      id,
+      status: 'fail',
+      message: `${path} is not a regular file (${statKind(st)}) — ${label} must be a plain file`,
+      remediation: `remove whatever is at ${path} and regenerate/restore the ${label} as a plain file`,
+    };
+  }
+  if (loosePerms(st.mode)) {
+    return {
+      id,
+      status: 'fail',
+      message: `${label} at ${path} is group/other-accessible (mode ${octal(st.mode)}) — it is a secret`,
       remediation: `chmod 600 ${path}`,
     };
   }
@@ -146,8 +219,26 @@ async function checkKeyPerms(id: string, path: string, label: string): Promise<D
 // when it needs to.
 async function checkIdentityRecipientPairing(): Promise<DoctorCheck> {
   const id = 'identity-recipient-pairing';
-  if (!(await exists(IDENTITY)) || !(await exists(RECIPIENT))) {
+  let idStat: Stats | null;
+  try {
+    idStat = await statOrNotFound(IDENTITY);
+  } catch (e) {
+    return { id, status: 'fail', message: `could not check ${IDENTITY}: ${errMsg(e)}` };
+  }
+  if (!idStat || !(await exists(RECIPIENT))) {
     return { id, status: 'skip', message: 'no identity/recipient pair to check yet' };
+  }
+  if (!idStat.isFile()) {
+    // Never open it: readFile() below would BLOCK indefinitely on e.g. a FIFO with no
+    // writer on the other end, turning this routine, read-only diagnostic into a hang
+    // (Codex review, #333) — a stat()-only check never has that problem, so the file's
+    // TYPE has to be confirmed before the first byte is ever read.
+    return {
+      id,
+      status: 'fail',
+      message: `${IDENTITY} is not a regular file (${statKind(idStat)}) — refusing to read it`,
+      remediation: `remove whatever is at ${IDENTITY} and restore the real identity file`,
+    };
   }
   const raw = await readFile(IDENTITY);
   const rawText = raw.toString('utf8');
@@ -176,17 +267,50 @@ async function checkIdentityRecipientPairing(): Promise<DoctorCheck> {
   let derived: string[];
   try {
     derived = await Promise.all(idLines.map((l) => identityToRecipient(l)));
-  } catch (e) {
-    return { id, status: 'fail', message: `could not derive a public key from ${IDENTITY}: ${errMsg(e)}` };
+  } catch {
+    // Deliberately do NOT include the underlying error's message (Codex review,
+    // #333): age-encryption's bech32 decoder reports a bad checksum by echoing the
+    // FULL input string back — "Invalid checksum in AGE-SECRET-KEY-1...: expected
+    // ..." — which for a corrupt/truncated identity line IS the secret key material.
+    // Printing that verbatim would leak it into whatever this routine, read-only
+    // diagnostic's output goes to (a terminal, a log file, --json piped somewhere).
+    return {
+      id,
+      status: 'fail',
+      message: `${IDENTITY} does not parse as a valid age identity — it may be corrupt or truncated`,
+      remediation: `restore ${IDENTITY} from a backup, or run 'cipher-brain keygen --force' to regenerate a fresh identity (only if you accept losing access to anything encrypted solely under the old one)`,
+    };
   }
+  const derivedSet = new Set(derived);
   const actual = new Set(await recipientEntries(RECIPIENT));
-  const matches = derived.some((d) => actual.has(d));
-  if (!matches) {
+  const anyMatch = derived.some((d) => actual.has(d));
+  if (!anyMatch) {
     return {
       id,
       status: 'fail',
       message: `${IDENTITY} does not match ${RECIPIENT} — deriving its public key gives a different value than what recipient.txt records; one of the two files was likely replaced independently`,
       remediation: `restore the correct pairing from a backup, or run 'cipher-brain keygen --force' to regenerate a fresh, MATCHING pair (only if you accept that any snapshot already encrypted under the old key stays recoverable solely by the old identity)`,
+    };
+  }
+  // The identity's own key IS somewhere in recipient.txt — but is anything ELSE also in
+  // there? A plain `cipher-brain snapshot` (no --recipient override) encrypts to EVERY
+  // entry recipient.txt lists, so an extra one here is not inert: it gets a real
+  // stanza on every future snapshot, same as if it had been passed as a deliberate
+  // second --recipient (README's Threat model: "a box that can rewrite recipient.txt
+  // ... could silently re-key future snapshots to an attacker while your own restore
+  // still works"). The documented way to encrypt to more than one identity (e.g. an
+  // offline backup key) is a SEPARATE --recipient pointing at a SEPARATE file, not
+  // merging keys into this one — so anything here beyond what THIS identity derives is
+  // unexpected by construction, not a normal multi-key setup (Codex review, #333: the
+  // previous `derived.some(...)` PASSED as long as ONE derived key matched, even with
+  // an attacker's recipient ALSO present).
+  const unexpected = [...actual].filter((r) => !derivedSet.has(r));
+  if (unexpected.length > 0) {
+    return {
+      id,
+      status: 'fail',
+      message: `${RECIPIENT} lists ${unexpected.length} recipient(s) that do not derive from ${IDENTITY} (${unexpected.join(', ')}) — an unexpected recipient here silently re-keys EVERY future plain "cipher-brain snapshot" to whoever holds its identity too`,
+      remediation: `if this is a deliberate multi-recipient/backup setup, keep the additional recipient in its OWN file and pass it as a separate --recipient at snapshot time instead of adding it to ${RECIPIENT}; otherwise remove the unexpected line(s) from ${RECIPIENT}`,
     };
   }
   return { id, status: 'pass', message: `${IDENTITY} matches the public key recorded in ${RECIPIENT}` };
@@ -248,20 +372,27 @@ async function checkPinRecipients(): Promise<DoctorCheck[]> {
     });
     return results;
   }
+  // snapshot() (#101) fails closed on the FIRST effective recipient entry that is not
+  // allowlisted — EVERY entry in recipient.txt must be allowed, not just the primary
+  // one. Checking `primary.some(r => allowed.has(r))` PASSED as soon as any single
+  // entry matched, even with a second, un-allowlisted recipient sitting right next to
+  // it — reporting doctor as healthy for a setup where the very next plain snapshot
+  // would refuse to run (Codex review, #333).
   const primary = await recipientEntries(RECIPIENT);
-  const included = primary.some((r) => allowed.has(r));
-  if (!included) {
+  const notAllowed = primary.filter((r) => !allowed.has(r));
+  if (notAllowed.length > 0) {
     results.push({
       id: includedId,
       status: 'warn',
-      message: `the primary recipient (${RECIPIENT}) is NOT in the CIPHER_BRAIN_PIN_RECIPIENTS allowlist — a plain "cipher-brain snapshot" with no --recipient override will be refused`,
-      remediation: 'add the primary recipient to the allowlist, or always pass --recipient with a pinned key',
+      message: `${notAllowed.length} of ${primary.length} recipient(s) in ${RECIPIENT} are NOT in the CIPHER_BRAIN_PIN_RECIPIENTS allowlist (${notAllowed.join(', ')}) — snapshot() requires EVERY effective recipient to be allowlisted, so a plain "cipher-brain snapshot" with no --recipient override will be refused`,
+      remediation:
+        'add the missing recipient(s) to the allowlist, remove them from recipient.txt, or always pass --recipient with a pinned key',
     });
   } else {
     results.push({
       id: includedId,
       status: 'pass',
-      message: 'the primary recipient is included in the CIPHER_BRAIN_PIN_RECIPIENTS allowlist',
+      message: 'every recipient in the primary recipient.txt is included in the CIPHER_BRAIN_PIN_RECIPIENTS allowlist',
     });
   }
   return results;
@@ -276,26 +407,39 @@ const DEFAULT_BACKUP_HOME = `${HOME}-backup`;
 async function checkOfflineBackupDisk(): Promise<DoctorCheck> {
   const id = 'offline-backup-different-disk';
   const backupIdentity = join(DEFAULT_BACKUP_HOME, 'identity.age');
-  if (!(await exists(HOME)) || !(await exists(backupIdentity))) {
+  let homeStat: Stats | null;
+  let backupStat: Stats | null;
+  try {
+    [homeStat, backupStat] = await Promise.all([statOrNotFound(HOME), statOrNotFound(backupIdentity)]);
+  } catch (e) {
+    return { id, status: 'fail', message: `could not check ${backupIdentity} against ${HOME}: ${errMsg(e)}` };
+  }
+  if (!homeStat || !backupStat) {
     return {
       id,
       status: 'skip',
       message: `no offline backup keypair found at the default location (${backupIdentity}) — this check only recognizes the 'init' wizard's suggested default path; a custom path is not detectable`,
     };
   }
-  const [homeStat, backupStat] = await Promise.all([stat(HOME), stat(backupIdentity)]);
+  // st_dev is a FILESYSTEM/mount id, not a physical-disk id: two different partitions
+  // on ONE physical disk get two different st_dev values just as two different disks
+  // do, so a difference here is not proof of separate hardware — and, in the other
+  // direction, bind mounts can make the same filesystem show up under two paths with
+  // the SAME st_dev. Both directions are worded as a signal, not a guarantee (Codex
+  // review, #333: the original wording claimed "different disk"/"same disk" outright).
   if (homeStat.dev === backupStat.dev) {
     return {
       id,
       status: 'warn',
-      message: `the offline backup keypair (${backupIdentity}) is on the SAME disk as the primary identity (${IDENTITY}) — a single disk failure could lose both`,
+      message: `the offline backup keypair (${backupIdentity}) reports the SAME filesystem/device id as the primary identity (${IDENTITY}) — likely the same disk (though a device id alone cannot rule out separate physical disks sharing one mount)`,
       remediation: `move ${DEFAULT_BACKUP_HOME} to a different disk or machine (e.g. an encrypted USB drive kept off-box)`,
     };
   }
   return {
     id,
     status: 'pass',
-    message: 'the offline backup keypair is on a different disk/device than the primary identity',
+    message:
+      'the offline backup keypair reports a different filesystem/device id than the primary identity (a reasonable, but not airtight, signal that they are on different disks)',
   };
 }
 
@@ -306,12 +450,28 @@ async function checkSchedule(): Promise<DoctorCheck[]> {
   let report: Awaited<ReturnType<typeof scheduleStatusReport>>;
   try {
     report = await scheduleStatusReport();
-  } catch {
+  } catch (e) {
+    if (e instanceof ScheduleNotInstalledError) {
+      return [
+        {
+          id: 'schedule-last-run',
+          status: 'skip',
+          message:
+            'no schedule installed (optional) — run "cipher-brain schedule install" to automate nightly snapshots',
+        },
+      ];
+    }
+    // Anything else — a corrupt schedule.json, a crontab/launchctl call that itself
+    // errored — is a REAL problem with an EXISTING schedule setup, not "nothing
+    // installed"; the original catch-all folded every exception into the same skip a
+    // fresh machine gets, which would hide it (Codex review, #333).
     return [
       {
         id: 'schedule-last-run',
-        status: 'skip',
-        message: 'no schedule installed (optional) — run "cipher-brain schedule install" to automate nightly snapshots',
+        status: 'fail',
+        message: `could not read the installed schedule's status: ${errMsg(e)}`,
+        remediation:
+          'run "cipher-brain schedule status" directly for more detail, or "cipher-brain schedule install" again if the config looks corrupt',
       },
     ];
   }
@@ -325,11 +485,23 @@ async function checkSchedule(): Promise<DoctorCheck[]> {
       message: `last scheduled run (${report.last_run.log}) failed: ${report.last_run.rc_line}`,
       remediation: `inspect ${report.last_run.log} in the schedule's logs directory for the cause, fix it, then confirm with a manual snapshot+push before trusting the next unattended run`,
     });
-  } else {
+  } else if (report.last_run.rc_line.startsWith('OK')) {
     results.push({
       id: 'schedule-last-run',
       status: 'pass',
       message: `last scheduled run (${report.last_run.log}) succeeded: ${report.last_run.rc_line}`,
+    });
+  } else {
+    // Neither "OK rc=0" nor "FAILED rc=N" — schedule.ts's own documented final-line
+    // format (install()'s printed message: `final line: "OK rc=0" or "FAILED rc=N"`).
+    // A truncated write or a corrupted log lands here too; the original logic treated
+    // anything not starting with "FAILED" as a success, which would report a healthy
+    // PASS for a line this check cannot actually vouch for (Codex review, #333).
+    results.push({
+      id: 'schedule-last-run',
+      status: 'warn',
+      message: `last scheduled run (${report.last_run.log}) ended with an unrecognized status line (${JSON.stringify(report.last_run.rc_line)}) — expected "OK rc=0" or "FAILED rc=N"; possibly a truncated or corrupted log`,
+      remediation: `inspect ${report.last_run.log} directly`,
     });
   }
   if (report.trigger.loaded === 'no') {
@@ -338,6 +510,17 @@ async function checkSchedule(): Promise<DoctorCheck[]> {
       status: 'warn',
       message: `the ${report.trigger.type} trigger is written but not currently loaded/registered — scheduled runs will not happen`,
       remediation: 'cipher-brain schedule install (re-run with the same flags to re-register)',
+    });
+  } else if (report.trigger.loaded === 'unknown') {
+    // Distinct from BOTH 'yes' and 'no': the loaded-check itself failed (e.g. crontab
+    // errored) rather than answering either way. The original logic fell through to
+    // the "registered" pass branch for anything that wasn't literally 'no' — reporting
+    // confidence this check does not actually have (Codex review, #333).
+    results.push({
+      id: 'schedule-trigger-loaded',
+      status: 'warn',
+      message: `could not determine whether the ${report.trigger.type} trigger is currently loaded/registered (the check itself failed) — scheduled runs may or may not be happening`,
+      remediation: 'cipher-brain schedule status for more detail, or re-run "cipher-brain schedule install" to be sure',
     });
   } else {
     results.push({
@@ -379,11 +562,24 @@ async function saveDoctorState(
   nowIso: string,
 ): Promise<boolean> {
   if (!(await exists(HOME))) return false; // never create HOME just to leave this file behind
+  const body: DoctorStateFile = { schema: STATE_SCHEMA, last_run: nowIso, non_passing: nonPassing };
+  const payload = `${JSON.stringify(body, null, 2)}\n`;
+  // Exclusive-create-then-rename — the SAME no-clobber write technique keys.ts's
+  // writeKeyFile() and wizard.ts's recovery-kit write already use for this codebase's
+  // other durable writes — instead of a plain writeFile() straight at the predictable
+  // doctor-state.json path. writeFile() truncates and writes THROUGH an existing
+  // symlink; rename() instead atomically replaces the directory ENTRY at statePath,
+  // whatever it was, so a symlink planted there (e.g. by another user able to write
+  // into a group/world-writable CIPHER_BRAIN_HOME — exactly what home-dir-perms exists
+  // to catch) cannot redirect this write into overwriting an arbitrary file (Codex
+  // review, #333).
+  const tmp = `${statePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   try {
-    const body: DoctorStateFile = { schema: STATE_SCHEMA, last_run: nowIso, non_passing: nonPassing };
-    await writeFile(statePath, `${JSON.stringify(body, null, 2)}\n`, { mode: 0o644 });
+    await writeFile(tmp, payload, { mode: 0o644, flag: 'wx' });
+    await rename(tmp, statePath);
     return true;
   } catch {
+    await rm(tmp, { force: true }).catch(() => {});
     return false; // best-effort: a read-only CIPHER_BRAIN_HOME still gets a full report
   }
 }
@@ -426,7 +622,7 @@ export async function computeDoctorReport(): Promise<DoctorReport> {
     await checkHomeDirPerms(),
     await checkKeyPerms('identity-perms', IDENTITY, 'age identity (private key)'),
     await checkKeyPerms('sign-identity-perms', SIGN_IDENTITY, 'signing identity (private key)'),
-    await checkKeyPerms('wallet-perms', AR_WALLET || WALLET_DEFAULT_PATH, 'arweave JWK wallet'),
+    await checkKeyPerms('wallet-perms', AR_WALLET || WALLET_DEFAULT_PATH, 'arweave JWK wallet', AR_WALLET !== ''),
     await checkIdentityRecipientPairing(),
     ...(await checkPinRecipients()),
     await checkOfflineBackupDisk(),

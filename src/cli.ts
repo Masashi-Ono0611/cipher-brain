@@ -297,10 +297,12 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       plaintext for gitleaks to look at.
       KNOWN LIMIT, so you can judge what the gate is worth for your sources: gitleaks
       reads files as they are and does NOT look inside archives, so a zip/tar source
-      (notably --profile chatgpt-export or --profile o2b, which archive their export
-      zip/bundle as-is) is scanned only as opaque bytes — a secret inside it will NOT
-      be found, even though the run reports the mode. Extract such an export and snapshot the
-      directory if you want the gate to actually cover its contents.
+      (notably --profile chatgpt-export, which archives the export zip as-is) is
+      scanned only as opaque bytes — a secret inside it will NOT be found, even
+      though the run reports the mode. Extract such an export and snapshot the
+      directory if you want the gate to actually cover its contents. --profile o2b's
+      bundle is plain JSON, not an archive, so gitleaks DOES read its actual text
+      content the same as any other file.
       Authenticity (#214): whenever a signing identity exists (default
       $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
       a different one), snapshot ALSO writes a detached "<out>.minisig" signature over

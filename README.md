@@ -147,11 +147,12 @@ dump it does not scan) is **refused**: a caller told a scan ran when it inspecte
 nothing is worse off than one told it did not run at all.
 
 Know what it does not cover, so the gate is not mistaken for a guarantee: gitleaks
-reads files as they are and does not look **inside archives**, so a zip/tar/single-file
-source — notably `--profile chatgpt-export` or `--profile o2b`, which archive their
-export zip/bundle as-is — is scanned only as opaque bytes, and a secret inside it is
-not found even though the run reports the mode. Extract such an export and snapshot
-the directory if you want the gate to cover its contents.
+reads files as they are and does not look **inside archives**, so a zip/tar source
+— notably `--profile chatgpt-export`, which archives the export zip as-is — is
+scanned only as opaque bytes, and a secret inside it is not found even though the
+run reports the mode. Extract such an export and snapshot the directory if you
+want the gate to cover its contents. `--profile o2b`'s bundle is plain JSON, not an
+archive, so gitleaks does read its actual text content the same as any other file.
 
 ### There is no delete
 
@@ -536,10 +537,12 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       plaintext for gitleaks to look at.
       KNOWN LIMIT, so you can judge what the gate is worth for your sources: gitleaks
       reads files as they are and does NOT look inside archives, so a zip/tar source
-      (notably --profile chatgpt-export or --profile o2b, which archive their export
-      zip/bundle as-is) is scanned only as opaque bytes — a secret inside it will NOT
-      be found, even though the run reports the mode. Extract such an export and snapshot the
-      directory if you want the gate to actually cover its contents.
+      (notably --profile chatgpt-export, which archives the export zip as-is) is
+      scanned only as opaque bytes — a secret inside it will NOT be found, even
+      though the run reports the mode. Extract such an export and snapshot the
+      directory if you want the gate to actually cover its contents. --profile o2b's
+      bundle is plain JSON, not an archive, so gitleaks DOES read its actual text
+      content the same as any other file.
       Authenticity (#214): whenever a signing identity exists (default
       $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
       a different one), snapshot ALSO writes a detached "<out>.minisig" signature over

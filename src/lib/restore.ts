@@ -1,6 +1,6 @@
 // restore + verify — the decrypt half and its falsifiable proof.
-import { rm, stat, readFile, writeFile, readdir, rename, lstat, mkdtemp } from 'node:fs/promises';
-import { mkdirSync } from 'node:fs';
+import { rm, stat, readFile, writeFile, readdir, rename, lstat } from 'node:fs/promises';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
@@ -16,11 +16,11 @@ import {
 import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
 import { checkArtifactSignature } from './minisign.js';
-import { exists, requireFile, sha256, readHead, fmtBytes, redactPgConn, errMsg } from './util.js';
-import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
+import { exists, requireFile, sha256, readHead, fmtBytes, redactPgConn, errMsg, rmrf } from './util.js';
+import { installStageSignalGuard, setActiveRestoreOutDir, setActiveVerifyScratchDir } from './signal-guard.js';
 import { didYouMean } from './suggest.js';
 import { moodForVerdict, printMascot, printJson } from './ui.js';
-import { pull } from './pushpull.js';
+import { pull, signatureGap } from './pushpull.js';
 import type { CliOptions } from './types.js';
 
 // GNU tar's --keep-old-files, unlike bsdtar's identically-named flag, treats an
@@ -493,6 +493,23 @@ interface FileCheckResult {
   verdict: 'PASS' | 'FAIL' | 'PARTIAL';
 }
 
+// The human-readable "VERDICT: …" line's wording, factored out of runFileChecks below so
+// finishVerify can print the SAME sentence for a verdict runFileChecks itself was told
+// NOT to print yet (--level drill's FAIL/PARTIAL early-return, below — its overall
+// verdict still depends on a restore step that never runs in that case, so the line
+// belongs to finishVerify there, not to runFileChecks) — one wording, not two copies
+// that could drift apart on the PARTIAL sentence (#209 review).
+function printFileCheckVerdict(verdict: 'PASS' | 'FAIL' | 'PARTIAL'): void {
+  if (verdict === 'FAIL') console.log('\nVERDICT: FAIL');
+  else if (verdict === 'PARTIAL') {
+    console.log(
+      '\nVERDICT: PARTIAL — header + wrong-key checks passed, but decryptability was NOT proven on this box (no private identity here). Run verify where the identity lives to prove it is restorable by you.',
+    );
+  } else {
+    console.log('\nVERDICT: PASS');
+  }
+}
+
 // runFileChecks is the falsifiable half. Three checks:
 //   1. it is real age ciphertext (header),
 //   2. a WRONG key is rejected (negative control), and
@@ -616,19 +633,15 @@ async function runFileChecks(o: CliOptions, printVerdictLine: boolean): Promise<
   let verdict: 'PASS' | 'FAIL' | 'PARTIAL';
   if (!isAge || !wrongKeyRejected || !positiveOk || hashOk === false || sigOk === false) {
     verdict = 'FAIL';
-    if (!o.json && printVerdictLine) console.log('\nVERDICT: FAIL');
+    if (!o.json && printVerdictLine) printFileCheckVerdict('FAIL');
     process.exitCode = 1;
   } else if (positiveSkipped) {
     verdict = 'PARTIAL';
-    if (!o.json && printVerdictLine) {
-      console.log(
-        '\nVERDICT: PARTIAL — header + wrong-key checks passed, but decryptability was NOT proven on this box (no private identity here). Run verify where the identity lives to prove it is restorable by you.',
-      );
-    }
+    if (!o.json && printVerdictLine) printFileCheckVerdict('PARTIAL');
     process.exitCode = 2; // distinct from PASS(0) and FAIL(1) so automation can tell them apart
   } else {
     verdict = 'PASS';
-    if (!o.json && printVerdictLine) console.log('\nVERDICT: PASS');
+    if (!o.json && printVerdictLine) printFileCheckVerdict('PASS');
   }
 
   return {
@@ -653,8 +666,23 @@ async function runFileChecks(o: CliOptions, printVerdictLine: boolean): Promise<
 // above or the MCP verify_restore tool (#211). `extra` (added by #209's --level remote)
 // is spread in between checks and verdict so a --level quick caller's JSON shape is
 // completely unaffected (extra is never passed there).
-function finishVerify(o: CliOptions, r: FileCheckResult, extra?: Record<string, unknown>): void {
+//
+// `printVerdictLine` (default false): quick and remote already had runFileChecks itself
+// print the "VERDICT: …" line (they pass printVerdictLine=true THERE, so finishVerify
+// must not print a second one here — the default covers that). --level drill's own
+// FAIL/PARTIAL early return (below) is the one caller that passes true here: it told
+// runFileChecks NOT to print one (drill's overall verdict still depended on the restore
+// step at that point), but once drill decides to SKIP that step, r.verdict IS the final
+// answer and the promised "VERDICT: FAIL/PARTIAL" line was going unprinted entirely —
+// silently downgrading a documented contract to only an exit code (#209 review).
+function finishVerify(
+  o: CliOptions,
+  r: FileCheckResult,
+  extra?: Record<string, unknown>,
+  printVerdictLine = false,
+): void {
   const exitCode = process.exitCode ?? 0;
+  if (!o.json && printVerdictLine) printFileCheckVerdict(r.verdict);
   if (o.json) {
     printJson({
       file: r.file,
@@ -735,9 +763,21 @@ export async function verify(o: CliOptions): Promise<void> {
     );
   }
 
+  // installStageSignalGuard() (idempotent) BEFORE the scratch dir exists — remote/drill
+  // reach here without restoreImpl() ever having called it (that only happens for drill,
+  // and only once its own checks already reached PASS), so without this call up front a
+  // signal during the fetch/checks below would hit no handler at all.
+  installStageSignalGuard();
   let scratchRoot: string | null = null;
   try {
-    scratchRoot = await mkdtemp(join(tmpdir(), 'cipher-brain-verify-'));
+    // mkdtempSync (not async mkdtemp), and setActiveVerifyScratchDir called immediately
+    // after with no await between them — same one-tick discipline snapshot.ts's own
+    // ACTIVE_STAGE registration uses (see signal-guard.ts): a signal landing during an
+    // await could otherwise fire the handler while this scratch dir is still untracked,
+    // leaking it (multi-model review finding on PR #332 — the ORIGINAL bug this whole
+    // function needed to close, not just drill's later decrypt+extract step).
+    scratchRoot = mkdtempSync(join(tmpdir(), 'cipher-brain-verify-'));
+    setActiveVerifyScratchDir(scratchRoot);
     const target = join(scratchRoot, 'pulled.age');
     // A fresh CliOptions object, not a spread of `o`: pull() only needs to know WHERE to
     // fetch from and WHERE to land it, and building it explicitly means no other field a
@@ -752,8 +792,27 @@ export async function verify(o: CliOptions): Promise<void> {
       tables: [],
       recipients: [],
     };
+    // pull()'s own narrative (retries, the "sha256 OK: …" confirmation, "pulled x -> y",
+    // and — the reason this is captured rather than left to print directly — a warning
+    // naming WHY an authenticity signature sidecar could not be fetched) goes to
+    // console.error. Captured here, not silenced: every line is replayed to the real
+    // stderr immediately below (success or failure), so this changes nothing an operator
+    // actually sees — it only ALSO makes pull()'s log available to signatureGap() so a
+    // deleted/unfetchable .minisig sidecar can be told apart from an artifact that was
+    // simply never signed (src/mcp.ts's verify_restore/restore_now already do exactly
+    // this over MCP, #312; --json here had no equivalent at all, #209 review).
+    const pullLog: string[] = [];
+    const prevConsoleError = console.error;
+    console.error = (...a: unknown[]) => {
+      pullLog.push(a.map(String).join(' '));
+    };
     try {
-      await pull(pullOpts);
+      try {
+        await pull(pullOpts);
+      } finally {
+        console.error = prevConsoleError;
+        for (const line of pullLog) console.error(line);
+      }
     } catch (e) {
       // Remote retrievability is exactly what --level remote/drill exists to test — a
       // fetch failure here (not-yet-propagated, deleted, wrong locator, sha256 mismatch, a
@@ -772,7 +831,17 @@ export async function verify(o: CliOptions): Promise<void> {
       if (o.json) {
         printJson({
           level,
-          pulled: { backend: pullOpts.backend ?? null, locator: pullOpts.locator ?? null, fetched: false, error: msg },
+          pulled: {
+            backend: pullOpts.backend ?? null,
+            locator: pullOpts.locator ?? null,
+            // Present even on a failed fetch (previously absent here, unlike every OTHER
+            // `pulled` shape below) — the same field, the same meaning, regardless of
+            // outcome, rather than a caller having to know it only sometimes exists
+            // (#209 review).
+            sha256_pin: pullOpts.sha256 ?? null,
+            fetched: false,
+            error: msg,
+          },
           verdict: 'FAIL',
           exit_code: 1,
         });
@@ -780,20 +849,26 @@ export async function verify(o: CliOptions): Promise<void> {
       if (!o.json) printMascot('sad');
       return;
     }
+    // sig_locator is pull()'s own bookkeeping, filled in on `pullOpts` (the SAME object
+    // reference passed to pull() above) when --from-locator-file recorded one — read
+    // AFTER the call, exactly like signatureGap()'s other two callers in src/mcp.ts do.
+    const sigGap = signatureGap(pullLog, pullOpts.sig_locator);
     const pulledInfo = {
       backend: pullOpts.backend,
       locator: pullOpts.locator,
       sha256_pin: pullOpts.sha256 ?? null,
       fetched: true,
+      ...(sigGap ? { signature: sigGap } : {}),
     };
     if (!o.json) {
       console.log(`level: ${level}`);
       console.log(`[PASS] fetched from ${pullOpts.backend}:${pullOpts.locator} (remote retrievability confirmed)`);
       if (!pullOpts.sha256 && pullOpts.backend && NON_CONTENT_ADDRESSED_BACKENDS.has(pullOpts.backend)) {
         console.log(
-          `warning: no sha256 pin was applied — ${pullOpts.backend} locators are post-assigned ids, not ` +
-            'content hashes, so a substituted/rolled-back object served at the same locator would not be ' +
-            'detected here (pass --sha256, or use --from-locator-file, to fail closed)',
+          `warning: no sha256 pin was applied — ${pullOpts.backend} locators are not content hashes ` +
+            '(post-assigned ids for arweave/turbo, an operator-chosen remote path for rclone), so a ' +
+            'substituted/rolled-back object served at the same locator would not be detected here (pass ' +
+            '--sha256, or use --from-locator-file, to fail closed)',
         );
       }
     }
@@ -822,7 +897,7 @@ export async function verify(o: CliOptions): Promise<void> {
             : '[SKIP] full restore drill — the checks above already failed',
         );
       }
-      finishVerify(o, r, { level, pulled: pulledInfo, full_restore: 'skip' });
+      finishVerify(o, r, { level, pulled: pulledInfo, full_restore: 'skip' }, true);
       return;
     }
 
@@ -890,7 +965,15 @@ export async function verify(o: CliOptions): Promise<void> {
     // handleRestoreNow) — always removed, whether the fetch, the checks, or the restore
     // step failed. Nothing here is meant to survive past this call: --level remote never
     // writes plaintext at all, and --level drill's whole point is proving restorability
-    // without performing an actual restore.
-    if (scratchRoot) await rm(scratchRoot, { recursive: true, force: true });
+    // without performing an actual restore. rmrf (util.ts), not a plain rm(): a --dir
+    // source captured with a restrictive mode (or a component tarball that recorded one)
+    // can leave a read-only directory under here even though the extract itself passes
+    // --no-same-permissions, and force:true alone does not retry past the EACCES that
+    // causes (#209 review). Only cleared from the signal guard AFTER removal actually
+    // finishes — a signal arriving mid-rmrf must still find scratchRoot tracked.
+    if (scratchRoot) {
+      await rmrf(scratchRoot);
+      setActiveVerifyScratchDir(null);
+    }
   }
 }

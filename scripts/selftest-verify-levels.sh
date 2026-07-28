@@ -159,5 +159,127 @@ set -e
 printf '%s' "$PART_OUT" | grep -q 'no private identity on this box' \
   && echo "[PASS] public-key-only --level drill SKIPs the restore step and reports PARTIAL (exit 2)" \
   || { echo "[FAIL] public-key-only --level drill did not explain the skip"; echo "$PART_OUT"; exit 1; }
+# The exit code above proves the VERDICT internally, but drill's SKIP branch used to
+# suppress the human-readable "VERDICT: …" line entirely (runFileChecks was told not to
+# print one, since drill's overall verdict still depended on a restore step it never
+# reaches here, and finishVerify never printed one either) — this specific assertion is
+# what would have caught that regression; the exit-code check above alone would not
+# have (#332 review).
+printf '%s' "$PART_OUT" | grep -q 'VERDICT: PARTIAL' \
+  && echo "[PASS] public-key-only --level drill still prints the promised VERDICT: PARTIAL line" \
+  || { echo "[FAIL] public-key-only --level drill did not print VERDICT: PARTIAL"; echo "$PART_OUT"; exit 1; }
+
+echo "== --level drill: a fetched-but-corrupt artifact (not a fetch failure) also prints VERDICT: FAIL in human mode =="
+# Distinct from the --sha256 mismatch case above: THAT fails during the FETCH itself
+# (pull()'s own pin check), which already printed its VERDICT: FAIL from the early-
+# return branch untouched by this bug. This one fetches fine — the corruption is only
+# caught by runFileChecks AFTERWARD (the positive control fails to decrypt a truncated
+# STREAM) — exercising the SAME "checks already failed, skip the restore" branch the
+# public-key-only case above exercises for PARTIAL, but for FAIL instead.
+cb snapshot --dir "$SRC" --out "$TMP/trunc-src.age" >/dev/null
+TRUNCSZ=$(wc -c < "$TMP/trunc-src.age" | tr -d ' ')
+head -c $((TRUNCSZ - 500)) "$TMP/trunc-src.age" > "$TMP/trunc.age"
+TRUNC_LOC=$(cb push --in "$TMP/trunc.age" --backend file)
+set +e
+FAIL_OUT=$(cb verify --level drill --locator "$TRUNC_LOC" --backend file 2>&1); FAIL_RC=$?
+set -e
+[ "$FAIL_RC" = "1" ] || { echo "[FAIL] drill on a fetched-but-corrupt artifact exited $FAIL_RC, expected 1"; echo "$FAIL_OUT"; exit 1; }
+printf '%s' "$FAIL_OUT" | grep -q 'full restore drill — the checks above already failed' \
+  || { echo "[FAIL] drill did not report why the restore step was skipped"; echo "$FAIL_OUT"; exit 1; }
+printf '%s' "$FAIL_OUT" | grep -q 'VERDICT: FAIL' \
+  && echo "[PASS] --level drill on a fetched-but-corrupt artifact prints VERDICT: FAIL (not silently suppressed)" \
+  || { echo "[FAIL] --level drill on a fetched-but-corrupt artifact did not print VERDICT: FAIL"; echo "$FAIL_OUT"; exit 1; }
+
+echo "== --level remote: file backend refuses an object substituted under the same locator (#332 review) =="
+# The file backend's locator IS its object's own sha256 (its whole "content-addressed"
+# claim) — but nothing enforced that BEFORE this fix: get() only checked the FILENAME
+# shape, never the actual bytes. Push a SECOND, different snapshot, then overwrite the
+# FIRST object's on-disk bytes with the second's, keeping the first object's FILENAME
+# (its locator) unchanged — exactly what a substituted/rolled-back object looks like.
+# Without --sha256 (the scenario NON_CONTENT_ADDRESSED_BACKENDS' warning does NOT cover
+# for `file`, since `file` is presumed self-verifying), this used to reach VERDICT: PASS.
+SRC2="$TMP/brain-src-2"; mkdir -p "$SRC2"
+printf 'different-content-%s\n' "$MARKER" > "$SRC2/note2.txt"
+cb snapshot --dir "$SRC2" --out "$TMP/snap2.age" >/dev/null
+LOC2=$(cb push --in "$TMP/snap2.age" --backend file)
+cp "$LOC2" "$LOC"
+set +e
+SUBST_ERR=$(cb verify --level remote --locator "$LOC" --backend file 2>&1); SUBST_RC=$?
+set -e
+[ "$SUBST_RC" != "0" ] || { echo "[FAIL] verify --level remote PASSed over a substituted file-backend object"; echo "$SUBST_ERR"; exit 1; }
+printf '%s' "$SUBST_ERR" | grep -qi 'does not match its own locator hash' \
+  && echo "[PASS] file backend refuses a substituted object (content no longer matches its own locator hash)" \
+  || { echo "[FAIL] substituted-object refusal message unclear: $SUBST_ERR"; exit 1; }
+
+echo "== --level remote --json: a recorded-but-unfetchable signature sidecar is reported structurally, not just a stderr warning (#332 review) =="
+# src/mcp.ts's verify_restore/restore_now already have this (signatureGap(), #312); the
+# CLI's --json had no equivalent field at all before this fix — only the human-readable
+# stderr warning pull() itself already prints.
+SIGHOME="$TMP/sig-keys"; mkdir -p "$SIGHOME"
+CIPHER_BRAIN_HOME="$SIGHOME" cb keygen >/dev/null
+CIPHER_BRAIN_HOME="$SIGHOME" cb keygen --sign >/dev/null
+SIGSRC="$TMP/sig-src"; mkdir -p "$SIGSRC"
+printf 'sig-test-%s\n' "$MARKER" > "$SIGSRC/note.txt"
+CIPHER_BRAIN_HOME="$SIGHOME" cb snapshot --dir "$SIGSRC" --out "$TMP/sig.age" >/dev/null
+CIPHER_BRAIN_HOME="$SIGHOME" cb push --in "$TMP/sig.age" --backend file --save-locator "$TMP/sig-loc.tsv" >/dev/null
+SIG_LOCATOR_PATH=$(cut -f6 "$TMP/sig-loc.tsv")
+[ -n "$SIG_LOCATOR_PATH" ] || { echo "[FAIL] save-locator file has no 6th (sig_locator) field"; cat "$TMP/sig-loc.tsv"; exit 1; }
+rm -f "$SIG_LOCATOR_PATH"   # the signature object itself vanishes from storage — recorded, but no longer fetchable
+SIGJ=$(CIPHER_BRAIN_HOME="$SIGHOME" cb verify --level remote --from-locator-file "$TMP/sig-loc.tsv" --json)
+printf '%s' "$SIGJ" | grep -q '"signature":{"fetched":false' \
+  && echo "[PASS] --level remote --json reports the downgrade structurally (signature.fetched:false)" \
+  || { echo "[FAIL] --level remote --json did not report the signature gap"; echo "$SIGJ"; exit 1; }
+printf '%s' "$SIGJ" | grep -q 'could not fetch the authenticity signature' \
+  && echo "[PASS] --level remote --json signature.reason carries pull's own reason" \
+  || { echo "[FAIL] --level remote --json signature block missing pull's reason"; echo "$SIGJ"; exit 1; }
+
+echo "== --level remote --json: a failed fetch still carries sha256_pin (consistent pulled{} shape across outcomes) =="
+set +e
+FAILJ=$(cb verify --level remote --locator "0000000000000000000000000000000000000000000000000000000000000000.age" --backend file --sha256 "$ORIG" --json)
+set -e
+printf '%s' "$FAILJ" | grep -q '"sha256_pin":"'"$ORIG"'"' \
+  && echo "[PASS] a failed-fetch --json still includes pulled.sha256_pin (same field, every outcome)" \
+  || { echo "[FAIL] failed-fetch --json is missing pulled.sha256_pin"; echo "$FAILJ"; exit 1; }
+
+echo "== --level drill: SIGTERM during component auto-expand leaves no scratch dir or plaintext behind (#332 review) =="
+# The P1 gap this covers: restoreImpl()'s own out-dir signal tracking (ACTIVE_RESTORE_OUT_DIR)
+# is cleared the instant its OWN tar extract settles — which is BEFORE component auto-expand
+# runs (still more plaintext written under the SAME scratch dir). A signal landing in
+# EXACTLY that window used to go untracked entirely. Slow down ONLY the auto-expand step's
+# own `tar -xzf` (never the outer restoreImpl() extract, which uses `tar -xf -`, no `z`) via
+# a stub tar, poll for the outer extract's manifest.json to land (proving
+# ACTIVE_RESTORE_OUT_DIR has ALREADY been cleared), then SIGTERM — landing in the gap.
+REALTAR="$(command -v tar)"
+STUBBIN="$TMP/stubbin"; mkdir -p "$STUBBIN"
+cat > "$STUBBIN/tar" <<STUBEOF
+#!/usr/bin/env bash
+if [ "\$1" = "-xzf" ] && [ "\${TAR_STUB_MODE:-}" = "slow_expand" ]; then
+  sleep "\${TAR_STUB_SLEEP:-5}"
+fi
+exec "$REALTAR" "\$@"
+STUBEOF
+chmod +x "$STUBBIN/tar"
+export TMPDIR="$TMP/verify-sig-tmpdir"; mkdir -p "$TMPDIR"
+PATH="$STUBBIN:$PATH" TAR_STUB_MODE=slow_expand TAR_STUB_SLEEP=5 \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" verify --level drill --locator "$LOC2" --backend file --sha256 "$(sha "$TMP/snap2.age")" >/dev/null 2>&1 &
+DRILL_PID=$!
+APPEARED=0
+for _ in $(seq 1 50); do
+  if find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-verify-*' -type d 2>/dev/null | grep -q .; then
+    MANIFEST=$(find "$TMPDIR" -maxdepth 3 -path '*/restored/manifest.json' 2>/dev/null | head -1)
+    if [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ]; then APPEARED=1; break; fi
+  fi
+  sleep 0.1
+done
+if [ "$APPEARED" != "1" ]; then
+  echo "[FAIL] drill never reached component auto-expand (test setup)"; kill "$DRILL_PID" 2>/dev/null || true; exit 1
+fi
+kill -TERM "$DRILL_PID"
+wait "$DRILL_PID" 2>/dev/null || true   # signal exit is non-zero — expected
+LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-verify-*' 2>/dev/null | wc -l | tr -d ' ')
+[ "$LEFTOVERS" = "0" ] \
+  && echo "[PASS] SIGTERM mid-component-expand leaves no cipher-brain-verify-* scratch dir (no plaintext left behind)" \
+  || { echo "[FAIL] SIGTERM mid-component-expand leaked $LEFTOVERS scratch dir(s)"; exit 1; }
+unset TMPDIR
 
 echo "[PASS] verify --level quick/remote/drill (issue #209) all behave as documented"

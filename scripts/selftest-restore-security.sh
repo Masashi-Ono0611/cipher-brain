@@ -155,4 +155,26 @@ cb restore --in "$TMP/c-hardlink.age" --out-dir "$TMP/out-hardlink-safe" >/dev/n
 echo "[PASS] a legitimate in-tree hardlink restores unchanged"
 
 echo
+echo "== (p) a SECOND restore into an out-dir a symlink already lives in cannot merge through it (mergeNoClobber) =="
+
+# First restore: a legitimate standalone symlink named "evil-link" pointing OUTSIDE
+# out-dir (a real directory this script controls, not the archive's own tree).
+OUTSIDE="$TMP/outside-target"
+mkdir -p "$OUTSIDE"
+CB_SYMLINK_TARGET="$OUTSIDE" make_age "$TMP/m-first.tar" merge-escape-symlink "$TMP/m-first.age"
+OUT_MERGE="$TMP/out-merge"
+cb restore --in "$TMP/m-first.age" --out-dir "$OUT_MERGE" >/dev/null
+[ -L "$OUT_MERGE/evil-link" ] || { echo "[FAIL] first restore did not create the symlink setup for this test"; exit 1; }
+
+# Second restore, into the SAME (now pre-existing) out-dir: an archive whose only entry
+# is a file nested under a directory sharing the symlink's name. Before the fix,
+# mergeNoClobber() followed exists()'s symlink-following stat and recursed straight
+# through "evil-link" into $OUTSIDE, writing payload.txt there.
+make_age "$TMP/m-second.tar" merge-escape-payload "$TMP/m-second.age"
+cb restore --in "$TMP/m-second.age" --out-dir "$OUT_MERGE" >/dev/null
+[ ! -e "$OUTSIDE/payload.txt" ] || { echo "[FAIL] mergeNoClobber wrote through the pre-existing symlink into \$OUTSIDE"; exit 1; }
+[ -L "$OUT_MERGE/evil-link" ] || { echo "[FAIL] the pre-existing symlink itself was disturbed"; exit 1; }
+echo "[PASS] mergeNoClobber refuses to recurse through a pre-existing symlink; no write escaped out-dir"
+
+echo
 echo "RESTORE-SECURITY SELFTEST PASS"

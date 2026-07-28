@@ -69,5 +69,19 @@ with tarfile.open(out_path, "w") as tf:
     elif shape == "hardlink-safe":
         add_file(tf, "target.txt", b"hardlink-ok")
         add_hardlink(tf, "link.txt", "target.txt")
+    elif shape == "merge-escape-symlink":
+        # First of a two-archive pair proving mergeNoClobber() cannot be sent through a
+        # symlink on a SECOND restore into an out-dir the first restore already
+        # populated. A standalone symlink (no entry nested under it) passes
+        # inspection -- restore.ts deliberately allows a legitimate symlink entry on
+        # its own, see the big comment near validateRestoreEntries' symlink case.
+        target = os.environ["CB_SYMLINK_TARGET"]
+        add_symlink(tf, "evil-link", target)
+    elif shape == "merge-escape-payload":
+        # Second archive of the pair: a plain file UNDER a directory sharing the first
+        # archive's symlink name. Restoring this into the SAME out-dir (which already
+        # holds "evil-link" as a symlink from the first restore) is what exercises
+        # mergeNoClobber()'s dest-is-a-directory branch.
+        add_file(tf, "evil-link/payload.txt", b"PWNED-MERGE")
     else:
         raise SystemExit(f"unknown CB_TAR_SHAPE: {shape}")

@@ -158,6 +158,17 @@ function validateRestoreEntries(entries: RestoreEntry[]): void {
         `archive entry "${label}" is a ${e.type} entry — refusing to extract (no legitimate use in a cipher-brain snapshot)`,
       );
     }
+    // This IS the allowlist: a type character RESTORE_ENTRY_TYPE_BY_CHAR does not
+    // recognize (a GNU tar extension, a sparse/contiguous-file record, a pax header
+    // leaking through) maps to 'other' and must be refused here — the big comment above
+    // RESTORE_ENTRY_TYPE_BY_CHAR says exactly this ("validation, not parsing, decides
+    // whether an entry is safe"), so an exotic type falling through UNREJECTED would
+    // contradict it and let tar attempt to create whatever that type is.
+    if (e.type === 'other') {
+      throw new Error(
+        `archive entry "${label}" is an unrecognized entry type — refusing to extract (not on the allowlist of file/dir/symlink/hardlink)`,
+      );
+    }
     // A hardlink's target names ANOTHER member of this SAME archive — a target that
     // escapes the tree (absolute, or a `..` component) has no legitimate purpose here.
     if (e.type === 'hardlink' && e.linkTarget !== undefined) {
@@ -344,14 +355,26 @@ async function mergeNoClobber(src: string, dest: string): Promise<void> {
   for (const entry of await readdir(src, { withFileTypes: true })) {
     const s = join(src, entry.name);
     const d = join(dest, entry.name);
-    if (entry.isDirectory() && (await exists(d))) {
+    // lstat, not exists()/stat(): exists() follows symlinks, so a pre-existing `d` that
+    // is a symlink to a real directory OUTSIDE dest would pass entry.isDirectory() &&
+    // exists(d) and send mergeNoClobber recursing through the symlink into whatever it
+    // points at — writing archive content outside dest entirely. A symlink at `d` is
+    // therefore always treated as "already there, do not touch" (the no-clobber
+    // fallthrough below), never as a directory to merge into.
+    let dStat: Awaited<ReturnType<typeof lstat>> | undefined;
+    try {
+      dStat = await lstat(d);
+    } catch {
+      dStat = undefined;
+    }
+    if (entry.isDirectory() && dStat?.isDirectory()) {
       await mergeNoClobber(s, d);
-    } else if (!(await exists(d))) {
+    } else if (!dStat) {
       await rename(s, d);
     }
-    // else: `d` already exists and is not a directory to merge into — leave it
-    // (no-clobber); the finally block in expandComponents() drops whatever's left
-    // under `src` (the scratch dir) once this returns.
+    // else: `d` already exists (a file, a symlink, or any other non-plain-directory
+    // entry) — leave it (no-clobber); the finally block in expandComponents() drops
+    // whatever's left under `src` (the scratch dir) once this returns.
   }
 }
 

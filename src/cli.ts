@@ -71,6 +71,7 @@ const VALUE_FLAGS = new Set([
   'profile',
   'vault',
   'zip',
+  'export',
   'pg',
   'pg_filter',
   'in',
@@ -253,6 +254,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
                                      --force-vault to snapshot a vault-less dir anyway)
         chatgpt-export --zip <path>  the official ChatGPT export zip, archived as-is
                                      (never extracted)
+        o2b --export <path>          an Open Second Brain bank-export bundle
+                                     ("o2b brain bank-export --out <path>.json"), archived
+                                     as-is (never extracted; must end in .json)
       --pg-filter <file> and --pg-exclude-table-data <table> are a thin, literal pass-through
       to pg_dump's OWN standard flags (--filter / --exclude-table-data) — cipher-brain does
       no SQL parsing or filtering of its own; pg_dump does exactly what it would if you ran
@@ -297,7 +301,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       (notably --profile chatgpt-export, which archives the export zip as-is) is
       scanned only as opaque bytes — a secret inside it will NOT be found, even
       though the run reports the mode. Extract such an export and snapshot the
-      directory if you want the gate to actually cover its contents.
+      directory if you want the gate to actually cover its contents. --profile o2b's
+      bundle is plain JSON, not an archive, so gitleaks DOES read its actual text
+      content the same as any other file.
       Authenticity (#214): whenever a signing identity exists (default
       $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
       a different one), snapshot ALSO writes a detached "<out>.minisig" signature over
@@ -486,7 +492,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
   cipher-brain schedule install --backend <file|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
                                 [--profile <name>] [--pg <conn>] [--pg-table <t>]...
                                 [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...
-                                [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>]
+                                [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>] [--export <path>]
                                 [--save-locator <path>] [--index-file <path>]
                                 [--ping-url <url>] [--ping-url-fail <url>]
                                 [--scan-secrets warn|deny|off]

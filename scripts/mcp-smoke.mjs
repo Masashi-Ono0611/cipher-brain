@@ -59,9 +59,28 @@
 //      second identical call would otherwise get; the same key reused for a
 //      DIFFERENT call is refused (ERR_IDEMPOTENCY_KEY_REUSED); a DIFFERENT
 //      key against the same already-existing `out` is NOT a free pass and
-//      still hits the real no-clobber refusal (CB-E009). runIdempotencyTtlTest():
-//      a SEPARATE server with a short CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS
+//      still hits the real no-clobber refusal (CB-E009); a replay carrying a
+//      NEW locator_file (deliberately excluded from the fingerprint) still
+//      writes the recovery pointer to that path instead of silently skipping
+//      it; and a partial-success push (a --save-locator write that fails
+//      strictly AFTER the ciphertext already uploaded) is still recorded
+//      under the key even though the overall call errors — a repeat with the
+//      SAME key then replays that recorded partial success instead of
+//      re-executing (multi-model review, #335). runIdempotencyTtlTest(): a
+//      SEPARATE server with a short CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS
 //      proves a cached result stops being replayed once it goes stale.
+//      runIdempotencyTtlValidationTest(): CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS
+//      set to a NaN/zero/negative/Infinity value refuses to start the server
+//      (naming the variable) rather than silently defeating replay; unset
+//      still starts normally. runIdempotencyCorruptedLogTest(): the
+//      idempotency log corrupted EXTERNALLY between two calls makes a
+//      BRAND NEW key refuse fail-closed (ERR_IDEMPOTENCY_STORE_UNREADABLE)
+//      rather than silently proceeding as "no prior calls". The signature-
+//      sidecar-upload-failure half of the same partial-success scenario
+//      (PushSignatureUploadError) is covered at the CLI level instead, in
+//      scripts/selftest-push-partial-failure.sh — the file backend's
+//      content-addressed locator makes that failure deterministic to force
+//      only outside the combined snapshot+push call this file drives.
 //
 // Exits 0 on success, 1 on any failure with a descriptive message on stderr.
 
@@ -100,8 +119,189 @@ async function main() {
     await run(tmp);
     await runKeygenWalletTests(tmp);
     await runIdempotencyTtlTest(tmp);
+    await runIdempotencyTtlValidationTest(tmp);
+    await runIdempotencyCorruptedLogTest(tmp);
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+// #220 P2 (multi-model review): CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS must be validated at
+// server startup, not merely Number()'d — a NaN/zero/negative override would silently
+// disable idempotency-key replay entirely (isFresh()'s `< ttlSeconds * 1000` comparison
+// is always false against NaN or a non-positive value), and an Infinity override would
+// never expire a key. Asserts the server refuses to start (nonzero exit, a stderr message
+// naming the variable) for each bad shape, and that leaving it unset still starts fine
+// (the DEFAULT-TTL regression every other test in this file already depends on).
+async function runIdempotencyTtlValidationTest(tmp) {
+  const home = join(tmp, 'home-ttl-validation');
+  const badValues = ['not-a-number', '0', '-5', 'Infinity', '1.5'];
+  for (const bad of badValues) {
+    const res = spawnSync(process.execPath, [SERVER_PATH], {
+      env: { ...process.env, CIPHER_BRAIN_HOME: home, CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS: bad },
+      input: '',
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    if (res.status === 0) {
+      throw new Error(
+        `idempotency TTL validation: CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS=${bad} started successfully (should refuse)`,
+      );
+    }
+    if (!/CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS/.test(res.stderr ?? '')) {
+      throw new Error(
+        `idempotency TTL validation: CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS=${bad} did not name the variable in ` +
+          `its refusal: ${JSON.stringify(res.stderr).slice(0, 400)}`,
+      );
+    }
+  }
+  // Unset (the default): must still start and serve normally — a regression here would
+  // mean the validation itself broke the common case every OTHER test in this file
+  // depends on.
+  const okChild = spawn(process.execPath, [SERVER_PATH], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, CIPHER_BRAIN_HOME: join(tmp, 'home-ttl-validation-ok') },
+  });
+  const { send, waitFor } = makeRpcClient(okChild);
+  try {
+    send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ci-smoke', version: '0.0.0' } },
+    });
+    const initRes = await waitFor(1);
+    if (!initRes.result)
+      throw new Error(
+        `idempotency TTL validation: server with an UNSET TTL failed to initialize: ${JSON.stringify(initRes)}`,
+      );
+  } finally {
+    try {
+      okChild.stdin.end();
+    } catch {
+      /* ignore */
+    }
+    try {
+      okChild.kill();
+    } catch {
+      /* ignore */
+    }
+  }
+  process.stdout.write(
+    `MCP SMOKE (idempotency TTL validation): PASS — refused to start for ${badValues.length} invalid TTL value(s) ` +
+      '(naming the variable each time), started normally with the TTL unset\n',
+  );
+}
+
+// #220 P1 (multi-model review): a corrupted idempotency log must make snapshot_now
+// fail-closed for a key it cannot rule out, rather than silently treating the corruption
+// as "no prior calls" and letting a paid operation proceed. Corrupts the log file
+// EXTERNALLY (a truncated write, a hand edit — not something this server itself would
+// produce) between two calls against an already-running server, then proves a BRAND NEW
+// idempotency_key is refused (fail-closed) rather than silently executed.
+async function runIdempotencyCorruptedLogTest(tmp) {
+  const home = join(tmp, 'home-corrupted-log');
+  const store = join(tmp, 'store-corrupted-log');
+  const data = join(tmp, 'data-corrupted-log');
+  await mkdir(data, { recursive: true });
+  await writeFile(join(data, 'hello.txt'), 'cipher-brain mcp corrupted-idempotency-log payload\n');
+
+  const keygenRes = spawnSync(process.execPath, [SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs'), 'keygen'], {
+    env: { ...process.env, CIPHER_BRAIN_HOME: home },
+    encoding: 'utf8',
+  });
+  if (keygenRes.status !== 0) {
+    throw new Error(`corrupted-log test: keygen failed (${keygenRes.status}): ${keygenRes.stderr || keygenRes.stdout}`);
+  }
+  const recipientPath = join(home, 'recipient.txt');
+
+  const child = spawn(process.execPath, [SERVER_PATH], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, CIPHER_BRAIN_HOME: home, CIPHER_BRAIN_FILE_DIR: store },
+  });
+  const { send, waitFor } = makeRpcClient(child);
+  try {
+    send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ci-smoke', version: '0.0.0' } },
+    });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    await wait(100);
+
+    // A first, ordinary call so the idempotency log actually exists on disk (its path is
+    // deterministic — join(HOME, 'idempotency-log.jsonl'), src/lib/config.ts).
+    const out1 = join(tmp, 'corrupted-log-1.age');
+    send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'snapshot_now',
+        arguments: {
+          dirs: [data],
+          recipients: [recipientPath],
+          out: out1,
+          backend: 'file',
+          idempotency_key: 'corrupted-log-seed-key',
+        },
+      },
+    });
+    const first = await waitFor(2);
+    if (first.result?.isError)
+      throw new Error(`corrupted-log test: seed snapshot_now failed: ${JSON.stringify(first.result).slice(0, 500)}`);
+
+    // Corrupt the log EXTERNALLY — a truncated write, not a well-formed StoredLine.
+    const logPath = join(home, 'idempotency-log.jsonl');
+    await writeFile(logPath, '{"key": "trunca', { flag: 'w' });
+
+    // A BRAND NEW key (never recorded, so no exact match could ever be found among what
+    // DOES parse) must refuse fail-closed rather than proceed as if this were simply
+    // unused.
+    const out2 = join(tmp, 'corrupted-log-2.age');
+    send({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: {
+        name: 'snapshot_now',
+        arguments: {
+          dirs: [data],
+          recipients: [recipientPath],
+          out: out2,
+          backend: 'file',
+          idempotency_key: 'corrupted-log-new-key',
+        },
+      },
+    });
+    const second = await waitFor(3);
+    if (!second.result?.isError || second.result?.structuredContent?.code !== 'ERR_IDEMPOTENCY_STORE_UNREADABLE') {
+      throw new Error(
+        `corrupted-log test: a brand-new idempotency_key against a corrupted log should refuse with ` +
+          `ERR_IDEMPOTENCY_STORE_UNREADABLE (fail-closed), not: ${JSON.stringify(second.result).slice(0, 500)}`,
+      );
+    }
+    if (existsSync(out2)) {
+      throw new Error('corrupted-log test: snapshot_now refused fail-closed but still produced a snapshot artifact');
+    }
+
+    process.stdout.write(
+      'MCP SMOKE (idempotency corrupted log): PASS — a brand-new key against a corrupted log refuses fail-closed ' +
+        '(ERR_IDEMPOTENCY_STORE_UNREADABLE), doing no work\n',
+    );
+  } finally {
+    try {
+      child.stdin.end();
+    } catch {
+      /* ignore */
+    }
+    try {
+      child.kill();
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -768,6 +968,113 @@ async function run(tmp) {
         `snapshot_now with a DIFFERENT idempotency_key against an already-existing out should hit the real ` +
           `no-clobber refusal (CB-E009): ${JSON.stringify(idem4.result).slice(0, 400)}`,
       );
+
+    // 2b-4e. #220 P2 (multi-model review): locator_file is deliberately excluded from the
+    // fingerprint, so a replay with a DIFFERENT locator_file than the original call must
+    // still WRITE the recovery pointer to the NEWLY-requested path — nothing is
+    // re-uploaded, but the requested side effect must not be silently dropped.
+    const idemReplayLocatorFile = join(tmp, 'idem-replay-locator.tsv');
+    if (existsSync(idemReplayLocatorFile)) throw new Error('idemReplayLocatorFile unexpectedly pre-exists');
+    send({
+      jsonrpc: '2.0',
+      id: 22005,
+      method: 'tools/call',
+      params: { name: 'snapshot_now', arguments: { ...idemArgs1, locator_file: idemReplayLocatorFile } },
+    });
+    const idem5 = await waitFor(22005);
+    const idem5Sc = idem5.result?.structuredContent;
+    if (idem5.result?.isError || idem5Sc?.idempotent_replay !== true)
+      throw new Error(
+        `snapshot_now (idempotency, replay with a NEW locator_file) should have replayed: ${JSON.stringify(idem5.result).slice(0, 500)}`,
+      );
+    if (!existsSync(idemReplayLocatorFile))
+      throw new Error(
+        'snapshot_now idempotent replay with a locator_file it had never seen before did not write it to disk',
+      );
+    const idemReplayLocatorLine = (await readFile(idemReplayLocatorFile, 'utf8')).split('\n')[0];
+    const [idemReplayLocatorField, idemReplayBackendField, idemReplaySha256Field] = idemReplayLocatorLine.split('\t');
+    if (
+      idemReplayLocatorField !== idem1Sc.locator ||
+      idemReplaySha256Field !== idem1Sc.sha256 ||
+      idemReplayBackendField !== 'file'
+    )
+      throw new Error(
+        `replayed locator_file content does not match the ORIGINAL call's locator/backend/sha256: ` +
+          `${JSON.stringify({ line: idemReplayLocatorLine, idem1: idem1Sc })}`,
+      );
+
+    // 2b-4f. #220 P1 (multi-model review): a partial-success push (ciphertext uploaded,
+    // then a LATER stage fails) must still be recorded under the idempotency_key even
+    // though the overall snapshot_now call reports an error — otherwise the exact retry
+    // this feature exists for would spend a second time for what already durably
+    // succeeded. Forced deterministically: locator_file's parent path component is a
+    // pre-existing regular FILE (not a directory), so push()'s own --save-locator mkdir
+    // fails with ENOTDIR strictly AFTER backend.put() (the real, "paid" step for
+    // arweave/turbo — here the free `file` backend stands in for the same code path)
+    // already succeeded — this is exactly PushLocatorWriteError's own scenario.
+    const idemPartialOut = join(tmp, 'idem-partial.age');
+    const idemPartialKey = 'idem-partial-failure-key';
+    const idemBadLocatorParent = join(tmp, 'idem-bad-locator-parent-is-a-file');
+    await writeFile(idemBadLocatorParent, 'not a directory\n');
+    const idemBadLocatorFile = join(idemBadLocatorParent, 'locator.tsv');
+    send({
+      jsonrpc: '2.0',
+      id: 22006,
+      method: 'tools/call',
+      params: {
+        name: 'snapshot_now',
+        arguments: {
+          dirs: [data],
+          recipients: [recipientPath],
+          out: idemPartialOut,
+          backend: 'file',
+          locator_file: idemBadLocatorFile,
+          idempotency_key: idemPartialKey,
+        },
+      },
+    });
+    const idem6 = await waitFor(22006);
+    const idem6Sc = idem6.result?.structuredContent;
+    if (!idem6.result?.isError || !/upload succeeded/.test(idem6Sc?.message ?? ''))
+      throw new Error(
+        `snapshot_now with a --save-locator write that fails AFTER a successful upload should refuse with a ` +
+          `"upload succeeded" PushLocatorWriteError message, not: ${JSON.stringify(idem6.result).slice(0, 500)}`,
+      );
+
+    // The SAME key, called again with a WORKING locator_file: if the partial success was
+    // correctly recorded above despite the overall call erroring, this replays the cached
+    // result (idempotent_replay:true, pushed:true) instead of re-executing — a real
+    // re-execution would fail closed on `out` already existing (CB-E009), so hitting THAT
+    // instead would prove the record was lost, exactly the bug this fixes.
+    const idemPartialGoodLocatorFile = join(tmp, 'idem-partial-good-locator.tsv');
+    send({
+      jsonrpc: '2.0',
+      id: 22007,
+      method: 'tools/call',
+      params: {
+        name: 'snapshot_now',
+        arguments: {
+          dirs: [data],
+          recipients: [recipientPath],
+          out: idemPartialOut,
+          backend: 'file',
+          locator_file: idemPartialGoodLocatorFile,
+          idempotency_key: idemPartialKey,
+        },
+      },
+    });
+    const idem7 = await waitFor(22007);
+    const idem7Sc = idem7.result?.structuredContent;
+    if (idem7.result?.isError || idem7Sc?.idempotent_replay !== true || idem7Sc?.pushed !== true)
+      throw new Error(
+        `a repeat call with the SAME idempotency_key after a partial-success failure should replay the recorded ` +
+          `partial success (idempotent_replay:true, pushed:true), not re-execute or refuse: ` +
+          `${JSON.stringify(idem7.result).slice(0, 500)}`,
+      );
+    if (typeof idem7Sc?.locator !== 'string' || idem7Sc.locator.length === 0)
+      throw new Error(`replayed partial-success result is missing its recorded locator: ${JSON.stringify(idem7Sc)}`);
+    if (!existsSync(idemPartialGoodLocatorFile))
+      throw new Error('the replay of a recorded partial-success result did not write the requested locator_file');
 
     // 2c. last_snapshot_status reads the save-locator file back
     send({

@@ -45,12 +45,13 @@ import {
   CONFIG_FILE_ERROR,
   IDEMPOTENCY_LOG,
   IDEMPOTENCY_TTL_SECONDS,
+  IDEMPOTENCY_TTL_ERROR,
 } from './lib/config.js';
 import { restoreRunbook } from './lib/runbook.js';
 import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
-import { push, pull, PushLocatorWriteError } from './lib/pushpull.js';
-import { lookupIdempotencyResult, recordIdempotencyResult } from './lib/idempotency.js';
+import { push, pull, PushPartialSuccessError, writeReplayedSavedLocator } from './lib/pushpull.js';
+import { lookupIdempotencyResult, recordIdempotencyResult, IdempotencyStoreError } from './lib/idempotency.js';
 import { schedule, scheduleStatusReport } from './lib/schedule.js';
 import { estimateCost } from './lib/estimate.js';
 import { keygenAt } from './lib/keys.js';
@@ -1120,12 +1121,28 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
   const lockId = idempotencyKey ? JSON.stringify([SNAPSHOT_NOW_TOOL.name, idempotencyKey]) : undefined;
   if (idempotencyKey && lockId) {
     fingerprint = snapshotNowFingerprint(args);
-    const cached = await lookupIdempotencyResult(
-      IDEMPOTENCY_LOG,
-      SNAPSHOT_NOW_TOOL.name,
-      idempotencyKey,
-      IDEMPOTENCY_TTL_SECONDS,
-    );
+    let cached: Awaited<ReturnType<typeof lookupIdempotencyResult>>;
+    try {
+      cached = await lookupIdempotencyResult(
+        IDEMPOTENCY_LOG,
+        SNAPSHOT_NOW_TOOL.name,
+        idempotencyKey,
+        IDEMPOTENCY_TTL_SECONDS,
+      );
+    } catch (e) {
+      if (!(e instanceof IdempotencyStoreError)) throw e; // an unexpected bug, not the fail-closed case below — stays ERR_INTERNAL
+      // Fail-closed (multi-model review, P1): the log could not rule out a prior call
+      // under this exact key — see IdempotencyStoreError's own doc comment in
+      // idempotency.ts. Refusing here means no paid work happens on an uncertain read,
+      // rather than silently treating "could not check" the same as "definitely unused".
+      throw new ToolError(
+        'ERR_IDEMPOTENCY_STORE_UNREADABLE',
+        `could not verify whether idempotency_key ${JSON.stringify(idempotencyKey)} was already used: ${errMsg(e)} ` +
+          '— refused rather than risk re-running a paid operation that may already have completed under this key ' +
+          '(fail-closed). Repair or remove the corrupted line(s) in the idempotency log, or retry once the ' +
+          'underlying I/O issue clears.',
+      );
+    }
     if (cached) {
       if (cached.fingerprint !== fingerprint) {
         throw new ToolError(
@@ -1135,7 +1152,30 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
             '— reuse a key only to retry the exact same call; use a new key for a different one.',
         );
       }
-      return structuredOk({ ...cached.result, idempotent_replay: true });
+      // #220 P2 (multi-model review): locator_file is deliberately excluded from the
+      // fingerprint (see snapshotNowFingerprint's own comment above) — but a replay must
+      // still honor a locator_file THIS call asked for, even though nothing is
+      // re-uploaded. Without this, a caller reusing a key with a NEW/different
+      // locator_file (e.g. it moved where it keeps its recovery pointer) would get a
+      // reported success while the requested pointer is silently never written anywhere.
+      // Deliberately minimal (locator/backend/sha256 ONLY, no re-derived sidecar
+      // fields) — see writeReplayedSavedLocator's own doc comment in pushpull.ts for why.
+      let replayedResult = cached.result;
+      if (
+        isStr(locatorFile) &&
+        cached.result.pushed === true &&
+        isStr(cached.result.locator) &&
+        isStr(cached.result.backend) &&
+        isStr(cached.result.sha256)
+      ) {
+        await writeReplayedSavedLocator(locatorFile, {
+          locator: cached.result.locator,
+          backend: cached.result.backend,
+          sha256: cached.result.sha256,
+        });
+        replayedResult = { ...replayedResult, locator_file: locatorFile };
+      }
+      return structuredOk({ ...replayedResult, idempotent_replay: true });
     }
     // No `await` between this check and the `.add()` below — see idempotencyInFlight's own
     // comment for why that is what makes it safe against a concurrent duplicate.
@@ -1200,19 +1240,50 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
       try {
         pushRes = await captureCall(() => push(pushOpts));
       } catch (e) {
-        if (idempotencyKey && fingerprint && e instanceof PushLocatorWriteError) {
-          // The upload already succeeded (see PushLocatorWriteError's own doc comment in
-          // pushpull.ts) even though THIS call is about to report an error — a retry
-          // carrying the same idempotency_key must be told that, not sent to spend again
-          // for a bookkeeping hiccup that has nothing to do with whether the upload landed.
-          await recordIdempotencyResult(
-            IDEMPOTENCY_LOG,
-            SNAPSHOT_NOW_TOOL.name,
-            idempotencyKey,
-            fingerprint,
-            { ...result, pushed: true, backend, locator: e.locator, locator_file_write_failed: true },
-            IDEMPOTENCY_TTL_SECONDS,
-          );
+        // #220 (multi-model review, P1): a PushPartialSuccessError means the ciphertext
+        // upload — the actual paid, permanent spend — already happened even though THIS
+        // call is about to report an error. That covers BOTH the ".minisig" signature
+        // sidecar upload failing (PushSignatureUploadError, e.sigLocator undefined —
+        // see its own doc comment in pushpull.ts) and the LOCAL --save-locator
+        // bookkeeping failing after everything durably uploaded (PushLocatorWriteError,
+        // e.sigLocator set when a signed push's sidecar landed first). Either way, a
+        // retry carrying the same idempotency_key must be told the spend already
+        // happened, not sent to spend again for an AFTERMATH failure that has nothing
+        // to do with whether the paid upload itself landed — this is precisely the
+        // "partial success" scenario #220 exists to make retry-safe.
+        if (idempotencyKey && fingerprint && e instanceof PushPartialSuccessError) {
+          const partialResult: Record<string, unknown> = {
+            ...result,
+            pushed: true,
+            backend,
+            locator: e.locator,
+            ...(e.sigLocator ? { sig_locator: e.sigLocator } : {}),
+            ...(e.name === 'PushSignatureUploadError'
+              ? { signature_upload_failed: true }
+              : { locator_file_write_failed: true }),
+          };
+          try {
+            await recordIdempotencyResult(
+              IDEMPOTENCY_LOG,
+              SNAPSHOT_NOW_TOOL.name,
+              idempotencyKey,
+              fingerprint,
+              partialResult,
+              IDEMPOTENCY_TTL_SECONDS,
+            );
+          } catch (recordErr) {
+            // A record-write failure here must NEVER mask `e` (multi-model review, P1):
+            // e.locator is recovery-critical, and swallowing it behind a DIFFERENT,
+            // unrelated fs error (the ORIGINAL bug this fixes) would hide the one piece
+            // of information the operator needs to hand-record the already-paid-for
+            // upload. Best-effort only — log a warning and fall through to `throw e`
+            // below unconditionally.
+            console.error(
+              `warning: could not record the idempotency-key result for a partially-succeeded snapshot_now call ` +
+                `(idempotency_key=${JSON.stringify(idempotencyKey)}, locator=${JSON.stringify(e.locator)}): ` +
+                `${errMsg(recordErr)} — the error below (not this warning) is the one to act on.`,
+            );
+          }
         }
         throw e;
       }
@@ -1225,14 +1296,28 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
     }
 
     if (idempotencyKey && fingerprint) {
-      await recordIdempotencyResult(
-        IDEMPOTENCY_LOG,
-        SNAPSHOT_NOW_TOOL.name,
-        idempotencyKey,
-        fingerprint,
-        result,
-        IDEMPOTENCY_TTL_SECONDS,
-      );
+      try {
+        await recordIdempotencyResult(
+          IDEMPOTENCY_LOG,
+          SNAPSHOT_NOW_TOOL.name,
+          idempotencyKey,
+          fingerprint,
+          result,
+          IDEMPOTENCY_TTL_SECONDS,
+        );
+      } catch (recordErr) {
+        // The snapshot (and any push) already fully succeeded — `result` is complete and
+        // correct. Only the FUTURE-replay safety net failed to get written; that must
+        // not turn an actually-successful, already-paid-for call into a reported
+        // failure, which would all but guarantee a double-spend retry AND hide that the
+        // work genuinely succeeded (multi-model review, P1: the same "never let
+        // idempotency-log bookkeeping outrank the real result" principle as above).
+        console.error(
+          `warning: snapshot_now succeeded but recording its idempotency-key result failed ` +
+            `(idempotency_key=${JSON.stringify(idempotencyKey)}): ${errMsg(recordErr)} — a retry with the SAME key ` +
+            'will not replay this result and may re-execute.',
+        );
+      }
     }
     return structuredOk(result);
   } finally {
@@ -2082,6 +2167,11 @@ async function main(): Promise<void> {
   // #286: same guard as the CLI — refuse to serve with a config file we could not
   // accept, rather than silently running as if the operator had configured nothing.
   if (CONFIG_FILE_ERROR) throw CONFIG_FILE_ERROR;
+  // #220 (multi-model review P2): same posture — refuse to serve with an idempotency-key
+  // TTL override that would silently defeat the feature (see config.ts's own doc comment
+  // on IDEMPOTENCY_TTL_ERROR). The CLI never reads or writes the idempotency log, so this
+  // check lives only here, not in cli.ts's equivalent guard.
+  if (IDEMPOTENCY_TTL_ERROR) throw IDEMPOTENCY_TTL_ERROR;
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

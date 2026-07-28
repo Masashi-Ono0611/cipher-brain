@@ -192,7 +192,40 @@ export const IDEMPOTENCY_LOG = join(HOME, 'idempotency-log.jsonl');
 // as a brand-new call. Default 24h: long enough to cover an agent's own retry-after-
 // failure window, short enough that a deliberate re-run days later (a different snapshot
 // an agent mistakenly keys the same) is never silently skipped forever.
-export const IDEMPOTENCY_TTL_SECONDS = Number(readEnv('CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS') || 24 * 60 * 60);
+//
+// Multi-model review (P2): a NaN/zero/negative override would silently DISABLE replay
+// entirely — idempotency.ts's isFresh() compares `now - t < ttlSeconds * 1000`, and a `<
+// NaN`/`< 0` comparison is always false, so every lookup reads as already-expired and
+// every retry spends again, exactly the double-spend #220 exists to prevent. An Infinity
+// override does the opposite: it never expires anything, so the SAME key reused days
+// later — the "a different snapshot an agent mistakenly keys the same" case the comment
+// above says the default must catch — is silently answered with a stale, unrelated
+// result forever instead. Validated, not just Number()'d like the other numeric env
+// overrides in this file; a bad value is RECORDED as a value here (not thrown), the same
+// pattern CONFIG_FILE_ERROR above uses and for the same reason: this runs in a module
+// body, before either entry point's own error formatting is available, and the CLI never
+// reads or writes the idempotency log at all, so only mcp.ts's own startup (the sole
+// actual consumer of this value) decides whether and when to surface it.
+function parseIdempotencyTtlSeconds(raw: string | undefined): { seconds: number; error: Error | null } {
+  const DEFAULT_SECONDS = 24 * 60 * 60;
+  if (raw === undefined) return { seconds: DEFAULT_SECONDS, error: null };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    return {
+      seconds: DEFAULT_SECONDS,
+      error: new Error(
+        `CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS must be a positive finite integer (seconds) — got ${JSON.stringify(raw)}. ` +
+          'A NaN/zero/negative value would disable idempotency-key replay entirely (every lookup reads as already ' +
+          'expired); an Infinity value would never expire a key, keeping a stale result replayable forever.',
+      ),
+    };
+  }
+  return { seconds: n, error: null };
+}
+const IDEMPOTENCY_TTL_LOAD = parseIdempotencyTtlSeconds(readEnv('CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS'));
+export const IDEMPOTENCY_TTL_SECONDS = IDEMPOTENCY_TTL_LOAD.seconds;
+/** Why CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS was refused, if it was — mcp.ts's main() must check this before serving (mirrors CONFIG_FILE_ERROR above). */
+export const IDEMPOTENCY_TTL_ERROR: Error | null = IDEMPOTENCY_TTL_LOAD.error;
 
 // schedule (#69) state and trigger locations. Declared here rather than in schedule.ts
 // so every CIPHER_BRAIN_* name lives in ENV_NAMES above (#286); the values and their

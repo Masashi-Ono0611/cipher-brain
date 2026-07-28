@@ -46,11 +46,19 @@ import {
   IDEMPOTENCY_LOG,
   IDEMPOTENCY_TTL_SECONDS,
   IDEMPOTENCY_TTL_ERROR,
+  NON_CONTENT_ADDRESSED_BACKENDS,
 } from './lib/config.js';
 import { restoreRunbook } from './lib/runbook.js';
 import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
-import { push, pull, PushPartialSuccessError, writeReplayedSavedLocator } from './lib/pushpull.js';
+import {
+  push,
+  pull,
+  signatureGap,
+  redactUserinfo,
+  PushPartialSuccessError,
+  writeReplayedSavedLocator,
+} from './lib/pushpull.js';
 import { lookupIdempotencyResult, recordIdempotencyResult, IdempotencyStoreError } from './lib/idempotency.js';
 import { schedule, scheduleStatusReport } from './lib/schedule.js';
 import { estimateCost } from './lib/estimate.js';
@@ -65,12 +73,17 @@ import type { CliOptions } from './lib/types.js';
 const SERVER_NAME = 'cipher-brain-mcp';
 const SERVER_VERSION = '0.0.1'; // keep in sync with package.json "version"
 
-const BACKENDS = ['file', 'arweave', 'turbo'];
+const BACKENDS = ['file', 'arweave', 'turbo']; // rclone (#204) is CLI/verify-only — not exposed as an MCP tool backend
 const PAID_BACKENDS = new Set(['arweave', 'turbo']);
-// arweave/turbo locators are post-assigned tx/upload ids, NOT content hashes —
-// pulling by bare locator cannot detect a rolled-back/substituted (yet still
-// age-decryptable) ciphertext unless a sha256 pin binds the fetched bytes.
-const NON_CONTENT_ADDRESSED_BACKENDS = new Set(['arweave', 'turbo']);
+// NON_CONTENT_ADDRESSED_BACKENDS: arweave/turbo locators are post-assigned tx/upload ids
+// and rclone's is an operator-chosen remote path — none of the three are content hashes,
+// so pulling by bare locator cannot detect a rolled-back/substituted (yet still
+// age-decryptable) ciphertext unless a sha256 pin binds the fetched bytes. `file`'s own
+// locator IS a content hash (its get() verifies the fetched bytes against it, #209
+// review), which is why it is NOT in this set. Shared with verify --level remote/drill
+// (src/lib/restore.ts, #209) — defined once in config.ts so the two call sites (rclone
+// is unreachable from here per BACKENDS above, but the constant is still one definition)
+// can't drift apart on which backends this applies to.
 const SHA256_HEX = /^[0-9a-fA-F]{64}$/;
 
 // Untyped JSON-RPC tool-call arguments (an MCP client can send anything) — every
@@ -1435,51 +1448,9 @@ async function handleLastSnapshotStatus(args: ToolArgs): Promise<CallToolResult>
   return structuredOk({ latest, sources, defaulted_to: defaulted ? locatorFile : undefined });
 }
 
-// pull()'s own line, verbatim (src/lib/pushpull.ts). Matched rather than inferred: see below.
-const SIG_FETCH_FAILED = 'could not fetch the authenticity signature';
-
-// A URL's userinfo is a credential, and CIPHER_BRAIN_AR_GATEWAYS can legitimately carry one
-// (`https://user:token@gateway`). pull() prints a failing gateway's URL, which was fine when
-// that text only reached the operator's own stderr and is not fine now that it is returned
-// to an MCP client. The scratch tmpdir path in "pulled <x> -> <y>"
-// is left as-is: it names a directory this call created and then deleted, and it is the only
-// way to read the rest of the log's paths.
-const redactUserinfo = (line: string): string => line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]*@/gi, '$1<redacted>@');
-
-// An artifact whose authenticity sidecar could not be fetched is not the same thing as one
-// that was never signed — and verify() cannot tell them apart, because it only ever sees the
-// local directory (#312). The caller of BOTH pull and verify can.
-//
-// This matters beyond tidiness: pull()'s sidecar fetch is best-effort by design (#214 — a
-// signature it cannot retrieve must warn and continue, never fail the pull), so the visible
-// result of a DELETED .minisig is verify() reporting "unsigned (legacy) artifact,
-// authenticity not checked" plus a PASS verdict. That sentence is true of a pre-#214 backup
-// and false here.
-//
-// Keyed on pull's OWN warning rather than on "sig_locator was recorded and the file is
-// missing", which review showed infers too much in two directions. It over-fires: the
-// arweave/turbo read promotes a body only if isAgeCiphertext() passes, and a minisign
-// sidecar is plaintext, so a perfectly intact signature in that storage can never be
-// fetched — the missing-file inference would cry downgrade on every signed arweave pull
-// (tracked separately; the sidecar round-trip is only exercised on the file backend today).
-// And it claims too much: a recorded sig_locator proves a sidecar OBJECT was pushed, not
-// that it holds a valid signature over this ciphertext. Matching the warning reports only
-// what actually happened, and carries pull's own reason with it.
-function signatureGap(pullLog: string[], sigLocator: unknown): Record<string, unknown> | undefined {
-  const line = pullLog.find((l) => l.includes(SIG_FETCH_FAILED));
-  if (!line) return undefined;
-  return {
-    fetched: false,
-    ...(isStr(sigLocator) ? { expected_locator: sigLocator } : {}),
-    reason: redactUserinfo(line),
-    note:
-      'a signature sidecar was recorded for this artifact and could not be fetched, so authenticity was NOT ' +
-      'checked. Any "unsigned (legacy) artifact" line in the checks/log below describes a different situation ' +
-      'and does not apply here. Read `reason` before concluding anything: a deleted .minisig (the downgrade an ' +
-      'attacker gets without forging a signature) and a storage backend that cannot serve sidecars both land ' +
-      'here, and they are not the same problem.',
-  };
-}
+// SIG_FETCH_FAILED / redactUserinfo / signatureGap now live in src/lib/pushpull.ts
+// (imported above) — shared with the CLI's `verify --level remote/drill` (src/lib/
+// restore.ts, #209), which used to have no equivalent structured report at all.
 
 async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
   const {
@@ -1568,8 +1539,9 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
       };
       if (!effectivePin && pullOpts.backend && NON_CONTENT_ADDRESSED_BACKENDS.has(pullOpts.backend)) {
         warning =
-          `integrity pin NOT applied: ${pullOpts.backend} locators are post-assigned ids, not content hashes, ` +
-          'so a gateway rollback/substitution that still decrypts with your key would go undetected by this ' +
+          `integrity pin NOT applied: ${pullOpts.backend} locators are not content hashes (post-assigned ids for ` +
+          'arweave/turbo, an operator-chosen remote path for rclone), so a gateway rollback/substitution that ' +
+          'still decrypts with your key would go undetected by this ' +
           'verdict. Pass sha256 (the expected ciphertext digest from a trusted off-box record, e.g. index.tsv) ' +
           'or use locator_file (a push --save-locator file, which carries the pin) to fail closed like the CLI recovery path.';
       }

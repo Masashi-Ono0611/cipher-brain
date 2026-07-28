@@ -611,6 +611,10 @@ export async function init(_o: CliOptions): Promise<void> {
           snapshotOpts.vault = expandHome(await askLine('Path to your Obsidian vault (must contain .obsidian/)'));
         if (profileChoice === 'chatgpt-export')
           snapshotOpts.zip = expandHome(await askLine('Path to the official ChatGPT export .zip'));
+        if (profileChoice === 'o2b')
+          snapshotOpts.export = expandHome(
+            await askLine('Path to the o2b bank-export bundle ("o2b brain bank-export --out <path>.json")'),
+          );
       } else {
         throw new Error(`unknown profile "${profileChoice}" — valid choices: none, ${PROFILE_NAMES.join(', ')}`);
       }

@@ -136,29 +136,37 @@ grep -q "export CIPHER_BRAIN_AR_PAID_BY='1234567890abcdef1234567890ABCDEF1234567
 grep -q "export CIPHER_BRAIN_AR_USD_RATE_URL='https://rates.invalid/v1/rates/usd'" "$RUNNER" || { echo "[FAIL] runner did not bake CIPHER_BRAIN_AR_USD_RATE_URL verbatim"; cat "$RUNNER"; exit 1; }
 echo "[PASS] env-capture: non-default env vars (CIPHER_BRAIN_AR_PAID_BY, CIPHER_BRAIN_AR_USD_RATE_URL) set at install time are baked into the runner"
 
-echo "== (a3) relative --vault/--zip/--recipient file paths resolve to ABSOLUTE in the runner (launchd/cron runs from a DIFFERENT cwd than install); an inline age1... --recipient is left UNCHANGED =="
+echo "== (a3) relative --vault/--zip/--export/--recipient file paths resolve to ABSOLUTE in the runner (launchd/cron runs from a DIFFERENT cwd than install); an inline age1... --recipient is left UNCHANGED =="
 # This is the exact issue #69 P2 regression: a relative path baked in verbatim resolves
 # correctly at install time (whatever cwd the operator happened to be in) but not
 # necessarily at scheduled-run time (launchd/cron invoke the runner from a different,
 # unrelated cwd). Run install FROM a subdirectory so cwd truly differs from $TMP.
+# --export (issue #206, profile o2b) is resolved the exact same way as --vault/--zip, so
+# it is folded into this same regression check rather than duplicating the whole test.
+# --profile o2b is required alongside it (see the (a3e) refusal test below) — --vault/
+# --zip stay on this same install call purely to exercise their OWN absolute-path
+# resolution; o2b never reads them, so their presence here is inert.
 mkdir -p "$TMP/subdir/vaultdir"
 touch "$TMP/subdir/exportdata.zip"
+printf '{"schema":"1"}\n' > "$TMP/subdir/bank-export.json"
 printf '# a recipients file\nage1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqcexskr\n' > "$TMP/subdir/recipients.txt"
 INLINE_KEY="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqcexskr"
 # Canonical form of $TMP/subdir — matches what node:path's resolve()/process.cwd() bakes
 # in (macOS mktemp dirs live under a symlinked /var/folders -> /private/var/folders, so a
 # naive string comparison against the raw $TMP/subdir would false-fail here).
 REALSUB="$(cd "$TMP/subdir" && pwd -P)"
-(cd "$TMP/subdir" && cb schedule install --backend file --dir "$SRC" --vault vaultdir --zip exportdata.zip --recipient recipients.txt --recipient "$INLINE_KEY" --no-load) \
+(cd "$TMP/subdir" && cb schedule install --backend file --dir "$SRC" --profile o2b --vault vaultdir --zip exportdata.zip --export bank-export.json --recipient recipients.txt --recipient "$INLINE_KEY" --no-load) \
   > "$TMP/install-a3.log" 2>&1 || { echo "[FAIL] install (relative paths, invoked from a different cwd) exited non-zero"; cat "$TMP/install-a3.log"; exit 1; }
 grep -qF -- "--vault '$REALSUB/vaultdir'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --vault path"; cat "$RUNNER"; exit 1; }
 grep -qF -- "--zip '$REALSUB/exportdata.zip'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --zip path"; cat "$RUNNER"; exit 1; }
+grep -qF -- "--export '$REALSUB/bank-export.json'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --export path"; cat "$RUNNER"; exit 1; }
 grep -qF -- "--recipient '$REALSUB/recipients.txt'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --recipient FILE path"; cat "$RUNNER"; exit 1; }
 grep -qF -- "--recipient '$INLINE_KEY'" "$RUNNER" || { echo "[FAIL] runner does not bake the inline age1... --recipient value UNCHANGED"; cat "$RUNNER"; exit 1; }
 if grep -qF -- "--vault 'vaultdir'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --vault string"; exit 1; fi
 if grep -qF -- "--zip 'exportdata.zip'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --zip string"; exit 1; fi
+if grep -qF -- "--export 'bank-export.json'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --export string"; exit 1; fi
 if grep -qF -- "--recipient 'recipients.txt'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --recipient FILE string"; exit 1; fi
-echo "[PASS] relative --vault/--zip/--recipient(file) resolved to absolute in the runner; inline age1... --recipient left unchanged"
+echo "[PASS] relative --vault/--zip/--export/--recipient(file) resolved to absolute in the runner; inline age1... --recipient left unchanged"
 
 echo "== (a3b) relative CIPHER_BRAIN_AR_WALLET / CIPHER_BRAIN_PIN_RECIPIENTS set before install (from a subdirectory) resolve to ABSOLUTE in the runner (same launchd/cron-different-cwd hazard as --vault/--zip/--recipient — Codex review round 4, #69 P2) =="
 mkdir -p "$TMP/subdir2"
@@ -222,6 +230,25 @@ grep -q "CIPHER_BRAIN_PIN_RECIPIENTS is set but empty" "$PINRUNLOG" 2>/dev/null 
 tail -n 1 "$PINRUNLOG" | grep -q '^FAILED rc=' || { echo "[FAIL] the empty-pin run did not end with the FAILED rc=N heartbeat line"; tail -n 3 "$PINRUNLOG"; exit 1; }
 [ -z "$(find "$PINSTORE" -maxdepth 1 -name '*.age' 2>/dev/null)" ] || { echo "[FAIL] the empty-pin run pushed an object to the store despite failing closed"; exit 1; }
 echo "[PASS] an explicitly empty CIPHER_BRAIN_PIN_RECIPIENTS is baked verbatim and the scheduled run fails closed (unset is still dropped)"
+
+echo "== (a3e) schedule install: --export without --profile o2b is refused, not silently baked into the runner (multi-model review, PR #334) =="
+# Before this check, install() baked cfg.export into the generated runner's snapshot line
+# UNCONDITIONALLY — it never calls resolveProfilePaths() itself — so a --export given
+# with no --profile (or the wrong one) installed cleanly and only turned out to be a
+# no-op every night, once the runner actually ran snapshot() (which only reads --export
+# via profile o2b's o2bPaths()). Refused HERE, at install time, instead.
+set +e
+ERR=$(cb schedule install --backend file --dir "$SRC" --export "$TMP/subdir/bank-export.json" --no-load 2>&1); RC=$?
+set -e
+[ "$RC" != "0" ] || { echo "[FAIL] schedule install accepted --export with no --profile at all"; exit 1; }
+printf '%s' "$ERR" | grep -q -- "--export" || { echo "[FAIL] install's no-profile --export refusal does not mention --export"; echo "$ERR"; exit 1; }
+printf '%s' "$ERR" | grep -q -- "--profile o2b" || { echo "[FAIL] install's no-profile --export refusal does not mention --profile o2b"; echo "$ERR"; exit 1; }
+set +e
+ERR2=$(cb schedule install --backend file --dir "$SRC" --profile obsidian --vault "$TMP/subdir/vaultdir" --export "$TMP/subdir/bank-export.json" --no-load 2>&1); RC2=$?
+set -e
+[ "$RC2" != "0" ] || { echo "[FAIL] schedule install accepted --export with --profile obsidian"; exit 1; }
+printf '%s' "$ERR2" | grep -q "obsidian" || { echo "[FAIL] install's wrong-profile --export refusal does not name the mismatched profile"; echo "$ERR2"; exit 1; }
+echo "[PASS] schedule install refuses --export without --profile o2b (absent or mismatched) before writing anything"
 
 echo "== (a4) --pg without CIPHER_BRAIN_PG_BIN resolves pg_dump on PATH at install time and bakes its DIRECTORY as CIPHER_BRAIN_PG_BIN (config.mjs's PG_BIN is a dir joined with the tool name via pgTool(), not the pg_dump binary path itself — baking the binary path verbatim would break both pg_dump AND pg_restore); install fails clearly when pg_dump cannot be resolved =="
 FAKE_PGBIN="$TMP/fake-pgbin"; mkdir -p "$FAKE_PGBIN"

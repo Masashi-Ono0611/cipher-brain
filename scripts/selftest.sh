@@ -1057,6 +1057,35 @@ else
   test -f "$TMP/deny-clean.age" || { echo "[FAIL] --scan-secrets deny refused a clean source"; exit 1; }
   echo "[PASS] --scan-secrets deny only refuses when gitleaks actually finds something"
 
+  echo "== #206: --profile o2b's bank-export bundle is PLAIN JSON — gitleaks reads its actual content, unlike chatgpt-export's opaque zip =="
+  # profiles.ts's o2bPaths() doc comment, README.md and MANAGEMENT.md all make this exact
+  # claim (a Sakana Fugu review finding on PR #334, corrected mid-implementation): unlike
+  # chatgpt-export's zip — which gitleaks can only see as opaque bytes (the "== #215:
+  # --scan-secrets deny still succeeds ==" pattern above would falsely pass on a zip
+  # carrying a real secret) — o2b's bundle is scanned like any other text file. Prove it
+  # with a synthetic bank-export bundle carrying the same dummy AWS-key-shaped string as
+  # the rest of this section, embedded in a preference value (a plausible place for a
+  # leaked credential to end up in a real export).
+  O2B_SECRETS_BUNDLE="$TMP/o2b-secrets-bank-export.json"
+  node -e "
+    const fs = require('node:fs');
+    const bundle = {
+      schema: '1',
+      graph: { nodes: [] },
+      pages: [],
+      preferences: [{ key: 'note', value: 'AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP' }],
+    };
+    fs.writeFileSync('$O2B_SECRETS_BUNDLE', JSON.stringify(bundle));
+  "
+  set +e
+  O2BDENY_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --profile o2b --export "$O2B_SECRETS_BUNDLE" --out "$TMP/o2b-deny.age" --scan-secrets deny 2>&1); O2BDENY_RC=$?
+  set -e
+  [ "$O2BDENY_RC" != "0" ] || { echo "[FAIL] --scan-secrets deny accepted an o2b bundle carrying a planted secret"; exit 1; }
+  printf '%s' "$O2BDENY_ERR" | grep -qi "refusing to snapshot" || { echo "[FAIL] o2b --scan-secrets deny did not explain the refusal"; echo "$O2BDENY_ERR"; exit 1; }
+  printf '%s' "$O2BDENY_ERR" | grep -q "AKIAABCDEFGHIJKLMNOP" && { echo "[FAIL] the dummy secret value leaked into o2b --scan-secrets deny output"; echo "$O2BDENY_ERR"; exit 1; }
+  test ! -e "$TMP/o2b-deny.age" || { echo "[FAIL] --scan-secrets deny still produced an output file for the leaky o2b bundle"; exit 1; }
+  echo "[PASS] gitleaks reads INSIDE the o2b bank-export bundle's plain-JSON text (not opaque bytes like chatgpt-export's zip) — --scan-secrets deny catches a planted secret in it"
+
   echo "== #215: --scan-secrets refuses clearly (naming gitleaks) when the binary can't be resolved, regardless of the real host's PATH =="
   # Same isolated-PATH technique selftest-schedule.sh uses for pg_dump: build a PATH
   # containing ONLY the one binary this check itself shells out to (a POSIX shell, to run

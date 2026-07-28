@@ -191,6 +191,59 @@ grep -qF 'stores the pushed ciphertext ONLY on this machine' "$TMP/wizard.log" |
 grep -qF 'LOCAL-ONLY — not reachable from another machine' "$TMP/wizard.log" || { echo "[FAIL] completion summary does not annotate the file backend as local-only"; cat "$TMP/wizard.log"; exit 1; }
 echo "[PASS] choosing the file backend prints an interactive warning, and the completion summary flags it as local-only"
 
+echo "== (e3) profile o2b end-to-end via the init wizard (issue #206): the wizard prompts for the bundle path and actually snapshots it =="
+# Test (d) above only exercises profile=none — none of the three NAMED profiles
+# (obsidian/chatgpt-export/o2b) had scripted wizard coverage before this. o2b's PR
+# (#334) added the "Path to the o2b bank-export bundle" prompt in wizard.ts but never
+# drove it, so a typo in the prompt-branch wiring (wrong snapshotOpts field, wrong
+# PROFILE_NAMES check) could ship unnoticed. Same drive-init.mjs scripted-stdin
+# mechanism as test (d), with a synthetic bank-export bundle standing in for
+# "o2b brain bank-export --out <path>.json" (its internal shape does not matter here,
+# only that it is a real, distinct JSON document — same fixture style as
+# selftest-profiles.sh's own o2b coverage).
+O2B_BUNDLE="$TMP/o2b-bank-export.json"
+printf '{"schema":"1","graph":{"nodes":[]},"pages":[],"preferences":[]}\n' > "$O2B_BUNDLE"
+O2B_SHA=$(shasum -a 256 "$O2B_BUNDLE" | cut -d' ' -f1)
+
+O2B_WIZ_HOME="$TMP/o2b-wiz-home"; mkdir -p "$O2B_WIZ_HOME"
+O2B_WIZ_CB_HOME="$TMP/o2b-wiz-cb-home"
+O2B_WIZ_STORE="$TMP/o2b-wiz-store"
+O2B_KIT_PATH="$O2B_WIZ_HOME/recovery-kit.txt"
+
+cat > "$TMP/qa-o2b.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", "o2b"],
+  ["Path to the o2b bank-export bundle", "$O2B_BUNDLE"],
+  ["Backend [file/", ""],
+  ["Path to write the recovery kit", "$O2B_KIT_PATH"]
+]
+JSON
+
+CIPHER_BRAIN_HOME="$O2B_WIZ_CB_HOME" CIPHER_BRAIN_FILE_DIR="$O2B_WIZ_STORE" HOME="$O2B_WIZ_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-o2b.json" --out "$TMP/wizard-o2b.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] the scripted profile-o2b wizard run did not complete"; cat "$TMP/wizard-o2b.log"; exit 1; }
+grep -q 'cipher-brain init: complete' "$TMP/wizard-o2b.log" || { echo "[FAIL] o2b wizard log lacks its own completion marker"; cat "$TMP/wizard-o2b.log"; exit 1; }
+grep -q 'Path to the o2b bank-export bundle' "$TMP/wizard-o2b.log" || { echo "[FAIL] wizard did not prompt for the o2b bundle path when profile o2b was chosen"; cat "$TMP/wizard-o2b.log"; exit 1; }
+
+# Not just a clean exit — verify the artifact: the wizard's own snapshot must record
+# profile o2b and archive the bundle byte-identical (same discipline as test (d)'s
+# "brain-*.age" check above).
+O2B_SNAP="$(find "$O2B_WIZ_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
+[ -n "$O2B_SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found under the o2b wizard's CIPHER_BRAIN_HOME"; exit 1; }
+CIPHER_BRAIN_HOME="$O2B_WIZ_CB_HOME" cb restore --in "$O2B_SNAP" --out-dir "$TMP/o2b-wiz-restore" >/dev/null 2>&1 \
+  || { echo "[FAIL] restore of the wizard's o2b snapshot failed"; exit 1; }
+grep -q '"profile": "o2b"' "$TMP/o2b-wiz-restore/manifest.json" \
+  || { echo "[FAIL] wizard's o2b snapshot manifest lacks profile o2b"; cat "$TMP/o2b-wiz-restore/manifest.json"; exit 1; }
+tar -xzf "$TMP/o2b-wiz-restore/o2b-bank-export.json.tar.gz" -C "$TMP/o2b-wiz-restore"
+O2B_RESTORED_SHA=$(shasum -a 256 "$TMP/o2b-wiz-restore/o2b-bank-export.json" | cut -d' ' -f1)
+[ "$O2B_SHA" = "$O2B_RESTORED_SHA" ] || { echo "[FAIL] wizard's o2b snapshot did not archive the bundle byte-identical"; exit 1; }
+echo "[PASS] init wizard's profile o2b path prompts for the bundle and actually snapshots it byte-identical (manifest records profile o2b)"
+
 echo "== (f) passphrase=yes path completes end-to-end (readline/promptHidden interaction fix) =="
 # CIPHER_BRAIN_PASSPHRASE (crypt.ts's own automation escape hatch) makes
 # askNewPassphrase() return immediately without touching stdin's raw mode, so this

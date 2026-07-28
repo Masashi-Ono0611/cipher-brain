@@ -292,13 +292,19 @@ cipher-brain restore \
 cipher-brain schedule install --backend turbo --pg "postgres://user@localhost:5432/gbrain" \
   --dir ~/.gbrain --max-spend 500000000 --ping-url https://hc-ping.com/<uuid>
 cipher-brain schedule status   # last run + rc, next scheduled run, ping-url config
+
+# any time: a read-only health check of the setup above (permissions, identity/recipient
+# pairing, an empty CIPHER_BRAIN_PIN_RECIPIENTS, an offline backup on the same disk, the
+# last scheduled run) — each problem comes with the exact command that fixes it.
+cipher-brain doctor
 ```
 
 `verify`, `estimate`, and `schedule status` each also take `--json` for a
 single machine-readable object instead of the printed report — the same
 fields the equivalent MCP tool (`verify_restore`/`estimate_cost`/
 `schedule_status`, see below) returns, so scripts and the MCP server never
-disagree.
+disagree. `doctor --json` is the same idea (one machine-readable object,
+documented in `cipher-brain doctor --help`) but has no MCP tool yet.
 
 ### Profiles
 
@@ -453,6 +459,34 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       $CIPHER_BRAIN_HOME/wallet.json (the same default 'wallet create' writes to). Use
       this to confirm you are funding the SAME wallet cipher-brain will sign uploads
       with.
+
+  cipher-brain doctor [--json]
+      Read-only environment health check (#201): inspects the EXISTING setup for the
+      permission/config problems several past issues were filed for (age identity 0600,
+      $CIPHER_BRAIN_HOME 0700, an Arweave JWK wallet's permissions, an identity/recipient
+      pairing mismatch, an empty CIPHER_BRAIN_PIN_RECIPIENTS fail-closing every snapshot,
+      the primary recipient missing from that same allowlist, an offline backup keypair
+      sharing a disk with the primary identity at its default location, and the last
+      scheduled run's outcome) and reports PASS/WARN/FAIL/SKIP per check, each FAIL/WARN
+      paired with the exact command that fixes it. Nothing not yet set up (no wallet, no
+      schedule, ...) is treated as a failure — it SKIPs instead.
+      Keeps a small bookkeeping file ($CIPHER_BRAIN_HOME/doctor-state.json — check ids and
+      timestamps only, never key material) between runs so a WARN/FAIL you have already
+      seen is marked "known" rather than re-surprising you every time you run this, while
+      a genuinely NEW one is marked with a "new" marker and costs MORE against
+      health_score than a known, still-unfixed one — a discount, not a full exclusion (a
+      lingering FAIL still pulls the score down, so it can never read a healthy 100/100
+      next to VERDICT: FAIL), so the score mostly answers "did anything get WORSE since I
+      last looked" rather than "have I fixed literally everything yet" (which would sit
+      low forever for a risk you have deliberately accepted). Written only when
+      $CIPHER_BRAIN_HOME already exists — doctor never creates it just to leave this file
+      behind on a machine with nothing set up yet.
+      VERDICT: PASS (exit 0, no WARN/FAIL) / PARTIAL (exit 2, WARN only) / FAIL (exit 1,
+      any check FAILs) — same three-way convention as "verify".
+      --json prints one JSON object to stdout instead of the human-readable report
+      (checks: [{id, status, message, remediation?, marker, since?}], resolved: [...],
+      health_score, new_count, carryover_count, verdict, state_path, state_saved) — the
+      SAME computation as the human-readable report, never a re-implementation.
 
   cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]...
                          [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...

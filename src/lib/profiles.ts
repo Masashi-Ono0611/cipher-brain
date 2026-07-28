@@ -15,7 +15,7 @@ import { join, resolve } from 'node:path';
 import { exists } from './util.js';
 import type { CliOptions } from './types.js';
 
-export const PROFILE_NAMES = ['claude-code', 'obsidian', 'chatgpt-export'];
+export const PROFILE_NAMES = ['claude-code', 'obsidian', 'chatgpt-export', 'o2b'];
 
 // Resolve --profile to the concrete source paths it snapshots.
 export async function resolveProfilePaths(o: CliOptions): Promise<string[]> {
@@ -26,6 +26,8 @@ export async function resolveProfilePaths(o: CliOptions): Promise<string[]> {
       return obsidianPaths(o);
     case 'chatgpt-export':
       return chatgptExportPaths(o);
+    case 'o2b':
+      return o2bPaths(o);
     default:
       throw new Error(`unknown profile "${o.profile}" — valid profiles: ${PROFILE_NAMES.join(', ')}`);
   }
@@ -92,4 +94,34 @@ async function chatgptExportPaths(o: CliOptions): Promise<string[]> {
       `${zip} does not end in .zip — profile chatgpt-export takes the official export zip as-is (not an extracted tree; use --dir for that)`,
     );
   return [await realpath(zip)];
+}
+
+// o2b: an Open Second Brain (https://github.com/itechmeat/open-second-brain) bank-export
+// bundle, taken AS-IS. `o2b brain bank-export [--vault <path>] [--out <file>]` serialises
+// preferences + the page graph + per-page interchange contracts + the read-only sources
+// dashboard into ONE deterministic, schema-versioned JSON document — the same "whole-brain,
+// single-file, never re-derived" shape chatgpt-export's official export already is, which
+// is why this profile follows that one almost verbatim. Upstream does NOT fix a filename or
+// extension for --out (its own CLI test suite writes bundles named "bank.json"/"b.json"),
+// so the ".json" check below is cipher-brain's OWN convention (mirroring chatgpt-export's
+// ".zip" check), not something o2b itself requires — point bank-export's --out at a
+// "*.json" path for this profile to accept it. Never parsed or expanded: restore hands the
+// bundle back byte-identical, the same "carried, not reconstructed" honesty bank-import
+// itself states about what it can and cannot restore from one.
+async function o2bPaths(o: CliOptions): Promise<string[]> {
+  if (!o.export)
+    throw new Error(
+      'profile o2b requires --export <path> (the bundle written by "o2b brain bank-export --out <file>")',
+    );
+  const bundle = resolve(o.export);
+  const st = await stat(bundle).catch(() => null);
+  if (!st?.isFile())
+    throw new Error(
+      `no bank-export bundle at ${bundle} — profile o2b takes the file "o2b brain bank-export --out <file>" writes`,
+    );
+  if (!bundle.endsWith('.json'))
+    throw new Error(
+      `${bundle} does not end in .json — profile o2b takes the bank-export bundle as-is (run "o2b brain bank-export --out <path>.json"; not an extracted/expanded form — use --dir for that)`,
+    );
+  return [await realpath(bundle)];
 }

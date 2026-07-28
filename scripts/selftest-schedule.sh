@@ -136,29 +136,34 @@ grep -q "export CIPHER_BRAIN_AR_PAID_BY='1234567890abcdef1234567890ABCDEF1234567
 grep -q "export CIPHER_BRAIN_AR_USD_RATE_URL='https://rates.invalid/v1/rates/usd'" "$RUNNER" || { echo "[FAIL] runner did not bake CIPHER_BRAIN_AR_USD_RATE_URL verbatim"; cat "$RUNNER"; exit 1; }
 echo "[PASS] env-capture: non-default env vars (CIPHER_BRAIN_AR_PAID_BY, CIPHER_BRAIN_AR_USD_RATE_URL) set at install time are baked into the runner"
 
-echo "== (a3) relative --vault/--zip/--recipient file paths resolve to ABSOLUTE in the runner (launchd/cron runs from a DIFFERENT cwd than install); an inline age1... --recipient is left UNCHANGED =="
+echo "== (a3) relative --vault/--zip/--export/--recipient file paths resolve to ABSOLUTE in the runner (launchd/cron runs from a DIFFERENT cwd than install); an inline age1... --recipient is left UNCHANGED =="
 # This is the exact issue #69 P2 regression: a relative path baked in verbatim resolves
 # correctly at install time (whatever cwd the operator happened to be in) but not
 # necessarily at scheduled-run time (launchd/cron invoke the runner from a different,
 # unrelated cwd). Run install FROM a subdirectory so cwd truly differs from $TMP.
+# --export (issue #206, profile o2b) is resolved the exact same way as --vault/--zip, so
+# it is folded into this same regression check rather than duplicating the whole test.
 mkdir -p "$TMP/subdir/vaultdir"
 touch "$TMP/subdir/exportdata.zip"
+printf '{"schema":"1"}\n' > "$TMP/subdir/bank-export.json"
 printf '# a recipients file\nage1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqcexskr\n' > "$TMP/subdir/recipients.txt"
 INLINE_KEY="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqcexskr"
 # Canonical form of $TMP/subdir — matches what node:path's resolve()/process.cwd() bakes
 # in (macOS mktemp dirs live under a symlinked /var/folders -> /private/var/folders, so a
 # naive string comparison against the raw $TMP/subdir would false-fail here).
 REALSUB="$(cd "$TMP/subdir" && pwd -P)"
-(cd "$TMP/subdir" && cb schedule install --backend file --dir "$SRC" --vault vaultdir --zip exportdata.zip --recipient recipients.txt --recipient "$INLINE_KEY" --no-load) \
+(cd "$TMP/subdir" && cb schedule install --backend file --dir "$SRC" --vault vaultdir --zip exportdata.zip --export bank-export.json --recipient recipients.txt --recipient "$INLINE_KEY" --no-load) \
   > "$TMP/install-a3.log" 2>&1 || { echo "[FAIL] install (relative paths, invoked from a different cwd) exited non-zero"; cat "$TMP/install-a3.log"; exit 1; }
 grep -qF -- "--vault '$REALSUB/vaultdir'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --vault path"; cat "$RUNNER"; exit 1; }
 grep -qF -- "--zip '$REALSUB/exportdata.zip'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --zip path"; cat "$RUNNER"; exit 1; }
+grep -qF -- "--export '$REALSUB/bank-export.json'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --export path"; cat "$RUNNER"; exit 1; }
 grep -qF -- "--recipient '$REALSUB/recipients.txt'" "$RUNNER" || { echo "[FAIL] runner does not bake the ABSOLUTE resolved --recipient FILE path"; cat "$RUNNER"; exit 1; }
 grep -qF -- "--recipient '$INLINE_KEY'" "$RUNNER" || { echo "[FAIL] runner does not bake the inline age1... --recipient value UNCHANGED"; cat "$RUNNER"; exit 1; }
 if grep -qF -- "--vault 'vaultdir'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --vault string"; exit 1; fi
 if grep -qF -- "--zip 'exportdata.zip'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --zip string"; exit 1; fi
+if grep -qF -- "--export 'bank-export.json'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --export string"; exit 1; fi
 if grep -qF -- "--recipient 'recipients.txt'" "$RUNNER"; then echo "[FAIL] runner still contains the RELATIVE --recipient FILE string"; exit 1; fi
-echo "[PASS] relative --vault/--zip/--recipient(file) resolved to absolute in the runner; inline age1... --recipient left unchanged"
+echo "[PASS] relative --vault/--zip/--export/--recipient(file) resolved to absolute in the runner; inline age1... --recipient left unchanged"
 
 echo "== (a3b) relative CIPHER_BRAIN_AR_WALLET / CIPHER_BRAIN_PIN_RECIPIENTS set before install (from a subdirectory) resolve to ABSOLUTE in the runner (same launchd/cron-different-cwd hazard as --vault/--zip/--recipient — Codex review round 4, #69 P2) =="
 mkdir -p "$TMP/subdir2"

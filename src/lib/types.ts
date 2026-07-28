@@ -38,6 +38,7 @@ export interface CliOptions {
   profile?: string;
   vault?: string;
   zip?: string;
+  export?: string; // profile o2b: the "o2b brain bank-export --out <file>" bundle path (issue #206)
   pg?: string;
   pg_filter?: string; // --pg-filter <file>: passed through verbatim as pg_dump's --filter <file> (issue #235)
   in?: string;

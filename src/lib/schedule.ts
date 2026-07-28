@@ -194,6 +194,7 @@ interface ScheduleConfig {
   profile?: string;
   vault?: string;
   zip?: string;
+  export?: string; // profile o2b: resolved absolute path, same reasoning as vault/zip below (issue #206)
   force_vault?: boolean;
   pg?: string;
   tables: string[];
@@ -291,6 +292,7 @@ function runnerBody(cfg: ScheduleConfig): string {
   if (cfg.profile) snapshotArgs.push('--profile', shq(cfg.profile));
   if (cfg.vault) snapshotArgs.push('--vault', shq(cfg.vault));
   if (cfg.zip) snapshotArgs.push('--zip', shq(cfg.zip));
+  if (cfg.export) snapshotArgs.push('--export', shq(cfg.export));
   if (cfg.force_vault) snapshotArgs.push('--force-vault');
   if (cfg.pg) snapshotArgs.push('--pg', shq(cfg.pg));
   for (const t of cfg.tables) snapshotArgs.push('--pg-table', shq(t));
@@ -675,6 +677,7 @@ async function install(o: CliOptions): Promise<void> {
     // nothing) at scheduled-run time even though it worked interactively at install time.
     ...(o.vault ? { vault: resolve(o.vault) } : {}),
     ...(o.zip ? { zip: resolve(o.zip) } : {}),
+    ...(o.export ? { export: resolve(o.export) } : {}),
     ...(o.force_vault ? { force_vault: true } : {}),
     ...(o.pg ? { pg: o.pg } : {}),
     tables: o.tables,

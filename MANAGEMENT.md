@@ -205,7 +205,8 @@ disappears, the nightly ends `FAILED rc=N` rather than quietly snapshotting unsc
 reads `schedule.json`, so it is not a health check). The gate covers `--dir`/`--profile`
 staged plaintext only, so a `--pg`-only schedule is refused rather than installed
 reporting a scan of no component — and gitleaks does not look inside archives, so a
-zip source (e.g. `--profile chatgpt-export`) is scanned only as opaque bytes. (The MCP
+zip/single-file source (e.g. `--profile chatgpt-export` or `--profile o2b`) is scanned
+only as opaque bytes. (The MCP
 `schedule_install` tool takes the same `scan_secrets` field.)
 
 **Paid backends must be capped.** For `turbo`/`arweave` the generated runner sets

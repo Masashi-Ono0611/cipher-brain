@@ -234,6 +234,13 @@ export const PIN_RECIPIENTS: string | undefined = readEnv('CIPHER_BRAIN_PIN_RECI
 export const AGE_PUBKEY_RE = /age1pq1[0-9a-z]{1900,2000}|age1[0-9a-z]{50,63}/g;
 
 // ---------- storage backend config (pluggable: storage only ever sees ciphertext) ----------
+// Backends whose locator is a POST-ASSIGNED id (a tx id / data item id), not a content
+// hash known in advance — unlike `file` (locator = sha256) or `rclone` (locator = the
+// operator's own path/remote string). Used by verify --level remote/drill (src/lib/
+// restore.ts, #209) and the MCP verify_restore tool (src/mcp.ts) to warn when a pull ran
+// with no sha256 pin: without one, a gateway that rolled back or substituted the object
+// served at that same locator would not be caught.
+export const NON_CONTENT_ADDRESSED_BACKENDS = new Set(['arweave', 'turbo']);
 export const FILE_DIR = readEnv('CIPHER_BRAIN_FILE_DIR') || join(HOME, 'store'); // file backend object store
 // rclone backend (#204): the `rclone` binary name/path, same PATH-or-override
 // pattern as PG_BIN above — most machines just need `rclone` on PATH; override

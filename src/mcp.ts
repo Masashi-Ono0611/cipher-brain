@@ -37,7 +37,7 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { HOME, IDENTITY, RECIPIENT, CONFIG_FILE_ERROR } from './lib/config.js';
+import { HOME, IDENTITY, RECIPIENT, CONFIG_FILE_ERROR, NON_CONTENT_ADDRESSED_BACKENDS } from './lib/config.js';
 import { restoreRunbook } from './lib/runbook.js';
 import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
@@ -57,10 +57,11 @@ const SERVER_VERSION = '0.0.1'; // keep in sync with package.json "version"
 
 const BACKENDS = ['file', 'arweave', 'turbo'];
 const PAID_BACKENDS = new Set(['arweave', 'turbo']);
-// arweave/turbo locators are post-assigned tx/upload ids, NOT content hashes —
-// pulling by bare locator cannot detect a rolled-back/substituted (yet still
-// age-decryptable) ciphertext unless a sha256 pin binds the fetched bytes.
-const NON_CONTENT_ADDRESSED_BACKENDS = new Set(['arweave', 'turbo']);
+// NON_CONTENT_ADDRESSED_BACKENDS: arweave/turbo locators are post-assigned tx/upload ids,
+// NOT content hashes — pulling by bare locator cannot detect a rolled-back/substituted
+// (yet still age-decryptable) ciphertext unless a sha256 pin binds the fetched bytes.
+// Shared with verify --level remote/drill (src/lib/restore.ts, #209) — now defined once
+// in config.ts so the two call sites can't drift apart on which backends this applies to.
 const SHA256_HEX = /^[0-9a-fA-F]{64}$/;
 
 // Untyped JSON-RPC tool-call arguments (an MCP client can send anything) — every

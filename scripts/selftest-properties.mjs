@@ -50,7 +50,14 @@ async function property(name, prop, params) {
 
 // ---- restore.ts: isSafeComponentName (#198's vulnerability class) ----
 //
-// A dedicated arbitrary for path-traversal-SHAPED strings, alongside generic fc.string()
+// `unit: 'binary'` (not fc.string()'s default `unit: 'grapheme-ascii'`) generates raw
+// UTF-16 code units -- control characters, lone surrogates, and the full Unicode range,
+// not just printable ASCII. A manifest's `source`/component-name fields are attacker-
+// controlled bytes, not necessarily well-formed text, so the property below needs to
+// see those shapes to actually test what its own name promises ("for any input").
+const wideString = (opts) => fc.string({ unit: 'binary', ...opts });
+
+// A dedicated arbitrary for path-traversal-SHAPED strings, alongside generic wideString()
 // — plain random unicode rarely happens to contain "..", so without this the property
 // would spend almost all its budget on inputs that were never going to be interesting.
 // `fc.oneof` weights both, so the suite still gets broad coverage AND concentrated
@@ -58,7 +65,7 @@ async function property(name, prop, params) {
 const pathSegment = fc.oneof(
   fc.constant('..'),
   fc.constant('.'),
-  fc.string({ minLength: 0, maxLength: 8 }).filter((s) => !s.includes('/') && !s.includes('\\')),
+  wideString({ minLength: 0, maxLength: 8 }).filter((s) => !s.includes('/') && !s.includes('\\')),
 );
 const traversalLike = fc
   .tuple(
@@ -67,7 +74,7 @@ const traversalLike = fc
     fc.boolean(), // leading separator, e.g. "/etc/passwd"
   )
   .map(([segs, s, leading]) => (leading ? s : '') + segs.join(s));
-const nameArb = fc.oneof(fc.string(), traversalLike);
+const nameArb = fc.oneof(wideString(), traversalLike);
 
 await property(
   'isSafeComponentName: an accepted name never resolves outside outDir',
@@ -121,7 +128,7 @@ check(
 // not just the short-input passthrough — a length-only regression in that branch
 // would otherwise never come up against a generator that only ever produces short
 // strings.
-const sourceArb = fc.oneof(fc.string(), fc.string({ minLength: 200, maxLength: 500 }), traversalLike);
+const sourceArb = fc.oneof(wideString(), wideString({ minLength: 200, maxLength: 500 }), traversalLike);
 await property(
   'encodeSourcePath: never emits a path separator, for any input',
   fc.property(sourceArb, (source) => {
@@ -181,13 +188,20 @@ await property(
 await property(
   "newEncrypter: rejects a non-age recipient with an error naming it, doesn't just crash opaquely",
   fc.property(
-    fc.string().filter((s) => !s.startsWith('age1')),
+    wideString().filter((s) => !s.startsWith('age1')),
     (bogus) => {
       try {
         newEncrypter([bogus]);
         return false; // must not have been accepted as a recipient
       } catch (e) {
-        return e instanceof Error && e.message.includes('invalid recipient');
+        // crypt.ts's rejection throws `invalid recipient ${JSON.stringify(r)}: ...` --
+        // check the REJECTED VALUE actually appears (JSON.stringify'd, so control
+        // characters/quotes in `bogus` are escaped the same way), not just the generic
+        // phrase every rejection shares. A prior version of this test only checked the
+        // phrase, which would still pass if the value were silently dropped.
+        return (
+          e instanceof Error && e.message.includes('invalid recipient') && e.message.includes(JSON.stringify(bogus))
+        );
       }
     },
   ),

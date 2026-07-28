@@ -128,13 +128,34 @@ check(
 // not just the short-input passthrough — a length-only regression in that branch
 // would otherwise never come up against a generator that only ever produces short
 // strings.
-const sourceArb = fc.oneof(wideString(), wideString({ minLength: 200, maxLength: 500 }), traversalLike);
+// Boundary-exact lengths around PATH_ENCODE_MAX (160): random sampling alone rarely
+// lands on the EXACT length the truncate-vs-passthrough branch flips on, no matter how
+// many runs -- these constants guarantee the mutation-testing kill oracle actually sees
+// the boundary (off-by-one <= vs < mutants, "always truncate"/"never truncate" mutants).
+const boundaryLengthArb = fc.oneof(
+  fc.constant('a'.repeat(159)),
+  fc.constant('a'.repeat(160)),
+  fc.constant('a'.repeat(161)),
+);
+const sourceArb = fc.oneof(
+  wideString(),
+  wideString({ minLength: 200, maxLength: 500 }),
+  traversalLike,
+  boundaryLengthArb,
+);
+// numRuns raised for these two: wideString()'s full binary-code-unit domain is vastly
+// larger than the old ASCII-only default, so the mutation-testing kill oracle (a mutant
+// that misbehaves only on specific narrow inputs, e.g. one particular character class in
+// encodeSourcePath's own replace regex) needs more samples to stay as likely to land on
+// a triggering input as it was against the smaller domain -- 200 runs alone let real
+// mutation-score coverage regress after the string arbitrary was widened.
 await property(
   'encodeSourcePath: never emits a path separator, for any input',
   fc.property(sourceArb, (source) => {
     const encoded = encodeSourcePath(source);
     return !encoded.includes('/') && !encoded.includes('\\');
   }),
+  { numRuns: 1000 },
 );
 
 // The per-component directory name is `<3-digit index>-<encoded>` (restore.ts) — this
@@ -144,6 +165,7 @@ await property(
 await property(
   'encodeSourcePath: output length never exceeds PATH_ENCODE_MAX + digest suffix, for any input',
   fc.property(sourceArb, (source) => encodeSourcePath(source).length <= PATH_ENCODE_MAX + 9),
+  { numRuns: 1000 },
 );
 
 // ---- crypt.ts: generateKeypair / newEncrypter / newDecrypter roundtrip ----

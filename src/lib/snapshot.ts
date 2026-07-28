@@ -11,7 +11,7 @@ import { newEncrypter, encryptToFile } from './crypt.js';
 import { exists, fmtBytes, requirePath, sha256, errMsg, redactPgConn } from './util.js';
 import { recipientEntries, resolvePinnedRecipients } from './keys.js';
 import { loadSignIdentity, signDetached } from './minisign.js';
-import { resolveProfilePaths } from './profiles.js';
+import { assertExportRequiresO2bProfile, resolveProfilePaths } from './profiles.js';
 import { installStageSignalGuard, setActiveStage, setActiveOutPart } from './signal-guard.js';
 import {
   assertGitleaksAvailable,
@@ -305,6 +305,10 @@ interface ManifestComponent {
 }
 
 export async function snapshot(o: CliOptions): Promise<void> {
+  // #206/multi-model review: --export only feeds profile o2b — refuse it up front
+  // rather than silently drop it when --profile o2b is missing or wrong (see
+  // profiles.ts's assertExportRequiresO2bProfile doc comment).
+  assertExportRequiresO2bProfile(o);
   // --profile is a thin veneer over --dir: it resolves to concrete source paths
   // (see profiles.ts) staged exactly like explicit --dir flags. Profile paths
   // come first; any extra --dir flags the user passed are appended after them.

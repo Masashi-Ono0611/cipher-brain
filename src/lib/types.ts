@@ -28,6 +28,7 @@ export interface CliOptions {
   no_expand_components?: boolean;
   dry_run?: boolean; // snapshot --dry-run: preview .cipherbrainignore include/exclude without writing anything (#216)
   json?: boolean; // verify/estimate/schedule status: machine-readable JSON on stdout instead of the human-readable report (issue #211)
+  level?: string; // verify --level quick|remote|drill (issue #209) — validated in restore.ts (parseArgs can't know the enum), default 'quick' when absent
   sign?: boolean; // keygen --sign: generate a minisign-compatible Ed25519 signing keypair instead of an age identity (#214)
   no_sign?: boolean; // snapshot --no-sign: skip writing a <out>.minisig sidecar even when a signing identity is present (#214)
   require_signature?: boolean; // restore/verify: an absent/unverifiable signature is a hard failure, not just a warning (#214)
@@ -38,6 +39,7 @@ export interface CliOptions {
   profile?: string;
   vault?: string;
   zip?: string;
+  export?: string; // profile o2b: the "o2b brain bank-export --out <file>" bundle path (issue #206)
   pg?: string;
   pg_filter?: string; // --pg-filter <file>: passed through verbatim as pg_dump's --filter <file> (issue #235)
   in?: string;

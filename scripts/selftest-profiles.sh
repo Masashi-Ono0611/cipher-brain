@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Round-trip proof for --profile source presets (issue #67). The three product
-# entry points (claude-code / obsidian / chatgpt-export) must resolve to the
+# Round-trip proof for --profile source presets (issue #67, #206). The four product
+# entry points (claude-code / obsidian / chatgpt-export / o2b) must resolve to the
 # right paths, compose with extra --dir flags, record the profile name in the
 # manifest, and fail loudly (non-zero + a clear error) when their inputs are
 # missing. Everything runs on synthetic fixtures under a fake $HOME — no real
@@ -128,7 +128,67 @@ printf '%s' "$ERR" | grep -q "no export zip" || { echo "[FAIL] missing-zip error
 printf '%s' "$ERR2" | grep -q "does not end in .zip" || { echo "[FAIL] non-zip error unclear"; echo "$ERR2"; exit 1; }
 echo "[PASS] chatgpt-export refuses a missing or non-.zip input"
 
-echo "== symlinked --vault / --zip are dereferenced (archive the data, not the link) =="
+echo "== profile o2b: the bank-export bundle round-trips byte-identical (never extracted) =="
+# a synthetic stand-in for "o2b brain bank-export --out <path>.json" — cipher-brain
+# archives it as one opaque file, so its internal shape does not matter here, only
+# that it is a real, distinct JSON document (issue #206).
+BUNDLE="$TMP/bank-export.json"
+printf '{"schema":"1","graph":{"nodes":[]},"pages":[],"preferences":[]}\n' > "$BUNDLE"
+BSHA=$(shasum -a 256 "$BUNDLE" | cut -d' ' -f1)
+cb snapshot --profile o2b --export "$BUNDLE" --out "$TMP/o2b.age" >/dev/null 2>&1
+cb restore --in "$TMP/o2b.age" --out-dir "$TMP/o2b-out" >/dev/null
+grep -q '"profile": "o2b"' "$TMP/o2b-out/manifest.json" \
+  || { echo "[FAIL] manifest lacks profile o2b"; exit 1; }
+grep -q '"kind": "file"' "$TMP/o2b-out/manifest.json" \
+  || { echo "[FAIL] bundle component is not recorded as kind file"; cat "$TMP/o2b-out/manifest.json"; exit 1; }
+tar -xzf "$TMP/o2b-out/bank-export.json.tar.gz" -C "$TMP/o2b-out"
+OSHA=$(shasum -a 256 "$TMP/o2b-out/bank-export.json" | cut -d' ' -f1)
+[ "$BSHA" = "$OSHA" ] || { echo "[FAIL] restored bundle is not byte-identical (expected $BSHA, got $OSHA)"; exit 1; }
+echo "[PASS] o2b bank-export bundle round-trips byte-identical as a single file component"
+
+echo "== profile o2b: a missing / non-.json path is refused =="
+set +e
+ERR=$(cb snapshot --profile o2b --export "$TMP/does-not-exist.json" --out "$TMP/o2b1.age" 2>&1); RC1=$?
+printf 'not json\n' > "$TMP/bank-export.txt"
+ERR2=$(cb snapshot --profile o2b --export "$TMP/bank-export.txt" --out "$TMP/o2b2.age" 2>&1); RC2=$?
+set -e
+[ "$RC1" != "0" ] || { echo "[FAIL] missing bundle was accepted"; exit 1; }
+printf '%s' "$ERR" | grep -q "no bank-export bundle" || { echo "[FAIL] missing-bundle error unclear"; echo "$ERR"; exit 1; }
+[ "$RC2" != "0" ] || { echo "[FAIL] non-.json path was accepted"; exit 1; }
+printf '%s' "$ERR2" | grep -q "does not end in .json" || { echo "[FAIL] non-json error unclear"; echo "$ERR2"; exit 1; }
+echo "[PASS] o2b refuses a missing or non-.json input"
+
+echo "== profile o2b requires --export =="
+set +e
+ERR=$(cb snapshot --profile o2b --out "$TMP/o2b-noexport.age" 2>&1); RC=$?
+set -e
+[ "$RC" != "0" ] || { echo "[FAIL] o2b without --export was accepted"; exit 1; }
+printf '%s' "$ERR" | grep -q -- "--export" || { echo "[FAIL] missing-export error does not mention --export"; echo "$ERR"; exit 1; }
+echo "[PASS] o2b refuses to run without --export"
+
+echo "== --export without --profile o2b is refused, not silently dropped (multi-model review, PR #334) =="
+# Before this check, --export (a recognized VALUE_FLAG, src/cli.ts) with no --profile —
+# or the wrong --profile — parsed fine and was then never read: resolveProfilePaths()
+# only runs `if (o.profile)` (snapshot.ts), so the snapshot below would have exited 0
+# having archived $EXTRA alone, silently omitting the bundle the caller asked for.
+set +e
+ERR=$(cb snapshot --dir "$EXTRA" --export "$BUNDLE" --out "$TMP/export-noprofile.age" 2>&1); RC=$?
+set -e
+[ "$RC" != "0" ] || { echo "[FAIL] --export with no --profile at all was accepted"; exit 1; }
+printf '%s' "$ERR" | grep -q -- "--export" || { echo "[FAIL] no-profile --export refusal does not mention --export"; echo "$ERR"; exit 1; }
+printf '%s' "$ERR" | grep -q -- "--profile o2b" || { echo "[FAIL] no-profile --export refusal does not mention --profile o2b"; echo "$ERR"; exit 1; }
+test ! -f "$TMP/export-noprofile.age" || { echo "[FAIL] refused snapshot still wrote output"; exit 1; }
+# Same silent-drop shape with a DIFFERENT profile selected: obsidian's o2bPaths() is
+# never even reached, so --export just sat there unread.
+set +e
+ERR2=$(cb snapshot --profile obsidian --vault "$VAULT" --export "$BUNDLE" --out "$TMP/export-wrongprofile.age" 2>&1); RC2=$?
+set -e
+[ "$RC2" != "0" ] || { echo "[FAIL] --export with --profile obsidian was accepted"; exit 1; }
+printf '%s' "$ERR2" | grep -q "obsidian" || { echo "[FAIL] wrong-profile --export refusal does not name the mismatched profile"; echo "$ERR2"; exit 1; }
+test ! -f "$TMP/export-wrongprofile.age" || { echo "[FAIL] refused snapshot (wrong profile) still wrote output"; exit 1; }
+echo "[PASS] --export without --profile o2b (absent or mismatched) is refused before anything is staged"
+
+echo "== symlinked --vault / --zip / --export are dereferenced (archive the data, not the link) =="
 ln -s "$VAULT" "$TMP/linked-vault"
 cb snapshot --profile obsidian --vault "$TMP/linked-vault" --out "$TMP/ob-ln.age" >/dev/null 2>&1 \
   || { echo "[FAIL] symlinked vault snapshot failed"; exit 1; }
@@ -147,14 +207,23 @@ tar -xzf "$TMP/gpt-ln-out/chatgpt-export.zip.tar.gz" -C "$TMP/gpt-ln-out"
   || { echo "[FAIL] restored zip is missing or is a symlink"; exit 1; }
 LSHA=$(shasum -a 256 "$TMP/gpt-ln-out/chatgpt-export.zip" | cut -d' ' -f1)
 [ "$ZSHA" = "$LSHA" ] || { echo "[FAIL] zip restored via symlink is not byte-identical"; exit 1; }
-echo "[PASS] symlinked vault and zip are dereferenced to the real data"
+ln -s "$BUNDLE" "$TMP/linked-bank-export.json"
+cb snapshot --profile o2b --export "$TMP/linked-bank-export.json" --out "$TMP/o2b-ln.age" >/dev/null 2>&1 \
+  || { echo "[FAIL] symlinked bundle snapshot failed"; exit 1; }
+cb restore --in "$TMP/o2b-ln.age" --out-dir "$TMP/o2b-ln-out" >/dev/null
+tar -xzf "$TMP/o2b-ln-out/bank-export.json.tar.gz" -C "$TMP/o2b-ln-out"
+{ test -f "$TMP/o2b-ln-out/bank-export.json" && test ! -L "$TMP/o2b-ln-out/bank-export.json"; } \
+  || { echo "[FAIL] restored bundle is missing or is a symlink"; exit 1; }
+BLSHA=$(shasum -a 256 "$TMP/o2b-ln-out/bank-export.json" | cut -d' ' -f1)
+[ "$BSHA" = "$BLSHA" ] || { echo "[FAIL] bundle restored via symlink is not byte-identical"; exit 1; }
+echo "[PASS] symlinked vault, zip and export bundle are dereferenced to the real data"
 
 echo "== unknown profile lists the valid ones =="
 set +e
 ERR=$(cb snapshot --profile nope --out "$TMP/nope.age" 2>&1); RC=$?
 set -e
 [ "$RC" != "0" ] || { echo "[FAIL] unknown profile exited 0"; exit 1; }
-printf '%s' "$ERR" | grep -q "claude-code, obsidian, chatgpt-export" \
+printf '%s' "$ERR" | grep -q "claude-code, obsidian, chatgpt-export, o2b" \
   || { echo "[FAIL] unknown-profile error does not list valid profiles"; echo "$ERR"; exit 1; }
 echo "[PASS] unknown profile fails, listing the valid names"
 

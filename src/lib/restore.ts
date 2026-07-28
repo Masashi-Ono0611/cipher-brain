@@ -1,16 +1,26 @@
 // restore + verify — the decrypt half and its falsifiable proof.
 import { rm, stat, readFile, writeFile, readdir, rename, lstat } from 'node:fs/promises';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
-import { AGE_MAGIC, CIPHER_YES, IDENTITY, PIPE_TIMEOUT_MS, SIGN_RECIPIENT, pgTool } from './config.js';
+import {
+  AGE_MAGIC,
+  CIPHER_YES,
+  IDENTITY,
+  PIPE_TIMEOUT_MS,
+  SIGN_RECIPIENT,
+  NON_CONTENT_ADDRESSED_BACKENDS,
+  pgTool,
+} from './config.js';
 import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
 import { checkArtifactSignature } from './minisign.js';
-import { exists, requireFile, sha256, readHead, fmtBytes, redactPgConn, errMsg } from './util.js';
-import { installStageSignalGuard, setActiveRestoreOutDir } from './signal-guard.js';
+import { exists, requireFile, sha256, readHead, fmtBytes, redactPgConn, errMsg, rmrf } from './util.js';
+import { installStageSignalGuard, setActiveRestoreOutDir, setActiveVerifyScratchDir } from './signal-guard.js';
 import { didYouMean } from './suggest.js';
 import { moodForVerdict, printMascot, printJson } from './ui.js';
+import { pull, signatureGap } from './pushpull.js';
 import type { CliOptions } from './types.js';
 
 // GNU tar's --keep-old-files, unlike bsdtar's identically-named flag, treats an
@@ -466,7 +476,41 @@ async function restoreImpl(o: CliOptions): Promise<void> {
   }
 }
 
-// verify is the falsifiable half. Three checks:
+// The result runFileChecks() computes over one already-on-disk *.age file — the same
+// shape verify --level quick always reported, factored out so --level remote/drill (#209
+// below) can run the identical checks against a file they just pulled into a scratch
+// location, instead of a second, divergent implementation of "is this ciphertext good".
+interface FileCheckResult {
+  file: string;
+  sizeBytes: number;
+  checks: {
+    age_header: boolean;
+    sha256_match: boolean | null;
+    signature: 'pass' | 'fail' | 'skip';
+    wrong_key_rejected: boolean | 'skip';
+    positive_control: 'pass' | 'fail' | 'skip';
+  };
+  verdict: 'PASS' | 'FAIL' | 'PARTIAL';
+}
+
+// The human-readable "VERDICT: …" line's wording, factored out of runFileChecks below so
+// finishVerify can print the SAME sentence for a verdict runFileChecks itself was told
+// NOT to print yet (--level drill's FAIL/PARTIAL early-return, below — its overall
+// verdict still depends on a restore step that never runs in that case, so the line
+// belongs to finishVerify there, not to runFileChecks) — one wording, not two copies
+// that could drift apart on the PARTIAL sentence (#209 review).
+function printFileCheckVerdict(verdict: 'PASS' | 'FAIL' | 'PARTIAL'): void {
+  if (verdict === 'FAIL') console.log('\nVERDICT: FAIL');
+  else if (verdict === 'PARTIAL') {
+    console.log(
+      '\nVERDICT: PARTIAL — header + wrong-key checks passed, but decryptability was NOT proven on this box (no private identity here). Run verify where the identity lives to prove it is restorable by you.',
+    );
+  } else {
+    console.log('\nVERDICT: PASS');
+  }
+}
+
+// runFileChecks is the falsifiable half. Three checks:
 //   1. it is real age ciphertext (header),
 //   2. a WRONG key is rejected (negative control), and
 //   3. when the private identity is on THIS machine, that identity decrypts the
@@ -477,7 +521,16 @@ async function restoreImpl(o: CliOptions): Promise<void> {
 // so verify there attests only the header + that a stranger's key cannot read it —
 // and reports VERDICT: PARTIAL (exit 2), never PASS, so it is not read as proof the
 // snapshot is restorable by you.
-export async function verify(o: CliOptions): Promise<void> {
+//
+// Prints its own narrative (gated by !o.json, exactly like verify always has) and sets
+// process.exitCode to match ITS verdict — a caller that goes on to do more after this
+// (verify --level drill's full-restore step, below) simply sets process.exitCode again
+// once it knows the combined outcome; whichever runs last wins, so nothing needs undoing.
+// `printVerdictLine` only suppresses the "VERDICT: …" line itself (still gated by !o.json
+// either way) — --level drill passes false here because ITS verdict depends on a step
+// that hasn't run yet when this returns, and printing an interim one would be read as
+// final.
+async function runFileChecks(o: CliOptions, printVerdictLine: boolean): Promise<FileCheckResult> {
   if (!o.in) throw new Error('--in <file.age> required');
   await requireFile(o.in); // #267: before stat(), so a typo is not a raw ENOENT
   const sz = (await stat(o.in)).size;
@@ -580,38 +633,64 @@ export async function verify(o: CliOptions): Promise<void> {
   let verdict: 'PASS' | 'FAIL' | 'PARTIAL';
   if (!isAge || !wrongKeyRejected || !positiveOk || hashOk === false || sigOk === false) {
     verdict = 'FAIL';
-    if (!o.json) console.log('\nVERDICT: FAIL');
+    if (!o.json && printVerdictLine) printFileCheckVerdict('FAIL');
     process.exitCode = 1;
   } else if (positiveSkipped) {
     verdict = 'PARTIAL';
-    if (!o.json) {
-      console.log(
-        '\nVERDICT: PARTIAL — header + wrong-key checks passed, but decryptability was NOT proven on this box (no private identity here). Run verify where the identity lives to prove it is restorable by you.',
-      );
-    }
+    if (!o.json && printVerdictLine) printFileCheckVerdict('PARTIAL');
     process.exitCode = 2; // distinct from PASS(0) and FAIL(1) so automation can tell them apart
   } else {
     verdict = 'PASS';
-    if (!o.json) console.log('\nVERDICT: PASS');
+    if (!o.json && printVerdictLine) printFileCheckVerdict('PASS');
   }
 
-  // --json: the SAME checks/verdict computed above, as one machine-readable line on
-  // stdout instead of the human-readable report — never a re-implementation, so this
-  // can never disagree with either the human-readable report above or the MCP
-  // verify_restore tool (#211).
+  return {
+    file: o.in,
+    sizeBytes: sz,
+    checks: {
+      age_header: isAge,
+      sha256_match: hashOk, // null when --sha256 was not passed (check skipped, not failed)
+      signature: sigOk === null ? 'skip' : sigOk ? 'pass' : 'fail', // #214: 'skip' when unsigned or no signing pubkey on this box
+      wrong_key_rejected: wrongKeyCheckSkipped ? 'skip' : wrongKeyRejected, // #214: 'skip' when the authenticity signature above already failed
+      positive_control: positiveSkipped ? 'skip' : positiveOk ? 'pass' : 'fail',
+    },
+    verdict,
+  };
+}
+
+// Shared tail for --level quick and --level remote (drill's final report is its own,
+// below, since its verdict also depends on the restore step that runs after
+// runFileChecks) — --json: the SAME checks/verdict runFileChecks computed, as one
+// machine-readable line on stdout instead of the human-readable report — never a
+// re-implementation, so this can never disagree with either the human-readable report
+// above or the MCP verify_restore tool (#211). `extra` (added by #209's --level remote)
+// is spread in between checks and verdict so a --level quick caller's JSON shape is
+// completely unaffected (extra is never passed there).
+//
+// `printVerdictLine` (default false): quick and remote already had runFileChecks itself
+// print the "VERDICT: …" line (they pass printVerdictLine=true THERE, so finishVerify
+// must not print a second one here — the default covers that). --level drill's own
+// FAIL/PARTIAL early return (below) is the one caller that passes true here: it told
+// runFileChecks NOT to print one (drill's overall verdict still depended on the restore
+// step at that point), but once drill decides to SKIP that step, r.verdict IS the final
+// answer and the promised "VERDICT: FAIL/PARTIAL" line was going unprinted entirely —
+// silently downgrading a documented contract to only an exit code (#209 review).
+function finishVerify(
+  o: CliOptions,
+  r: FileCheckResult,
+  extra?: Record<string, unknown>,
+  printVerdictLine = false,
+): void {
+  const exitCode = process.exitCode ?? 0;
+  if (!o.json && printVerdictLine) printFileCheckVerdict(r.verdict);
   if (o.json) {
     printJson({
-      file: o.in,
-      size_bytes: sz,
-      checks: {
-        age_header: isAge,
-        sha256_match: hashOk, // null when --sha256 was not passed (check skipped, not failed)
-        signature: sigOk === null ? 'skip' : sigOk ? 'pass' : 'fail', // #214: 'skip' when unsigned or no signing pubkey on this box
-        wrong_key_rejected: wrongKeyCheckSkipped ? 'skip' : wrongKeyRejected, // #214: 'skip' when the authenticity signature above already failed
-        positive_control: positiveSkipped ? 'skip' : positiveOk ? 'pass' : 'fail',
-      },
-      verdict,
-      exit_code: process.exitCode ?? 0,
+      file: r.file,
+      size_bytes: r.sizeBytes,
+      checks: r.checks,
+      ...(extra ?? {}),
+      verdict: r.verdict,
+      exit_code: exitCode,
     });
   }
   // Human-facing decoration only (mascot faced for the verdict) — see printMascot in
@@ -620,5 +699,281 @@ export async function verify(o: CliOptions): Promise<void> {
   // called on a --json / piped path") — it writes to stderr only, so it would never
   // corrupt the JSON on stdout, but a --json caller asked for machine-readable output
   // only, not ASCII-art decoration alongside it.
-  if (!o.json) printMascot(moodForVerdict(verdict));
+  if (!o.json) printMascot(moodForVerdict(r.verdict));
+}
+
+// verify --level quick|remote|drill (issue #209): three progressively deeper checks that
+// the ciphertext is actually durable, not just three ways to read the SAME local file.
+//   quick  (default, unchanged since before #209): everything runFileChecks does above,
+//          against --in as given — a structural check, no network access, restic
+//          `check`'s speed class. Rejects --locator/--backend/--from-locator-file: those
+//          name something to FETCH, and quick never fetches anything.
+//   remote: pulls the artifact by --locator/--backend (or --from-locator-file) into a
+//           scratch temp file, then runs the SAME runFileChecks against THAT — restic
+//           `check --read-data-subset`'s idea, proving the object is still actually
+//           retrievable from storage and unchanged, not merely that a local copy still
+//           parses.
+//   drill:  does everything remote does, and — only once those checks reach PASS — ALSO
+//           decrypts and extracts the pulled artifact into a scratch out-dir (the same
+//           restoreImpl() the `restore` command runs), the full pull -> decrypt -> extract
+//           rehearsal MANAGEMENT.md's restore runbook / identity backup drill describe.
+//           Never runs pg_restore even if --pg is given (see the refusal below) — a
+//           verification drill must not write to a live database. The scratch directory
+//           (pulled ciphertext + extracted plaintext) is always removed afterward, success
+//           or failure — this proves restorability, it does not perform a real restore.
+export async function verify(o: CliOptions): Promise<void> {
+  const level = o.level ?? 'quick';
+  if (level !== 'quick' && level !== 'remote' && level !== 'drill') {
+    throw new Error(`--level must be quick, remote or drill (got "${o.level}")`);
+  }
+
+  if (level === 'quick') {
+    if (o.locator || o.backend || o.from_locator_file) {
+      throw new Error(
+        '--level quick checks the LOCAL --in file only — it never fetches from storage, so --locator/' +
+          '--backend/--from-locator-file have nothing to do here (--level remote or --level drill fetch by ' +
+          'those instead of taking --in)',
+      );
+    }
+    const r = await runFileChecks(o, true);
+    finishVerify(o, r);
+    return;
+  }
+
+  // remote and drill both start the same way: actually fetch the artifact. That fetch IS
+  // the point of both — --level quick can only ever look at bytes already on this
+  // machine, so it can never prove the storage side of "will this still be here".
+  if (o.in) {
+    throw new Error(
+      `--level ${level} fetches the artifact from storage itself — pass --locator/--backend or ` +
+        '--from-locator-file (like pull does), not --in, which only names a file already on this machine ' +
+        '(that is what --level quick checks)',
+    );
+  }
+  if (!o.from_locator_file && !(o.locator && o.backend)) {
+    throw new Error(
+      `--level ${level} requires --locator <id> --backend <name>, or --from-locator-file <path> — the ` +
+        'artifact to actually fetch and check',
+    );
+  }
+  if (level === 'drill' && o.pg) {
+    throw new Error(
+      '--level drill never runs pg_restore, even when --pg is given — a verification drill must not write ' +
+        'to a live database. Use `restore --pg <conn>` separately if you actually want to recover into one.',
+    );
+  }
+
+  // installStageSignalGuard() (idempotent) BEFORE the scratch dir exists — remote/drill
+  // reach here without restoreImpl() ever having called it (that only happens for drill,
+  // and only once its own checks already reached PASS), so without this call up front a
+  // signal during the fetch/checks below would hit no handler at all.
+  installStageSignalGuard();
+  let scratchRoot: string | null = null;
+  try {
+    // mkdtempSync (not async mkdtemp), and setActiveVerifyScratchDir called immediately
+    // after with no await between them — same one-tick discipline snapshot.ts's own
+    // ACTIVE_STAGE registration uses (see signal-guard.ts): a signal landing during an
+    // await could otherwise fire the handler while this scratch dir is still untracked,
+    // leaking it (multi-model review finding on PR #332 — the ORIGINAL bug this whole
+    // function needed to close, not just drill's later decrypt+extract step).
+    scratchRoot = mkdtempSync(join(tmpdir(), 'cipher-brain-verify-'));
+    setActiveVerifyScratchDir(scratchRoot);
+    const target = join(scratchRoot, 'pulled.age');
+    // A fresh CliOptions object, not a spread of `o`: pull() only needs to know WHERE to
+    // fetch from and WHERE to land it, and building it explicitly means no other field a
+    // future CliOptions grows can leak into a pull call that was never meant to see it.
+    const pullOpts: CliOptions = {
+      locator: o.locator,
+      backend: o.backend,
+      from_locator_file: o.from_locator_file,
+      sha256: o.sha256,
+      out: target,
+      dirs: [],
+      tables: [],
+      recipients: [],
+    };
+    // pull()'s own narrative (retries, the "sha256 OK: …" confirmation, "pulled x -> y",
+    // and — the reason this is captured rather than left to print directly — a warning
+    // naming WHY an authenticity signature sidecar could not be fetched) goes to
+    // console.error. Captured here, not silenced: every line is replayed to the real
+    // stderr immediately below (success or failure), so this changes nothing an operator
+    // actually sees — it only ALSO makes pull()'s log available to signatureGap() so a
+    // deleted/unfetchable .minisig sidecar can be told apart from an artifact that was
+    // simply never signed (src/mcp.ts's verify_restore/restore_now already do exactly
+    // this over MCP, #312; --json here had no equivalent at all, #209 review).
+    const pullLog: string[] = [];
+    const prevConsoleError = console.error;
+    console.error = (...a: unknown[]) => {
+      pullLog.push(a.map(String).join(' '));
+    };
+    try {
+      try {
+        await pull(pullOpts);
+      } finally {
+        console.error = prevConsoleError;
+        for (const line of pullLog) console.error(line);
+      }
+    } catch (e) {
+      // Remote retrievability is exactly what --level remote/drill exists to test — a
+      // fetch failure here (not-yet-propagated, deleted, wrong locator, sha256 mismatch, a
+      // dead gateway) IS the verdict, not a crash: report FAIL the same way an on-disk
+      // check would, rather than letting pull()'s exception propagate raw past this point.
+      const msg = errMsg(e);
+      if (!o.json) {
+        console.log(`level: ${level}`);
+        console.log(
+          `[FAIL] could not fetch the artifact from ${pullOpts.backend ?? '(unresolved backend)'}` +
+            `${pullOpts.locator ? `:${pullOpts.locator}` : ''} (${msg})`,
+        );
+        console.log('\nVERDICT: FAIL');
+      }
+      process.exitCode = 1;
+      if (o.json) {
+        printJson({
+          level,
+          pulled: {
+            backend: pullOpts.backend ?? null,
+            locator: pullOpts.locator ?? null,
+            // Present even on a failed fetch (previously absent here, unlike every OTHER
+            // `pulled` shape below) — the same field, the same meaning, regardless of
+            // outcome, rather than a caller having to know it only sometimes exists
+            // (#209 review).
+            sha256_pin: pullOpts.sha256 ?? null,
+            fetched: false,
+            error: msg,
+          },
+          verdict: 'FAIL',
+          exit_code: 1,
+        });
+      }
+      if (!o.json) printMascot('sad');
+      return;
+    }
+    // sig_locator is pull()'s own bookkeeping, filled in on `pullOpts` (the SAME object
+    // reference passed to pull() above) when --from-locator-file recorded one — read
+    // AFTER the call, exactly like signatureGap()'s other two callers in src/mcp.ts do.
+    const sigGap = signatureGap(pullLog, pullOpts.sig_locator);
+    const pulledInfo = {
+      backend: pullOpts.backend,
+      locator: pullOpts.locator,
+      sha256_pin: pullOpts.sha256 ?? null,
+      fetched: true,
+      ...(sigGap ? { signature: sigGap } : {}),
+    };
+    if (!o.json) {
+      console.log(`level: ${level}`);
+      console.log(`[PASS] fetched from ${pullOpts.backend}:${pullOpts.locator} (remote retrievability confirmed)`);
+      if (!pullOpts.sha256 && pullOpts.backend && NON_CONTENT_ADDRESSED_BACKENDS.has(pullOpts.backend)) {
+        console.log(
+          `warning: no sha256 pin was applied — ${pullOpts.backend} locators are not content hashes ` +
+            '(post-assigned ids for arweave/turbo, an operator-chosen remote path for rclone), so a ' +
+            'substituted/rolled-back object served at the same locator would not be detected here (pass ' +
+            '--sha256, or use --from-locator-file, to fail closed)',
+        );
+      }
+    }
+
+    // Same checks as --level quick, run against the just-pulled file. --level remote's
+    // own verdict line prints normally here (drill's does not — its overall verdict still
+    // depends on the restore step below, so printing one now would read as final).
+    const r = await runFileChecks({ ...o, in: target, sha256: pullOpts.sha256 }, level === 'remote');
+
+    if (level === 'remote') {
+      finishVerify(o, r, { level, pulled: pulledInfo });
+      return;
+    }
+
+    // drill only goes on to a real decrypt+extract once the checks above actually reached
+    // PASS. FAIL means the artifact itself is bad (wrong key rejected it, a tampered
+    // signature, a hash mismatch, corrupt bytes, …) — restoreImpl() below would just
+    // rethrow the identical problem restore's own checks already report, proving nothing
+    // new. PARTIAL means there is no private identity on this box at all, so restoreImpl()
+    // cannot even start (it requires one) — nothing left to drill either.
+    if (r.verdict !== 'PASS') {
+      if (!o.json) {
+        console.log(
+          r.verdict === 'PARTIAL'
+            ? '[SKIP] full restore drill — no private identity on this box to decrypt with'
+            : '[SKIP] full restore drill — the checks above already failed',
+        );
+      }
+      finishVerify(o, r, { level, pulled: pulledInfo, full_restore: 'skip' }, true);
+      return;
+    }
+
+    // restoreImpl(), NOT restore(): restore() prints its own mood mascot on success/failure
+    // (issue #194), and a drill's own final mascot below would double up with it. Its
+    // stdout narrative (the manifest.json dump, "restored components into …", the
+    // component auto-expand summary) is captured rather than left to print directly, so a
+    // --json drill still emits exactly one JSON line on stdout — the same contract #211
+    // already holds --level quick/remote to.
+    const restoreOutDir = join(scratchRoot, 'restored');
+    // A fresh CliOptions object, NOT a spread of `o`: restoreImpl() reads o.pg and would
+    // run pg_restore --clean --if-exists (an irreversible DROP) if it were passed through
+    // here — refused above already, but this also means no OTHER field a future CliOptions
+    // grows can reach restoreImpl() from a verify call unnoticed either.
+    const restoreOpts: CliOptions = {
+      in: target,
+      out_dir: restoreOutDir,
+      identity: o.identity,
+      sign_recipient: o.sign_recipient,
+      require_signature: o.require_signature,
+      dirs: [],
+      tables: [],
+      recipients: [],
+    };
+    const restoreStdout: string[] = [];
+    const prevLog = console.log;
+    console.log = (...a: unknown[]) => {
+      restoreStdout.push(a.map(String).join(' '));
+    };
+    let restoreOk = true;
+    let restoreErr: string | undefined;
+    try {
+      await restoreImpl(restoreOpts);
+    } catch (e) {
+      restoreOk = false;
+      restoreErr = errMsg(e);
+    } finally {
+      console.log = prevLog;
+    }
+    if (!o.json) {
+      if (restoreOk) for (const line of restoreStdout) console.log(`  ${line}`);
+      console.log(
+        restoreOk
+          ? '[PASS] full restore (decrypt + extract, incl. component auto-expand) into a scratch directory succeeded'
+          : `[FAIL] full restore into a scratch directory failed (${restoreErr})`,
+      );
+    }
+    const finalVerdict: 'PASS' | 'FAIL' = restoreOk ? 'PASS' : 'FAIL';
+    if (!o.json) console.log(`\nVERDICT: ${finalVerdict}`);
+    process.exitCode = finalVerdict === 'PASS' ? 0 : 1;
+    if (o.json) {
+      printJson({
+        level,
+        pulled: pulledInfo,
+        checks: r.checks,
+        full_restore: restoreOk,
+        ...(restoreErr ? { full_restore_error: restoreErr } : {}),
+        verdict: finalVerdict,
+        exit_code: process.exitCode,
+      });
+    }
+    if (!o.json) printMascot(finalVerdict === 'PASS' ? 'happy' : 'sad');
+  } finally {
+    // Best-effort, same posture as mcp.ts's own scratch-tmpdir cleanup (handleVerifyRestore/
+    // handleRestoreNow) — always removed, whether the fetch, the checks, or the restore
+    // step failed. Nothing here is meant to survive past this call: --level remote never
+    // writes plaintext at all, and --level drill's whole point is proving restorability
+    // without performing an actual restore. rmrf (util.ts), not a plain rm(): a --dir
+    // source captured with a restrictive mode (or a component tarball that recorded one)
+    // can leave a read-only directory under here even though the extract itself passes
+    // --no-same-permissions, and force:true alone does not retry past the EACCES that
+    // causes (#209 review). Only cleared from the signal guard AFTER removal actually
+    // finishes — a signal arriving mid-rmrf must still find scratchRoot tracked.
+    if (scratchRoot) {
+      await rmrf(scratchRoot);
+      setActiveVerifyScratchDir(null);
+    }
+  }
 }

@@ -72,6 +72,7 @@ const VALUE_FLAGS = new Set([
   'profile',
   'vault',
   'zip',
+  'export',
   'pg',
   'pg_filter',
   'in',
@@ -82,6 +83,7 @@ const VALUE_FLAGS = new Set([
   'digest',
   'save_locator',
   'locator',
+  'level',
   'scan_secrets',
   'from_locator_file',
   'sign_identity',
@@ -286,6 +288,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
                                      --force-vault to snapshot a vault-less dir anyway)
         chatgpt-export --zip <path>  the official ChatGPT export zip, archived as-is
                                      (never extracted)
+        o2b --export <path>          an Open Second Brain bank-export bundle
+                                     ("o2b brain bank-export --out <path>.json"), archived
+                                     as-is (never extracted; must end in .json)
       --pg-filter <file> and --pg-exclude-table-data <table> are a thin, literal pass-through
       to pg_dump's OWN standard flags (--filter / --exclude-table-data) — cipher-brain does
       no SQL parsing or filtering of its own; pg_dump does exactly what it would if you ran
@@ -330,7 +335,9 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       (notably --profile chatgpt-export, which archives the export zip as-is) is
       scanned only as opaque bytes — a secret inside it will NOT be found, even
       though the run reports the mode. Extract such an export and snapshot the
-      directory if you want the gate to actually cover its contents.
+      directory if you want the gate to actually cover its contents. --profile o2b's
+      bundle is plain JSON, not an archive, so gitleaks DOES read its actual text
+      content the same as any other file.
       Authenticity (#214): whenever a signing identity exists (default
       $CIPHER_BRAIN_HOME/sign-identity.key, from "keygen --sign"; --sign-identity picks
       a different one), snapshot ALSO writes a detached "<out>.minisig" signature over
@@ -374,6 +381,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       .minisig sidecar (rather than forging one) no longer silently succeeds either.
 
   cipher-brain verify --in <file.age> [--identity <file>] [--sha256 <hex>] [--sign-recipient <file>] [--require-signature] [--json]
+                       [--level quick|remote|drill]
       Assert it is real age ciphertext, a wrong key cannot open it, AND (when the
       private identity is on this box) that YOUR key decrypts it into a well-formed
       bundle. --sha256 also pins the artifact to an expected hash. Authenticity (#214):
@@ -387,14 +395,36 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       a valid signature; without it, an unsigned/legacy artifact still reaches PASS.
       VERDICT: PASS (exit 0) / FAIL (exit 1) / PARTIAL (exit 2 — decryptability not
       proven, e.g. public-key-only box).
-      --json prints one JSON object to stdout instead of the human-readable report
-      (file, size_bytes, checks: {age_header, sha256_match, signature, wrong_key_rejected,
-      positive_control}, verdict, exit_code) — the SAME checks computed above, so it
-      never disagrees with the human-readable report or the MCP verify_restore tool.
-      The exit code is unchanged either way. If the command ERRORS instead (#270 —
-      a missing file, an unreadable identity), stdout carries an error object
-      ({error, code, exit_code}) rather than nothing, so a --json caller never has to
-      fall back to scraping stderr; "code" is the CB-E0xx identifier when the failure
+      --level (issue #209) picks how deep the check goes, restic/kopia-style — each
+      level is a strictly deeper (slower, more expensive) proof than the one before:
+        quick  (default, unchanged): everything above, against the LOCAL --in file —
+               no network access. Refuses --locator/--backend/--from-locator-file
+               (those name something to FETCH; quick never fetches anything).
+        remote: pulls the artifact by --locator <id> --backend <name> (or
+               --from-locator-file <path>, same contract as "pull") into a scratch temp
+               file, then runs the SAME checks above against THAT — proving the object
+               is still actually retrievable from storage and unchanged, not merely
+               that a local copy still parses. Rejects --in (remote fetches instead).
+        drill:  does everything remote does, and — only once those checks reach
+               PASS — ALSO decrypts and extracts the pulled artifact into a scratch
+               out-dir (the same code path "restore" runs), the full
+               pull -> decrypt -> extract rehearsal MANAGEMENT.md's restore runbook
+               describes. Refuses --pg (a verification drill must never run
+               pg_restore against a live database); the scratch directory is always
+               removed afterward, success or failure.
+      A failed remote/drill fetch reports VERDICT: FAIL (exit 1) rather than a raw
+      error — retrievability itself is what those two levels test.
+      --json prints one JSON object to stdout instead of the human-readable report.
+      quick: {file, size_bytes, checks: {age_header, sha256_match, signature,
+      wrong_key_rejected, positive_control}, verdict, exit_code} — the SAME checks
+      computed above, so it never disagrees with the human-readable report or the MCP
+      verify_restore tool. remote adds {level, pulled: {backend, locator, sha256_pin,
+      fetched}} alongside checks. drill replaces positive_control's role with a
+      {full_restore: true|false|"skip", full_restore_error?} pair once the pulled
+      checks reach PASS. The exit code is unchanged either way. If the command ERRORS
+      instead (#270 — a missing file, an unreadable identity), stdout carries an error
+      object ({error, code, exit_code}) rather than nothing, so a --json caller never
+      has to fall back to scraping stderr; "code" is the CB-E0xx identifier when the failure
       matches a known one (MANAGEMENT.md#error-codes), null otherwise.
 
   cipher-brain push --in <file.age> --backend <file|arweave|turbo|rclone> [--remote <name>:<path>] [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
@@ -496,7 +526,7 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
   cipher-brain schedule install --backend <file|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
                                 [--profile <name>] [--pg <conn>] [--pg-table <t>]...
                                 [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...
-                                [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>]
+                                [--recipient <pubkey|file>]... [--vault <path>] [--zip <path>] [--export <path>]
                                 [--save-locator <path>] [--index-file <path>]
                                 [--ping-url <url>] [--ping-url-fail <url>]
                                 [--scan-secrets warn|deny|off]

@@ -13,9 +13,15 @@
 // Interactivity: non-secret yes/no and path/text prompts use @clack/prompts (issue
 // #230) via the askLine/askYesNo wrappers below — cancel (Ctrl+C) detection, NO_COLOR
 // (Node's own util.styleText, which every clack render call goes through, already
-// checks NO_COLOR/FORCE_COLOR/isTTY before emitting any escape code — nothing extra to
-// wire up here) and terminal-width wrapping come from the library instead of being
-// hand-rolled. Before this, each prompt ran on its own node:readline/promises
+// checks NO_COLOR/FORCE_COLOR/isTTY before emitting any COLOR escape code — nothing
+// extra to wire up here for coloring specifically) and terminal-width wrapping come
+// from the library instead of being hand-rolled. NO_COLOR does NOT suppress every
+// escape code clack emits, only color: cursor movement/hide/show/erase sequences
+// (clack's own rendering, via sisteransi — a separate mechanism from styleText) are
+// still written regardless of NO_COLOR — expected here, since this wizard refuses
+// outright on a non-TTY stdin (requireTTY below) unless the automation escape hatch
+// is set, so a real terminal is always on the other end of that output. Before this,
+// each prompt ran on its own node:readline/promises
 // Interface that had to be closed before crypt.ts's OWN raw-mode passphrase reader
 // (promptHidden) touched the same stdin, then reopened afterwards — see the passphrase
 // step below for why that dance is no longer needed. Anything secret (the passphrase)
@@ -87,14 +93,26 @@ function requireTTY(): void {
 }
 
 async function askLine(question: string, def = ''): Promise<string> {
-  // defaultValue: clack itself substitutes this when the user submits with no input
-  // (TextPrompt's own "finalize" handler) — same "blank answer -> def" contract the
-  // old rl.question()-based version had. placeholder just shows it as dimmed ghost
-  // text before anything is typed; pass undefined rather than '' so an empty def
-  // does not render a stray placeholder.
+  // defaultValue: clack itself substitutes this ONLY when the user submits with
+  // truly zero characters typed (TextPrompt's own "finalize" handler treats an
+  // empty `this.value` as "use defaultValue") — it does NOT trigger for an answer
+  // that is one or more whitespace characters (a space, a tab, ...), since that is
+  // non-empty input as far as clack itself is concerned. The old rl.question()-based
+  // version's contract was "blank answer -> def" where "blank" meant "trims to
+  // nothing", not "literally zero keystrokes" — so a whitespace-only answer used to
+  // fall back to the default too. Recreate that here by trimming FIRST and falling
+  // back to `def` ourselves when the trimmed result is empty, rather than trusting
+  // clack's own substitution to have already covered it. This matters well beyond
+  // cosmetics: the Postgres connection-string prompt below (step 6/7) reuses this
+  // same helper, and a whitespace-only answer landing as a literal `''` there makes
+  // snapshotOpts.pg falsy — snapshot() then silently SKIPS pg_dump entirely, producing
+  // a backup that looks complete but contains no database at all (Codex review
+  // finding). placeholder just shows the default as dimmed ghost text before anything
+  // is typed; pass undefined rather than '' so an empty def does not render a stray
+  // placeholder.
   const answer = await text({ message: question, placeholder: def || undefined, defaultValue: def });
   if (isCancel(answer)) throw new InitCancelledError();
-  return answer.trim();
+  return answer.trim() || def;
 }
 
 // A wizard prompt reads its answer as a plain string — no shell is ever involved, so a
@@ -932,6 +950,20 @@ export async function init(_o: CliOptions): Promise<void> {
     // process._getActiveHandles() even paused, verified directly; unref() is what
     // tells the event loop this handle must not keep the process alive, which was
     // exactly the property the old rl.close() gave us for free.
-    process.stdin.unref();
+    //
+    // Guard the call itself: unref()/ref() are net.Socket/tty.ReadStream methods, not
+    // something every possible stdin implements. CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1
+    // (this wizard's own scripted-automation escape hatch, requireTTY above) combined
+    // with stdin coming from a HEREDOC or a plain `< file` redirection (rather than a
+    // pipe) makes process.stdin a bare fs.ReadStream, which has neither method — calling
+    // it unconditionally throws "process.stdin.unref is not a function" from THIS
+    // finally block, which then REPLACES whatever error (often InitCancelledError, e.g.
+    // stdin hitting EOF mid-wizard) was already propagating out of the try above (Codex
+    // review finding: confirmed empirically — a real bug, not a hypothetical, with
+    // `cb init < some-file` under the automation env var). A pipe (this repo's own
+    // drive-init.mjs, and a real interactive TTY) still gets a net.Socket/tty.ReadStream
+    // here and keeps unreffing exactly as before; only the fs.ReadStream case is now a
+    // harmless no-op instead of a crash that masks the real failure.
+    if (typeof process.stdin.unref === 'function') process.stdin.unref();
   }
 }

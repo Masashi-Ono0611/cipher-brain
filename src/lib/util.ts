@@ -1,6 +1,7 @@
 // ---------- utils ----------
-import { access, lstat, stat } from 'node:fs/promises';
-import { createReadStream, statSync, constants as FS } from 'node:fs';
+import { access, chmod, lstat, readdir, rm, stat } from 'node:fs/promises';
+import { createReadStream, statSync, constants as FS, type Dirent } from 'node:fs';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
 export const exists = (p: string): Promise<boolean> =>
@@ -8,6 +9,45 @@ export const exists = (p: string): Promise<boolean> =>
     .then(() => true)
     .catch(() => false);
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// fs.rm({recursive: true, force: true}) only swallows ENOENT (already gone) — a
+// directory that itself (or a descendant) landed with no owner-write bit (a --dir
+// source captured with a restrictive mode, or a just-extracted component tarball that
+// recorded one) makes a plain rm() throw EACCES instead: unlinking an entry needs WRITE
+// on its PARENT directory, not on the entry itself. verify --level drill's scratch dir
+// (src/lib/restore.ts, #209) is exactly the kind of tree this can happen under — best-
+// effort chmod everything under `path` owner-writable FIRST, then retry, rather than
+// leaving decrypted content behind because the first attempt threw (#209 review). Only
+// swallows the retry's own removal errors the same way plain rm({force:true}) already
+// does; a chmod that itself fails (e.g. a foreign-owned entry) is swallowed too, so the
+// final rm() below still gets a chance to remove whatever it can.
+async function unlockRecursive(path: string): Promise<void> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(path, { withFileTypes: true });
+  } catch {
+    return; // not a directory, or already gone — nothing to unlock
+  }
+  for (const e of entries) {
+    const p = join(path, e.name);
+    if (e.isDirectory()) await unlockRecursive(p);
+    try {
+      await chmod(p, e.isDirectory() ? 0o700 : 0o600);
+    } catch {}
+  }
+  try {
+    await chmod(path, 0o700);
+  } catch {}
+}
+
+export async function rmrf(path: string): Promise<void> {
+  try {
+    await rm(path, { recursive: true, force: true });
+  } catch {
+    await unlockRecursive(path);
+    await rm(path, { recursive: true, force: true });
+  }
+}
 
 // Refuse up front when a path the user pointed at is not there (issue #267).
 // A command that reads a path goes through one of these BEFORE opening it, so a

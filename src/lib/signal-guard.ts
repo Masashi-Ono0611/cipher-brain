@@ -7,7 +7,13 @@
 // active stage dir / .part / restore out-dir and clean them up synchronously from a
 // signal handler (async rm/fs calls can't finish before the process dies), then
 // re-raise so the exit code is correct.
-import { rmSync, writeFileSync } from 'node:fs';
+//
+// verify --level drill (#209) does the SAME decrypt+extract into its own scratch dir
+// (src/lib/restore.ts) — see setActiveVerifyScratchDir below — with a wrinkle restore()
+// itself does not have: that scratch dir outlives restoreImpl()'s own out-dir tracking
+// (component auto-expand still runs after restoreImpl() clears ACTIVE_RESTORE_OUT_DIR),
+// so it needs its OWN, longer-lived tracked variable rather than reusing that one.
+import { rmSync, readdirSync, chmodSync, writeFileSync, type Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { ACTIVE_CHILDREN } from './proc.js';
 
@@ -26,7 +32,49 @@ let ACTIVE_RESTORE_OUT_DIR_PREEXISTED = false; // whether restore() created out-
 // other's cleanup).
 let ACTIVE_RESTORE_SCRATCH_DIR: string | null = null;
 let ACTIVE_SCAN_REPORT_DIR: string | null = null; // secrets-scan's gitleaks report temp dir while a scan is in flight
+let ACTIVE_VERIFY_SCRATCH_DIR: string | null = null; // verify --level remote/drill's pulled-ciphertext (+, for drill, decrypted-plaintext) scratch dir, for its ENTIRE lifetime
 let SIGNAL_GUARD_INSTALLED = false;
+
+// fs.rmSync({force: true}) only swallows ENOENT (already gone) — it does NOT retry past
+// an EACCES from a read-only directory somewhere under `dir` (removing an entry needs
+// WRITE on its PARENT directory, not on the entry itself). A --dir source captured with
+// a restrictive mode, or a component tarball that recorded one, can land exactly that
+// under a drill's scratch dir even though the outer extract itself passes
+// --no-same-permissions (#209 review). This handler cannot await (the process is
+// mid-signal), so unlike util.ts's rmrf (the async, normal-exit equivalent of this same
+// idea) this chmods synchronously and swallows whatever is still left afterward — the
+// same best-effort posture every other branch in this handler already has.
+function forceRmSync(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return;
+  } catch {}
+  try {
+    unlockRecursiveSync(dir);
+  } catch {}
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {}
+}
+
+function unlockRecursiveSync(dir: string): void {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return; // not a directory, or already gone — nothing to unlock
+  }
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) unlockRecursiveSync(p);
+    try {
+      chmodSync(p, e.isDirectory() ? 0o700 : 0o600);
+    } catch {}
+  }
+  try {
+    chmodSync(dir, 0o700);
+  } catch {}
+}
 
 // ESM live bindings are read-only from the importing side, so the module that owns a
 // stage / .part (snapshot) or an out-dir (restore) registers them through these setters.
@@ -65,6 +113,18 @@ export const setActiveRestoreOutDir = (v: string | null, preExisted = false): vo
 export const setActiveRestoreScratchDir = (v: string | null): void => {
   ACTIVE_RESTORE_SCRATCH_DIR = v;
 };
+// verify --level remote/drill (src/lib/restore.ts, #209) registers its scratch dir here
+// the instant mkdtempSync creates it, and clears it only once its own cleanup (rmrf, in
+// util.ts) has actually finished removing it — covering the ENTIRE call, not just the
+// decrypt+extract step restoreImpl() tracks via setActiveRestoreOutDir above. That
+// narrower tracking is not enough by itself: restoreImpl() clears it as soon as the tar
+// extract settles, which is BEFORE component auto-expand runs (still more plaintext
+// written under this same scratch dir) and long before the pulled ciphertext itself is
+// removed — a signal landing in either of those windows previously went untracked
+// entirely (multi-model review finding on PR #332).
+export const setActiveVerifyScratchDir = (v: string | null): void => {
+  ACTIVE_VERIFY_SCRATCH_DIR = v;
+};
 
 export function installStageSignalGuard(): void {
   if (SIGNAL_GUARD_INSTALLED) return;
@@ -82,9 +142,7 @@ export function installStageSignalGuard(): void {
       }
       ACTIVE_CHILDREN.clear();
       if (ACTIVE_STAGE) {
-        try {
-          rmSync(ACTIVE_STAGE, { recursive: true, force: true });
-        } catch {}
+        forceRmSync(ACTIVE_STAGE);
         ACTIVE_STAGE = null;
       }
       if (ACTIVE_OUT_PART) {
@@ -94,9 +152,7 @@ export function installStageSignalGuard(): void {
         ACTIVE_OUT_PART = null;
       }
       if (ACTIVE_SCAN_REPORT_DIR) {
-        try {
-          rmSync(ACTIVE_SCAN_REPORT_DIR, { recursive: true, force: true });
-        } catch {}
+        forceRmSync(ACTIVE_SCAN_REPORT_DIR);
         ACTIVE_SCAN_REPORT_DIR = null;
       }
       if (ACTIVE_RESTORE_SCRATCH_DIR) {
@@ -109,9 +165,7 @@ export function installStageSignalGuard(): void {
       }
       if (ACTIVE_RESTORE_OUT_DIR) {
         if (!ACTIVE_RESTORE_OUT_DIR_PREEXISTED) {
-          try {
-            rmSync(ACTIVE_RESTORE_OUT_DIR, { recursive: true, force: true });
-          } catch {}
+          forceRmSync(ACTIVE_RESTORE_OUT_DIR);
         } else {
           // can't safely delete a directory the caller already owned before restore()
           // touched it — drop a durable sentinel instead (a console.error here could be
@@ -126,6 +180,15 @@ export function installStageSignalGuard(): void {
         }
         ACTIVE_RESTORE_OUT_DIR = null;
         ACTIVE_RESTORE_OUT_DIR_PREEXISTED = false;
+      }
+      // Covers verify --level remote/drill's ENTIRE scratch dir (pulled ciphertext, and
+      // for drill the decrypted+expanded plaintext under it) — always safe to erase
+      // outright, unlike ACTIVE_RESTORE_OUT_DIR above: this scratch dir is always one
+      // verify() itself created (mkdtempSync), never a caller-owned directory, so there
+      // is no "preexisted" case to protect here.
+      if (ACTIVE_VERIFY_SCRATCH_DIR) {
+        forceRmSync(ACTIVE_VERIFY_SCRATCH_DIR);
+        ACTIVE_VERIFY_SCRATCH_DIR = null;
       }
       // adding a listener suppressed Node's default auto-terminate — remove only our
       // own handler (not any unrelated listener) and re-raise so the process exits

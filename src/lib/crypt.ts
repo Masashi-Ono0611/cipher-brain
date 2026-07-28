@@ -27,6 +27,16 @@ import { AGE_MAGIC, AGE_ARMOR_HEADER, readEnv } from './config.js';
 import { ACTIVE_CHILDREN } from './proc.js';
 import { errMsg, warnIfLooseKeyPerms } from './util.js';
 
+// #228: this file's StrykerJS mutation run (`npm run mutation-test`) is deliberately
+// scoped, with the ignore-comment markers below, to ONLY generateKeypair(),
+// newEncrypter(), and newDecrypter() — the encrypt/decrypt/keygen core
+// scripts/selftest-properties.mjs's roundtrip property test exercises. The streaming
+// pipeline helpers (encryptToFile/decryptToChild) and passphrase-prompting code below
+// have no fast in-process test oracle for Stryker to run per mutant — mutating them
+// would only produce "survived" noise, not a security signal. See
+// stryker.conf.json's own header comment for the full scope statement.
+// Stryker disable all
+
 // ---------- keys ----------
 
 export interface Keypair {
@@ -44,11 +54,13 @@ export interface Keypair {
 // identity/recipient/ciphertext (recipient ~1.9KB vs ~62 bytes, a fixed ~1.4KB
 // per-recipient ciphertext overhead vs X25519 — negligible next to a real snapshot,
 // but visible on tiny payloads).
+// Stryker restore all
 export async function generateKeypair(opts: { pq?: boolean } = {}): Promise<Keypair> {
   const identity = opts.pq ? await generateHybridIdentity() : await generateIdentity(); // AGE-SECRET-KEY-PQ-1… or AGE-SECRET-KEY-1…
   const recipient = await identityToRecipient(identity);
   return { identity, recipient };
 }
+// Stryker disable all
 
 // The standard age-keygen file layout (comments + the secret key line), so the
 // identity stays drop-in usable with `age -d -i` and any other age tooling.
@@ -56,6 +68,7 @@ export function identityFileText(identity: string, recipient: string): string {
   return `# created: ${new Date().toISOString()}\n# public key: ${recipient}\n${identity}\n`;
 }
 
+// Stryker restore all
 export function newEncrypter(recipients: string[]): Encrypter {
   const e = new Encrypter();
   for (const r of recipients) {
@@ -76,6 +89,7 @@ export function newDecrypter(identities: string[]): Decrypter {
   for (const i of identities) d.addIdentity(i);
   return d;
 }
+// Stryker disable all
 
 // scrypt-wrap an identity file's text at rest (keygen --passphrase). Same format
 // `age -p` produces, so either implementation can unwrap the other's file.

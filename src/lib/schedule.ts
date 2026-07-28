@@ -41,6 +41,7 @@ import {
 } from './secrets-scan.js';
 import { exists } from './util.js';
 import { printJson } from './ui.js';
+import { assertExportRequiresO2bProfile } from './profiles.js';
 import type { CliOptions } from './types.js';
 
 // LABEL/CRON_MARKER are scoped to CIPHER_BRAIN_HOME (#114) so a second `install` under a
@@ -513,6 +514,12 @@ async function readOwnCronEntry(): Promise<string | null> {
 async function install(o: CliOptions): Promise<void> {
   if (!o.backend) throw new Error('--backend <file|arweave|turbo> required');
   if (!BACKENDS.has(o.backend)) throw new Error(`unknown backend: ${o.backend} (expected file|arweave|turbo)`);
+  // #206/multi-model review: install() bakes cfg.export into the runner's snapshot line
+  // unconditionally (below) — it never calls resolveProfilePaths() itself, so an --export
+  // given without --profile o2b would install cleanly and only turn out to be a no-op
+  // every night, unattended, once the runner actually calls snapshot() (see
+  // profiles.ts's assertExportRequiresO2bProfile doc comment for the full bug class).
+  assertExportRequiresO2bProfile(o);
   if (!o.pg && o.dirs.length === 0 && !o.profile) {
     throw new Error('nothing to snapshot: pass --profile <name>, --pg <conn> and/or --dir <path>');
   }

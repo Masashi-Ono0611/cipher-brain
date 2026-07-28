@@ -17,6 +17,30 @@ import type { CliOptions } from './types.js';
 
 export const PROFILE_NAMES = ['claude-code', 'obsidian', 'chatgpt-export', 'o2b'];
 
+// --export (issue #206) is read ONLY by o2bPaths() below, and ONLY reached via
+// resolveProfilePaths() — which snapshot.ts calls `if (o.profile)` and schedule.ts's
+// install() never calls at all (it just bakes cfg.export into the runner's snapshot
+// line unconditionally). So `--export <path>` given without `--profile o2b` — a typo'd
+// or forgotten --profile, or --export left over from a different --profile — used to
+// parse fine (a recognized VALUE_FLAG, src/cli.ts) and then be silently DROPPED: a
+// `snapshot --dir X --export bank.json` with no --profile would exit 0 having archived
+// nothing from the bundle, and a `schedule install` with the same mistake would bake a
+// nightly that repeats that silently every night. That is the exact "flag accepted,
+// never honored, looks identical to a flag that WAS" bug class #253/#277/#307 all
+// refuse elsewhere — refused here too, called by both snapshot() and schedule's
+// install() before either does anything else with o.export (multi-model review, PR #334).
+export function assertExportRequiresO2bProfile(o: CliOptions): void {
+  if (o.export === undefined) return;
+  if (o.profile === 'o2b') return;
+  throw new Error(
+    `--export <path> only applies to --profile o2b (it is the bundle "o2b brain bank-export --out <file>" writes) — ` +
+      (o.profile
+        ? `this run's --profile is "${o.profile}", which does not read --export`
+        : 'no --profile was given, so --export would otherwise be silently ignored') +
+      `. Add --profile o2b to actually use --export, or drop --export if you meant --profile ${o.profile ?? '<name>'} on its own.`,
+  );
+}
+
 // Resolve --profile to the concrete source paths it snapshots.
 export async function resolveProfilePaths(o: CliOptions): Promise<string[]> {
   switch (o.profile) {

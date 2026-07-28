@@ -166,6 +166,28 @@ set -e
 printf '%s' "$ERR" | grep -q -- "--export" || { echo "[FAIL] missing-export error does not mention --export"; echo "$ERR"; exit 1; }
 echo "[PASS] o2b refuses to run without --export"
 
+echo "== --export without --profile o2b is refused, not silently dropped (multi-model review, PR #334) =="
+# Before this check, --export (a recognized VALUE_FLAG, src/cli.ts) with no --profile —
+# or the wrong --profile — parsed fine and was then never read: resolveProfilePaths()
+# only runs `if (o.profile)` (snapshot.ts), so the snapshot below would have exited 0
+# having archived $EXTRA alone, silently omitting the bundle the caller asked for.
+set +e
+ERR=$(cb snapshot --dir "$EXTRA" --export "$BUNDLE" --out "$TMP/export-noprofile.age" 2>&1); RC=$?
+set -e
+[ "$RC" != "0" ] || { echo "[FAIL] --export with no --profile at all was accepted"; exit 1; }
+printf '%s' "$ERR" | grep -q -- "--export" || { echo "[FAIL] no-profile --export refusal does not mention --export"; echo "$ERR"; exit 1; }
+printf '%s' "$ERR" | grep -q -- "--profile o2b" || { echo "[FAIL] no-profile --export refusal does not mention --profile o2b"; echo "$ERR"; exit 1; }
+test ! -f "$TMP/export-noprofile.age" || { echo "[FAIL] refused snapshot still wrote output"; exit 1; }
+# Same silent-drop shape with a DIFFERENT profile selected: obsidian's o2bPaths() is
+# never even reached, so --export just sat there unread.
+set +e
+ERR2=$(cb snapshot --profile obsidian --vault "$VAULT" --export "$BUNDLE" --out "$TMP/export-wrongprofile.age" 2>&1); RC2=$?
+set -e
+[ "$RC2" != "0" ] || { echo "[FAIL] --export with --profile obsidian was accepted"; exit 1; }
+printf '%s' "$ERR2" | grep -q "obsidian" || { echo "[FAIL] wrong-profile --export refusal does not name the mismatched profile"; echo "$ERR2"; exit 1; }
+test ! -f "$TMP/export-wrongprofile.age" || { echo "[FAIL] refused snapshot (wrong profile) still wrote output"; exit 1; }
+echo "[PASS] --export without --profile o2b (absent or mismatched) is refused before anything is staged"
+
 echo "== symlinked --vault / --zip / --export are dereferenced (archive the data, not the link) =="
 ln -s "$VAULT" "$TMP/linked-vault"
 cb snapshot --profile obsidian --vault "$TMP/linked-vault" --out "$TMP/ob-ln.age" >/dev/null 2>&1 \

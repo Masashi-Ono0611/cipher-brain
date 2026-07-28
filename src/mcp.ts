@@ -23,6 +23,7 @@
 import { stat, readFile, mkdtemp, rm, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -37,11 +38,19 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { HOME, IDENTITY, RECIPIENT, CONFIG_FILE_ERROR } from './lib/config.js';
+import {
+  HOME,
+  IDENTITY,
+  RECIPIENT,
+  CONFIG_FILE_ERROR,
+  IDEMPOTENCY_LOG,
+  IDEMPOTENCY_TTL_SECONDS,
+} from './lib/config.js';
 import { restoreRunbook } from './lib/runbook.js';
 import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
-import { push, pull } from './lib/pushpull.js';
+import { push, pull, PushLocatorWriteError } from './lib/pushpull.js';
+import { lookupIdempotencyResult, recordIdempotencyResult } from './lib/idempotency.js';
 import { schedule, scheduleStatusReport } from './lib/schedule.js';
 import { estimateCost } from './lib/estimate.js';
 import { keygenAt } from './lib/keys.js';
@@ -236,7 +245,14 @@ const SNAPSHOT_NOW_TOOL: Tool = {
     'stores — pushing to them REQUIRES confirm_paid=true (the MCP equivalent of the CLI --yes ' +
     'guard; the CIPHER_BRAIN_YES env escape hatch is NOT honored here, so nothing can be spent ' +
     'without an explicit confirm_paid in the call). Snapshotting itself needs only the PUBLIC ' +
-    'recipient key(s); storage only ever sees ciphertext.',
+    'recipient key(s); storage only ever sees ciphertext. Pass idempotency_key to make a RETRY ' +
+    'safe (issue #220, the Stripe idempotency-key pattern): a repeat call with the SAME key ' +
+    "returns the FIRST call's result (no new snapshot, no new spend) instead of re-executing — " +
+    "the fix for an agent's own retry logic (a network blip after the upload already succeeded, " +
+    "say) double-spending on arweave/turbo. The key is scoped to THIS call's dirs/pg/recipients/" +
+    'out/backend/scan_secrets: reusing it for a call that differs in any of those is refused ' +
+    'rather than silently answered with the wrong result. Cached results expire after ' +
+    'CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS (default 24h) — a repeat past that is a fresh call.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -277,6 +293,15 @@ const SNAPSHOT_NOW_TOOL: Tool = {
         description:
           'Run gitleaks over each dirs source\'s staged plaintext BEFORE it is archived+encrypted (the CLI --scan-secrets, #215): "warn" logs findings (rule ID + count only, never the secret) and proceeds, "deny" refuses the whole snapshot if any source has findings. Omitted = no scan (same default as the CLI). Requires the gitleaks binary on PATH: when set and gitleaks cannot be resolved, the call FAILS rather than silently skipping the scan.',
       },
+      idempotency_key: {
+        type: 'string',
+        description:
+          "Caller-chosen key making a RETRY safe (issue #220, Stripe's idempotency-key pattern): a repeat " +
+          'call with the SAME key AND the same dirs/pg/recipients/out/backend/scan_secrets returns the ' +
+          "FIRST call's result — no new snapshot, no new spend — instead of re-executing. The same key " +
+          'with DIFFERENT values in any of those fields is refused rather than answered with the wrong ' +
+          'result. Cached results expire after CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS (default 24h).',
+      },
     },
     required: ['recipients', 'out'],
     additionalProperties: false,
@@ -285,7 +310,10 @@ const SNAPSHOT_NOW_TOOL: Tool = {
     // Creates a new snapshot file (and, with backend, pushes it) — never
     // overwrites (out is no-clobber), so it adds state rather than destroying
     // existing state. Each call produces a distinct snapshot/spend, so it is
-    // not idempotent. Talks to Postgres and/or the storage backends.
+    // not idempotent BY DEFAULT. #220's idempotency_key is an opt-in exception to
+    // that (a repeat call with the same key replays rather than re-executes), but
+    // this hint describes the tool's default posture — a caller that omits the
+    // key gets exactly the non-idempotent behavior this says.
     readOnlyHint: false,
     destructiveHint: false,
     idempotentHint: false,
@@ -1014,6 +1042,38 @@ function assertDeclaredEnums(tool: Tool, args: ToolArgs): void {
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// #220: an in-process, per-(tool, key) lock — belt-and-suspenders alongside the
+// idempotency log itself. The log alone closes the SEQUENTIAL case (a retry that arrives
+// after this call has already returned and recorded); it does nothing about two calls
+// carrying the SAME key arriving before either has finished (a client that fires a retry
+// without waiting for a timeout) — both would read a cache MISS from the log and both
+// would go on to spend. Keyed on tool+key together, encoded via JSON.stringify([tool,
+// key]) rather than a hand-picked separator — unambiguous regardless of what characters an
+// arbitrary caller-chosen key contains — so a key reused across two different tools can
+// never be treated as the same in-flight call. Checked and inserted synchronously with no
+// `await` in between (see the call site below) — that is what makes the check-then-add
+// atomic under Node's single-threaded, cooperative concurrency, with no separate mutex
+// needed.
+const idempotencyInFlight = new Set<string>();
+
+// The fields that define "the same snapshot_now call" for #220's idempotency-key replay —
+// deliberately NOT confirm_paid (a consent flag, not part of the operation's identity) and
+// NOT locator_file (where the recovery pointer is written, not what is snapshotted/
+// pushed). A caller reusing a key for a call that differs in one of THESE fields is
+// refused rather than silently answered with an unrelated result — the same rule Stripe's
+// own idempotency keys follow ("Keys can only be reused for the exact same operation").
+function snapshotNowFingerprint(args: ToolArgs): string {
+  const relevant = {
+    dirs: args.dirs,
+    pg: args.pg,
+    recipients: args.recipients,
+    out: args.out,
+    backend: args.backend,
+    scan_secrets: args.scan_secrets,
+  };
+  return createHash('sha256').update(JSON.stringify(relevant)).digest('hex');
+}
+
 async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
   const {
     dirs = [],
@@ -1024,6 +1084,7 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
     locator_file: locatorFile,
     confirm_paid: confirmPaid,
     scan_secrets: scanSecrets,
+    idempotency_key: idempotencyKeyRaw,
   } = args;
   if (!isStrArray(recipients) || recipients.length === 0)
     throw new ToolError(
@@ -1046,59 +1107,137 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
       'ERR_INVALID_INPUT',
       `scan_secrets must be one of ${SCAN_SECRETS_MODES.join('|')} — got ${JSON.stringify(scanSecrets)}`,
     );
-  // Spend gate FIRST — before any snapshot work — so a refused paid push does no
-  // work and leaves no artifact behind. Never silently spend: the CLI accepts
-  // CIPHER_BRAIN_YES=1 for unattended cadence loops, but via MCP the consent
-  // must be in the call itself.
-  if (backend && PAID_BACKENDS.has(backend) && confirmPaid !== true) {
-    throw new ToolError(
-      'ERR_CONFIRM_REQUIRED',
-      `backend "${backend}" is a PAID, PERMANENT Arweave store — pushing spends real funds ` +
-        `irreversibly. Re-call snapshot_now with confirm_paid=true to consent (the MCP equivalent ` +
-        `of the CLI --yes guard). The CIPHER_BRAIN_YES environment escape hatch is not honored ` +
-        `over MCP, so no call can spend without this flag.`,
+  if (idempotencyKeyRaw !== undefined && !isStr(idempotencyKeyRaw))
+    throw new ToolError('ERR_INVALID_INPUT', 'idempotency_key must be a non-empty string');
+  const idempotencyKey = isStr(idempotencyKeyRaw) ? idempotencyKeyRaw : undefined;
+
+  // #220: idempotency-key replay, checked BEFORE the spend gate below — a replay of an
+  // already-completed call must not need confirm_paid supplied again (nothing NEW is being
+  // spent; this only returns what already happened) and must do no work at all. A
+  // fingerprint mismatch means the same key named two DIFFERENT calls, refused rather than
+  // silently answered with the wrong one's result (see snapshotNowFingerprint above).
+  let fingerprint: string | undefined;
+  const lockId = idempotencyKey ? JSON.stringify([SNAPSHOT_NOW_TOOL.name, idempotencyKey]) : undefined;
+  if (idempotencyKey && lockId) {
+    fingerprint = snapshotNowFingerprint(args);
+    const cached = await lookupIdempotencyResult(
+      IDEMPOTENCY_LOG,
+      SNAPSHOT_NOW_TOOL.name,
+      idempotencyKey,
+      IDEMPOTENCY_TTL_SECONDS,
     );
+    if (cached) {
+      if (cached.fingerprint !== fingerprint) {
+        throw new ToolError(
+          'ERR_IDEMPOTENCY_KEY_REUSED',
+          `idempotency_key ${JSON.stringify(idempotencyKey)} was already used for a snapshot_now call with ` +
+            `different dirs/pg/recipients/out/backend/scan_secrets within the last ${IDEMPOTENCY_TTL_SECONDS}s ` +
+            '— reuse a key only to retry the exact same call; use a new key for a different one.',
+        );
+      }
+      return structuredOk({ ...cached.result, idempotent_replay: true });
+    }
+    // No `await` between this check and the `.add()` below — see idempotencyInFlight's own
+    // comment for why that is what makes it safe against a concurrent duplicate.
+    if (idempotencyInFlight.has(lockId)) {
+      throw new ToolError(
+        'ERR_IDEMPOTENCY_IN_FLIGHT',
+        `a snapshot_now call with idempotency_key ${JSON.stringify(idempotencyKey)} is already running — ` +
+          'wait for it to finish rather than sending a concurrent duplicate with the same key.',
+      );
+    }
+    idempotencyInFlight.add(lockId);
   }
 
-  const snapOpts: CliOptions = { out, pg, dirs, tables: [], recipients, scan_secrets: scanSecrets };
-  const snap = await captureCall(() => snapshot(snapOpts));
-  const size = (await stat(out)).size;
-  const digest = await sha256(out);
+  try {
+    // Spend gate FIRST — before any snapshot work — so a refused paid push does no
+    // work and leaves no artifact behind. Never silently spend: the CLI accepts
+    // CIPHER_BRAIN_YES=1 for unattended cadence loops, but via MCP the consent
+    // must be in the call itself.
+    if (backend && PAID_BACKENDS.has(backend) && confirmPaid !== true) {
+      throw new ToolError(
+        'ERR_CONFIRM_REQUIRED',
+        `backend "${backend}" is a PAID, PERMANENT Arweave store — pushing spends real funds ` +
+          `irreversibly. Re-call snapshot_now with confirm_paid=true to consent (the MCP equivalent ` +
+          `of the CLI --yes guard). The CIPHER_BRAIN_YES environment escape hatch is not honored ` +
+          `over MCP, so no call can spend without this flag.`,
+      );
+    }
 
-  const result: Record<string, unknown> = {
-    out,
-    size_bytes: size,
-    sha256: digest,
-    pushed: false,
-    // The EFFECTIVE mode, read back off the options object snapshot() resolved it onto —
-    // not `scanSecrets`, which is only what the CALLER passed. Since #301 an omitted
-    // scan_secrets means "warn ran" as often as it means "nothing ran", so echoing the
-    // input would report null for both and leave an agent unable to tell a scanned
-    // snapshot from an unscanned one. Reaching this line
-    // means snapshot() returned, so a mode here means the scan really ran in that mode.
-    scan_secrets: snapOpts.scan_secrets ?? null,
-    log: [...snap.out, ...snap.err],
-  };
+    const snapOpts: CliOptions = { out, pg, dirs, tables: [], recipients, scan_secrets: scanSecrets };
+    const snap = await captureCall(() => snapshot(snapOpts));
+    const size = (await stat(out)).size;
+    const digest = await sha256(out);
 
-  if (backend) {
-    const pushOpts: CliOptions = {
-      in: out,
-      backend,
-      yes: confirmPaid === true,
-      save_locator: locatorFile,
-      dirs: [],
-      tables: [],
-      recipients: [],
+    const result: Record<string, unknown> = {
+      out,
+      size_bytes: size,
+      sha256: digest,
+      pushed: false,
+      // The EFFECTIVE mode, read back off the options object snapshot() resolved it onto —
+      // not `scanSecrets`, which is only what the CALLER passed. Since #301 an omitted
+      // scan_secrets means "warn ran" as often as it means "nothing ran", so echoing the
+      // input would report null for both and leave an agent unable to tell a scanned
+      // snapshot from an unscanned one. Reaching this line
+      // means snapshot() returned, so a mode here means the scan really ran in that mode.
+      scan_secrets: snapOpts.scan_secrets ?? null,
+      log: [...snap.out, ...snap.err],
+      idempotency_key: idempotencyKey ?? null,
+      idempotent_replay: false,
     };
-    const pushRes = await captureCall(() => push(pushOpts));
-    const locator = pushRes.out.join('\n').trim(); // push() prints ONLY the locator to stdout
-    result.pushed = true;
-    result.backend = backend;
-    result.locator = locator;
-    if (locatorFile) result.locator_file = locatorFile;
-    (result.log as string[]).push(...pushRes.err);
+
+    if (backend) {
+      const pushOpts: CliOptions = {
+        in: out,
+        backend,
+        yes: confirmPaid === true,
+        save_locator: locatorFile,
+        dirs: [],
+        tables: [],
+        recipients: [],
+      };
+      let pushRes: CaptureResult<boolean>;
+      try {
+        pushRes = await captureCall(() => push(pushOpts));
+      } catch (e) {
+        if (idempotencyKey && fingerprint && e instanceof PushLocatorWriteError) {
+          // The upload already succeeded (see PushLocatorWriteError's own doc comment in
+          // pushpull.ts) even though THIS call is about to report an error — a retry
+          // carrying the same idempotency_key must be told that, not sent to spend again
+          // for a bookkeeping hiccup that has nothing to do with whether the upload landed.
+          await recordIdempotencyResult(
+            IDEMPOTENCY_LOG,
+            SNAPSHOT_NOW_TOOL.name,
+            idempotencyKey,
+            fingerprint,
+            { ...result, pushed: true, backend, locator: e.locator, locator_file_write_failed: true },
+            IDEMPOTENCY_TTL_SECONDS,
+          );
+        }
+        throw e;
+      }
+      const locator = pushRes.out.join('\n').trim(); // push() prints ONLY the locator to stdout
+      result.pushed = true;
+      result.backend = backend;
+      result.locator = locator;
+      if (locatorFile) result.locator_file = locatorFile;
+      (result.log as string[]).push(...pushRes.err);
+    }
+
+    if (idempotencyKey && fingerprint) {
+      await recordIdempotencyResult(
+        IDEMPOTENCY_LOG,
+        SNAPSHOT_NOW_TOOL.name,
+        idempotencyKey,
+        fingerprint,
+        result,
+        IDEMPOTENCY_TTL_SECONDS,
+      );
+    }
+    return structuredOk(result);
+  } finally {
+    if (lockId) idempotencyInFlight.delete(lockId);
   }
-  return structuredOk(result);
 }
 
 interface LocatorSource {

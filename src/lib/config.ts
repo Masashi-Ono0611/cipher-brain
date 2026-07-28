@@ -46,6 +46,7 @@ const ENV_NAMES = [
   'CIPHER_BRAIN_PIPE_TIMEOUT',
   'CIPHER_BRAIN_PULL_RETRY_MS',
   'CIPHER_BRAIN_NO_CONFIG_FILE', // set by the generated nightly runner so a scheduled run uses only baked values (#286)
+  'CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS', // #220: snapshot_now MCP idempotency-key cache lifetime
 ] as const;
 
 export type EnvName = (typeof ENV_NAMES)[number];
@@ -180,6 +181,18 @@ export const pgTool = (name: string): string => (PG_BIN ? join(PG_BIN, name) : n
 
 export const IDENTITY = join(HOME, 'identity.age'); // private key — required to restore
 export const RECIPIENT = join(HOME, 'recipient.txt'); // public key — all snapshot needs
+
+// #220: cipher-brain-mcp's idempotency-key log for snapshot_now (the paid MCP tool) — an
+// AI agent's own retry after a network blip must not spend twice for what it believes is
+// one call. JSONL, one line per still-fresh (tool, idempotency_key) pair; see
+// src/lib/idempotency.ts for the read/write contract. MCP-only bookkeeping (the CLI never
+// reads or writes it), so it needs no CLI flag, only this path and the TTL below.
+export const IDEMPOTENCY_LOG = join(HOME, 'idempotency-log.jsonl');
+// How long a recorded result stays replayable before a repeat of the same key is treated
+// as a brand-new call. Default 24h: long enough to cover an agent's own retry-after-
+// failure window, short enough that a deliberate re-run days later (a different snapshot
+// an agent mistakenly keys the same) is never silently skipped forever.
+export const IDEMPOTENCY_TTL_SECONDS = Number(readEnv('CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS') || 24 * 60 * 60);
 
 // schedule (#69) state and trigger locations. Declared here rather than in schedule.ts
 // so every CIPHER_BRAIN_* name lives in ENV_NAMES above (#286); the values and their

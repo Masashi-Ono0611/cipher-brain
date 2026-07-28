@@ -53,6 +53,15 @@
 //      keygen then wallet_create then wallet_address, each's no-clobber
 //      refusal without --force, and keygen --force actually rotating the
 //      keypair — with real files asserted on disk, not just tool output.
+//   4. idempotency_key (#220): a repeat snapshot_now call with the SAME key
+//      replays the first call's result (idempotent_replay:true, identical
+//      locator/sha256) instead of hitting the real no-clobber refusal a
+//      second identical call would otherwise get; the same key reused for a
+//      DIFFERENT call is refused (ERR_IDEMPOTENCY_KEY_REUSED); a DIFFERENT
+//      key against the same already-existing `out` is NOT a free pass and
+//      still hits the real no-clobber refusal (CB-E009). runIdempotencyTtlTest():
+//      a SEPARATE server with a short CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS
+//      proves a cached result stops being replayed once it goes stale.
 //
 // Exits 0 on success, 1 on any failure with a descriptive message on stderr.
 
@@ -90,8 +99,111 @@ async function main() {
   try {
     await run(tmp);
     await runKeygenWalletTests(tmp);
+    await runIdempotencyTtlTest(tmp);
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+// #220 continued: idempotency-key TTL expiry. A SEPARATE server + a short
+// CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS proves a cached result stops being replayed once it
+// goes stale — without this, run()'s replay assertions above could not tell "replays
+// because the key still matches" apart from "replays forever no matter what". Its own
+// server (rather than reusing run()'s) because the TTL is read once from the environment
+// at process start (src/lib/config.ts), so a short TTL has to be set before this server's
+// very first snapshot_now call.
+async function runIdempotencyTtlTest(tmp) {
+  const home3 = join(tmp, 'home3');
+  const store3 = join(tmp, 'store3');
+  const data3 = join(tmp, 'data3');
+  await mkdir(data3, { recursive: true });
+  await writeFile(join(data3, 'hello.txt'), 'cipher-brain mcp idempotency TTL payload\n');
+
+  const keygenRes = spawnSync(process.execPath, [SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs'), 'keygen'], {
+    env: { ...process.env, CIPHER_BRAIN_HOME: home3 },
+    encoding: 'utf8',
+  });
+  if (keygenRes.status !== 0) {
+    throw new Error(
+      `idempotency TTL test: keygen failed (${keygenRes.status}): ${keygenRes.stderr || keygenRes.stdout}`,
+    );
+  }
+  const recipientPath3 = join(home3, 'recipient.txt');
+
+  const child3 = spawn(process.execPath, [SERVER_PATH], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      CIPHER_BRAIN_HOME: home3,
+      CIPHER_BRAIN_FILE_DIR: store3,
+      CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS: '1', // 1s — short enough to expire within this test
+    },
+  });
+  const { send, waitFor } = makeRpcClient(child3);
+  try {
+    send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ci-smoke', version: '0.0.0' } },
+    });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    await wait(100);
+
+    const out3 = join(tmp, 'idem-ttl.age');
+    const args3 = {
+      dirs: [data3],
+      recipients: [recipientPath3],
+      out: out3,
+      backend: 'file',
+      idempotency_key: 'idem-ttl-key',
+    };
+
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'snapshot_now', arguments: args3 } });
+    const first = await waitFor(2);
+    if (first.result?.isError) {
+      throw new Error(
+        `idempotency TTL test: fresh snapshot_now failed: ${JSON.stringify(first.result?.structuredContent).slice(0, 500)}`,
+      );
+    }
+
+    // Immediately replayed (well within the 1s TTL): must hit the cache, not re-execute.
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'snapshot_now', arguments: args3 } });
+    const second = await waitFor(3);
+    if (second.result?.isError || second.result?.structuredContent?.idempotent_replay !== true) {
+      throw new Error(
+        `idempotency TTL test: immediate replay did not hit the cache: ${JSON.stringify(second.result).slice(0, 400)}`,
+      );
+    }
+
+    // After the TTL elapses, the SAME key is treated as a brand-new call — this must hit
+    // the real no-clobber refusal (CB-E009), proving the cache actually expired rather
+    // than replaying forever.
+    await wait(1300);
+    send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'snapshot_now', arguments: args3 } });
+    const third = await waitFor(4);
+    if (!third.result?.isError || third.result?.structuredContent?.cb_code !== 'CB-E009') {
+      throw new Error(
+        `idempotency TTL test: replay after TTL expiry should have re-executed and hit the no-clobber refusal ` +
+          `(CB-E009): ${JSON.stringify(third.result).slice(0, 400)}`,
+      );
+    }
+
+    process.stdout.write(
+      'MCP SMOKE (idempotency TTL): PASS — immediate replay hit the cache, replay after TTL expiry re-executed\n',
+    );
+  } finally {
+    try {
+      child3.stdin.end();
+    } catch {
+      /* ignore */
+    }
+    try {
+      child3.kill();
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -573,6 +685,89 @@ async function run(tmp) {
           'The schema/validation assertions above still ran.\n',
       );
     }
+
+    // 2b-4. #220: idempotency_key makes a snapshot_now call RETRY-safe — a repeat call
+    // with the SAME key returns the FIRST call's result instead of re-executing. Ids in
+    // the 220xx range (the issue number), same convention as the 307xx scan_secrets block
+    // above. Uses its own out paths throughout, so it never touches outAge/locatorFile —
+    // the sections below (last_snapshot_status, verify_restore, restore_now) still depend
+    // on those being exactly what 2b left them as.
+    const idemOut1 = join(tmp, 'idem1.age');
+    const idemOut2 = join(tmp, 'idem2.age');
+    const idemKey1 = 'idem-test-key-1';
+    const idemArgs1 = {
+      dirs: [data],
+      recipients: [recipientPath],
+      out: idemOut1,
+      backend: 'file',
+      idempotency_key: idemKey1,
+    };
+
+    // 2b-4a. Fresh call: succeeds and reports idempotent_replay:false (the real work ran).
+    send({ jsonrpc: '2.0', id: 22001, method: 'tools/call', params: { name: 'snapshot_now', arguments: idemArgs1 } });
+    const idem1 = await waitFor(22001);
+    const idem1Sc = idem1.result?.structuredContent;
+    if (idem1.result?.isError)
+      throw new Error(`snapshot_now (idempotency, fresh) failed: ${JSON.stringify(idem1Sc).slice(0, 500)}`);
+    if (idem1Sc?.idempotent_replay !== false || idem1Sc?.idempotency_key !== idemKey1)
+      throw new Error(`snapshot_now (idempotency, fresh) result unexpected: ${JSON.stringify(idem1Sc).slice(0, 300)}`);
+    if (typeof idem1Sc?.locator !== 'string' || typeof idem1Sc?.sha256 !== 'string')
+      throw new Error(
+        `snapshot_now (idempotency, fresh) missing locator/sha256: ${JSON.stringify(idem1Sc).slice(0, 300)}`,
+      );
+
+    // 2b-4b. Exact same call again, same key: `out` already exists (no --force), so a REAL
+    // re-execution would fail closed with "already exists" (CB-E009, no-clobber) — this
+    // call instead SUCCEEDING with the identical locator/sha256 and idempotent_replay:true
+    // is what proves the cache — not a second snapshot/push — answered it.
+    send({ jsonrpc: '2.0', id: 22002, method: 'tools/call', params: { name: 'snapshot_now', arguments: idemArgs1 } });
+    const idem2 = await waitFor(22002);
+    const idem2Sc = idem2.result?.structuredContent;
+    if (idem2.result?.isError)
+      throw new Error(
+        `snapshot_now (idempotency, replay) should have replayed the cached success, not re-executed: ${JSON.stringify(idem2Sc).slice(0, 500)}`,
+      );
+    if (idem2Sc?.idempotent_replay !== true)
+      throw new Error(
+        `snapshot_now (idempotency, replay) did not report idempotent_replay:true: ${JSON.stringify(idem2Sc).slice(0, 300)}`,
+      );
+    if (idem2Sc?.locator !== idem1Sc.locator || idem2Sc?.sha256 !== idem1Sc.sha256)
+      throw new Error(
+        `snapshot_now (idempotency, replay) locator/sha256 do not match the original call: ${JSON.stringify({ idem1: idem1Sc, idem2: idem2Sc }).slice(0, 500)}`,
+      );
+
+    // 2b-4c. Same key, a DIFFERENT call (a different `out`): refused rather than silently
+    // answered with idem1's unrelated result — reusing a key must name the SAME operation.
+    send({
+      jsonrpc: '2.0',
+      id: 22003,
+      method: 'tools/call',
+      params: { name: 'snapshot_now', arguments: { ...idemArgs1, out: idemOut2 } },
+    });
+    const idem3 = await waitFor(22003);
+    const idem3Sc = idem3.result?.structuredContent;
+    if (!idem3.result?.isError || idem3Sc?.code !== 'ERR_IDEMPOTENCY_KEY_REUSED')
+      throw new Error(
+        `snapshot_now (idempotency, key reused for a different call) did not refuse: ${JSON.stringify(idem3.result).slice(0, 400)}`,
+      );
+    if (existsSync(idemOut2))
+      throw new Error('snapshot_now refused a reused idempotency_key but still produced a snapshot artifact');
+
+    // 2b-4d. A DIFFERENT key against the SAME already-existing `out`: the cache is scoped
+    // to the key, not a global "skip no-clobber" switch — this must hit the real
+    // no-clobber refusal (CB-E009), not be silently waved through.
+    send({
+      jsonrpc: '2.0',
+      id: 22004,
+      method: 'tools/call',
+      params: { name: 'snapshot_now', arguments: { ...idemArgs1, idempotency_key: 'idem-test-key-2' } },
+    });
+    const idem4 = await waitFor(22004);
+    if (!idem4.result?.isError || idem4.result?.structuredContent?.cb_code !== 'CB-E009')
+      throw new Error(
+        `snapshot_now with a DIFFERENT idempotency_key against an already-existing out should hit the real ` +
+          `no-clobber refusal (CB-E009): ${JSON.stringify(idem4.result).slice(0, 400)}`,
+      );
 
     // 2c. last_snapshot_status reads the save-locator file back
     send({
@@ -1626,7 +1821,9 @@ async function run(tmp) {
         `resource==tool=yes, ` +
         `prompt=restore-runbook(${promptText.length}ch), keygen(pre-existing)=refused, ` +
         `unknown-arg refused by all ${EXPECTED_MCP_TOOLS.length} tools (near miss named), ` +
-        `out-of-enum value refused on all ${enumFields.length} declared enum field(s)\n`,
+        `out-of-enum value refused on all ${enumFields.length} declared enum field(s), ` +
+        `idempotency_key: replay=ok, key-reused-for-different-call=ERR_IDEMPOTENCY_KEY_REUSED, ` +
+        `different-key-not-a-free-pass=CB-E009\n`,
     );
   } finally {
     try {

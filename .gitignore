@@ -16,5 +16,9 @@ dist/
 _baseline-logs/
 _newlayout-logs/
 
+# StrykerJS mutation-test scratch dir + generated HTML report (#228)
+.stryker-tmp/
+/reports/
+
 # personal Claude Code settings + ephemeral agent worktree containers (not shipped code)
 .claude/

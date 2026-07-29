@@ -1,0 +1,44 @@
+name: mutation-test
+
+# #228 — StrykerJS mutation testing, deliberately kept OUT of ci.yml (see
+# stryker.conf.json's own header comment for the full scope statement): it targets
+# only src/lib/crypt.ts's and src/lib/restore.ts's encrypt/decrypt/keygen +
+# manifest-path-traversal-guard core, run against scripts/selftest-properties.mjs's
+# fast-check properties as the kill oracle. Weekly + on-demand only, so a slower
+# (~1-2 minute) job never sits on the critical path of every PR.
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 6 * * 1" # Monday 06:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-test
+  cancel-in-progress: false
+
+jobs:
+  mutation-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.8
+      - run: bun install --frozen-lockfile
+      # Fails the job if the mutation score drops under stryker.conf.json's
+      # `thresholds.break` — see that file for what's in/out of scope and why.
+      - name: mutation test (crypt.ts + restore.ts, scoped — see stryker.conf.json)
+        run: npm run mutation-test
+      # Always upload, even on a failing score — the HTML report is exactly what a
+      # human needs to see WHICH mutant regressed.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          retention-days: 30

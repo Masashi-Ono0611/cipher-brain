@@ -29,6 +29,16 @@ import { moodForVerdict, printMascot, printJson } from './ui.js';
 import { pull, signatureGap } from './pushpull.js';
 import type { CliOptions } from './types.js';
 
+// #228: this file's StrykerJS mutation run (`npm run mutation-test`) is deliberately
+// scoped, with the ignore-comment markers below, to ONLY isSafeComponentName() and
+// encodeSourcePath() — the two manifest-field guards PR #198's review finding was
+// about, and the ones scripts/selftest-properties.mjs property-tests. Everything else
+// in this file (the tar/pg_restore process orchestration, signal-guard wiring, the
+// verify() report) has no fast in-process test oracle for Stryker to run per mutant —
+// mutating it would only produce "survived" noise, not a security signal. See
+// stryker.conf.json's own header comment for the full scope statement.
+// Stryker disable all
+
 // GNU tar's --keep-old-files, unlike bsdtar's identically-named flag, treats an
 // existing-file collision as a FATAL error (exit 2, "Cannot open: File exists")
 // rather than silently skipping it — so on Linux the very protection this flag is
@@ -280,7 +290,10 @@ interface RestoreManifestComponent {
 // Cap on the human-legible part of an encoded directory name (see encodeSourcePath) —
 // keeps `<index>-<encoded>` comfortably under common 255-byte filename limits even for a
 // deeply nested source path, before any truncation suffix is appended.
-const PATH_ENCODE_MAX = 160;
+//
+// Exported (#228) so scripts/selftest-properties.mjs can state its length-bound
+// property in terms of the same constant, instead of a second, driftable copy of 160.
+export const PATH_ENCODE_MAX = 160;
 
 // Encode an absolute source path into a filesystem-safe directory-name fragment: drop the
 // leading separator(s), then replace anything that is not an ASCII alnum/dot/dash/
@@ -290,7 +303,13 @@ const PATH_ENCODE_MAX = 160;
 // alone guarantees no two components ever land in the same directory (manifest
 // component order is stable per snapshot). This function only needs to stay human-
 // legible enough to recognize the source at a glance.
-function encodeSourcePath(abs: string): string {
+//
+// Exported (#228) so scripts/selftest-properties.mjs can property-test, for ANY input
+// string (manifest.components[].source is attacker-controlled — see the block above),
+// that the output never contains a path separator — the invariant expandComponents()
+// below relies on to build a single, un-escapable directory-name segment out of it.
+// Stryker restore all
+export function encodeSourcePath(abs: string): string {
   const flat = abs.replace(/^[/\\]+/, '').replace(/[^A-Za-z0-9._-]+/g, '_');
   if (flat.length <= PATH_ENCODE_MAX) return flat;
   // A very long/deeply-nested path could otherwise blow past a filesystem's per-component
@@ -301,6 +320,7 @@ function encodeSourcePath(abs: string): string {
   const digest = createHash('sha256').update(abs).digest('hex').slice(0, 8);
   return `${flat.slice(0, PATH_ENCODE_MAX)}-${digest}`;
 }
+// Stryker disable all
 
 // ---- manifest.json is attacker-controlled data — the guards below are why ----
 // age is public-key encryption: ANYONE holding a recipient's PUBLIC key can construct
@@ -316,11 +336,18 @@ function encodeSourcePath(abs: string): string {
 // directory separator, no dot-segment. Without this check, a forged name like
 // "../../../etc/cron.d/evil.tar.gz" passed to join(outDir, name) would resolve OUTSIDE
 // --out-dir entirely (path traversal via a crafted manifest).
-function isSafeComponentName(name: string): boolean {
+//
+// Exported (#228) so scripts/selftest-properties.mjs can property-test the actual
+// security invariant PR #198 was about — for ANY string, if this returns true then
+// join(outDir, name) must stay inside outDir — instead of only the handful of
+// traversal strings a human thinks to hand-write.
+// Stryker restore all
+export function isSafeComponentName(name: string): boolean {
   if (name.length === 0 || name.includes('/') || name.includes('\\')) return false;
   if (name === '.' || name === '..') return false;
   return true;
 }
+// Stryker disable all
 
 // Strip ASCII control characters (0x00-0x1F, 0x7F) from a manifest-derived string
 // before it is ever printed to stdout/stderr or written into README.txt. A forged

@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# Selftest for `cipher-brain doctor` (#201): the read-only environment health check.
+#
+# Covers, in order:
+#   (a) a not-yet-set-up CIPHER_BRAIN_HOME: every check SKIPs, health_score 100, PASS.
+#   (b) a freshly keygen'd home: home-dir-perms / identity-perms / identity-recipient-
+#       pairing all PASS.
+#   (c) a loose (group/other-accessible) identity.age is a NEW FAIL with a `chmod 600`
+#       remediation, and the process exit code is 1.
+#   (d) running doctor AGAIN with the SAME unfixed problem marks it "known" (carryover),
+#       not 🆕 new — and health_score for the carryover run is HIGHER than the first
+#       run's (the known-issue discount), while VERDICT stays FAIL and health_score
+#       stays below 100 (the discount must never look like a full pass — the specific
+#       regression this test exists to catch: an earlier draft of the scoring excluded
+#       carryover issues ENTIRELY, so a single unfixed FAIL still read 100/100 next to
+#       VERDICT: FAIL).
+#   (e) fixing the permission is reported as [RESOLVED] on the next run, back to PASS.
+#   (f) CIPHER_BRAIN_PIN_RECIPIENTS="" is a FAIL (matches snapshot()'s own #101
+#       fail-closed behavior) with a remediation naming the variable.
+#   (g) an identity/recipient pairing mismatch (recipient.txt replaced independently) is
+#       a FAIL naming both paths.
+#   (h) --json prints exactly one JSON document with the documented shape, and it agrees
+#       with the human-readable report's verdict.
+#   (i) the doctor-state.json bookkeeping file itself never holds key material.
+#   (j) an EXTRA recipient injected into recipient.txt (alongside the real one) is a
+#       FAIL on both identity-recipient-pairing and pin-recipients-primary-included,
+#       not a silent PASS on either (a partial-match check used to let it ride along).
+#   (k) a corrupted identity.age (bad bech32 checksum) FAILs without ever printing the
+#       underlying library error or raw key material — that error embeds the FULL
+#       (corrupt) identity string.
+#   (l) a symlink pre-planted at doctor-state.json is REPLACED by an atomic rename, not
+#       followed and truncated — its original target is left untouched.
+#   (m) an explicitly-configured but missing CIPHER_BRAIN_AR_WALLET is a FAIL, not the
+#       same SKIP an unconfigured wallet gets.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/bin/cipher-brain.mjs"
+source "$ROOT/scripts/dev-node-flags.sh"
+TMP="$(mktemp -d)"
+trap 'chmod -R u+rwX "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+
+# Start from a clean CIPHER_BRAIN_* environment (same reasoning as selftest-schedule.sh:
+# a PIN_RECIPIENTS/AR_WALLET/etc. left over in whoever-runs-this's own shell would leak
+# into every case below).
+for _leaked in $(env | sed -n 's/^\(CIPHER_BRAIN_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$_leaked"; done
+unset _leaked
+
+cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+
+echo "== (a) a not-yet-set-up home: every check SKIPs, health_score 100, PASS, exit 0 =="
+export CIPHER_BRAIN_HOME="$TMP/fresh-home"
+[ ! -e "$CIPHER_BRAIN_HOME" ] || { echo "[FAIL] test setup: $CIPHER_BRAIN_HOME already exists"; exit 1; }
+RC=0
+cb doctor > "$TMP/a.log" 2>&1 || RC=$?
+[ "$RC" = "0" ] || { echo "[FAIL] doctor on a not-yet-set-up home exited $RC, expected 0"; cat "$TMP/a.log"; exit 1; }
+grep -q '^health_score: 100/100 (no issues found)$' "$TMP/a.log" \
+  || { echo "[FAIL] expected health_score 100/100 (no issues found)"; cat "$TMP/a.log"; exit 1; }
+grep -q '^VERDICT: PASS$' "$TMP/a.log" || { echo "[FAIL] expected VERDICT: PASS"; cat "$TMP/a.log"; exit 1; }
+[ ! -e "$CIPHER_BRAIN_HOME" ] \
+  || { echo "[FAIL] doctor CREATED $CIPHER_BRAIN_HOME — it must stay read-only when nothing is set up yet"; exit 1; }
+echo "[PASS] not-yet-set-up home: all SKIP, health_score 100/100, VERDICT PASS, no side effect"
+
+echo "== (b) after keygen: home-dir-perms / identity-perms / identity-recipient-pairing all PASS =="
+export CIPHER_BRAIN_HOME="$TMP/home"
+cb keygen > "$TMP/keygen.log" 2>&1 || { echo "[FAIL] keygen exited non-zero"; cat "$TMP/keygen.log"; exit 1; }
+cb doctor --json > "$TMP/b.json" 2>&1 || { echo "[FAIL] doctor --json exited non-zero after keygen"; cat "$TMP/b.json"; exit 1; }
+node -e "
+const j = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+const byId = Object.fromEntries(j.checks.map((c) => [c.id, c]));
+for (const id of ['home-dir-perms', 'identity-perms', 'identity-recipient-pairing']) {
+  if (!byId[id] || byId[id].status !== 'pass') {
+    throw new Error(id + ' expected status pass, got ' + JSON.stringify(byId[id]));
+  }
+}
+if (j.verdict !== 'PASS') throw new Error('expected verdict PASS, got ' + j.verdict);
+if (j.health_score !== 100) throw new Error('expected health_score 100, got ' + j.health_score);
+" "$TMP/b.json"
+echo "[PASS] freshly keygen'd home: home-dir-perms/identity-perms/identity-recipient-pairing PASS"
+
+echo "== (c) a loose identity.age is a NEW FAIL with a chmod 600 remediation, exit 1 =="
+chmod 644 "$CIPHER_BRAIN_HOME/identity.age"
+RC=0
+cb doctor > "$TMP/c.log" 2>&1 || RC=$?
+[ "$RC" = "1" ] || { echo "[FAIL] doctor with a loose identity.age exited $RC, expected 1"; cat "$TMP/c.log"; exit 1; }
+grep -E '^\[FAIL\] .+ new .*identity \(private key\) at .*identity\.age is group/other-accessible \(mode 644\)' "$TMP/c.log" \
+  || { echo "[FAIL] expected a NEW FAIL line for the loose identity.age"; cat "$TMP/c.log"; exit 1; }
+grep -qF "remediation: chmod 600 $CIPHER_BRAIN_HOME/identity.age" "$TMP/c.log" \
+  || { echo "[FAIL] expected the exact chmod 600 remediation command"; cat "$TMP/c.log"; exit 1; }
+FIRST_SCORE="$(sed -n 's/^health_score: \([0-9]*\)\/100.*/\1/p' "$TMP/c.log")"
+[ "$FIRST_SCORE" -lt 100 ] || { echo "[FAIL] health_score did not drop below 100 for a new FAIL (got $FIRST_SCORE)"; exit 1; }
+echo "[PASS] loose identity.age: NEW FAIL, exact chmod remediation, exit 1, health_score $FIRST_SCORE/100"
+
+echo "== (d) the SAME unfixed problem on the next run is 'known' (carryover), not new; VERDICT stays FAIL and health_score stays below 100 =="
+RC=0
+cb doctor > "$TMP/d.log" 2>&1 || RC=$?
+[ "$RC" = "1" ] || { echo "[FAIL] second doctor run (still unfixed) exited $RC, expected 1"; cat "$TMP/d.log"; exit 1; }
+grep -E '^\[FAIL\] \(known since [0-9]{4}-[0-9]{2}-[0-9]{2}\) .*identity \(private key\)' "$TMP/d.log" \
+  || { echo "[FAIL] expected the SAME unfixed FAIL to be marked '(known since ...)', not 🆕 new"; cat "$TMP/d.log"; exit 1; }
+if grep -qF 'new age identity' "$TMP/d.log"; then
+  echo "[FAIL] the already-seen identity.age FAIL was marked new again — carryover tracking is not working"; cat "$TMP/d.log"; exit 1
+fi
+SECOND_SCORE="$(sed -n 's/^health_score: \([0-9]*\)\/100.*/\1/p' "$TMP/d.log")"
+grep -q '^VERDICT: FAIL$' "$TMP/d.log" || { echo "[FAIL] expected VERDICT: FAIL to persist while the problem is unfixed"; cat "$TMP/d.log"; exit 1; }
+[ "$SECOND_SCORE" -lt 100 ] \
+  || { echo "[FAIL] a lingering, known FAIL must still pull health_score below 100 (regression: a full score/verdict mismatch), got $SECOND_SCORE/100"; exit 1; }
+[ "$SECOND_SCORE" -gt "$FIRST_SCORE" ] \
+  || { echo "[FAIL] a known/carryover FAIL should cost LESS than a brand-new one (first=$FIRST_SCORE, second=$SECOND_SCORE)"; exit 1; }
+echo "[PASS] carryover: marked known (not new), VERDICT FAIL persists, health_score $SECOND_SCORE/100 (discounted, still < 100)"
+
+echo "== (e) fixing the permission is reported [RESOLVED] on the next run, back to PASS =="
+chmod 600 "$CIPHER_BRAIN_HOME/identity.age"
+RC=0
+cb doctor > "$TMP/e.log" 2>&1 || RC=$?
+[ "$RC" = "0" ] || { echo "[FAIL] doctor after fixing the permission exited $RC, expected 0"; cat "$TMP/e.log"; exit 1; }
+grep -qF '[RESOLVED] identity-perms:' "$TMP/e.log" \
+  || { echo "[FAIL] expected identity-perms to be reported [RESOLVED]"; cat "$TMP/e.log"; exit 1; }
+grep -q '^VERDICT: PASS$' "$TMP/e.log" || { echo "[FAIL] expected VERDICT: PASS once the permission is fixed"; cat "$TMP/e.log"; exit 1; }
+echo "[PASS] fixed permission: [RESOLVED] reported, back to VERDICT PASS"
+
+echo "== (f) CIPHER_BRAIN_PIN_RECIPIENTS=\"\" is a FAIL naming the fix (#101 fail-closed behavior) =="
+RC=0
+CIPHER_BRAIN_PIN_RECIPIENTS="" cb doctor > "$TMP/f.log" 2>&1 || RC=$?
+[ "$RC" = "1" ] || { echo "[FAIL] doctor with an empty PIN_RECIPIENTS exited $RC, expected 1"; cat "$TMP/f.log"; exit 1; }
+grep -qF 'CIPHER_BRAIN_PIN_RECIPIENTS is set but EMPTY' "$TMP/f.log" \
+  || { echo "[FAIL] expected the empty-pin FAIL message"; cat "$TMP/f.log"; exit 1; }
+grep -qF 'remediation: unset CIPHER_BRAIN_PIN_RECIPIENTS' "$TMP/f.log" \
+  || { echo "[FAIL] expected a remediation naming CIPHER_BRAIN_PIN_RECIPIENTS"; cat "$TMP/f.log"; exit 1; }
+echo "[PASS] empty CIPHER_BRAIN_PIN_RECIPIENTS: FAIL with the unset remediation"
+
+echo "== (g) an identity/recipient pairing mismatch is a FAIL naming both files =="
+cp "$CIPHER_BRAIN_HOME/recipient.txt" "$TMP/recipient.txt.bak"
+# A syntactically valid but UNRELATED age1 recipient (68 bech32 chars after 'age1',
+# matching AGE_PUBKEY_RE) — recipientEntries()/identityToRecipient() only care about
+# shape, not that it maps to a real keypair, since this check never encrypts anything.
+printf 'age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq5s0kwc\n' > "$CIPHER_BRAIN_HOME/recipient.txt"
+RC=0
+cb doctor > "$TMP/g.log" 2>&1 || RC=$?
+[ "$RC" = "1" ] || { echo "[FAIL] doctor with a mismatched recipient.txt exited $RC, expected 1"; cat "$TMP/g.log"; exit 1; }
+grep -E "does not match $CIPHER_BRAIN_HOME/recipient\.txt" "$TMP/g.log" \
+  || { echo "[FAIL] expected the identity/recipient pairing mismatch FAIL"; cat "$TMP/g.log"; exit 1; }
+cp "$TMP/recipient.txt.bak" "$CIPHER_BRAIN_HOME/recipient.txt"
+echo "[PASS] identity/recipient mismatch: FAIL naming both paths"
+
+echo "== (h) --json: exactly one JSON document, shape matches the human-readable report =="
+JOUT="$(cb doctor --json)"
+LINES=$(printf '%s\n' "$JOUT" | wc -l | tr -d ' ')
+[ "$LINES" = "1" ] || { echo "[FAIL] doctor --json printed $LINES stdout line(s), expected exactly 1"; echo "$JOUT"; exit 1; }
+node -e "
+const j = JSON.parse(process.argv[1]);
+for (const key of ['checks', 'resolved', 'health_score', 'new_count', 'carryover_count', 'verdict', 'state_path', 'state_saved']) {
+  if (!(key in j)) throw new Error('missing top-level key: ' + key);
+}
+if (!Array.isArray(j.checks) || j.checks.length === 0) throw new Error('expected a non-empty checks array');
+for (const c of j.checks) {
+  for (const key of ['id', 'status', 'message', 'marker']) {
+    if (!(key in c)) throw new Error('check ' + JSON.stringify(c) + ' missing key: ' + key);
+  }
+  if (!['pass', 'warn', 'fail', 'skip'].includes(c.status)) throw new Error('unexpected status: ' + c.status);
+  if (![null, 'new', 'carryover'].includes(c.marker)) throw new Error('unexpected marker: ' + c.marker);
+}
+if (!['PASS', 'FAIL', 'PARTIAL'].includes(j.verdict)) throw new Error('unexpected verdict: ' + j.verdict);
+if (j.verdict !== 'PASS' && j.health_score >= 100) throw new Error('verdict ' + j.verdict + ' but health_score is ' + j.health_score + ' — score/verdict must not disagree');
+if (typeof j.state_saved !== 'boolean') throw new Error('expected state_saved to be a boolean');
+" "$JOUT"
+echo "[PASS] --json: exactly one document, documented shape, score/verdict agree"
+
+echo "== (i) the bookkeeping file itself never holds key material =="
+STATE="$CIPHER_BRAIN_HOME/doctor-state.json"
+[ -f "$STATE" ] || { echo "[FAIL] expected $STATE to have been written by now"; exit 1; }
+if grep -qE 'AGE-SECRET-KEY|age1' "$STATE"; then
+  echo "[FAIL] doctor-state.json contains what looks like key material — it must hold only check ids/timestamps"; cat "$STATE"; exit 1
+fi
+echo "[PASS] doctor-state.json holds no key material"
+
+echo "== (j) an EXTRA recipient injected into recipient.txt is a FAIL, not a silent PASS (Codex review, #333: a partial-match check let an attacker recipient ride along with the real one) =="
+cp "$CIPHER_BRAIN_HOME/recipient.txt" "$TMP/recipient.txt.bak2"
+PRIMARY_RECIPIENT="$(cat "$CIPHER_BRAIN_HOME/recipient.txt")"
+# A syntactically valid but UNRELATED age1 recipient, same one (g) uses — identityToRecipient()
+# is never asked to derive FROM it, so it only needs to match AGE_PUBKEY_RE's shape.
+EXTRA_RECIPIENT='age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq5s0kwc'
+printf '%s\n%s\n' "$PRIMARY_RECIPIENT" "$EXTRA_RECIPIENT" > "$CIPHER_BRAIN_HOME/recipient.txt"
+RC=0
+CIPHER_BRAIN_PIN_RECIPIENTS="$PRIMARY_RECIPIENT" cb doctor --json > "$TMP/j.json" 2>&1 || RC=$?
+[ "$RC" = "1" ] \
+  || { echo "[FAIL] doctor with an injected extra recipient exited $RC, expected 1"; cat "$TMP/j.json"; exit 1; }
+node -e "
+const j = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+const byId = Object.fromEntries(j.checks.map((c) => [c.id, c]));
+const pairing = byId['identity-recipient-pairing'];
+if (!pairing || pairing.status !== 'fail') {
+  throw new Error('expected identity-recipient-pairing FAIL for an injected extra recipient, got ' + JSON.stringify(pairing));
+}
+if (!pairing.message.includes('$EXTRA_RECIPIENT')) {
+  throw new Error('identity-recipient-pairing message does not name the unexpected recipient: ' + pairing.message);
+}
+const pin = byId['pin-recipients-primary-included'];
+if (!pin || pin.status !== 'warn') {
+  throw new Error('expected pin-recipients-primary-included WARN (not pass) when recipient.txt has an entry outside CIPHER_BRAIN_PIN_RECIPIENTS, got ' + JSON.stringify(pin));
+}
+if (!pin.message.includes('$EXTRA_RECIPIENT')) {
+  throw new Error('pin-recipients-primary-included message does not name the un-allowlisted recipient: ' + pin.message);
+}
+" "$TMP/j.json"
+cp "$TMP/recipient.txt.bak2" "$CIPHER_BRAIN_HOME/recipient.txt"
+echo "[PASS] injected extra recipient: identity-recipient-pairing FAILs naming it, pin-recipients-primary-included WARNs (neither silently PASSes)"
+
+echo "== (k) a corrupted identity.age (bad bech32 checksum) FAILs without ever printing the raw error or key material (Codex review, #333) =="
+cp "$CIPHER_BRAIN_HOME/identity.age" "$TMP/identity.age.bak"
+# age-encryption's bech32 decoder reports a bad checksum by echoing the FULL identity
+# string back in its error ("Invalid checksum in AGE-SECRET-KEY-1...: expected ...") —
+# flip one character well inside the data portion (past the 16-char "AGE-SECRET-KEY-1"
+# prefix) so decoding fails on checksum, not on shape, and confirm that exact library
+# message text never reaches doctor's output.
+node -e "
+const fs = require('node:fs');
+const path = process.argv[1];
+const lines = fs.readFileSync(path, 'utf8').split('\n');
+const idx = lines.findIndex((l) => l.startsWith('AGE-SECRET-KEY-1'));
+if (idx === -1) throw new Error('no AGE-SECRET-KEY-1 line found in ' + path);
+const chars = lines[idx].split('');
+const pos = 20; // inside the bech32 data, well past the 16-char prefix
+chars[pos] = chars[pos] === 'Q' ? 'P' : 'Q';
+lines[idx] = chars.join('');
+fs.writeFileSync(path, lines.join('\n'));
+" "$CIPHER_BRAIN_HOME/identity.age"
+RC=0
+cb doctor > "$TMP/k.log" 2>&1 || RC=$?
+[ "$RC" = "1" ] || { echo "[FAIL] doctor with a corrupted identity.age exited $RC, expected 1"; cat "$TMP/k.log"; exit 1; }
+grep -qF 'does not parse as a valid age identity' "$TMP/k.log" \
+  || { echo "[FAIL] expected a FAIL naming the corrupt identity"; cat "$TMP/k.log"; exit 1; }
+if grep -qE 'AGE-SECRET-KEY-1[A-Za-z0-9]{10,}' "$TMP/k.log"; then
+  echo "[FAIL] doctor's output contains what looks like raw identity key material"; cat "$TMP/k.log"; exit 1
+fi
+if grep -qF 'Invalid checksum' "$TMP/k.log"; then
+  echo "[FAIL] doctor's output leaked the underlying 'Invalid checksum' library error, which embeds the full (corrupt) identity string"; cat "$TMP/k.log"; exit 1
+fi
+cp "$TMP/identity.age.bak" "$CIPHER_BRAIN_HOME/identity.age"
+echo "[PASS] corrupted identity.age: FAIL with a sanitized message, no raw key material or library error text in the output"
+
+echo "== (l) doctor-state.json write is symlink-safe: a pre-planted symlink is REPLACED via atomic rename, never followed to overwrite its target (Codex review, #333) =="
+VICTIM="$TMP/doctor-state-victim.txt"
+printf 'DO-NOT-OVERWRITE\n' > "$VICTIM"
+rm -f "$CIPHER_BRAIN_HOME/doctor-state.json"
+ln -s "$VICTIM" "$CIPHER_BRAIN_HOME/doctor-state.json"
+[ -L "$CIPHER_BRAIN_HOME/doctor-state.json" ] || { echo "[FAIL] test setup: doctor-state.json is not a symlink"; exit 1; }
+cb doctor > "$TMP/l.log" 2>&1 || true # exit code is irrelevant here — only the write's symlink safety is asserted
+[ "$(cat "$VICTIM")" = "DO-NOT-OVERWRITE" ] \
+  || { echo "[FAIL] the pre-planted symlink's target was overwritten by doctor's bookkeeping write — got: $(cat "$VICTIM")"; exit 1; }
+[ ! -L "$CIPHER_BRAIN_HOME/doctor-state.json" ] \
+  || { echo "[FAIL] doctor-state.json is STILL a symlink — the write never replaced it with a real file"; exit 1; }
+[ -f "$CIPHER_BRAIN_HOME/doctor-state.json" ] \
+  || { echo "[FAIL] expected doctor-state.json to now be a real, regular file"; exit 1; }
+node -e "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))" "$CIPHER_BRAIN_HOME/doctor-state.json" \
+  || { echo "[FAIL] doctor-state.json is not valid JSON after the write"; exit 1; }
+echo "[PASS] a pre-planted symlink at doctor-state.json is replaced by a real file via atomic rename; its original target is left untouched"
+
+echo "== (m) CIPHER_BRAIN_AR_WALLET explicitly set to a path with nothing there is a FAIL, not the same SKIP an unconfigured wallet gets (Codex review, #333) =="
+RC=0
+CIPHER_BRAIN_AR_WALLET="$TMP/no-such-wallet.json" cb doctor --json > "$TMP/m.json" 2>&1 || RC=$?
+[ "$RC" = "1" ] || { echo "[FAIL] doctor with a missing explicit CIPHER_BRAIN_AR_WALLET exited $RC, expected 1"; cat "$TMP/m.json"; exit 1; }
+node -e "
+const j = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+const wallet = j.checks.find((c) => c.id === 'wallet-perms');
+if (!wallet || wallet.status !== 'fail') throw new Error('expected wallet-perms FAIL, got ' + JSON.stringify(wallet));
+if (!wallet.message.includes('$TMP/no-such-wallet.json')) throw new Error('wallet-perms message does not name the configured path: ' + wallet.message);
+" "$TMP/m.json"
+echo "[PASS] an explicitly-configured but missing CIPHER_BRAIN_AR_WALLET is a FAIL naming the path"
+
+echo
+echo "all cipher-brain doctor selftests passed"

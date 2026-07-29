@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
+import type { Decrypter } from 'age-encryption';
 import {
   AGE_MAGIC,
   CIPHER_YES,
@@ -17,7 +18,12 @@ import { run } from './proc.js';
 import { loadIdentities, newDecrypter, decryptToChild, wrongKeyRejects } from './crypt.js';
 import { checkArtifactSignature } from './minisign.js';
 import { exists, requireFile, sha256, readHead, fmtBytes, redactPgConn, errMsg, rmrf } from './util.js';
-import { installStageSignalGuard, setActiveRestoreOutDir, setActiveVerifyScratchDir } from './signal-guard.js';
+import {
+  installStageSignalGuard,
+  setActiveRestoreOutDir,
+  setActiveRestoreScratchDir,
+  setActiveVerifyScratchDir,
+} from './signal-guard.js';
 import { didYouMean } from './suggest.js';
 import { moodForVerdict, printMascot, printJson } from './ui.js';
 import { pull, signatureGap } from './pushpull.js';
@@ -54,6 +60,210 @@ async function tarNoClobberFlag(): Promise<string> {
   } catch {
     return '--keep-old-files'; // conservative default if `tar --version` itself fails to run
   }
+}
+
+// ---- pre-extraction entry inspection (#218) ----
+//
+// bsdtar and GNU tar each ALREADY refuse some dangerous entries at extraction time —
+// confirmed empirically against both (bsdtar 3.5.3/libarchive 3.7.4 on macOS, GNU tar
+// 1.35 via `brew install gnu-tar`, the same tool tarNoClobberFlag() above already needed
+// to test against a real GNU tar locally): both refuse a member name containing a `..`
+// path component, and both refuse to extract a LATER entry THROUGH an existing symlink
+// (the classic tar path-traversal-through-symlink attack OWASP's page and this issue cite
+// — libarchive's ARCHIVE_EXTRACT_SECURE_SYMLINKS equivalent). But neither refuses a
+// FIFO/device/socket entry outright — a non-root run only fails on a device node because
+// mknod() itself needs privilege, so a privileged restore would still create one — and
+// both merely STRIP a leading absolute-path slash with a stderr warning restore has never
+// read, rather than refusing the entry. And by the time either tar exits non-zero on some
+// LATER bad entry, every entry BEFORE it in archive order has already been written to
+// disk — two different tar implementations giving two different PARTIAL guarantees is
+// exactly what this issue means by "tar自体の安全性をtar実装任せにしている".
+//
+// So restore lists every entry TWICE before extracting a single byte: once bare
+// (`tar -tf`, exact member names, one per line — identical text on both tar flavors,
+// verified empirically above) and once verbose (`tar -tv`, whose FIRST character is the
+// same ls(1)-style type indicator on both flavors, and whose "name -> target" /
+// "name link to target" suffix convention for symlink/hardlink entries is likewise
+// identical on both — also verified empirically). The two listings are zipped together
+// BY POSITION (same archive, read twice by the same tar binary, in the same
+// deterministic entry order) rather than parsed out of the verbose line's owner/group/
+// size/date columns, whose width and format differ between GNU tar and bsdtar (e.g.
+// bsdtar: "Jan  1  1970", GNU tar: "1970-01-01"). Only after every entry passes
+// validateRestoreEntries() does extraction — into an ISOLATED scratch directory, never
+// straight into --out-dir, see restoreImpl below — even start.
+//
+// One known asymmetry (empirically confirmed, not just claimed): GNU tar's `-tv` line
+// for a hardlink whose target escapes the tree already has the leading `../` stripped
+// by GNU tar ITSELF before restore.ts ever reads the line (with its own
+// "Removing leading '../../' from hard link targets" stderr warning) — so
+// validateRestoreEntries() sees an already-sanitized, in-tree-looking target and never
+// throws its own message for this one case on GNU tar. bsdtar's `-tv` shows the raw,
+// unsanitized target, so validateRestoreEntries() DOES catch it there. This is not a
+// security gap: GNU tar's own extraction then refuses the same entry a second time
+// (the sanitized relative target does not exist in the archive), so the hardlink is
+// never created on either tar flavor — just via a different, tar-owned error message
+// on GNU tar rather than this file's own. scripts/selftest-restore-security.sh's
+// hardlink-escape case accepts either message for exactly this reason.
+
+type RestoreEntryType = 'file' | 'dir' | 'symlink' | 'hardlink' | 'fifo' | 'device' | 'socket' | 'other';
+
+// The first character of a `tar -tv` line is the same ls(1)-style type indicator on both
+// bsdtar and GNU tar (verified empirically — see the comment above): '-' regular file,
+// 'd' directory, 'l' symlink, 'h' hardlink, 'p' FIFO, 'c'/'b' character/block device,
+// 's' socket. Anything else maps to 'other' rather than throwing here — validation
+// (not parsing) is what decides whether an entry is safe, so an unrecognized/exotic type
+// character falls through to be handled like any other non-allowlisted type.
+const RESTORE_ENTRY_TYPE_BY_CHAR: Record<string, RestoreEntryType> = {
+  '-': 'file',
+  d: 'dir',
+  l: 'symlink',
+  h: 'hardlink',
+  p: 'fifo',
+  c: 'device',
+  b: 'device',
+  s: 'socket',
+};
+
+interface RestoreEntry {
+  name: string;
+  type: RestoreEntryType;
+  linkTarget?: string; // symlink/hardlink only — the text after " -> " / " link to "
+}
+
+function hasDotDotSegment(p: string): boolean {
+  return p.split('/').includes('..');
+}
+
+// Zip the bare (`-tf`) name list and the verbose (`-tv`) line list into one RestoreEntry
+// per member — see the big comment above. A length mismatch would mean the two listings
+// somehow disagree on how many entries this archive has, which should never happen
+// (same archive, same tar binary, read twice) — refuse rather than guess which one to
+// trust when it does.
+function zipRestoreEntries(bareNames: string[], verboseLines: string[]): RestoreEntry[] {
+  if (bareNames.length !== verboseLines.length) {
+    throw new Error(
+      `archive inspection: bare listing has ${bareNames.length} entries but verbose listing has ${verboseLines.length} — refusing to trust either`,
+    );
+  }
+  return bareNames.map((name, i) => {
+    const line = verboseLines[i];
+    const type = RESTORE_ENTRY_TYPE_BY_CHAR[line.charAt(0)] ?? 'other';
+    let linkTarget: string | undefined;
+    if (type === 'symlink') {
+      const marker = line.lastIndexOf(' -> ');
+      if (marker !== -1) linkTarget = line.slice(marker + 4);
+    } else if (type === 'hardlink') {
+      const marker = line.lastIndexOf(' link to ');
+      if (marker !== -1) linkTarget = line.slice(marker + 9);
+    }
+    return { name, type, linkTarget };
+  });
+}
+
+// Reject the WHOLE archive outright if ANY entry looks unsafe — see the big comment
+// above. Throws on the first problem found (restoreImpl never sees a partially-vetted
+// archive: this either runs to completion or throws, always BEFORE extraction starts).
+function validateRestoreEntries(entries: RestoreEntry[]): void {
+  const names = new Set(entries.map((e) => e.name));
+  for (const e of entries) {
+    const label = sanitizeForDisplay(e.name);
+    if (e.name.length === 0) throw new Error('archive contains an entry with an empty name — refusing to extract');
+    if (e.name.startsWith('/')) {
+      throw new Error(`archive entry "${label}" has an absolute path — refusing to extract (path traversal)`);
+    }
+    if (hasDotDotSegment(e.name)) {
+      throw new Error(`archive entry "${label}" contains a ".." path segment — refusing to extract (path traversal)`);
+    }
+    // No legitimate cipher-brain snapshot ever contains a FIFO/device/socket — snapshot()
+    // only ever archives files, directories and symlinks (see snapshot.ts's ScanEntry
+    // kind). Refuse outright rather than let tar attempt (and, run as root, succeed at)
+    // creating one.
+    if (e.type === 'fifo' || e.type === 'device' || e.type === 'socket') {
+      throw new Error(
+        `archive entry "${label}" is a ${e.type} entry — refusing to extract (no legitimate use in a cipher-brain snapshot)`,
+      );
+    }
+    // This IS the allowlist: a type character RESTORE_ENTRY_TYPE_BY_CHAR does not
+    // recognize (a GNU tar extension, a sparse/contiguous-file record, a pax header
+    // leaking through) maps to 'other' and must be refused here — the big comment above
+    // RESTORE_ENTRY_TYPE_BY_CHAR says exactly this ("validation, not parsing, decides
+    // whether an entry is safe"), so an exotic type falling through UNREJECTED would
+    // contradict it and let tar attempt to create whatever that type is.
+    if (e.type === 'other') {
+      throw new Error(
+        `archive entry "${label}" is an unrecognized entry type — refusing to extract (not on the allowlist of file/dir/symlink/hardlink)`,
+      );
+    }
+    // A hardlink's target names ANOTHER member of this SAME archive — a target that
+    // escapes the tree (absolute, or a `..` component) has no legitimate purpose here.
+    if (e.type === 'hardlink' && e.linkTarget !== undefined) {
+      if (e.linkTarget.startsWith('/') || hasDotDotSegment(e.linkTarget)) {
+        throw new Error(
+          `archive entry "${label}" is a hardlink to "${sanitizeForDisplay(e.linkTarget)}" — refusing to extract (hardlink target escapes the archive tree)`,
+        );
+      }
+    }
+    // Symlink TARGETS are not rejected here on their own — snapshot() deliberately
+    // archives a dangling/absolute-target symlink source as-is (see snapshot.ts), so a
+    // real restore legitimately contains those. What IS rejected: another entry in this
+    // SAME archive nested under a symlink's name — the classic tar
+    // path-traversal-through-symlink attack this issue and OWASP's page both describe.
+    // Both tar flavors this project supports already refuse this at extraction time
+    // (verified empirically — see the comment above), but restore checks it here too
+    // rather than depend on that alone, which is the entire point of this phase.
+    if (e.type === 'symlink') {
+      const prefix = `${e.name}/`;
+      for (const other of names) {
+        if (other !== e.name && other.startsWith(prefix)) {
+          throw new Error(
+            `archive entry "${sanitizeForDisplay(other)}" is nested under symlink "${label}" — refusing to extract (path-traversal-through-symlink)`,
+          );
+        }
+      }
+    }
+  }
+}
+
+const splitEntryLines = (s: string): string[] => s.split('\n').filter((l) => l.length > 0);
+
+// The outer restore archive is never gzip-compressed (only expandComponents()'s inner
+// --dir/--profile *.tar.gz components are, below) — so a decompression-bomb amplification
+// is not possible on this path, and the CIPHERTEXT size is already a tight bound on how
+// much restore is about to write (age's per-chunk framing overhead is a small constant,
+// not a multiplier). Generous on purpose: this exists to catch a runaway/corrupted
+// artifact filling a disk unattended, not to second-guess a legitimately large
+// second-brain snapshot (attachments/PDFs/embeddings routinely reach several GB) — not
+// exposed as a CIPHER_BRAIN_* tunable, since #218 asks for a cap, not a configurable one.
+const MAX_RESTORE_INPUT_BYTES = 20 * 1024 * 1024 * 1024; // 20 GiB
+
+// List an age-encrypted restore archive's tar entries WITHOUT writing a single byte to
+// disk (`tar -t` / `tar -tv` read only the archive's headers) and validate them. The two
+// listing passes run CONCURRENTLY (two independent decrypt streams over the same input
+// file) rather than one after another — nothing here is a "cheaper approximation" of what
+// actually gets extracted; it reads exactly what extraction will read, twice, for its
+// metadata instead of once for its bytes.
+async function inspectRestoreArchive(decrypter: Decrypter, inPath: string): Promise<void> {
+  const [bareOut, verboseOut] = await Promise.all([
+    decryptToChild(decrypter, inPath, 'tar', ['-tf', '-'], { consStdout: 'pipe', timeoutMs: PIPE_TIMEOUT_MS }),
+    decryptToChild(decrypter, inPath, 'tar', ['-tvf', '-'], { consStdout: 'pipe', timeoutMs: PIPE_TIMEOUT_MS }),
+  ]);
+  // decryptToChild() always resolves with a string (never undefined) when consStdout is
+  // 'pipe' — the `| undefined` in its return type only covers the OTHER callers
+  // ('inherit'/'ignore'). The `?? ''` below is a type-level formality, not a runtime path.
+  validateRestoreEntries(zipRestoreEntries(splitEntryLines(bareOut ?? ''), splitEntryLines(verboseOut ?? '')));
+}
+
+// Plain-file counterpart of inspectRestoreArchive() above, for expandComponents()'s inner
+// --dir/--profile component tarballs (below) — same threat model (both come from the same
+// attacker-controlled archive/manifest), same validation; this one lists an
+// ALREADY-DECRYPTED gzip file already sitting on disk rather than piping tar's stdin
+// through age.decrypt() first, so it runs two plain `tar` invocations instead.
+async function inspectPlainArchive(archivePath: string): Promise<void> {
+  const [bareRes, verboseRes] = await Promise.all([
+    run('tar', ['-tzf', archivePath], { timeoutMs: PIPE_TIMEOUT_MS }),
+    run('tar', ['-tzvf', archivePath], { timeoutMs: PIPE_TIMEOUT_MS }),
+  ]);
+  validateRestoreEntries(zipRestoreEntries(splitEntryLines(bareRes.out), splitEntryLines(verboseRes.out)));
 }
 
 // One row of the mapping restore's auto-expand step prints/writes: the ORIGINAL absolute
@@ -187,14 +397,26 @@ async function mergeNoClobber(src: string, dest: string): Promise<void> {
   for (const entry of await readdir(src, { withFileTypes: true })) {
     const s = join(src, entry.name);
     const d = join(dest, entry.name);
-    if (entry.isDirectory() && (await exists(d))) {
+    // lstat, not exists()/stat(): exists() follows symlinks, so a pre-existing `d` that
+    // is a symlink to a real directory OUTSIDE dest would pass entry.isDirectory() &&
+    // exists(d) and send mergeNoClobber recursing through the symlink into whatever it
+    // points at — writing archive content outside dest entirely. A symlink at `d` is
+    // therefore always treated as "already there, do not touch" (the no-clobber
+    // fallthrough below), never as a directory to merge into.
+    let dStat: Awaited<ReturnType<typeof lstat>> | undefined;
+    try {
+      dStat = await lstat(d);
+    } catch {
+      dStat = undefined;
+    }
+    if (entry.isDirectory() && dStat?.isDirectory()) {
       await mergeNoClobber(s, d);
-    } else if (!(await exists(d))) {
+    } else if (!dStat) {
       await rename(s, d);
     }
-    // else: `d` already exists and is not a directory to merge into — leave it
-    // (no-clobber); the finally block in expandComponents() drops whatever's left
-    // under `src` (the scratch dir) once this returns.
+    // else: `d` already exists (a file, a symlink, or any other non-plain-directory
+    // entry) — leave it (no-clobber); the finally block in expandComponents() drops
+    // whatever's left under `src` (the scratch dir) once this returns.
   }
 }
 
@@ -286,6 +508,12 @@ async function expandComponents(outDir: string): Promise<void> {
     // complete extraction from a truncated one).
     const scratchDir = `${targetDir}.expand-${process.pid}-${randomBytes(4).toString('hex')}`;
     try {
+      // #218: same pre-extraction entry inspection as the outer restore extract above
+      // (this component tarball comes from the SAME attacker-controlled archive/
+      // manifest) — a bad entry here is skipped like any other per-component problem
+      // (see this function's "Best-effort throughout" doc comment), not a hard restore
+      // failure.
+      await inspectPlainArchive(archivePath);
       await refuseIfSymlink(scratchDir, 'expand scratch directory'); // defense in depth: this name should never pre-exist
       mkdirSync(scratchDir, { recursive: true });
       await run('tar', ['-xzf', archivePath, '--no-same-owner', '--no-same-permissions', '-C', scratchDir], {
@@ -429,9 +657,6 @@ async function restoreImpl(o: CliOptions): Promise<void> {
   // Load the identity FIRST (this prompts for the passphrase if the file is wrapped)
   // so a wrong passphrase / unreadable identity fails before out_dir is even created.
   const decrypter = newDecrypter(await loadIdentities(identity));
-  // age streams plaintext chunk-by-chunk, so a truncated/corrupt artifact errors only
-  // AFTER tar has already extracted the leading components — leaving a partial tree.
-  // Track whether we created out_dir so we can remove it (or warn) on a mid-stream fail.
   // The tar child spawned below lands in the same ACTIVE_CHILDREN set snapshot's tar
   // does (see proc.ts), but until now nothing ever installed a signal guard for
   // restore() — a SIGINT/SIGTERM/SIGHUP mid-extract hit Node's default handler, the
@@ -439,49 +664,85 @@ async function restoreImpl(o: CliOptions): Promise<void> {
   // with no cleanup and no warning (#95). installStageSignalGuard() is idempotent, so
   // calling it here is safe whether or not a snapshot() in the same process already did.
   installStageSignalGuard();
-  // mkdirSync (not async mkdir), and its return value (not a separate exists() check)
-  // decides outDirPreExisted: recursive mkdirSync returns undefined when the path
-  // already fully existed, or the first path segment it created otherwise — a single
-  // atomic syscall sequence with no TOCTOU gap between "check" and "create" (an
-  // async exists() followed by mkdir leaves a window where something else could
-  // create out_dir in between, misclassifying it as "we created this, safe to erase").
-  // It also keeps dir-creation and the registration below in one tick with no
-  // event-loop yield — same discipline snapshot() uses for ACTIVE_STAGE (mkdtempSync +
-  // setActiveStage, see signal-guard.ts): otherwise a signal landing during an await
-  // could fire before out_dir is registered and leave a freshly-created empty dir
-  // untracked.
-  const outDirPreExisted = mkdirSync(o.out_dir, { recursive: true }) === undefined;
-  // Register out_dir with the guard so a mid-extract signal is handled the same way
-  // snapshot's stage/.part are: erase it if we created it ourselves, or otherwise flag
-  // it (see installStageSignalGuard) rather than destroy content we don't own.
-  setActiveRestoreOutDir(o.out_dir, outDirPreExisted);
-  // decrypt(in) | tar -xf - -C out-dir
+  // #218 size cap: see MAX_RESTORE_INPUT_BYTES above for why the ciphertext's own size
+  // is already a tight (not merely approximate) bound on this pipeline's extraction
+  // footprint — before any inspection or decrypt work happens.
+  const inSize = (await stat(o.in)).size;
+  if (inSize > MAX_RESTORE_INPUT_BYTES) {
+    throw new Error(
+      `${o.in} is ${fmtBytes(inSize)}, over the ${fmtBytes(MAX_RESTORE_INPUT_BYTES)} restore cap — refusing to extract`,
+    );
+  }
+  // #218 phase 1 — inspect every tar entry before a single byte is written to disk. See
+  // the big comment above inspectRestoreArchive()/validateRestoreEntries().
+  await inspectRestoreArchive(decrypter, o.in);
+
+  const outDirPreExisted = await exists(o.out_dir);
+  // The old mkdirSync(o.out_dir, {recursive:true}) this replaced would itself throw
+  // (ENOTDIR/EEXIST) if --out-dir already existed as a non-directory — keep that same
+  // fail-fast behavior explicitly now that nothing mkdir's --out-dir up front anymore
+  // (phase 3 below either rename()s onto it directly or merges into it, neither of
+  // which gives as clear an error against a plain file).
+  if (outDirPreExisted && !(await stat(o.out_dir)).isDirectory()) {
+    throw new Error(`--out-dir ${o.out_dir} exists and is not a directory`);
+  }
+  // #218 phase 2 — extract into an ISOLATED scratch directory, never straight into
+  // --out-dir. Same reasoning expandComponents() below already applies per component: a
+  // tar that dies mid-stream then leaves nothing behind under out-dir's real name
+  // (nothing has been promoted into it yet), instead of a half-written tree that a later
+  // run could only ever partially repair (no-clobber can SKIP an existing name, it has no
+  // way to tell a complete extraction from a truncated one). Named the same way
+  // expandComponents()'s own per-component scratch dir is (a sibling path, not a nested
+  // one — mkdtemp under os.tmpdir() would risk landing on a different filesystem than
+  // --out-dir, turning the atomic rename() below into a cross-device copy).
+  const scratchDir = `${o.out_dir}.restore-${process.pid}-${randomBytes(4).toString('hex')}`;
+  await refuseIfSymlink(scratchDir, 'restore scratch directory'); // defense in depth: this name should never pre-exist
+  mkdirSync(scratchDir, { recursive: true });
+  // Register the scratch dir BEFORE the tar child starts (mkdirSync + this call, no
+  // await in between — same no-event-loop-yield discipline the removed outDirPreExisted
+  // comment used to describe): a signal landing mid-extract now erases the scratch dir
+  // outright (see setActiveRestoreScratchDir in signal-guard.ts) rather than leaving a
+  // partial tree with no cleanup and no warning.
+  setActiveRestoreScratchDir(scratchDir);
+  // decrypt(in) | tar -xf - -C scratchDir
   // --no-same-owner/--no-same-permissions: a substituted/forged archive must not be
   // able to set hostile ownership or modes on extraction (defense-in-depth — the
-  // bytes can be attacker-chosen if storage is compromised; see verify --sha256).
-  // The no-clobber flag (see tarNoClobberFlag above): when --out-dir already held
-  // files before this run (outDirPreExisted), extraction must not silently clobber
-  // them — skip a colliding name rather than overwrite it, on EITHER tar flavor.
+  // bytes can be attacker-chosen if storage is compromised; see verify --sha256). The
+  // no-clobber flag (see tarNoClobberFlag above) still matters here even though
+  // scratchDir starts empty: it is what keeps this call's OWN behavior identical
+  // (skip a colliding name, exit 0) on both tar flavors, rather than a flavor-specific
+  // fatal-vs-skip split showing up as a mysterious extraction failure.
   const noClobberFlag = await tarNoClobberFlag();
   try {
     await decryptToChild(
       decrypter,
       o.in,
       'tar',
-      ['-xf', '-', '--no-same-owner', '--no-same-permissions', noClobberFlag, '-C', o.out_dir],
+      ['-xf', '-', '--no-same-owner', '--no-same-permissions', noClobberFlag, '-C', scratchDir],
       { timeoutMs: PIPE_TIMEOUT_MS },
     );
   } catch (e) {
-    if (!outDirPreExisted) await rm(o.out_dir, { recursive: true, force: true });
-    else
-      console.error(
-        `warning: ${o.out_dir} may now hold a partially-extracted tree (restore failed mid-stream) — discard it before trusting the contents`,
-      );
+    await rm(scratchDir, { recursive: true, force: true });
+    setActiveRestoreScratchDir(null);
     throw e;
+  }
+  setActiveRestoreScratchDir(null);
+
+  // #218 phase 3 — promote atomically, only now that extraction of an ALREADY-VETTED
+  // archive fully succeeded: a fresh --out-dir gets the whole scratch tree renamed into
+  // place in one step (rename() onto a non-existent destination path both creates it and
+  // is atomic); an --out-dir that already held content merges into it without ever
+  // clobbering an existing name — the SAME no-clobber/atomic-rename policy
+  // expandComponents()'s mergeNoClobber()/rename() split already keeps for each inner
+  // component below, converged here for the outer extract too.
+  setActiveRestoreOutDir(o.out_dir, outDirPreExisted);
+  try {
+    if (!outDirPreExisted) await rename(scratchDir, o.out_dir);
+    else await mergeNoClobber(scratchDir, o.out_dir);
   } finally {
-    // the extract is settled (cleanly, or the catch above already ran its own
-    // non-signal cleanup) — a later signal (e.g. during pg_restore below) must not
-    // touch out_dir anymore.
+    await rm(scratchDir, { recursive: true, force: true }); // no-op once rename() has already moved it away
+    // the promotion is settled (cleanly, or the above already threw) — a later signal
+    // (e.g. during pg_restore below) must not touch out_dir anymore.
     setActiveRestoreOutDir(null);
   }
   console.log(`restored components into ${o.out_dir}`);

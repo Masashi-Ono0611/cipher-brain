@@ -317,18 +317,25 @@ export function encryptToFile(
 // truncated or corrupt payload errors mid-stream and the whole call rejects even if
 // tar exited 0 on the resulting EOF — a partial extraction must never look like
 // success. Success = decrypt stream fully delivered AND the consumer exited 0.
+//
+// Resolves with the consumer's captured stdout TEXT when `consStdout: 'pipe'` — added
+// for restore.ts's pre-extraction inspection phase (#218), which needs `tar -tf`/
+// `tar -tv`'s entry listing back as a string, not merely a "did it succeed" signal.
+// Every existing caller passes 'inherit' (the default) or 'ignore' and simply never
+// reads the resolved value, so this stays source-compatible with them.
 export function decryptToChild(
   decrypter: Decrypter,
   inPath: string,
   consCmd: string,
   consArgs: string[],
   { consStdout = 'inherit', timeoutMs }: PipelineOpts & { consStdout?: StdioNull | StdioPipe } = {},
-): Promise<void> {
+): Promise<string | undefined> {
   return new Promise((resolve, reject) => {
     const cons = spawn(consCmd, consArgs, { stdio: ['pipe', consStdout, 'pipe'] });
     ACTIVE_CHILDREN.add(cons);
     const src = createReadStream(inPath);
     let cErr = '',
+      cOut = '',
       settled = false,
       pipelineDone = false,
       consClosed = false;
@@ -364,10 +371,14 @@ export function decryptToChild(
       settled = true;
       clearTimeout(timer);
       ACTIVE_CHILDREN.delete(cons);
-      resolve();
+      resolve(consStdout === 'pipe' ? cOut : undefined);
     };
     if (timeoutMs)
       timer = setTimeout(() => fail(new Error(`age|${consCmd} pipeline timed out after ${timeoutMs}ms`)), timeoutMs);
+    // Only accumulated when the caller actually asked for it ('pipe') — every other
+    // mode ('inherit'/'ignore') never attaches a 'data' listener, so cons.stdout (which
+    // is null under those modes anyway) costs this function nothing when unused.
+    if (consStdout === 'pipe') cons.stdout?.on('data', (d) => (cOut += d));
     cons.stderr?.on('data', (d) => (cErr += d));
     cons.on('error', fail);
     // EPIPE when the consumer dies early — swallow on the pipe end so the real

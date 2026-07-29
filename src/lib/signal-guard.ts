@@ -19,8 +19,18 @@ import { ACTIVE_CHILDREN } from './proc.js';
 
 let ACTIVE_STAGE: string | null = null;
 let ACTIVE_OUT_PART: string | null = null; // the partial ${out}.part being written; erased on signal so no stray ciphertext lingers
-let ACTIVE_RESTORE_OUT_DIR: string | null = null; // restore()'s --out-dir while a tar extract is in flight
+let ACTIVE_RESTORE_OUT_DIR: string | null = null; // restore()'s --out-dir while the vetted scratch tree is being promoted into it
 let ACTIVE_RESTORE_OUT_DIR_PREEXISTED = false; // whether restore() created out-dir itself (safe to erase) or it was already there (must not be destroyed)
+// restore()'s ISOLATED scratch directory (#218) while tar extracts an already-vetted
+// archive into it — a SEPARATE slot from ACTIVE_RESTORE_OUT_DIR/preexisted because,
+// unlike out-dir, the scratch dir is ALWAYS restore's own freshly-created temp
+// directory: always safe to erase outright on signal, no preexisted flag needed (same
+// "always ours" guarantee ACTIVE_STAGE already gives snapshot()'s plaintext staging
+// dir — kept as its own field rather than reused because mcp.ts's long-lived server
+// process can have a snapshot_now and a restore_now call in flight in the same
+// process, and two unrelated resources sharing one slot would let one clobber the
+// other's cleanup).
+let ACTIVE_RESTORE_SCRATCH_DIR: string | null = null;
 let ACTIVE_SCAN_REPORT_DIR: string | null = null; // secrets-scan's gitleaks report temp dir while a scan is in flight
 let ACTIVE_VERIFY_SCRATCH_DIR: string | null = null; // verify --level remote/drill's pulled-ciphertext (+, for drill, decrypted-plaintext) scratch dir, for its ENTIRE lifetime
 let SIGNAL_GUARD_INSTALLED = false;
@@ -96,6 +106,13 @@ export const setActiveRestoreOutDir = (v: string | null, preExisted = false): vo
   ACTIVE_RESTORE_OUT_DIR = v;
   ACTIVE_RESTORE_OUT_DIR_PREEXISTED = preExisted;
 };
+// restore() calls this right after mkdirSync'ing its isolated scratch directory and
+// before the tar child starts extracting the already-vetted archive into it, then
+// clears it (v=null) once extraction settles — mirroring ACTIVE_STAGE's own
+// create-then-register-then-clear discipline for snapshot()'s plaintext stage.
+export const setActiveRestoreScratchDir = (v: string | null): void => {
+  ACTIVE_RESTORE_SCRATCH_DIR = v;
+};
 // verify --level remote/drill (src/lib/restore.ts, #209) registers its scratch dir here
 // the instant mkdtempSync creates it, and clears it only once its own cleanup (rmrf, in
 // util.ts) has actually finished removing it — covering the ENTIRE call, not just the
@@ -137,6 +154,14 @@ export function installStageSignalGuard(): void {
       if (ACTIVE_SCAN_REPORT_DIR) {
         forceRmSync(ACTIVE_SCAN_REPORT_DIR);
         ACTIVE_SCAN_REPORT_DIR = null;
+      }
+      if (ACTIVE_RESTORE_SCRATCH_DIR) {
+        // Always safe to erase outright — restore's scratch dir is never anything
+        // other than a directory restore just mkdirSync'd itself moments earlier.
+        try {
+          rmSync(ACTIVE_RESTORE_SCRATCH_DIR, { recursive: true, force: true });
+        } catch {}
+        ACTIVE_RESTORE_SCRATCH_DIR = null;
       }
       if (ACTIVE_RESTORE_OUT_DIR) {
         if (!ACTIVE_RESTORE_OUT_DIR_PREEXISTED) {

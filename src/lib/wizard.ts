@@ -28,7 +28,7 @@ import { askNewPassphrase, wrapIdentity } from './crypt.js';
 import { keygenSignAt } from './minisign.js';
 import { PROFILE_NAMES } from './profiles.js';
 import { snapshot } from './snapshot.js';
-import { push, PushLocatorWriteError } from './pushpull.js';
+import { push, PushPartialSuccessError } from './pushpull.js';
 import { estimateCost, formatEstimate } from './estimate.js';
 import { BACKEND_NAMES } from './backends/index.js';
 import { walletConfigured } from './wallet.js';
@@ -729,23 +729,27 @@ export async function init(_o: CliOptions): Promise<void> {
         pushedLocatorPath = locatorPath;
         savedLocatorLine = (await readFile(locatorPath, 'utf8')).split('\n').find((l) => l.trim()) ?? '';
       } catch (pushErr) {
-        if (pushErr instanceof PushLocatorWriteError) {
-          // The upload itself (backend.put()) already succeeded — see
-          // PushLocatorWriteError's own doc comment in pushpull.ts. The remote
-          // artifact durably exists (permanently, on arweave/turbo) even though
-          // locatorPath was never written, so this is exactly as unrollbackable as
-          // an ordinary successful push: flip pushSucceeded so the outer catch below
-          // preserves the identities/snapshot instead of deleting them, but leave
-          // pushedLocatorPath null (there genuinely is no locator FILE on disk this
-          // time — only the value inside pushErr.locator, which the thrown error
-          // below surfaces for the operator to record by hand).
+        if (pushErr instanceof PushPartialSuccessError) {
+          // The ciphertext upload itself (backend.put()) already succeeded — see
+          // PushPartialSuccessError's own doc comment in pushpull.ts, covering BOTH the
+          // ".minisig" sidecar upload failing (PushSignatureUploadError) and the LOCAL
+          // --save-locator bookkeeping failing after everything durably uploaded
+          // (PushLocatorWriteError). Either way the remote artifact durably exists
+          // (permanently, on arweave/turbo) even though locatorPath was never reached
+          // and never written, so this is exactly as unrollbackable as an ordinary
+          // successful push: flip pushSucceeded so the outer catch below preserves the
+          // identities/snapshot instead of deleting them, but leave pushedLocatorPath
+          // null (there genuinely is no locator FILE on disk this time — only the value
+          // inside pushErr.locator, which the thrown error below surfaces for the
+          // operator to record by hand).
           pushSucceeded = true;
           pushedBackend = backend;
           pushedLocatorPath = null;
           throw new Error(
             `${pushErr.message}\nACTION REQUIRED: the upload already happened and cannot be undone — hand-record ` +
-              `this locator now, since --save-locator itself failed to: locator="${pushErr.locator}" backend="${backend}". ` +
-              `Without recording it, this snapshot is unrecoverable even though it durably exists in the backend.`,
+              `this locator now, since --save-locator itself never ran (or failed) for it: locator="${pushErr.locator}" ` +
+              `backend="${backend}". Without recording it, this snapshot is unrecoverable even though it durably ` +
+              `exists in the backend.`,
           );
         }
         // Any other push() failure (declined paid-backend consent, a network error
@@ -842,9 +846,9 @@ export async function init(_o: CliOptions): Promise<void> {
             : []),
           ...(snapshotOutPath ? [`snapshot: ${snapshotOutPath}`] : []),
         ].join('; ');
-        // pushedLocatorPath is null exactly when PushLocatorWriteError fired above:
-        // the upload succeeded but --save-locator's own file was never written, so
-        // there is no path to print here — printing the literal `null` would read as
+        // pushedLocatorPath is null exactly when a PushPartialSuccessError fired above:
+        // the upload succeeded but --save-locator's own file was never reached/written,
+        // so there is no path to print here — printing the literal `null` would read as
         // a bug rather than the "go read the error below" instruction it actually is.
         const locatorNote = pushedLocatorPath
           ? `locator saved: ${pushedLocatorPath}`

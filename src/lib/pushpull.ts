@@ -50,24 +50,61 @@ async function recipientsFingerprintFor(o: CliOptions): Promise<string | null> {
   }
 }
 
-// Thrown when backend.put() (the actual, possibly PAID/PERMANENT upload) already
-// succeeded but the LOCAL --save-locator bookkeeping afterward (mkdir, digest, the
-// temp-write+rename) then threw. This is the ONE failure shape a caller must treat
-// completely differently from every other push() error: the remote artifact already
-// exists (and, on arweave/turbo, money was already spent) — a caller that reacts to
-// ANY push() rejection by assuming "nothing happened yet" (e.g. deleting the only
-// identity that can decrypt what was just uploaded) would turn a mere bookkeeping
-// hiccup into permanent, unrecoverable loss. `locator` is carried on the error
-// itself because this is the only place that value still exists once push() has
-// otherwise failed to persist it anywhere.
-export class PushLocatorWriteError extends Error {
+// Thrown for any push() failure that happens AFTER backend.put() (the actual,
+// possibly PAID/PERMANENT ciphertext upload) already succeeded — the point of no
+// return already passed. This is the shape every caller must treat completely
+// differently from every OTHER push() error: the remote ciphertext already exists
+// (and, on arweave/turbo, money was already spent) — a caller that reacts to ANY
+// push() rejection by assuming "nothing happened yet" (e.g. deleting the only
+// identity that can decrypt what was just uploaded, or an MCP idempotency-key
+// caller concluding nothing needs to be remembered for a retry) would turn a mere
+// AFTERMATH failure into permanent, unrecoverable loss or a real double-spend.
+// `locator` (the ciphertext's) is carried on every subclass because it is the one
+// value a caller can still act on once push() has otherwise failed to persist it
+// anywhere; `sigLocator` is carried too, set only when the ".minisig" sidecar
+// upload (below) had ALSO already succeeded before the later failure occurred —
+// PushSignatureUploadError never has one (its own failure IS that upload),
+// PushLocatorWriteError does when a signed push's sidecar landed before the
+// separate --save-locator bookkeeping then failed.
+export abstract class PushPartialSuccessError extends Error {
   readonly locator: string;
+  readonly sigLocator: string | undefined;
+  constructor(message: string, locator: string, sigLocator: string | undefined) {
+    super(message);
+    this.locator = locator;
+    this.sigLocator = sigLocator;
+  }
+}
+
+// The ciphertext uploaded, but the ".minisig" authenticity sidecar (#214) that
+// snapshot() wrote alongside it then failed to upload (a network blip on the SECOND
+// backend.put() call below — the first, for the ciphertext, already returned). Distinct
+// from PushLocatorWriteError: nothing about --save-locator has even been reached yet,
+// so unlike that error this one never carries a sigLocator (there is no "it uploaded,
+// only the bookkeeping after it failed" story here — the sidecar upload itself is what
+// failed).
+export class PushSignatureUploadError extends PushPartialSuccessError {
   constructor(locator: string, cause: unknown) {
     super(
+      `ciphertext upload succeeded (locator: ${locator}) but uploading the .minisig signature sidecar failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      locator,
+      undefined,
+    );
+    this.name = 'PushSignatureUploadError';
+  }
+}
+
+// Thrown when the ciphertext (and, if the artifact is signed, its ".minisig" sidecar)
+// already uploaded but the LOCAL --save-locator bookkeeping afterward (mkdir, digest,
+// the temp-write+rename) then threw.
+export class PushLocatorWriteError extends PushPartialSuccessError {
+  constructor(locator: string, sigLocator: string | undefined, cause: unknown) {
+    super(
       `upload succeeded (locator: ${locator}) but writing --save-locator failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      locator,
+      sigLocator,
     );
     this.name = 'PushLocatorWriteError';
-    this.locator = locator;
   }
 }
 
@@ -272,7 +309,16 @@ export async function push(o: CliOptions): Promise<boolean> {
   const sigPath = `${o.in}.minisig`;
   let sigLocator: string | undefined;
   if (await exists(sigPath)) {
-    sigLocator = await backend.put(sigPath, { yes, remote: o.remote ? `${o.remote}.minisig` : undefined });
+    try {
+      sigLocator = await backend.put(sigPath, { yes, remote: o.remote ? `${o.remote}.minisig` : undefined });
+    } catch (e) {
+      // The ciphertext (above) already durably uploaded — see PushPartialSuccessError's
+      // own doc comment for why this must never be reported the same way as an
+      // ordinary push() failure (a caller assuming "nothing happened" here would be
+      // wrong, and an MCP idempotency-key caller must still remember this call as
+      // having spent, not treat a retry as the first attempt).
+      throw new PushSignatureUploadError(locator, e);
+    }
     console.error(`pushed ${sigPath} -> ${o.backend}:${sigLocator}`);
   }
   // --save-locator <path>: persist the returned locator so operators can back it up
@@ -333,11 +379,37 @@ export async function push(o: CliOptions): Promise<boolean> {
       }
       console.error(`locator saved -> ${o.save_locator}`);
     } catch (e) {
-      throw new PushLocatorWriteError(locator, e);
+      throw new PushLocatorWriteError(locator, sigLocator, e);
     }
   }
   console.log(locator); // stdout = locator ONLY, so a script can capture it
   return true;
+}
+
+// Used only by cipher-brain-mcp's idempotency-key replay path (#220, multi-model review
+// P2): a repeat snapshot_now call carrying a DIFFERENT locator_file than the original
+// call must still get the recovery pointer written to ITS requested path, even though a
+// replay re-uploads nothing. Deliberately minimal — locator/backend/sha256 only, NOT the
+// content-digest/recipients-fingerprint/signing fields the full save-locator write above
+// derives by re-reading the sidecars next to `o.in` at push TIME. Re-deriving those here
+// would mean re-reading whatever currently sits at the ORIGINAL call's `out` path, which
+// the idempotency log does not itself vouch is still the same file an agent could have
+// since overwritten with something unrelated. The three fields written here are exactly
+// the ones the idempotency log already recorded at the time of the original successful
+// push, so there is nothing to re-derive or risk going stale.
+export async function writeReplayedSavedLocator(
+  savedLocatorPath: string,
+  fields: { locator: string; backend: string; sha256: string },
+): Promise<void> {
+  await mkdir(dirname(resolve(savedLocatorPath)), { recursive: true });
+  const tmp = `${savedLocatorPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    await writeFile(tmp, `${fields.locator}\t${fields.backend}\t${fields.sha256}\n`, { flag: 'w' });
+    await rename(tmp, savedLocatorPath);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
+  }
 }
 
 // Promote a completed pull's temp part to --out, no-clobber (#107). Mirrors

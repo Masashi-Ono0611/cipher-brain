@@ -10,14 +10,28 @@
 // exactly as it does when those commands are run directly, because the wizard calls
 // the SAME functions with the SAME options — it never bypasses or duplicates them.
 //
-// Interactivity: non-secret yes/no and path/text prompts use node:readline/promises
-// (visible echo, stdlib, zero dependency) via askLine/askYesNo below. Anything secret
-// (the passphrase) reuses crypt.ts's EXISTING promptHidden-backed askNewPassphrase +
-// wrapIdentity — never reimplemented here. `init` is fundamentally an interactive
-// command: it refuses immediately (requireTTY) if stdin is not a TTY — the same
-// non-interactive-safety posture promptHidden already has — rather than hanging or
-// behaving unpredictably under a CI/pipe invocation.
-import { createInterface } from 'node:readline/promises';
+// Interactivity: non-secret yes/no and path/text prompts use @clack/prompts (issue
+// #230) via the askLine/askYesNo wrappers below — cancel (Ctrl+C) detection, NO_COLOR
+// (Node's own util.styleText, which every clack render call goes through, already
+// checks NO_COLOR/FORCE_COLOR/isTTY before emitting any COLOR escape code — nothing
+// extra to wire up here for coloring specifically) and terminal-width wrapping come
+// from the library instead of being hand-rolled. NO_COLOR does NOT suppress every
+// escape code clack emits, only color: cursor movement/hide/show/erase sequences
+// (clack's own rendering, via sisteransi — a separate mechanism from styleText) are
+// still written regardless of NO_COLOR — expected here, since this wizard refuses
+// outright on a non-TTY stdin (requireTTY below) unless the automation escape hatch
+// is set, so a real terminal is always on the other end of that output. Before this,
+// each prompt ran on its own node:readline/promises
+// Interface that had to be closed before crypt.ts's OWN raw-mode passphrase reader
+// (promptHidden) touched the same stdin, then reopened afterwards — see the passphrase
+// step below for why that dance is no longer needed. Anything secret (the passphrase)
+// still reuses crypt.ts's EXISTING promptHidden-backed askNewPassphrase + wrapIdentity
+// — never reimplemented here, and out of scope for #230 (promptHidden is shared with
+// `keygen --passphrase`/`restore`, well beyond just this wizard). `init` is
+// fundamentally an interactive command: it refuses immediately (requireTTY) if stdin
+// is not a TTY — the same non-interactive-safety posture promptHidden already has —
+// rather than hanging or behaving unpredictably under a CI/pipe invocation.
+import { text, confirm, isCancel } from '@clack/prompts';
 import { readFile, writeFile, mkdir, rm, rename, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir, userInfo } from 'node:os';
@@ -28,14 +42,33 @@ import { askNewPassphrase, wrapIdentity } from './crypt.js';
 import { keygenSignAt } from './minisign.js';
 import { PROFILE_NAMES } from './profiles.js';
 import { snapshot } from './snapshot.js';
-import { push, PushLocatorWriteError } from './pushpull.js';
+import { push, PushPartialSuccessError } from './pushpull.js';
 import { estimateCost, formatEstimate } from './estimate.js';
 import { BACKEND_NAMES } from './backends/index.js';
 import { walletConfigured } from './wallet.js';
 import { exists, errMsg, redactPgConn } from './util.js';
 import type { CliOptions } from './types.js';
 
-type Rl = ReturnType<typeof createInterface>;
+// Thrown when a clack prompt reports a cancel (Ctrl+C, or Esc on the ones that support
+// it) — turning that into a normal thrown Error routes it through init()'s own
+// try/catch below exactly like any other mid-wizard failure (an invalid profile name,
+// a declined paid-backend consent, ...), so whatever THIS run already created gets
+// rolled back (or, past the push, preserved) the same way. This is a behavioural
+// improvement over the old readline-based wizard: a Ctrl+C there never ran through
+// init()'s own catch at all (readline forwards SIGINT straight to the process, which
+// signal-guard.ts's handler re-raises immediately — a path that never unwinds this
+// async function), so a keygen or backup key already written before the interrupt was
+// simply left behind. clack does not touch process signals at all here — see
+// setRawMode in @clack/core, which only calls stdin.setRawMode() when isTTY, so a
+// Ctrl-C byte arrives as ordinary input and is decoded into a cancel result instead.
+class InitCancelledError extends Error {
+  constructor() {
+    super(
+      'cipher-brain init: cancelled — anything this run already created is being rolled back (or, if a snapshot was already pushed, preserved and reported), same as any other error mid-wizard.',
+    );
+    this.name = 'InitCancelledError';
+  }
+}
 
 // `init` is fundamentally interactive: a plain non-TTY invocation (piped/redirected
 // stdin, a CI job with no terminal attached) must refuse cleanly here rather than
@@ -59,9 +92,27 @@ function requireTTY(): void {
   );
 }
 
-async function askLine(rl: Rl, question: string, def = ''): Promise<string> {
-  const answer = (await rl.question(question)).trim();
-  return answer || def;
+async function askLine(question: string, def = ''): Promise<string> {
+  // defaultValue: clack itself substitutes this ONLY when the user submits with
+  // truly zero characters typed (TextPrompt's own "finalize" handler treats an
+  // empty `this.value` as "use defaultValue") — it does NOT trigger for an answer
+  // that is one or more whitespace characters (a space, a tab, ...), since that is
+  // non-empty input as far as clack itself is concerned. The old rl.question()-based
+  // version's contract was "blank answer -> def" where "blank" meant "trims to
+  // nothing", not "literally zero keystrokes" — so a whitespace-only answer used to
+  // fall back to the default too. Recreate that here by trimming FIRST and falling
+  // back to `def` ourselves when the trimmed result is empty, rather than trusting
+  // clack's own substitution to have already covered it. This matters well beyond
+  // cosmetics: the Postgres connection-string prompt below (step 6/7) reuses this
+  // same helper, and a whitespace-only answer landing as a literal `''` there makes
+  // snapshotOpts.pg falsy — snapshot() then silently SKIPS pg_dump entirely, producing
+  // a backup that looks complete but contains no database at all (Codex review
+  // finding). placeholder just shows the default as dimmed ghost text before anything
+  // is typed; pass undefined rather than '' so an empty def does not render a stray
+  // placeholder.
+  const answer = await text({ message: question, placeholder: def || undefined, defaultValue: def });
+  if (isCancel(answer)) throw new InitCancelledError();
+  return answer.trim() || def;
 }
 
 // A wizard prompt reads its answer as a plain string — no shell is ever involved, so a
@@ -82,15 +133,15 @@ function expandHome(path: string): string {
 // NEVER be silently coerced to false: several callers below default to true for a
 // security-relevant prompt (e.g. the offline backup keypair, #96's motivating case),
 // so a misread "no" there would quietly skip the tool's main defense against identity
-// loss with no indication anything went wrong. Re-prompt instead of guessing.
-async function askYesNo(rl: Rl, question: string, def: boolean): Promise<boolean> {
-  for (;;) {
-    const answer = (await askLine(rl, `${question} [${def ? 'Y/n' : 'y/N'}] `)).toLowerCase();
-    if (!answer) return def;
-    if (answer === 'y' || answer === 'yes') return true;
-    if (answer === 'n' || answer === 'no') return false;
-    console.log(`Please answer "y" or "n" (or press Enter for the default).`);
-  }
+// loss with no indication anything went wrong. The old free-text version of this
+// re-prompted on anything that wasn't y/yes/n/no; clack's confirm() prompt makes that
+// entire class of misreading structurally impossible instead — it is a toggle between
+// exactly two labelled options (default "Yes"/"No"), not a parsed string, so there is
+// no "unrecognized answer" state left to re-prompt for.
+async function askYesNo(question: string, def: boolean): Promise<boolean> {
+  const answer = await confirm({ message: question, initialValue: def });
+  if (isCancel(answer)) throw new InitCancelledError();
+  return answer;
 }
 
 interface BackupKey {
@@ -291,7 +342,6 @@ export async function init(_o: CliOptions): Promise<void> {
     'cipher-brain init — interactive setup: keygen, key recovery, authenticity signing, first snapshot + push, recovery kit.\n',
   );
 
-  let rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     // ---------- 1. primary keygen (reuses keygen() verbatim — no reimplementation) ----------
     console.log('== 1/7: generating your primary identity ==');
@@ -368,7 +418,7 @@ export async function init(_o: CliOptions): Promise<void> {
           'second, OFFLINE backup keypair. If you encrypt every snapshot to BOTH the primary and the backup\n' +
           'public key, either identity alone can restore — see MANAGEMENT.md "Key recovery #1".',
       );
-      if (await askYesNo(rl, 'Generate an offline backup keypair now?', true)) {
+      if (await askYesNo('Generate an offline backup keypair now?', true)) {
         // Shown BEFORE the path prompt (and BEFORE keygenAt() below writes anything) —
         // not after, like it used to be. The old order printed this warning only once
         // the keypair was already on disk and a "backup identity written to: ..." success
@@ -381,8 +431,7 @@ export async function init(_o: CliOptions): Promise<void> {
         const defaultBackupHome = `${HOME}-backup`;
         const backupHome = expandHome(
           await askLine(
-            rl,
-            `Path for the backup keypair (same disk unless you change this) [${defaultBackupHome}]: `,
+            `Path for the backup keypair (same disk unless you change this) [${defaultBackupHome}]`,
             defaultBackupHome,
           ),
         );
@@ -451,7 +500,7 @@ export async function init(_o: CliOptions): Promise<void> {
           recipientPath: SIGN_RECIPIENT,
           pubkeyText: await readFile(SIGN_RECIPIENT, 'utf8'),
         };
-      } else if (await askYesNo(rl, 'Generate a signing keypair now?', true)) {
+      } else if (await askYesNo('Generate a signing keypair now?', true)) {
         // Same partial-write hazard/rollback shape as the backup keypair above: check
         // pre-existence BEFORE calling keygenSignAt (this branch only runs when
         // NEITHER path existed a moment ago, but keygenSignAt's own precondition
@@ -486,25 +535,26 @@ export async function init(_o: CliOptions): Promise<void> {
           '--passphrase" flag uses) makes an exfiltrated identity file useless without it. See MANAGEMENT.md\n' +
           '"Key recovery #2".',
       );
-      if (await askYesNo(rl, 'Protect the primary identity with a passphrase now?', false)) {
+      if (await askYesNo('Protect the primary identity with a passphrase now?', false)) {
         // Reuses the EXACT same pieces keygen --passphrase uses (askNewPassphrase / wrapIdentity from
         // crypt.ts) — the identity was just written unwrapped above, so this wraps it in place rather
         // than re-generating (keygenAt's own wrap-at-creation path is for a keypair that does not exist
         // yet; here we already have the one we want to protect).
         //
-        // askNewPassphrase() -> promptHidden (crypt.ts) puts stdin into raw mode and manages its OWN
-        // 'data' listener directly, bypassing readline entirely. Doing that while this wizard's OWN
-        // readline Interface is still attached to the SAME stdin is a real bug under a genuine TTY: two
-        // competing consumers of one stdin leave it unable to deliver input to a LATER rl.question() —
-        // confirmed empirically with a real pty harness (python's stdlib pty module driving this exact
-        // path): the wizard silently exited after this step, never reaching step 4's prompt. Fully close
-        // this interface before the hidden-prompt path, then open a fresh one for the remaining prompts.
-        rl.close();
-        const text = await readFile(IDENTITY, 'utf8');
-        const payload = await wrapIdentity(text, await askNewPassphrase());
+        // Before the @clack/prompts migration (#230) this had to explicitly close() the wizard's own
+        // readline Interface here and reopen a fresh one afterwards: askNewPassphrase() -> promptHidden
+        // (crypt.ts) puts stdin into raw mode and manages its OWN 'data' listener directly, and having
+        // that run while a readline Interface was ALSO still attached to the same stdin left stdin
+        // unable to deliver input to a later rl.question() (confirmed empirically with a real pty
+        // harness). clack's prompts don't hold a persistent Interface open between calls — each text()/
+        // confirm() call above already attached and fully detached its own keypress listener by the time
+        // its promise resolved (@clack/core's Prompt.prompt(), the `this.input.off('keypress', ...)`
+        // cleanup on submit/cancel) — so by the time this line runs there is nothing left competing with
+        // promptHidden's own raw-mode read, and no interface to close/reopen around it.
+        const identityPlain = await readFile(IDENTITY, 'utf8');
+        const payload = await wrapIdentity(identityPlain, await askNewPassphrase());
         await writeFile(IDENTITY, payload, { mode: 0o600 });
         console.log(`identity re-written, passphrase-wrapped: ${IDENTITY}`);
-        rl = createInterface({ input: process.stdin, output: process.stdout });
       } else {
         // NOT "keygen --passphrase --force": --force still calls generateKeypair()
         // unconditionally (keys.ts) and so DISCARDS this identity for a brand-new one,
@@ -539,14 +589,11 @@ export async function init(_o: CliOptions): Promise<void> {
           'run from a shell that had sourced it. (Added it after "schedule install"? Re-run install to pick it up.)',
       );
       let pinRecipientsLine: string | null = null;
-      if (await askYesNo(rl, 'Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line for the config file?', true)) {
+      if (await askYesNo('Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line for the config file?', true)) {
         const primaryPub = (await readFile(RECIPIENT, 'utf8')).trim();
         const defaultLine = `CIPHER_BRAIN_PIN_RECIPIENTS="${[primaryPub, backup?.recipient].filter(Boolean).join(' ')}"`;
-        pinRecipientsLine = await askLine(
-          rl,
-          `Suggested line (edit or press Enter to accept):\n${defaultLine}\n> `,
-          defaultLine,
-        );
+        console.log(`Suggested line (edit or press Enter to accept):\n${defaultLine}`);
+        pinRecipientsLine = await askLine('CIPHER_BRAIN_PIN_RECIPIENTS line', defaultLine);
         console.log(
           `\nAdd this line to ${CONFIG_FILE_PATH} (create the file if it does not exist yet, then chmod 600 it):\n` +
             `${pinRecipientsLine}\n` +
@@ -563,10 +610,10 @@ export async function init(_o: CliOptions): Promise<void> {
       console.log('\n== 6/7: what to back up ==');
       console.log(`Available profiles (one-flag source presets): ${PROFILE_NAMES.join(', ')}. Or "none" to point at`);
       console.log('directories yourself (the same as passing --dir manually to snapshot later).');
-      const profileChoice = await askLine(rl, `Profile [none/${PROFILE_NAMES.join('/')}] (default none): `, 'none');
+      const profileChoice = await askLine(`Profile [none/${PROFILE_NAMES.join('/')}] (default none)`, 'none');
       const snapshotOpts: CliOptions = { dirs: [], tables: [], recipients: [] };
       if (profileChoice === 'none') {
-        const dirsInput = await askLine(rl, 'Directory path(s) to back up, comma-separated (at least one, required): ');
+        const dirsInput = await askLine('Directory path(s) to back up, comma-separated (at least one, required)');
         const dirs = dirsInput
           .split(',')
           .map((d) => expandHome(d.trim()))
@@ -579,12 +626,12 @@ export async function init(_o: CliOptions): Promise<void> {
       } else if (PROFILE_NAMES.includes(profileChoice)) {
         snapshotOpts.profile = profileChoice;
         if (profileChoice === 'obsidian')
-          snapshotOpts.vault = expandHome(await askLine(rl, 'Path to your Obsidian vault (must contain .obsidian/): '));
+          snapshotOpts.vault = expandHome(await askLine('Path to your Obsidian vault (must contain .obsidian/)'));
         if (profileChoice === 'chatgpt-export')
-          snapshotOpts.zip = expandHome(await askLine(rl, 'Path to the official ChatGPT export .zip: '));
+          snapshotOpts.zip = expandHome(await askLine('Path to the official ChatGPT export .zip'));
         if (profileChoice === 'o2b')
           snapshotOpts.export = expandHome(
-            await askLine(rl, 'Path to the o2b bank-export bundle ("o2b brain bank-export --out <path>.json"): '),
+            await askLine('Path to the o2b bank-export bundle ("o2b brain bank-export --out <path>.json")'),
           );
       } else {
         throw new Error(`unknown profile "${profileChoice}" — valid choices: none, ${PROFILE_NAMES.join(', ')}`);
@@ -603,7 +650,7 @@ export async function init(_o: CliOptions): Promise<void> {
         console.log(`\nDetected a gbrain config at ${gbrainConfigPath} — gbrain's actual data (pages, embeddings,`);
         console.log('timeline, graph) lives in Postgres, not in that directory alone. Requires pg_dump/pg_restore');
         console.log('on PATH — see README "Prerequisites for --pg".');
-        if (await askYesNo(rl, 'Include a Postgres database dump (--pg) for gbrain in this backup?', true)) {
+        if (await askYesNo('Include a Postgres database dump (--pg) for gbrain in this backup?', true)) {
           // Default to the CURRENT machine's OS user — local Postgres setups commonly use
           // peer auth keyed to it (matches README's own --pg examples), so this is a real
           // guess rather than a literal "you" placeholder nobody's account is ever named
@@ -617,14 +664,14 @@ export async function init(_o: CliOptions): Promise<void> {
           // percent-encode: a username with '@', ':', '/', or a space would otherwise
           // corrupt the URI's own authority parsing (Fugu review finding).
           const defaultPg = `postgres://${encodeURIComponent(osUser)}@localhost:5432/gbrain`;
-          snapshotOpts.pg = await askLine(rl, `Postgres connection string [${defaultPg}]: `, defaultPg);
+          snapshotOpts.pg = await askLine(`Postgres connection string [${defaultPg}]`, defaultPg);
         }
       }
 
       // ---------- 7. initial snapshot + push ----------
       console.log('\n== 7/7: first snapshot + push ==');
       console.log(`Storage backends: ${BACKEND_NAMES.join(', ')}. arweave/turbo are PAID, permanent stores.`);
-      const backend = await askLine(rl, `Backend [${BACKEND_NAMES.join('/')}] (default file): `, 'file');
+      const backend = await askLine(`Backend [${BACKEND_NAMES.join('/')}] (default file)`, 'file');
       if (!(BACKEND_NAMES as readonly string[]).includes(backend)) {
         throw new Error(`unknown backend "${backend}" — valid choices: ${BACKEND_NAMES.join(', ')}`);
       }
@@ -682,7 +729,6 @@ export async function init(_o: CliOptions): Promise<void> {
         console.log(`\n${backend}: cost estimate for this snapshot:`);
         for (const line of formatEstimate(est)) console.log(`  ${line}`);
         const consent = await askYesNo(
-          rl,
           `${backend} is a PAID, PERMANENT store — uploading spends real funds and cannot be undone. Proceed?`,
           false,
         );
@@ -729,23 +775,27 @@ export async function init(_o: CliOptions): Promise<void> {
         pushedLocatorPath = locatorPath;
         savedLocatorLine = (await readFile(locatorPath, 'utf8')).split('\n').find((l) => l.trim()) ?? '';
       } catch (pushErr) {
-        if (pushErr instanceof PushLocatorWriteError) {
-          // The upload itself (backend.put()) already succeeded — see
-          // PushLocatorWriteError's own doc comment in pushpull.ts. The remote
-          // artifact durably exists (permanently, on arweave/turbo) even though
-          // locatorPath was never written, so this is exactly as unrollbackable as
-          // an ordinary successful push: flip pushSucceeded so the outer catch below
-          // preserves the identities/snapshot instead of deleting them, but leave
-          // pushedLocatorPath null (there genuinely is no locator FILE on disk this
-          // time — only the value inside pushErr.locator, which the thrown error
-          // below surfaces for the operator to record by hand).
+        if (pushErr instanceof PushPartialSuccessError) {
+          // The ciphertext upload itself (backend.put()) already succeeded — see
+          // PushPartialSuccessError's own doc comment in pushpull.ts, covering BOTH the
+          // ".minisig" sidecar upload failing (PushSignatureUploadError) and the LOCAL
+          // --save-locator bookkeeping failing after everything durably uploaded
+          // (PushLocatorWriteError). Either way the remote artifact durably exists
+          // (permanently, on arweave/turbo) even though locatorPath was never reached
+          // and never written, so this is exactly as unrollbackable as an ordinary
+          // successful push: flip pushSucceeded so the outer catch below preserves the
+          // identities/snapshot instead of deleting them, but leave pushedLocatorPath
+          // null (there genuinely is no locator FILE on disk this time — only the value
+          // inside pushErr.locator, which the thrown error below surfaces for the
+          // operator to record by hand).
           pushSucceeded = true;
           pushedBackend = backend;
           pushedLocatorPath = null;
           throw new Error(
             `${pushErr.message}\nACTION REQUIRED: the upload already happened and cannot be undone — hand-record ` +
-              `this locator now, since --save-locator itself failed to: locator="${pushErr.locator}" backend="${backend}". ` +
-              `Without recording it, this snapshot is unrecoverable even though it durably exists in the backend.`,
+              `this locator now, since --save-locator itself never ran (or failed) for it: locator="${pushErr.locator}" ` +
+              `backend="${backend}". Without recording it, this snapshot is unrecoverable even though it durably ` +
+              `exists in the backend.`,
           );
         }
         // Any other push() failure (declined paid-backend consent, a network error
@@ -759,9 +809,7 @@ export async function init(_o: CliOptions): Promise<void> {
       const defaultKitPath = join(homedir(), 'recovery-kit.txt');
       console.log('\n⚠  The recovery kit written below will contain secret key material in plaintext — once it');
       console.log('   is written, move it OFF-BOX (encrypted USB, a second location, a trusted person).');
-      const kitPath = expandHome(
-        await askLine(rl, `Path to write the recovery kit [${defaultKitPath}]: `, defaultKitPath),
-      );
+      const kitPath = expandHome(await askLine(`Path to write the recovery kit [${defaultKitPath}]`, defaultKitPath));
       const kitText = buildRecoveryKit({
         primaryIdentityPath: IDENTITY,
         primaryRecipient,
@@ -842,9 +890,9 @@ export async function init(_o: CliOptions): Promise<void> {
             : []),
           ...(snapshotOutPath ? [`snapshot: ${snapshotOutPath}`] : []),
         ].join('; ');
-        // pushedLocatorPath is null exactly when PushLocatorWriteError fired above:
-        // the upload succeeded but --save-locator's own file was never written, so
-        // there is no path to print here — printing the literal `null` would read as
+        // pushedLocatorPath is null exactly when a PushPartialSuccessError fired above:
+        // the upload succeeded but --save-locator's own file was never reached/written,
+        // so there is no path to print here — printing the literal `null` would read as
         // a bug rather than the "go read the error below" instruction it actually is.
         const locatorNote = pushedLocatorPath
           ? `locator saved: ${pushedLocatorPath}`
@@ -888,6 +936,38 @@ export async function init(_o: CliOptions): Promise<void> {
       throw err;
     }
   } finally {
-    rl.close();
+    // No persistent readline Interface to close anymore (issue #230 — @clack/prompts
+    // tears down its own per-prompt stdin listeners itself; see askLine/askYesNo
+    // above). BUT: Node's own readline.emitKeypressEvents(stdin) — which every clack
+    // prompt call makes at least once (@clack/core's Prompt.prompt()) to decode raw
+    // bytes into keypress events — installs a decoder on stdin's underlying socket
+    // that stays registered for the rest of the process; nothing clack does (or that
+    // this wizard could do) removes it again. An open stdin socket handle keeps
+    // Node's event loop alive on its own, and cli.ts sets `process.exitCode` (rather
+    // than calling process.exit() directly) on error, so the process depends on the
+    // event loop actually draining to exit — confirmed empirically: after the
+    // migration off readline.createInterface (whose own close() DID leave stdin with
+    // no handle at all), a run through init() that hits an error here would print it
+    // and then just hang forever needing SIGKILL, on EVERY path through init()
+    // (success, a thrown error, or InitCancelledError above), not just this one.
+    // stdin.pause() alone does not fix it — the handle stays in
+    // process._getActiveHandles() even paused, verified directly; unref() is what
+    // tells the event loop this handle must not keep the process alive, which was
+    // exactly the property the old rl.close() gave us for free.
+    //
+    // Guard the call itself: unref()/ref() are net.Socket/tty.ReadStream methods, not
+    // something every possible stdin implements. CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1
+    // (this wizard's own scripted-automation escape hatch, requireTTY above) combined
+    // with stdin coming from a HEREDOC or a plain `< file` redirection (rather than a
+    // pipe) makes process.stdin a bare fs.ReadStream, which has neither method — calling
+    // it unconditionally throws "process.stdin.unref is not a function" from THIS
+    // finally block, which then REPLACES whatever error (often InitCancelledError, e.g.
+    // stdin hitting EOF mid-wizard) was already propagating out of the try above (Codex
+    // review finding: confirmed empirically — a real bug, not a hypothetical, with
+    // `cb init < some-file` under the automation env var). A pipe (this repo's own
+    // drive-init.mjs, and a real interactive TTY) still gets a net.Socket/tty.ReadStream
+    // here and keeps unreffing exactly as before; only the fs.ReadStream case is now a
+    // harmless no-op instead of a crash that masks the real failure.
+    if (typeof process.stdin.unref === 'function') process.stdin.unref();
   }
 }

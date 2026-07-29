@@ -464,6 +464,7 @@ failure); the plain message is still the full story either way. Over MCP,
 | Area | Status |
 |---|---|
 | Backup-key recovery (any one identity restores), versioning round-trip | **proven** — `selftest:recovery` (CI) |
+| Restore extraction hardening (`restore` inspects every tar entry — absolute paths, `..` traversal, FIFO/device/socket, an escaping hardlink target, a path-traversal-through-symlink shape — and refuses the whole archive before extracting a byte; extraction itself lands in an isolated scratch directory, only promoted into `--out-dir` once fully vetted and complete — #218, defense-in-depth alongside #198's manifest.json path-traversal guard) | **proven** — `selftest:restore-security` (CI; malicious archives rejected, legitimate symlink/hardlink shapes `snapshot()` itself produces still restore) |
 | `file` backend store/fetch | **proven** — `selftest:storage` (CI) |
 | `arweave` backend round-trip | **proven** — `selftest:arweave` (CI, against arlocal); real-network gateway pull confirmed operator-run |
 | `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |

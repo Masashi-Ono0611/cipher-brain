@@ -103,6 +103,16 @@ signature into a hard failure too — that is the recipe that actually closes th
 gap. See the CLI reference's `keygen`/`snapshot`/`restore`/`verify` entries below for
 the flags.
 
+The same "anyone holding a recipient's public key can forge ciphertext" point applies
+one layer down, to the tar payload age decrypts to: `restore` inspects every tar entry
+— absolute paths, `..` traversal, FIFO/device/socket entries, a hardlink whose target
+escapes the archive tree, or a symlink another entry is nested under (the classic tar
+path-traversal-through-symlink attack) — and refuses the whole archive before
+extracting a single byte, into an isolated scratch directory only promoted into
+`--out-dir` once fully vetted (#218). This is defense-in-depth alongside #198's
+equivalent guard for manifest.json's `name`/`source` fields, not a fix for a known
+exploited vulnerability.
+
 Permanence adds a fourth caveat: **harvest now, decrypt later.** Ciphertext parked
 on a permanent public network can never be recalled — anyone can copy it today and
 wait for the cryptography to fail. age's plain X25519 recipient scheme is **not

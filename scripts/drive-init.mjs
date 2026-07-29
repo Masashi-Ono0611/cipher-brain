@@ -14,6 +14,24 @@
 // (confirmed empirically while building this test). Pacing each answer to the
 // prompt it actually answers — one at a time, only once that prompt has genuinely
 // been printed — avoids ever having more than one answer in flight.
+//
+// Terminator: '\r', not '\n' (issue #230, the @clack/prompts migration). clack's
+// prompt classes (@clack/core's Prompt.onKeypress) only treat a keypress named
+// "return" as the submit trigger, and Node's readline keypress decoder maps the RAW
+// '\r' byte to that "return" name — a plain '\n' byte decodes to a DIFFERENT key
+// name ("enter") that clack's submit check does not match, so a wizard prompt fed
+// '\n' just sits there forever instead of submitting (confirmed empirically: the
+// exact same driver logic below hangs on the very first prompt with '\n', and
+// completes normally with '\r' — this is why plain terminal input works fine while
+// piped drivers need this care: a real terminal in raw mode sends '\r' for the Enter
+// key itself, never '\n'). A confirm() prompt submits on its first "y"/"n" keypress
+// alone (before this trailing '\r' is even read) — the leftover '\r' byte is not a
+// problem: it is decoded into its own "return" keypress event on the underlying
+// stream, but by the time that happens the prompt that just closed has already torn
+// down its own keypress listener (@clack/core's Prompt.close()), and the NEXT
+// prompt has not attached its own yet, so that stray keypress event fires with zero
+// listeners and is silently dropped — verified with a standalone two-prompts-in-a-row
+// harness before relying on it here.
 import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync } from 'node:fs';
 
@@ -40,7 +58,7 @@ function tryAdvance() {
   while (qaIndex < qa.length) {
     const [waitFor, send] = qa[qaIndex];
     if (!transcript.includes(waitFor)) return;
-    child.stdin.write(`${send}\n`);
+    child.stdin.write(`${send}\r`);
     qaIndex++;
   }
 }

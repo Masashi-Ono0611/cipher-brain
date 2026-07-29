@@ -907,16 +907,75 @@ CIPHER_BRAIN_HOME="$PG2_CB_HOME" cb restore --in "$PG2_SNAP" --out-dir "$PG2_RES
 if [ -f "$PG2_RESTORE_DIR/db.dump" ]; then echo "[FAIL] declining the Postgres prompt still produced a db.dump component"; exit 1; fi
 echo "[PASS] declining the gbrain-detected Postgres prompt (auto-detect defaults to yes, but a real 'n' is honored) proceeds without --pg — no db.dump, kit says not included"
 
-echo "== (n) askYesNo re-prompts on an unrecognized answer instead of silently defaulting to no (issue #96) =="
-# "Generate an offline backup keypair now?" defaults to YES (the tool's own main
-# defense against identity loss) — an unrecognized answer like "yeah" must NOT be
-# silently read as "no". Prove it re-prompts, and that the corrected 'n' answer is
-# the one actually honored (not the unrecognized "yeah").
-REPROMPT_HOME="$TMP/reprompt-home"
-cat > "$TMP/qa-reprompt.json" <<JSON
+echo "== (m3) a whitespace-only answer to the Postgres connection-string prompt falls back to the default, not a silently-skipped pg_dump (P2 fix) =="
+# clack's text() only substitutes defaultValue for a TRULY EMPTY submission (zero
+# characters) — a whitespace-only answer (a stray space, an accidental tab) is
+# non-empty input as far as clack itself is concerned, so before askLine's own
+# trim-then-fallback this became the literal string "   " -> .trim() -> "" -> a
+# FALSY snapshotOpts.pg -> snapshot() silently SKIPS pg_dump entirely, producing a
+# backup that looks complete but contains no database at all (Codex review finding).
+# Reuses PG_HOME/PG_SRC/FAKE_PGBIN from (m)/(m2) above, answering the SAME prompt
+# those tests leave at its default with three spaces instead of a bare Enter.
+PG3_CB_HOME="$TMP/pg3-cb-home"
+PG3_STORE="$TMP/pg3-store"
+PG3_KIT_PATH="$PG_HOME/recovery-kit-3.txt"
+
+cat > "$TMP/qa-pg-whitespace.json" <<JSON
 [
-  ["Generate an offline backup keypair now?", "yeah"],
-  ["Please answer", "n"],
+  ["Generate an offline backup keypair now?", "n"],
+  ["Generate a signing keypair now?", "n"],
+  ["Protect the primary identity with a passphrase now?", "n"],
+  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Profile [none/", ""],
+  ["Directory path(s) to back up", "$PG_SRC"],
+  ["Include a Postgres database dump", ""],
+  ["Postgres connection string", "   "],
+  ["Backend [file/", ""],
+  ["Path to write the recovery kit", "$PG3_KIT_PATH"]
+]
+JSON
+
+CIPHER_BRAIN_HOME="$PG3_CB_HOME" CIPHER_BRAIN_FILE_DIR="$PG3_STORE" HOME="$PG_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN" \
+  with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-pg-whitespace.json" --out "$TMP/wizard-pg-whitespace.log" \
+  -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
+  || { echo "[FAIL] the whitespace-only pg connection-string run did not complete"; cat "$TMP/wizard-pg-whitespace.log"; exit 1; }
+grep -q 'cipher-brain init: complete' "$TMP/wizard-pg-whitespace.log" || { echo "[FAIL] whitespace-pg run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pg-whitespace.log"; exit 1; }
+grep -q 'postgres:          included (pg_dump)' "$TMP/wizard-pg-whitespace.log" || { echo "[FAIL] a whitespace-only connection-string answer did not fall back to the default — pg_dump was silently skipped (the P2 regression)"; cat "$TMP/wizard-pg-whitespace.log"; exit 1; }
+PG3_SNAP="$(find "$PG3_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
+[ -n "$PG3_SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found for the whitespace-pg run"; exit 1; }
+PG3_RESTORE_DIR="$TMP/pg3-restored"
+CIPHER_BRAIN_HOME="$PG3_CB_HOME" cb restore --in "$PG3_SNAP" --out-dir "$PG3_RESTORE_DIR" > "$TMP/pg3-restore.log" 2>&1 \
+  || { echo "[FAIL] restoring the whitespace-pg run's snapshot failed"; cat "$TMP/pg3-restore.log"; exit 1; }
+[ -f "$PG3_RESTORE_DIR/db.dump" ] || { echo "[FAIL] restored tree has no db.dump — a whitespace-only connection-string answer silently dropped the Postgres backup entirely (the P2 regression)"; exit 1; }
+grep -qF 'fake-pg-dump-content' "$PG3_RESTORE_DIR/db.dump" || { echo "[FAIL] db.dump does not contain the shimmed pg_dump output"; exit 1; }
+echo "[PASS] a whitespace-only answer to the Postgres connection-string prompt falls back to the default connection string instead of silently skipping pg_dump"
+
+echo "== (n) the yes/no prompt structurally cannot misread an ambiguous answer as 'no' (issue #96, re-verified post-#230) =="
+# Issue #96's original bug (and this test's original form): a free-text y/n reader
+# that silently coerced any unrecognized answer to false. The OLD askYesNo() (plain
+# node:readline) re-prompted on anything that was not literally y/yes/n/no, and this
+# test drove that re-prompt loop with "yeah".
+#
+# Issue #230 replaced that free-text reader with @clack/prompts' confirm() — a
+# two-option TOGGLE (Yes/No), not parsed text — so there is no longer any "answer
+# string" to misread in the first place: confirm() submits the instant it sees a "y"
+# or "n" keypress (@clack/core's ConfirmPrompt), and any OTHER character just moves
+# the toggle's cursor/highlight, never a value. "Answer 'yeah' as three keypresses
+# and see if it re-prompts" is no longer a meaningful drive-init.mjs scenario against
+# this prompt type: the SAME first "y" keypress that used to start "yeah" now submits
+# true immediately, before the rest of the string is even sent — that is the
+# structural improvement, not a regression to re-test the OLD way.
+#
+# What is still worth proving here: the specific #96 failure mode (a non-explicit
+# answer silently landing as "no" on a prompt whose default is YES — the tool's own
+# main defense against identity loss) cannot happen via the one input path confirm()
+# actually accepts for "no answer at all": a bare Enter, which must still honor the
+# prompt's own default (initialValue: true) rather than silently defaulting to false.
+NODEFAULT_HOME="$TMP/confirm-default-home"
+cat > "$TMP/qa-confirm-default.json" <<JSON
+[
+  ["Generate an offline backup keypair now?", ""],
+  ["Path for the backup keypair", ""],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
@@ -924,14 +983,14 @@ cat > "$TMP/qa-reprompt.json" <<JSON
   ["Directory path(s) to back up", ""]
 ]
 JSON
-if CIPHER_BRAIN_HOME="$REPROMPT_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
-  with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-reprompt.json" --out "$TMP/reprompt.log" \
+if CIPHER_BRAIN_HOME="$NODEFAULT_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-confirm-default.json" --out "$TMP/confirm-default.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
-  echo "[FAIL] init accepted an empty directory list for profile=none (unexpected pass on the re-prompt path)"; cat "$TMP/reprompt.log"; exit 1
+  echo "[FAIL] init accepted an empty directory list for profile=none (unexpected pass)"; cat "$TMP/confirm-default.log"; exit 1
 fi
-grep -qi 'Please answer' "$TMP/reprompt.log" || { echo "[FAIL] an unrecognized answer ('yeah') did not trigger a re-prompt"; cat "$TMP/reprompt.log"; exit 1; }
-grep -qi 'Skipping the backup key' "$TMP/reprompt.log" || { echo "[FAIL] the re-prompted 'n' answer was not honored (backup key generation was not skipped)"; cat "$TMP/reprompt.log"; exit 1; }
-echo "[PASS] an unrecognized yes/no answer re-prompts instead of silently defaulting to 'no', and the corrected answer is the one honored"
+grep -qi 'backup identity written to' "$TMP/confirm-default.log" || { echo "[FAIL] a bare Enter on the backup-keypair prompt did not honor its stated default (Yes) — it should have generated a backup keypair"; cat "$TMP/confirm-default.log"; exit 1; }
+if grep -qi 'Skipping the backup key' "$TMP/confirm-default.log"; then echo "[FAIL] a bare Enter on the backup-keypair prompt was silently read as 'no' — the exact #96 failure mode"; cat "$TMP/confirm-default.log"; exit 1; fi
+echo "[PASS] a bare-Enter answer on the security-relevant backup-keypair prompt honors its stated Yes default (never silently reads as 'no') — confirm()'s toggle UI also makes the OLD free-text misread (#96) structurally unreachable"
 
 echo "== (o) paid backend chosen with no CIPHER_BRAIN_AR_WALLET configured exits CLEANLY before the spend-consent prompt — no rollback (issue #161) =="
 # Before the fix, picking arweave/turbo with no wallet set sailed past the "spends
@@ -1043,6 +1102,49 @@ if grep -qF 'needs a funded wallet to push' "$TMP/wallet-precheck-present.log"; 
 grep -qi "aborted before spending" "$TMP/wallet-precheck-present.log" || { echo "[FAIL] declined-consent error message missing (unchanged existing behavior expected)"; cat "$TMP/wallet-precheck-present.log"; exit 1; }
 [ ! -f "$O3_CB_HOME/identity.age" ] || { echo "[FAIL] declining consent should still roll back the identity (unchanged existing behavior, issue #161 non-goal)"; exit 1; }
 echo "[PASS] a configured, present-on-disk wallet still reaches the existing spend-consent prompt unchanged, and declining it still aborts + rolls back exactly as before"
+
+echo "== (p) CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 with FILE-redirected (non-pipe) stdin surfaces the real cancellation, not a masking TypeError (P2 fix) =="
+# Node's process.stdin is a plain fs.ReadStream (no unref()/ref()) when stdin comes
+# from a HEREDOC or a `< file` redirection — unlike a pipe (net.Socket), which is
+# ALL every other scripted run in this file uses (drive-init.mjs spawns the child
+# with stdio:['pipe',...]), so none of them ever exercised this path. Before the
+# fix, init()'s own `finally` block called process.stdin.unref() unconditionally,
+# which throws "process.stdin.unref is not a function" on an fs.ReadStream and
+# REPLACES whatever real error (here, InitCancelledError from the Ctrl+C byte below)
+# was already propagating out of the wizard (Codex review finding — confirmed
+# empirically before the fix: this exact repro printed "error: process.stdin.unref
+# is not a function" instead of the cancellation message asserted below).
+# with_timeout itself can't be reused here as-is: bash nulls an asynchronous
+# command's stdin unless THAT EXACT backgrounded command carries its own explicit
+# redirection (see bash's "Command Execution Environment") — with_timeout's `"$@" &`
+# does not qualify just because with_timeout's OWN invocation was redirected from a
+# file, so it silently replaces this test's Ctrl+C byte with /dev/null (confirmed
+# empirically: every other with_timeout call site in this file is unaffected only
+# because it either already redirects from /dev/null or never needed real stdin
+# content in the first place — this is the first one that does). `<&0` makes the
+# dup an explicit redirection ON the backgrounded command itself, which is enough to
+# opt back out of bash's default.
+with_stdin_timeout() {
+  local s=$1; shift
+  "$@" <&0 & local c=$!
+  ( sleep "$s"; kill -9 "$c" 2>/dev/null ) >/dev/null 2>&1 & local w=$!
+  wait "$c" 2>/dev/null; local rc=$?
+  kill -9 "$w" 2>/dev/null; wait "$w" 2>/dev/null
+  return $rc
+}
+
+P_HOME="$TMP/nonpipe-stdin-home"; mkdir -p "$P_HOME"
+P_CB_HOME="$TMP/nonpipe-stdin-cb-home"
+printf '\x03' > "$TMP/ctrlc-byte.bin" # a raw Ctrl+C byte — clack decodes this as a cancel keypress
+
+if CIPHER_BRAIN_HOME="$P_CB_HOME" HOME="$P_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  with_stdin_timeout 30 node "${BIN_DEV_ARGS[@]}" "$BIN" init < "$TMP/ctrlc-byte.bin" > "$TMP/nonpipe-stdin.log" 2>&1; then
+  echo "[FAIL] init did not fail on a Ctrl+C byte delivered via file-redirected stdin"; cat "$TMP/nonpipe-stdin.log"; exit 1
+fi
+grep -qi "cipher-brain init: cancelled" "$TMP/nonpipe-stdin.log" || { echo "[FAIL] the real InitCancelledError was not surfaced (masked by something else?)"; cat "$TMP/nonpipe-stdin.log"; exit 1; }
+if grep -qi "is not a function" "$TMP/nonpipe-stdin.log"; then echo "[FAIL] process.stdin.unref() crashed and masked the real error — the P2 regression"; cat "$TMP/nonpipe-stdin.log"; exit 1; fi
+[ ! -f "$P_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity survived the cancellation — rollback should still fire on this path"; exit 1; }
+echo "[PASS] file-redirected (non-pipe) stdin under CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 surfaces the real InitCancelledError instead of a masking 'unref is not a function' crash"
 
 echo
 echo "INIT SELFTEST PASS"

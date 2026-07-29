@@ -68,7 +68,8 @@
     "selftest:error-codes": "node scripts/selftest-error-codes.mjs",
     "selftest:progress": "node --experimental-strip-types --import ./scripts/dev-cli-loader.mjs scripts/selftest-progress.mjs",
     "selftest:config-file": "bash scripts/selftest-config-file.sh",
-    "verify:suite": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:pq && npm run selftest:minisign && npm run selftest:push-partial-failure && npm run selftest:idempotency-lib && npm run selftest:verify-levels && npm run selftest:schedule && npm run selftest:config-file && npm run selftest:init && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && npm run selftest:error-codes && npm run selftest:progress && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs"
+    "selftest:doctor": "bash scripts/selftest-doctor.sh",
+    "verify:suite": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:pq && npm run selftest:minisign && npm run selftest:push-partial-failure && npm run selftest:idempotency-lib && npm run selftest:verify-levels && npm run selftest:schedule && npm run selftest:config-file && npm run selftest:init && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && npm run selftest:error-codes && npm run selftest:progress && npm run selftest:doctor && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs"
   },
   "engines": {
     "node": ">=22.6.0"

@@ -48,8 +48,9 @@ async function getArweave(): Promise<ArweaveWalletClient> {
 // The default path `wallet create` writes to when --out is omitted. Pulled out to a
 // module-level constant (rather than inlined at each call site) so `walletAddress`'s
 // fallback below reuses the exact same path `walletCreate` just wrote to (#164) instead
-// of re-deriving it and risking the two drifting apart.
-const WALLET_DEFAULT_PATH = join(HOME, 'wallet.json');
+// of re-deriving it and risking the two drifting apart. Exported so `doctor` (#201) can
+// check the SAME default path's permissions rather than re-deriving it a third time.
+export const WALLET_DEFAULT_PATH = join(HOME, 'wallet.json');
 
 async function walletCreate(o: CliOptions): Promise<void> {
   const usingDefaultPath = !o.out;

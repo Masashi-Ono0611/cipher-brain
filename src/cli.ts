@@ -35,6 +35,7 @@ import { push, pull } from './lib/pushpull.js';
 import { schedule } from './lib/schedule.js';
 import { wallet } from './lib/wallet.js';
 import { estimate } from './lib/estimate.js';
+import { doctor } from './lib/doctor.js';
 import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
 import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
@@ -219,6 +220,39 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       $CIPHER_BRAIN_HOME/wallet.json (the same default 'wallet create' writes to). Use
       this to confirm you are funding the SAME wallet cipher-brain will sign uploads
       with.
+
+  cipher-brain doctor [--json]
+      Read-only environment health check (#201): inspects the EXISTING setup for the
+      permission/config problems several past issues were filed for (age identity 0600,
+      $CIPHER_BRAIN_HOME 0700, an Arweave JWK wallet's permissions, an identity/recipient
+      pairing mismatch (including an unexpected EXTRA recipient in recipient.txt that the
+      identity does not derive), an empty CIPHER_BRAIN_PIN_RECIPIENTS fail-closing every
+      snapshot, any recipient.txt entry missing from that same allowlist (not just the
+      primary one), an offline backup keypair sharing a disk with the primary identity at
+      its default location, and the last scheduled run's outcome) and reports
+      PASS/WARN/FAIL/SKIP per check, each FAIL/WARN paired with the exact command that
+      fixes it. Nothing not yet set up (no wallet, no schedule, ...) is treated as a
+      failure — it SKIPs instead, EXCEPT a path explicitly configured via an environment
+      variable (e.g. CIPHER_BRAIN_AR_WALLET) pointing at nothing, which is a FAIL. A
+      permission-denied path, a symlink loop, or an unexpected file type (e.g. a FIFO) is
+      its own FAIL rather than folded into the same result an absent path gets.
+      Keeps a small bookkeeping file ($CIPHER_BRAIN_HOME/doctor-state.json — check ids and
+      timestamps only, never key material) between runs so a WARN/FAIL you have already
+      seen is marked "known" rather than re-surprising you every time you run this, while
+      a genuinely NEW one is marked with a "new" marker and costs MORE against
+      health_score than a known, still-unfixed one — a discount, not a full exclusion (a
+      lingering FAIL still pulls the score down, so it can never read a healthy 100/100
+      next to VERDICT: FAIL), so the score mostly answers "did anything get WORSE since I
+      last looked" rather than "have I fixed literally everything yet" (which would sit
+      low forever for a risk you have deliberately accepted). Written only when
+      $CIPHER_BRAIN_HOME already exists — doctor never creates it just to leave this file
+      behind on a machine with nothing set up yet.
+      VERDICT: PASS (exit 0, no WARN/FAIL) / PARTIAL (exit 2, WARN only) / FAIL (exit 1,
+      any check FAILs) — same three-way convention as "verify".
+      --json prints one JSON object to stdout instead of the human-readable report
+      (checks: [{id, status, message, remediation?, marker, since?}], resolved: [...],
+      health_score, new_count, carryover_count, verdict, state_path, state_saved) — the
+      SAME computation as the human-readable report, never a re-implementation.
 
   cipher-brain snapshot --out <file.age> [--profile <name>] [--pg <conn>] [--pg-table <t>]...
                          [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...
@@ -738,6 +772,10 @@ const FLAG_IRRELEVANT: Record<string, FlagIrrelevance[]> = {
   pull: [],
   schedule: [],
   wallet: [],
+  // doctor() reads only o.json — every other flag another command takes (--out, --in,
+  // --backend, ...) is meaningless here, but none is likely enough to be typed by
+  // mistake to warrant naming individually (unlike restore's --out/--out-dir mix-up).
+  doctor: [],
   // Reached through the same switch, so the source-level guard in cli-smoke expects an
   // answer from them too. They take no flags and produce no side effects, which is the
   // answer — recorded rather than special-cased, so a future route that DOES take flags
@@ -857,6 +895,8 @@ async function main(): Promise<void> {
       return schedule(o);
     case 'wallet':
       return wallet(o);
+    case 'doctor':
+      return doctor(o);
     // mascot on stderr (decoration only, EPIPE-safe — see printMascot in
     // ui.ts), HELP text stays on stdout so `cipher-brain --help | grep …`
     // still sees only the HELP text on its stdin.

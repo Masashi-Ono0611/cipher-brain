@@ -26,6 +26,12 @@
 //     same #64 reason age-encryption does, or the shipped CLI would need node_modules
 //     just to run `snapshot` on a fresh machine (selftest-arweave-nodeps.mjs's
 //     isolated-dir copy of dist/cli.mjs has none, and would fail to even start).
+//   - `@clack/prompts` (the init wizard's prompt UI, #230) is the same "always-needed,
+//     eagerly imported" shape as `ignore` above: cli.ts imports `init` from
+//     src/lib/wizard.ts at its own top level (every command needs it resolvable, not
+//     just `init` itself), so leaving it external would break the same nodeps
+//     property `ignore` was inlined to preserve — an isolated dist/cli.mjs copy with no
+//     node_modules would fail to even start `pull`, not just `init`.
 //   - the lazily-imported optional backends — `arweave` and `@ardrive/turbo-sdk`
 //     — stay external: bundling them would break the documented "a gateway pull
 //     needs no npm dependency" recovery property (and the selftest that proves it).
@@ -43,7 +49,7 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
   peerDependencies?: Record<string, string>;
 };
 
-const INLINE = new Set(['age-encryption', '@modelcontextprotocol/sdk', 'ignore']);
+const INLINE = new Set(['age-encryption', '@modelcontextprotocol/sdk', 'ignore', '@clack/prompts']);
 
 const external = [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.peerDependencies ?? {})].filter(
   (d) => !INLINE.has(d),

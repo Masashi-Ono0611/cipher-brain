@@ -40,20 +40,22 @@ const FACES: Record<Mood, { lensL: string; lensR: string; mouth: string }> = {
 export function mascot(mood: Mood = 'neutral'): string[] {
   const f = FACES[mood];
   return [
-    // Hood peak indent: the face rows below (the "|...|"/"/...\ " lines) span
-    // columns 1-14 (issue #197's measured leftEdge/rightEdge), so their visual
-    // center is column 7.5 — matching the lens-pair center computed the same
-    // way ([10]/[01] centers at 4.5/10.5, averaging to 7.5 too). ",--^--,"'s
-    // own "^" sits at its exact middle (index 3 of the 7-char string), so a
-    // 5-space indent lands it at column 8 (closest integer to 7.5, since a
-    // 15-column-wide row has no exact center for a 7-char-wide, odd-length
-    // hood) — re-measured after changing this from the old 3-space indent
-    // (which put "^" at column 6, visibly left of center).
-    '     ,--^--,',
-    '  /           \\',
+    // "Sharp hood" (#346). The face rows (lens/mouth, unchanged from #197's
+    // measurements) span columns 1-14, visual center 7.5. The 7-char hood peak
+    // "_,-^-,_" carries its "^" at index 3, so the same 5-space indent as before
+    // lands it at column 8 (closest integer to 7.5) — the #197 center math is
+    // untouched, only the ornament changed. The peak is a true mirror
+    // (left "_,-" / right "-,_"), the brim insets one column each side (2..13)
+    // under the face edges at 1/14, and the chin's quotes sit at columns 1 and
+    // 14 — exactly under both face edges (a first draft had the left quote at
+    // column 2, one inside, which review caught against the per-column claim) —
+    // each measured per column, since "looks centered" is what #197 was filed
+    // about.
+    '     _,-^-,_',
+    "  ,'        ',",
     ` | ${f.lensL}  ${f.lensR} |`,
     ` |     ${f.mouth}      |`,
-    '  \\___________/',
+    " '.__________.'",
   ];
 }
 

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 import { warnIfLooseKeyPermsSync } from './util.js';
+import { warn } from './warn.js';
 
 // Every CIPHER_BRAIN_* name this codebase reads, declared exactly once.
 //
@@ -175,9 +176,7 @@ export const CONFIG_FILE_ERROR: Error | null = CONFIG_LOAD.error;
 // #64: age runs in-process (typage, bundled) — the external-binary overrides are obsolete.
 for (const v of ['CIPHER_BRAIN_AGE', 'CIPHER_BRAIN_AGE_KEYGEN'] as const) {
   if (readEnv(v))
-    console.error(
-      `cipher-brain: ${v} is deprecated and ignored — age is bundled in-process (typage); no external age binary is used`,
-    );
+    warn(`${v} is deprecated and ignored — age is bundled in-process (typage); no external age binary is used`);
 }
 export const PG_BIN = readEnv('CIPHER_BRAIN_PG_BIN') || ''; // dir holding pg_dump/pg_restore; '' => PATH
 export const pgTool = (name: string): string => (PG_BIN ? join(PG_BIN, name) : name);

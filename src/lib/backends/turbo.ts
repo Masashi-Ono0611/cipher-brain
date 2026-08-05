@@ -10,6 +10,7 @@ import { resolve } from 'node:path';
 import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND, SKIP_FUNDS_CHECK } from '../config.js';
 import { warnIfLooseKeyPerms, fmtBytes, errMsg, isWalletAddress, sleep, sdkImportAdvice } from '../util.js';
 import { summarizeBalance, balanceLines, insufficientFundsError, type BalanceSummary } from '../balance.js';
+import { warn } from '../warn.js';
 import { arUsdRate, turboUsdRate, usdApprox } from '../estimate.js';
 import { progressReporter } from '../progress.js';
 import { arweaveBackend } from './arweave.js';
@@ -111,7 +112,7 @@ export function turboBackend(): StorageBackend {
           // failing stderr must not become the one thing that CAN fail the push here
           // (Codex review).
           try {
-            process.stderr.write(`turbo: could not read the credit balance (${errMsg(e)}); proceeding\n`);
+            warn(`turbo: could not read the credit balance (${errMsg(e)}); proceeding`);
           } catch {
             /* a dead stderr cannot be reported to stderr */
           }
@@ -127,7 +128,7 @@ export function turboBackend(): StorageBackend {
             `turbo: could not estimate upload cost (${errMsg(e)}) while CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} is set — aborting (fail-closed) because the spend cap cannot be verified; set CIPHER_BRAIN_MAX_SPEND=0 to disable the cap and upload uncapped`,
           );
         }
-        process.stderr.write(`turbo: could not estimate upload cost (${errMsg(e)}); proceeding\n`);
+        warn(`turbo: could not estimate upload cost (${errMsg(e)}); proceeding`);
       }
       // The cap check lives OUTSIDE the estimate try/catch above so a failed estimate can
       // never suppress it (the original bug: both lived in the same try, so any exception
@@ -183,7 +184,9 @@ export function turboBackend(): StorageBackend {
         if (insufficientFundsError(uploadWinc, balForCheck, AR_PAID_BY) !== null) {
           if (!process.stderr.isTTY) {
             const warning = insufficientFundsError(uploadWinc, balForCheck, AR_PAID_BY, 'warn');
-            if (warning !== null) process.stderr.write(`${warning}\n`);
+            // warn(), not a raw write (#347): this is THE line an unattended morning
+            // log exists to carry, and raw stderr bypasses the MCP capture.
+            if (warning !== null) warn(warning);
           } else {
             // The throw sits OUTSIDE the try so the re-read's failure handling can never
             // catch the refusal itself — no string-matching a message to tell them apart.

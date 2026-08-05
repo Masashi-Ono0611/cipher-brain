@@ -252,6 +252,54 @@ async function runIdempotencyCorruptedLogTest(tmp) {
     const first = await waitFor(2);
     if (first.result?.isError)
       throw new Error(`corrupted-log test: seed snapshot_now failed: ${JSON.stringify(first.result).slice(0, 500)}`);
+    // #347: this snapshot encrypts to exactly ONE recipient, so the run records the
+    // "single recipient — UNRECOVERABLE" warning — and the tool result must carry it
+    // in a dedicated `warnings` array, not just buried in `log`. This is the warning
+    // that was measured vanishing into a background log on a real agent-driven push;
+    // the field is the structural fix.
+    const seedWarnings = first.result?.structuredContent?.warnings;
+    if (!Array.isArray(seedWarnings) || !seedWarnings.some((w) => /SINGLE recipient/.test(w)))
+      throw new Error(
+        `#347: snapshot_now (single recipient) did not surface the warning in a warnings[] field: ` +
+          `${JSON.stringify(first.result?.structuredContent?.warnings ?? null)}`,
+      );
+    console.log(
+      'MCP SMOKE (#347 warnings field): PASS — the single-recipient warning rides the tool result as warnings[]',
+    );
+
+    // #347, the failure half: a warning recorded BEFORE the call failed must ride the
+    // ERROR result too — losing it would re-open the relay hole on exactly the runs
+    // that most need a human's eyes. Ordering matters for the probe: source
+    // validation runs before the single-recipient warning, so a bad DIR fails too
+    // early to have warned (as does the out no-clobber check — both probed and
+    // rejected as probes for exactly that reason); pg staging runs AFTER recipient
+    // resolution, so an unreachable pg connection fails the call post-warning
+    // whether pg_dump connects-and-fails or is not even installed.
+    send({
+      jsonrpc: '2.0',
+      id: 20,
+      method: 'tools/call',
+      params: {
+        name: 'snapshot_now',
+        arguments: {
+          dirs: [data],
+          pg: 'postgres://nobody@127.0.0.1:1/nope',
+          recipients: [recipientPath],
+          out: join(tmp, 'never-347.age'),
+        },
+      },
+    });
+    const failed347 = await waitFor(20);
+    if (!failed347.result?.isError)
+      throw new Error(
+        `#347 error-path probe: expected the call to fail, got: ${JSON.stringify(failed347.result).slice(0, 300)}`,
+      );
+    const failWarnings = failed347.result?.structuredContent?.warnings;
+    if (!Array.isArray(failWarnings) || !failWarnings.some((w) => /SINGLE recipient/.test(w)))
+      throw new Error(
+        `#347: a warning recorded before the failure did not ride the error result: ${JSON.stringify(failed347.result?.structuredContent)}`,
+      );
+    console.log('MCP SMOKE (#347 error-path warnings): PASS — a pre-failure warning rides the error result');
 
     // Corrupt the log EXTERNALLY — a truncated write, not a well-formed StoredLine.
     const logPath = join(home, 'idempotency-log.jsonl');

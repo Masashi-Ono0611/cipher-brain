@@ -40,7 +40,8 @@ import { init } from './lib/wizard.js';
 import { errMsg } from './lib/util.js';
 import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
 import { didYouMean } from './lib/suggest.js';
-import { hasWrittenJson, printMascot } from './lib/ui.js';
+import { hasWrittenJson, printMascot, installEpipeGuard } from './lib/ui.js';
+import { drainWarnings, formatWarningSummary } from './lib/warn.js';
 import { printFounderNote, printWisdomQuote } from './lib/wisdom.js';
 import type { CliOptions } from './lib/types.js';
 
@@ -962,35 +963,56 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e: unknown) => {
-  // issue #212: a stable "[CB-E0xx] see MANAGEMENT.md#error-codes" suffix is appended
-  // HERE (the one place every command's error funnels through) when the message matches
-  // a known failure pattern — never at the individual throw site, so no existing message
-  // body changes; an unmatched error prints exactly as before.
-  const message = errMsg(e);
-  console.error(`error: ${annotateErrorMessage(message)}`);
-  // issue #270: --json (#211) only ever produced JSON on the SUCCESS path, so a caller
-  // that asked for machine-readable output had to parse stdout on success and scrape
-  // English off stderr on failure. The stable error identity #212 computes is already
-  // right here — surface it as a field instead of leaving it embedded in a sentence.
-  //
-  // Read off argv rather than the parsed options because parseArgs() itself can throw
-  // (an unknown flag, #253) before any options exist — that failure must answer in the
-  // format the caller asked for too.
-  //
-  // `error` carries the RAW message; the "[CB-E0xx] see …" suffix is stderr's rendering
-  // of the same two facts, and duplicating it inside a field that sits next to `code`
-  // would just make the JSON harder to consume. Additive: stdout on this path used to
-  // be empty, stderr is byte-for-byte what it was, and the exit code stays the sole
-  // authority on success/failure.
-  //
-  // hasWrittenJson(): never append a SECOND JSON value to a stdout that already holds
-  // a command's own document — two values on one stream is not parseable as one. No
-  // --json command can currently throw after printing (each prints last and returns),
-  // so this is a structural guarantee for future ones rather than a live fix
-  //.
-  if (process.argv.slice(2).includes('--json') && !hasWrittenJson()) {
-    console.log(JSON.stringify({ error: message, code: matchErrorCode(message)?.code ?? null, exit_code: 1 }));
-  }
-  process.exitCode = 1;
-});
+// The end-of-run warning summary (#347). Every ⚠-class warning a run recorded (via
+// warn.ts's chokepoint) is repeated ONCE, together, at the very end — on stderr, after
+// everything else. Why: an agent driving this CLI relays fragments; warnings that
+// scrolled by mid-run (a single-recipient snapshot, a spend-blocking shortfall, a
+// loose-permissioned key) were measured to vanish into a background log on a real
+// agent-driven push. One block at the tail, explicitly addressed to agents, is a
+// relayable contract — and a human scrolling a long unattended log gets the recap for
+// free. stderr only (stdout stays machine-readable), printed on success AND failure
+// (warnings recorded before an error still matter), skipped when nothing was recorded.
+function printWarningSummary(): void {
+  const lines = formatWarningSummary(drainWarnings());
+  if (lines.length === 0) return;
+  installEpipeGuard();
+  for (const l of lines) console.error(l);
+}
+
+main()
+  .catch((e: unknown) => {
+    // issue #212: a stable "[CB-E0xx] see MANAGEMENT.md#error-codes" suffix is appended
+    // HERE (the one place every command's error funnels through) when the message matches
+    // a known failure pattern — never at the individual throw site, so no existing message
+    // body changes; an unmatched error prints exactly as before.
+    const message = errMsg(e);
+    console.error(`error: ${annotateErrorMessage(message)}`);
+    // issue #270: --json (#211) only ever produced JSON on the SUCCESS path, so a caller
+    // that asked for machine-readable output had to parse stdout on success and scrape
+    // English off stderr on failure. The stable error identity #212 computes is already
+    // right here — surface it as a field instead of leaving it embedded in a sentence.
+    //
+    // Read off argv rather than the parsed options because parseArgs() itself can throw
+    // (an unknown flag, #253) before any options exist — that failure must answer in the
+    // format the caller asked for too.
+    //
+    // `error` carries the RAW message; the "[CB-E0xx] see …" suffix is stderr's rendering
+    // of the same two facts, and duplicating it inside a field that sits next to `code`
+    // would just make the JSON harder to consume. Additive: stdout on this path used to
+    // be empty, stderr is byte-for-byte what it was, and the exit code stays the sole
+    // authority on success/failure.
+    //
+    // hasWrittenJson(): never append a SECOND JSON value to a stdout that already holds
+    // a command's own document — two values on one stream is not parseable as one. No
+    // --json command can currently throw after printing (each prints last and returns),
+    // so this is a structural guarantee for future ones rather than a live fix
+    //.
+    if (process.argv.slice(2).includes('--json') && !hasWrittenJson()) {
+      console.log(JSON.stringify({ error: message, code: matchErrorCode(message)?.code ?? null, exit_code: 1 }));
+    }
+    process.exitCode = 1;
+  })
+  // The summary is genuinely LAST — after the error line and the --json error object
+  // (multi-model review: printing it before the error handler made "end-of-run" a
+  // misnomer). .finally covers success and failure with one call site.
+  .finally(() => printWarningSummary());

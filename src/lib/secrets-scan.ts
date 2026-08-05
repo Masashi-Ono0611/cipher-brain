@@ -27,6 +27,7 @@ import { GITLEAKS_BIN } from './config.js';
 import { run } from './proc.js';
 import { setActiveScanReportDir } from './signal-guard.js';
 import { errMsg } from './util.js';
+import { warn } from './warn.js';
 
 // `off` exists because the scan is no longer opt-in (#301): when gitleaks is resolvable
 // and no mode was named, snapshot() defaults to `warn`. A user who does not want that
@@ -157,8 +158,8 @@ export function reportSecretFindings(label: string, findings: SecretFinding[], m
         `source if this is a false positive, or rerun with --scan-secrets=warn to proceed anyway.`,
     );
   }
-  console.error(
-    `⚠  gitleaks found ${total} potential secret(s) in "${label}" (${summary}) — proceeding ` +
+  warn(
+    `gitleaks found ${total} potential secret(s) in "${label}" (${summary}) — proceeding ` +
       `(--scan-secrets=warn). This snapshot is about to be encrypted and may go to an UN-DELETABLE ` +
       `backend (Arweave/Turbo) — review before pushing.`,
   );

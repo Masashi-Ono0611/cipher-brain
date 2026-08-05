@@ -9,6 +9,7 @@ import { RECIPIENT, PIN_RECIPIENTS, PIPE_TIMEOUT_MS, SIGN_IDENTITY, pgTool } fro
 import { run } from './proc.js';
 import { newEncrypter, encryptToFile } from './crypt.js';
 import { exists, fmtBytes, requirePath, sha256, errMsg, redactPgConn } from './util.js';
+import { warn } from './warn.js';
 import { recipientEntries, resolvePinnedRecipients } from './keys.js';
 import { loadSignIdentity, signDetached } from './minisign.js';
 import { assertExportRequiresO2bProfile, resolveProfilePaths } from './profiles.js';
@@ -499,8 +500,8 @@ export async function snapshot(o: CliOptions): Promise<void> {
   const effectiveKeys = new Set<string>();
   for (const entries of entriesByRec.values()) for (const e of entries) effectiveKeys.add(e);
   if (effectiveKeys.size === 1) {
-    console.error(
-      '⚠  snapshot encrypted to a SINGLE recipient key — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.',
+    warn(
+      'snapshot encrypted to a SINGLE recipient key — if you lose that identity the brain is UNRECOVERABLE. Add a second --recipient (an offline backup public key) for key recovery; see MANAGEMENT.md.',
     );
   }
 
@@ -698,8 +699,8 @@ export async function snapshot(o: CliOptions): Promise<void> {
             // this default existed. It is loud about being unscanned — the failure mode to
             // avoid is not "no scan", it is "no scan, reported as a scan".
             if (scanExplicit) throw e;
-            console.error(
-              `⚠  the default secret scan could not run on "${name}" (${errMsg(e)}) — snapshotting it UNSCANNED. ` +
+            warn(
+              `the default secret scan could not run on "${name}" (${errMsg(e)}) — snapshotting it UNSCANNED. ` +
                 `Pass --scan-secrets deny to make this a refusal instead, or --scan-secrets off to stop trying.`,
             );
             secretsScan = undefined;

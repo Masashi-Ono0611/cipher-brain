@@ -3,6 +3,7 @@ import { access, chmod, lstat, readdir, rm, stat } from 'node:fs/promises';
 import { createReadStream, statSync, constants as FS, type Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { warn } from './warn.js';
 
 export const exists = (p: string): Promise<boolean> =>
   access(p, FS.F_OK)
@@ -109,12 +110,15 @@ export async function requirePath(path: string, what = 'path'): Promise<void> {
 // BODY, which cannot await, so it needs the sync form — and duplicating the sentence
 // there would be the same drift this codebase keeps removing.
 const loosePermsWarning = (path: string, what: string, mode: number): string =>
-  `⚠  ${what} at ${path} is group/other-accessible (mode ${(mode & 0o777).toString(8)}); chmod 600 it — it is a secret.\n`;
+  `${what} at ${path} is group/other-accessible (mode ${(mode & 0o777).toString(8)}); chmod 600 it — it is a secret.`;
 
 export async function warnIfLooseKeyPerms(path: string, what: string): Promise<void> {
   try {
     const { mode } = await stat(path);
-    if (mode & 0o077) process.stderr.write(loosePermsWarning(path, what, mode));
+    // warn(), not a raw stderr write (#347): the raw stream bypasses the MCP server's
+    // per-call capture, which is exactly how a loose-perms warning about a
+    // spend-capable key vanished from an agent-driven run.
+    if (mode & 0o077) warn(loosePermsWarning(path, what, mode));
   } catch {
     /* unreadable / missing perms info — the caller's own read will surface real errors */
   }
@@ -123,7 +127,7 @@ export async function warnIfLooseKeyPerms(path: string, what: string): Promise<v
 export function warnIfLooseKeyPermsSync(path: string, what: string): void {
   try {
     const { mode } = statSync(path);
-    if (mode & 0o077) process.stderr.write(loosePermsWarning(path, what, mode));
+    if (mode & 0o077) warn(loosePermsWarning(path, what, mode));
   } catch {
     /* same posture as the async form above */
   }

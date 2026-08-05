@@ -277,5 +277,31 @@ const REAL_BODY = {
   }
 }
 
+// --- the end-of-run warning summary formatter (#347) --------------------------------
+{
+  const { formatWarningSummary } = await import('../src/lib/warn.ts');
+  check('summary: empty input produces NO block (negative control)', formatWarningSummary([]).length === 0);
+  const many = formatWarningSummary(Array.from({ length: 11 }, (_, i) => `warning number ${i + 1}`));
+  check(
+    'summary: numbering runs 1..N and the header carries the count',
+    many[1].includes('11 warning(s)') && many.some((l) => l.startsWith('   11. warning number 11')),
+    JSON.stringify(many.slice(0, 3)),
+  );
+  const multi = formatWarningSummary(['line one\nline two']);
+  const item = multi[multi.length - 1].split('\n');
+  check(
+    'summary: a multi-line warning indents its continuation under its own text (width-aware)',
+    item[1] === `${' '.repeat('   1. '.length)}line two`,
+    JSON.stringify(item),
+  );
+  const ten = formatWarningSummary(Array.from({ length: 10 }, () => 'a\nb'));
+  const last = ten[ten.length - 1].split('\n');
+  check(
+    'summary: item 10 keeps its continuation aligned (two-digit prefix)',
+    last[1] === `${' '.repeat('   10. '.length)}b`,
+    JSON.stringify(last),
+  );
+}
+
 console.log(failed ? 'PUSH BALANCE REPORT SELFTEST: FAIL' : 'PUSH BALANCE REPORT SELFTEST: PASS');
 process.exit(failed ? 1 : 0);

@@ -17,6 +17,21 @@ agent's shell). For non-interactive/scripted setup, drive the individual command
 it wraps (keygen, snapshot, push) by hand instead — see README.md's "Manual flow"
 (which also covers `schedule install` for ongoing unattended runs).
 
+## Driving this CLI as an agent (#347)
+
+stderr is load-bearing, not decoration. If you run cipher-brain on a human's behalf:
+
+- Warnings are ⚠-prefixed on stderr, and every run that produced any ends with a block
+  headed `⚠  run summary — N warning(s) a human should see` — **relay that block to
+  your human verbatim**. It repeats every warning from the run (a snapshot encrypted to
+  a single unrecoverable key, a spend shortfall, a loose-permissioned secret file):
+  these exist precisely to reach a person, and a log file they never read does not count.
+- The MCP tools return the same content structurally: results carry a `warnings` array
+  when the call recorded any (alongside `log`). Surface those to your human too.
+- stdout is machine-readable data (a push prints ONLY the locator; `--json` prints one
+  JSON document). Parse stdout; relay stderr's summary. The exit code is the sole
+  authority on success.
+
 ## Key concepts
 
 - **identity** (private key) — the only thing that can decrypt. Lives off the

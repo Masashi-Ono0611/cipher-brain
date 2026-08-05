@@ -39,7 +39,6 @@ const PORT = Number(process.env.CB_ARLOCAL_PORT || (await freePort()));
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, '..', 'bin', 'cipher-brain.mjs');
 const sha = (buf) => createHash('sha256').update(buf).digest('hex');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TX_RE = /^[A-Za-z0-9_-]{43}$/; // base64url Arweave tx id
 
 const log = (m) => console.error(`· ${m}`);

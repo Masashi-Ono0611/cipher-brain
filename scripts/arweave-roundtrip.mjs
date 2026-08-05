@@ -714,7 +714,9 @@ try {
   // "fetch failed" when the (orphaned) server vanished mid-test, and nothing said so.
   fail(
     `exception: ${e.message}` +
-      (arExit !== null ? ` (the arlocal server process exited mid-run: code ${arExit.code}, signal ${arExit.signal})` : ''),
+      (arExit !== null
+        ? ` (the arlocal server process exited mid-run: code ${arExit.code}, signal ${arExit.signal})`
+        : ''),
   );
 } finally {
   await rm(tmp, { recursive: true, force: true });

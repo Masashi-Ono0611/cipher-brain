@@ -259,23 +259,28 @@ try {
 
   // 2. the reachability warning — an approval a push cannot draw on because
   // CIPHER_BRAIN_AR_PAID_BY does not name its payer.
-  if (!r.stdout.includes('CIPHER_BRAIN_AR_PAID_BY=<payer address>'))
-    fail(`no warning when PAID_BY is unset despite a live approval: ${r.stdout}`);
-  else pass('wallet balance: warns that a received approval is unreachable while PAID_BY is unset');
+  if (!r.stderr.includes('CIPHER_BRAIN_AR_PAID_BY=<payer address>'))
+    fail(`no warning when PAID_BY is unset despite a live approval: ${r.stdout}\n${r.stderr}`);
+  else if (!r.stderr.includes('run summary — 1 warning(s)'))
+    fail(`the end-of-run warning summary block (#347) is missing: ${r.stderr}`);
+  else pass('wallet balance: warns (on stderr) about the unreachable approval AND repeats it in the run summary');
 
   // 2b. NEGATIVE control for the same warning: correctly configured must stay quiet.
   // Without this, a warning hard-coded to always fire would pass the check above.
   r = await run(['--address', ADDR], { CIPHER_BRAIN_AR_PAID_BY: PAYER });
   if (r.code !== 0) fail(`PAID_BY-set run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
-  else if (r.stdout.includes('⚠')) fail(`warned even though PAID_BY names the payer: ${r.stdout}`);
-  else pass('wallet balance: no warning once PAID_BY names the approval payer (negative control)');
+  else if (r.stdout.includes('⚠') || r.stderr.includes('⚠'))
+    fail(`warned even though PAID_BY names the payer: ${r.stdout}\n${r.stderr}`);
+  else if (r.stderr.includes('run summary'))
+    fail(`a warning-free run still printed the summary block (#347 negative control): ${r.stderr}`);
+  else pass('wallet balance: no warning and NO summary block once PAID_BY names the payer (negative control)');
 
   // 2c. PAID_BY set to an address that shared nothing — a push would silently fall back
   // to the (empty) own balance, so this must be called out.
   r = await run(['--address', ADDR], { CIPHER_BRAIN_AR_PAID_BY: ADDR });
   if (r.code !== 0) fail(`PAID_BY-mismatch run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
-  else if (!r.stdout.includes('matches no live approval'))
-    fail(`no warning for a PAID_BY that shared nothing: ${r.stdout}`);
+  else if (!r.stderr.includes('matches no live approval'))
+    fail(`no warning for a PAID_BY that shared nothing: ${r.stdout}\n${r.stderr}`);
   else pass('wallet balance: warns when PAID_BY matches no live approval');
 
   // 3. an EXPIRED approval must be labelled, not quietly counted as usable. The fixture
@@ -312,8 +317,8 @@ try {
   // approval still means the push falls back to the own balance.
   r = await run(['--address', ADDR], { CIPHER_BRAIN_AR_PAID_BY: PAYER });
   if (r.code !== 0) fail(`drained-approval mismatch run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
-  else if (!r.stdout.includes('matches no live approval'))
-    fail(`a drained approval silenced the PAID_BY mismatch warning: ${r.stdout}`);
+  else if (!r.stderr.includes('matches no live approval'))
+    fail(`a drained approval silenced the PAID_BY mismatch warning: ${r.stdout}\n${r.stderr}`);
   else pass('wallet balance: a drained approval does not satisfy the PAID_BY reachability check');
 
   // 3d. an expiry we cannot READ must not be reported as good. "expired: false" alone
@@ -342,8 +347,8 @@ try {
   body = funded({ receivedApprovals: [approval({ payingAddress: arCaseVariant })] });
   r = await run(['--address', ADDR], { CIPHER_BRAIN_AR_PAID_BY: ADDR });
   if (r.code !== 0) fail(`arweave case-variant run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
-  else if (!r.stdout.includes('matches no live approval'))
-    fail(`two Arweave addresses differing only in case were treated as the same account: ${r.stdout}`);
+  else if (!r.stderr.includes('matches no live approval'))
+    fail(`two Arweave addresses differing only in case were treated as the same account: ${r.stdout}\n${r.stderr}`);
   else pass('wallet balance: case folding does not leak to case-sensitive (Arweave) addresses');
 
   // 3g. an INVALID CALENDAR DATE must not pass as a known expiry. Date.parse accepts

@@ -100,6 +100,15 @@ and everything else the bullets above mention (Threat model claims, prose
 Usage sections, MCP tool listings) is still manual discipline; keep applying
 this section's checklist to those.
 
+## stderr warnings are a relay contract, not noise
+
+Runtime warnings go through `src/lib/warn.ts` (#347) — never `process.stderr.write`
+directly, which bypasses the MCP server's per-call capture (measured: that bypass is
+how a "single recipient — UNRECOVERABLE" warning vanished from an agent-driven run).
+`warn()` prints immediately AND records, which is what feeds the CLI's end-of-run
+`run summary` block and the MCP results' `warnings` array. If you add a warning a
+human must see, call `warn()`; if you add prose that is merely narrative, don't.
+
 ## Everything else
 
 For CLI usage, architecture, and the quality bar PRs must meet, see

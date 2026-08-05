@@ -27,6 +27,7 @@ import {
   sdkImportAdvice,
 } from './util.js';
 import { fetchBalance, type CreditApproval } from './balance.js';
+import { warn } from './warn.js';
 import { arUsdRate, turboUsdRate, usdApprox } from './estimate.js';
 import { printJson } from './ui.js';
 import type { CliOptions } from './types.js';
@@ -221,13 +222,13 @@ async function walletBalance(o: CliOptions): Promise<void> {
   // check below, or such an approval would silence the warning that names the problem.
   const usable = bal.received_approvals.filter((a) => a.expiry_known && !a.expired && BigInt(a.remaining) > 0n);
   if (usable.length > 0 && !AR_PAID_BY) {
-    console.log(
-      `\n⚠  ${usable.length} received approval(s) above are NOT reachable by a push yet: set ` +
+    warn(
+      `${usable.length} received approval(s) above are NOT reachable by a push yet: set ` +
         `CIPHER_BRAIN_AR_PAID_BY=<payer address> so the upload draws from one (see docs/arweave-upload-runbook.md).`,
     );
   } else if (AR_PAID_BY && !usable.some((a) => sameWalletAddress(a.payer, AR_PAID_BY))) {
-    console.log(
-      `\n⚠  CIPHER_BRAIN_AR_PAID_BY=${AR_PAID_BY} matches no live approval to this address — ` +
+    warn(
+      `CIPHER_BRAIN_AR_PAID_BY=${AR_PAID_BY} matches no live approval to this address — ` +
         `a push using it will fall back to the own balance above.`,
     );
   }

@@ -49,6 +49,7 @@ import {
   NON_CONTENT_ADDRESSED_BACKENDS,
 } from './lib/config.js';
 import { restoreRunbook } from './lib/runbook.js';
+import { drainWarnings } from './lib/warn.js';
 import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
 import {
@@ -106,6 +107,10 @@ interface CaptureResult<T> {
   value: T;
   out: string[];
   err: string[];
+  /** ⚠-class warnings the call recorded via warn.ts (#347) — the load-bearing subset
+   *  of `err`, surfaced as its own field so an agent can relay them without parsing
+   *  logs. Drained per call (the mutex serializes calls, so no cross-call bleed). */
+  warnings: string[];
   exitCode: number;
 }
 
@@ -113,6 +118,9 @@ interface CaptureResult<T> {
 // snapshotted. Calls are serialized through a promise-chain mutex because the
 // capture mutates process-global state (console + exitCode).
 let callChain: Promise<void> = Promise.resolve();
+// Warnings recorded by a call that then FAILED (#347) — set by captureCall's catch,
+// consumed (and cleared) by structuredErr. Mutex-serialized calls make this safe.
+let failedCallWarnings: string[] = [];
 function captureCall<T>(fn: () => Promise<T>): Promise<CaptureResult<T>> {
   const run = callChain.then(async (): Promise<CaptureResult<T>> => {
     const out: string[] = [];
@@ -131,11 +139,22 @@ function captureCall<T>(fn: () => Promise<T>): Promise<CaptureResult<T>> {
     };
     try {
       const value = await fn();
-      return { value, out, err, exitCode: process.exitCode ?? 0 };
+      return { value, out, err, warnings: drainWarnings(), exitCode: process.exitCode ?? 0 };
+    } catch (e) {
+      // A warning recorded BEFORE the failure matters no less for having been
+      // followed by one — losing it here would re-open the exact relay hole #347
+      // closes (multi-model review, Critical). Stash for structuredErr(), which every
+      // failed tool call funnels through; the calls are mutex-serialized, so the
+      // stash cannot cross calls.
+      failedCallWarnings = drainWarnings();
+      throw e;
     } finally {
       console.log = prevLog;
       console.error = prevErr;
       process.exitCode = prevExit;
+      // No-op after either path above; kept as a backstop so a future edit cannot
+      // leak one call's warnings into the next call's drain.
+      drainWarnings();
     }
   });
   callChain = run.then(
@@ -188,10 +207,15 @@ function structuredErr(errObj: unknown): CallToolResult {
   // changes). `cb_code` additionally surfaces the bare code as its own field — an AI
   // agent driving these tools can branch on it directly instead of regexing `message`.
   const cbCode = matchErrorCode(rawMessage)?.code;
+  // Additive (#347): warnings the failing call recorded before it failed ride the
+  // error result too — {code, message} consumers are unaffected by an extra field.
+  const warnings = failedCallWarnings;
+  failedCallWarnings = [];
   const payload = {
     code: errObj instanceof ToolError ? errObj.code : 'ERR_INTERNAL',
     message: annotateErrorMessage(rawMessage),
     ...(cbCode ? { cb_code: cbCode } : {}),
+    ...(warnings.length ? { warnings } : {}),
   };
   return {
     content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
@@ -1235,6 +1259,7 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
       // means snapshot() returned, so a mode here means the scan really ran in that mode.
       scan_secrets: snapOpts.scan_secrets ?? null,
       log: [...snap.out, ...snap.err],
+      ...(snap.warnings.length ? { warnings: snap.warnings } : {}),
       idempotency_key: idempotencyKey ?? null,
       idempotent_replay: false,
     };
@@ -1783,6 +1808,7 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
       ...(signature ? { signature } : {}),
       pg_restored: Boolean(pg),
       log: [...res.out, ...res.err],
+      ...(res.warnings.length ? { warnings: res.warnings } : {}),
     });
   } finally {
     if (tdir) await rm(tdir, { recursive: true, force: true });
@@ -1897,6 +1923,7 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
     // nightly will really do.
     scan_secrets: installOpts.scan_secrets ?? null,
     log: [...res.out, ...res.err],
+    ...(res.warnings.length ? { warnings: res.warnings } : {}),
   });
 }
 
@@ -1938,6 +1965,7 @@ async function handleKeygen(args: ToolArgs): Promise<CallToolResult> {
     passphrase_wrapped: res.value.wrapped,
     post_quantum: !!pq,
     log: [...res.out, ...res.err],
+    ...(res.warnings.length ? { warnings: res.warnings } : {}),
   });
 }
 
@@ -1969,6 +1997,7 @@ async function handleWalletCreate(args: ToolArgs): Promise<CallToolResult> {
     wallet_path: lastToken(res.out[0]),
     address: lastToken(res.out[1]),
     log: [...res.out, ...res.err],
+    ...(res.warnings.length ? { warnings: res.warnings } : {}),
   });
 }
 
@@ -1984,7 +2013,11 @@ async function handleWalletAddress(args: ToolArgs): Promise<CallToolResult> {
     wallet: isStr(walletPath) ? walletPath : undefined,
   };
   const res = await captureCall(() => wallet(walletOpts));
-  return structuredOk({ address: lastToken(res.out[0]), log: [...res.out, ...res.err] });
+  return structuredOk({
+    address: lastToken(res.out[0]),
+    log: [...res.out, ...res.err],
+    ...(res.warnings.length ? { warnings: res.warnings } : {}),
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2144,6 +2177,10 @@ async function main(): Promise<void> {
   // on IDEMPOTENCY_TTL_ERROR). The CLI never reads or writes the idempotency log, so this
   // check lives only here, not in cli.ts's equivalent guard.
   if (IDEMPOTENCY_TTL_ERROR) throw IDEMPOTENCY_TTL_ERROR;
+  // Module-load warnings (a deprecated env var, a loose-permissioned config file)
+  // already printed to the server's stderr live; drain them here so they are not
+  // misattributed to whichever tool call happens to run first (#347).
+  drainWarnings();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

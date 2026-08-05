@@ -11,8 +11,18 @@ declare module '@ardrive/turbo-sdk' {
     winc: string;
   }
 
+  // `winc` is the signer's OWN balance, and was for a long time the only field declared
+  // here — which quietly encoded the belief that it is all the response carries. It is
+  // not: the service also returns the effective balance and the Credit Share Approvals
+  // behind it, and reading only `winc` is what made a paid upload announce "0 winc" and
+  // then spend ~4.7T winc successfully (#341). Kept loose on purpose — summarizeBalance()
+  // (src/lib/balance.ts) validates the body it is handed rather than trusting a
+  // hand-written ambient type to match a service this repo does not control.
   export interface TurboBalance {
     winc: string;
+    effectiveBalance?: string;
+    receivedApprovals?: unknown;
+    givenApprovals?: unknown;
   }
 
   export interface TurboFiatRate {

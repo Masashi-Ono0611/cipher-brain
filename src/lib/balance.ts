@@ -13,7 +13,7 @@
 // found unusable inside a dependency-heavy checkout. Reading a balance is the one thing
 // that must keep working when the push path's optional dep does not.
 import { AR_BALANCE_URL, AR_HTTP_TIMEOUT_MS } from './config.js';
-import { errMsg, isWalletAddress } from './util.js';
+import { errMsg, isWalletAddress, sameWalletAddress } from './util.js';
 
 // One approval — either received (someone funds THIS address) or given (this address
 // funds someone else). Native winc amounts stay strings for the same reason the rest of
@@ -37,6 +37,12 @@ export interface CreditApproval {
 // Every field REQUIRED and nullable rather than optional, matching CostEstimate's shape
 // contract (#268): a --json consumer gets one stable object, so `usd_estimate === null`
 // reads as "no rate available" instead of looking like a bug in the caller.
+// The same figures WITHOUT an address. `push` (#341) reads its balance through the Turbo
+// SDK, which keys off the signer it already holds and so never names an address — but it
+// needs exactly this reading of the body, and getting a DIFFERENT one there is the bug
+// #341 is about. Split out so both surfaces summarize one wire body one way.
+export type BalanceSummary = Omit<WalletBalance, 'address'>;
+
 export interface WalletBalance {
   address: string;
   own: string; // winc the address itself holds
@@ -134,6 +140,117 @@ function parseApprovals(v: unknown, what: string): CreditApproval[] {
 }
 
 /**
+ * Read one payment-service balance body into the figures every surface reports.
+ *
+ * Shared by `wallet balance` (which GETs the body itself) and `push` (which already has
+ * it from the Turbo SDK): the whole point of #341 is that the push path was reading only
+ * `winc` — the signer's OWN balance, structurally 0 in the documented paidBy setup — and
+ * so announced "0 winc" moments before successfully spending from an approval. One
+ * summarizer means that divergence cannot come back.
+ *
+ * Throws on a body it cannot trust (see wincField/parseApprovals). Callers that must not
+ * fail on it — the push path, where this is advisory output next to a cost estimate —
+ * catch it themselves rather than have this guess.
+ */
+export function summarizeBalance(body: unknown, rate: number | null = null): BalanceSummary {
+  const w = (body ?? {}) as WireBalance;
+  const own = wincField(w.winc, 'winc');
+  // effectiveBalance is the service's own "own + what approvals let you draw" figure, so
+  // it is taken as authoritative rather than recomputed from the approval list here —
+  // only the service knows which approvals it will actually honour at spend time (expiry
+  // handling, per-payer rules). Older/leaner responses may omit it; fall back to `own`,
+  // which is the conservative direction (understating spendable credit cannot green-light
+  // a push that will fail).
+  const effective = w.effectiveBalance === undefined ? own : wincField(w.effectiveBalance, 'effectiveBalance');
+  const approxAr = Number(effective) / 1e12;
+  return {
+    own: own.toString(),
+    effective: effective.toString(),
+    unit: 'winc',
+    approx_ar: approxAr,
+    usd_estimate: rate !== null ? Number((approxAr * rate).toFixed(6)) : null,
+    received_approvals: parseApprovals(w.receivedApprovals, 'receivedApprovals'),
+    given_approvals: parseApprovals(w.givenApprovals, 'givenApprovals'),
+  };
+}
+
+/**
+ * What THIS upload can actually draw on, given how it is configured (#341).
+ *
+ * Deliberately NOT `effectiveBalance`. That figure is the service's answer to "what could
+ * this ADDRESS spend", summing approvals from every payer — but an upload draws on an
+ * approval only when `CIPHER_BRAIN_AR_PAID_BY` names its payer (turbo.ts passes exactly
+ * one `paidBy`). So with two payers it overstates, and with `paidBy` unset it overstates
+ * by every approval there is: none of them are reachable at all. Presenting it as
+ * "spendable" before a paid upload would be the same false green light `wallet balance`
+ * already refuses to give (Codex review).
+ *
+ * "Usable" matches `wallet balance`'s rule: a known, unexpired deadline and winc left.
+ *
+ * The figure is an UPPER BOUND, and callers must present it as one ("up to"). Two
+ * uncertainties are deliberately folded up rather than guessed at: (a) all usable
+ * approvals from the named payer are summed, but whether the service aggregates several
+ * approvals from one payer within a single upload is undocumented and unverifiable
+ * without a real spend — for the one-approval case (every observed real body) the sum is
+ * exact; (b) the signer's own balance is included because the service draws on the
+ * approval FIRST and falls back to the signer's own credits (the documented paidBy
+ * semantics — see AR_PAID_BY in config.ts), so own funds are a real, reachable source,
+ * just last in line.
+ */
+export function reachableCredit(bal: BalanceSummary, paidBy: string): { winc: bigint; approvals: CreditApproval[] } {
+  const approvals = paidBy
+    ? bal.received_approvals.filter(
+        (a) => a.expiry_known && !a.expired && BigInt(a.remaining) > 0n && sameWalletAddress(a.payer, paidBy),
+      )
+    : [];
+  return { winc: approvals.reduce((sum, a) => sum + BigInt(a.remaining), BigInt(bal.own)), approvals };
+}
+
+/**
+ * The balance lines `push` prints before an irreversible paid upload (#341).
+ *
+ * Returned as strings rather than written here for the same reason progress.ts takes an
+ * injected sink (#283): the surface these serve — a real turbo upload — cannot be
+ * exercised without a funded wallet and actual spend, so the part that CAN be tested
+ * honestly is separated from the part that cannot.
+ *
+ * `paidBy` is CIPHER_BRAIN_AR_PAID_BY.
+ */
+export function balanceLines(bal: BalanceSummary, paidBy: string): string[] {
+  const fmt = (w: bigint | string) => `${w} winc (~${(Number(w) / 1e12).toFixed(8)} AR)`;
+  const lines = [`turbo: Turbo Credit balance (this signer's own): ${fmt(bal.own)}`];
+  const { winc: reachable, approvals } = reachableCredit(bal, paidBy);
+  // Printed only when it differs from the own balance: on a self-funded wallet the two
+  // are identical and a second identical line is noise, not information.
+  if (reachable !== BigInt(bal.own))
+    lines.push(`turbo: reachable for this upload (own + approvals from ${paidBy}): up to ${fmt(reachable)}`);
+  // Name each approval being drawn on, with what is left and when it lapses — the facts
+  // that decide whether the NEXT push also works. An expiry that could not be read is
+  // omitted rather than printed as if it were a date.
+  for (const a of approvals)
+    lines.push(
+      `turbo:   via approval from ${a.payer}: ${a.remaining} winc left` +
+        (a.expires_at !== null && a.expiry_known ? `, expires ${a.expires_at}` : ''),
+    );
+  // Credit that exists on this signer but that this upload cannot touch. Saying nothing
+  // would leave the operator staring at a shortfall while the service says they are
+  // funded — the exact confusion #341 is about, one level up. The gap is not only
+  // "approvals from other payers": an expired/exhausted/unreadable approval from the
+  // NAMED payer lands here too, so the wording stays at "cannot draw on" rather than
+  // over-specifying the reason (Codex review round 2).
+  const stranded = BigInt(bal.effective) - reachable;
+  if (stranded > 0n)
+    lines.push(
+      `turbo: note: the service reports ${bal.effective} winc effective for this signer, but ${stranded} winc of it ` +
+        `sits on credit this upload cannot draw on ` +
+        (paidBy
+          ? `(approvals CIPHER_BRAIN_AR_PAID_BY=${paidBy} does not select, or ones that are expired/exhausted)`
+          : `(no CIPHER_BRAIN_AR_PAID_BY is set, so no credit share approval is reachable at all)`),
+    );
+  return lines;
+}
+
+/**
  * Fetch `address`'s spendable state from the Turbo payment service.
  *
  * Throws on any failure (bad address shape, non-200, malformed body, timeout). That is
@@ -189,24 +306,5 @@ export async function fetchBalance(address: string, rate: number | null = null):
   } catch (e) {
     throw new Error(`balance: could not read ${address} from ${AR_BALANCE_URL}: ${errMsg(e)}`);
   }
-  const w = (body ?? {}) as WireBalance;
-  const own = wincField(w.winc, 'winc');
-  // effectiveBalance is the service's own "own + what approvals let you draw" figure, so
-  // it is taken as authoritative rather than recomputed from the approval list here —
-  // only the service knows which approvals it will actually honour at spend time (expiry
-  // handling, per-payer rules). Older/leaner responses may omit it; fall back to `own`,
-  // which is the conservative direction (understating spendable credit cannot green-light
-  // a push that will fail).
-  const effective = w.effectiveBalance === undefined ? own : wincField(w.effectiveBalance, 'effectiveBalance');
-  const approxAr = Number(effective) / 1e12;
-  return {
-    address,
-    own: own.toString(),
-    effective: effective.toString(),
-    unit: 'winc',
-    approx_ar: approxAr,
-    usd_estimate: rate !== null ? Number((approxAr * rate).toFixed(6)) : null,
-    received_approvals: parseApprovals(w.receivedApprovals, 'receivedApprovals'),
-    given_approvals: parseApprovals(w.givenApprovals, 'givenApprovals'),
-  };
+  return { address, ...summarizeBalance(body, rate) };
 }

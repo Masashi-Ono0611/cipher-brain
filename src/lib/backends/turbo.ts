@@ -9,6 +9,7 @@ import { createReadStream } from 'node:fs';
 import { resolve } from 'node:path';
 import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND } from '../config.js';
 import { warnIfLooseKeyPerms, fmtBytes, errMsg, isWalletAddress } from '../util.js';
+import { summarizeBalance, balanceLines } from '../balance.js';
 import { arUsdRate, usdApprox } from '../estimate.js';
 import { progressReporter } from '../progress.js';
 import { arweaveBackend } from './arweave.js';
@@ -66,14 +67,28 @@ export function turboBackend(): StorageBackend {
             `turbo: approx cost: ${fmtBytes(size)} -> ${usdApprox(uploadWinc, rate)} (at ~$${rate.toFixed(2)}/AR; rate-dependent estimate, not a quote)\n`,
           );
         }
+        // The signer's OWN balance is structurally 0 whenever the credits were bought on
+        // a wallet that cannot sign here and shared to this JWK — the exact funding flow
+        // docs/arweave-upload-runbook.md documents. Reporting only that number meant this
+        // line read "Turbo Credit balance: 0 winc" immediately before an upload that then
+        // spent ~4.7T winc from an approval and succeeded (#341, observed on a real
+        // push). Report what can ACTUALLY be spent alongside it, out of the same body the
+        // SDK was already returning.
         try {
-          const { winc: balWincStr } = await turbo.getBalance();
-          const balWinc = BigInt(balWincStr);
-          process.stderr.write(
-            `turbo: Turbo Credit balance: ${balWinc} winc (~${(Number(balWinc) / 1e12).toFixed(8)} AR)\n`,
-          );
-        } catch {
-          /* paidBy wallet has no personal balance on this signer — non-fatal */
+          for (const line of balanceLines(summarizeBalance(await turbo.getBalance(), rate), AR_PAID_BY))
+            process.stderr.write(`${line}\n`);
+        } catch (e) {
+          // Advisory output beside a cost estimate: it must never fail a push. Say WHY it
+          // is missing, though — silently dropping the line (the old behaviour) leaves the
+          // operator unable to tell "no balance shown" from "no balance". The write itself
+          // is best-effort for the same reason: the old catch swallowed everything, and a
+          // failing stderr must not become the one thing that CAN fail the push here
+          // (Codex review).
+          try {
+            process.stderr.write(`turbo: could not read the credit balance (${errMsg(e)}); proceeding\n`);
+          } catch {
+            /* a dead stderr cannot be reported to stderr */
+          }
         }
       } catch (e) {
         // A cost-estimate failure (getUploadCosts reject, empty-array destructure, bad

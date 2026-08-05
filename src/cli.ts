@@ -94,6 +94,7 @@ const VALUE_FLAGS = new Set([
   'max_spend',
   'index_file',
   'wallet',
+  'address',
   'ping_url',
   'ping_url_fail',
 ]);
@@ -220,6 +221,23 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       $CIPHER_BRAIN_HOME/wallet.json (the same default 'wallet create' writes to). Use
       this to confirm you are funding the SAME wallet cipher-brain will sign uploads
       with.
+
+  cipher-brain wallet balance [--wallet <path>] [--address <addr>] [--json]
+      Print what an address can actually spend on the turbo backend: its OWN Turbo
+      Credit balance, its SPENDABLE balance (own + Credit Share Approvals delegated to
+      it), and every approval received/given with the winc remaining on it and when it
+      expires. Answers the three questions a top-up asks — did my purchase land, did the
+      share to this wallet land, how much is left — which otherwise need a hand-written
+      @ardrive/turbo-sdk script. A plain unauthenticated GET against the payment service
+      keyed on a PUBLIC address: no '@ardrive/turbo-sdk' install, no signature.
+      --address queries ANY address without a key or wallet file (this is how you check
+      the browser/MetaMask wallet you bought credits on — the one whose JWK this machine
+      by definition does not have). Without it, the address is derived from the JWK, with
+      the same --wallet / CIPHER_BRAIN_AR_WALLET / $CIPHER_BRAIN_HOME/wallet.json
+      fallback 'wallet address' uses. Warns when a received approval exists but
+      CIPHER_BRAIN_AR_PAID_BY does not name its payer — a push cannot draw on an
+      approval it is not told about, so credits that look spendable here would not be.
+      --json prints the same fields as one JSON line on stdout instead.
 
   cipher-brain doctor [--json]
       Read-only environment health check (#201): inspects the EXISTING setup for the
@@ -606,7 +624,7 @@ Env: CIPHER_BRAIN_HOME (default ~/.cipher-brain), CIPHER_BRAIN_PG_BIN (dir of pg
      CIPHER_BRAIN_PIN_RECIPIENTS (snapshot: allowlist of age1… pubkeys, inline or a file — refuse to encrypt to any other recipient).
      CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 (init: bypass its TTY requirement — automation/CI only, e.g. this repo's own selftest; a human just runs init directly in a terminal).
 Storage: CIPHER_BRAIN_FILE_DIR (file);
-         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT,USD_RATE_URL} (arweave; CIPHER_BRAIN_AR_WALLET is a path to a JWK key file — 'cipher-brain wallet create' generates one, 'wallet address' shows what to fund; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none; CIPHER_BRAIN_AR_USD_RATE_URL overrides the AR/USD rate endpoint used for the approximate-USD line printed next to the native-unit cost — a dead or unreachable endpoint just omits that line, it never blocks a push);
+         CIPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT,USD_RATE_URL,BALANCE_URL} (arweave; CIPHER_BRAIN_AR_WALLET is a path to a JWK key file — 'cipher-brain wallet create' generates one, 'wallet address' shows what to fund; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none; CIPHER_BRAIN_AR_USD_RATE_URL overrides the AR/USD rate endpoint used for the approximate-USD line printed next to the native-unit cost — a dead or unreachable endpoint just omits that line, it never blocks a push; CIPHER_BRAIN_AR_BALANCE_URL overrides the payment-service account endpoint 'wallet balance' queries as '<url>?address=<addr>');
          turbo: CIPHER_BRAIN_AR_WALLET (JWK signer) + optional CIPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
          rclone: CIPHER_BRAIN_RCLONE_BIN (path to the rclone binary; default 'rclone' on PATH) — the remote itself is whatever --remote <name>:<path> names in your own 'rclone config'.
 Spend: arweave/turbo PUSH needs --yes or CIPHER_BRAIN_YES=1 (paid, permanent); CIPHER_BRAIN_MAX_SPEND caps the arweave/turbo cost estimate (winston/winc).

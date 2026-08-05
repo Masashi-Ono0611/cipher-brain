@@ -40,6 +40,7 @@ const ENV_NAMES = [
   'CIPHER_BRAIN_AR_GATEWAYS',
   'CIPHER_BRAIN_AR_HTTP_TIMEOUT',
   'CIPHER_BRAIN_AR_USD_RATE_URL',
+  'CIPHER_BRAIN_AR_BALANCE_URL',
   'CIPHER_BRAIN_AR_L1_MAX',
   'CIPHER_BRAIN_YES',
   'CIPHER_BRAIN_MAX_SPEND',
@@ -315,6 +316,12 @@ export const AR_HTTP_TIMEOUT_MS = Number(readEnv('CIPHER_BRAIN_AR_HTTP_TIMEOUT')
 // fetches this directly instead of going through @ardrive/turbo-sdk, so the USD line
 // works even when that optional peerDependency isn't installed.
 export const AR_USD_RATE_URL = readEnv('CIPHER_BRAIN_AR_USD_RATE_URL') || 'https://payment.ardrive.io/v1/rates/usd';
+// Public, unauthenticated account-balance endpoint on the same payment service, queried
+// as `<url>?address=<addr>` (#345). Same #170 reasoning as the rate URL above: the SDK
+// exposes this as turbo.getBalance(), but it is a plain GET keyed on a PUBLIC address —
+// no signature, no key material — so reading it must not require an optional
+// peerDependency that a machine may not have (or, per #344, may not be installable on).
+export const AR_BALANCE_URL = readEnv('CIPHER_BRAIN_AR_BALANCE_URL') || 'https://payment.ardrive.io/v1/balance';
 // Spend guard: arweave/turbo uploads are irreversible and cost real funds. Require an
 // explicit opt-in so an unattended nightly loop doesn't silently accumulate charges.
 //   CIPHER_BRAIN_YES=1  — set in the nightly runner (`schedule install` writes it for paid backends) to suppress the --yes prompt

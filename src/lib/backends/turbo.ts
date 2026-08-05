@@ -8,7 +8,7 @@ import { stat, readFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { resolve } from 'node:path';
 import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND } from '../config.js';
-import { warnIfLooseKeyPerms, fmtBytes, errMsg } from '../util.js';
+import { warnIfLooseKeyPerms, fmtBytes, errMsg, isWalletAddress } from '../util.js';
 import { arUsdRate, usdApprox } from '../estimate.js';
 import { progressReporter } from '../progress.js';
 import { arweaveBackend } from './arweave.js';
@@ -118,7 +118,7 @@ export function turboBackend(): StorageBackend {
         ],
       };
       if (AR_PAID_BY) {
-        if (!/^[A-Za-z0-9_-]{30,64}$/.test(AR_PAID_BY))
+        if (!isWalletAddress(AR_PAID_BY))
           throw new Error(
             `turbo: CIPHER_BRAIN_AR_PAID_BY must be a plain wallet address (Arweave/Ethereum/Solana): ${AR_PAID_BY}`,
           );

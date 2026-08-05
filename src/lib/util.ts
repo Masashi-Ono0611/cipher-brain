@@ -166,6 +166,25 @@ export function fmtBytes(n: number): string {
   return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
 }
 
+// Shape check for a bare wallet address of any chain Turbo accepts (Arweave base64url,
+// Ethereum 0x-hex, Solana base58). Deliberately a SHAPE check, not a per-chain validator:
+// the point is to reject input that would break out of the context it is interpolated
+// into (an HTTP header for CIPHER_BRAIN_AR_PAID_BY, a query string for `wallet balance`)
+// before it gets there. A well-formed address that simply does not exist is the payment
+// service's answer to give, not ours.
+export const isWalletAddress = (s: string): boolean => /^[A-Za-z0-9_-]{30,64}$/.test(s);
+
+// Do two address strings name the SAME account? Not a plain === : an Ethereum address is
+// written both EIP-55-checksummed (0x1b2c2Fda…) and all-lowercase for one account, so a
+// byte comparison reports a false mismatch between a user's CIPHER_BRAIN_AR_PAID_BY and
+// the payer the payment service echoes back. Case is NOT folded globally, though —
+// Arweave (base64url) and Solana (base58) addresses are case-SENSITIVE, so folding there
+// would invent a match between two genuinely different accounts. Only the 0x-hex form,
+// where case carries no identity, is compared case-insensitively (Codex review).
+const ETH_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+export const sameWalletAddress = (a: string, b: string): boolean =>
+  ETH_ADDRESS.test(a) && ETH_ADDRESS.test(b) ? a.toLowerCase() === b.toLowerCase() : a === b;
+
 // A Postgres connection string (--pg, wizard.ts's recovery kit, restore.ts's pg_restore
 // consent gate) can embed a password. Anywhere one of these is printed for REFERENCE
 // (a long-lived kit document, an error/log line) — never as an argv passed to pg_dump/

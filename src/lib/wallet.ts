@@ -15,9 +15,12 @@
 // arweave/turbo backends that consume the resulting file.
 import { mkdir, chmod, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { HOME, AR_WALLET } from './config.js';
+import { HOME, AR_WALLET, AR_PAID_BY } from './config.js';
 import { writeKeyFile } from './keys.js';
-import { exists, errMsg, warnIfLooseKeyPerms, SdkMissingError } from './util.js';
+import { exists, errMsg, warnIfLooseKeyPerms, SdkMissingError, isWalletAddress, sameWalletAddress } from './util.js';
+import { fetchBalance, type CreditApproval } from './balance.js';
+import { arUsdRate, usdApprox } from './estimate.js';
+import { printJson } from './ui.js';
 import type { CliOptions } from './types.js';
 
 // Minimal shape actually used here — hand-rolled rather than statically importing the
@@ -96,7 +99,12 @@ export async function walletConfigured(walletPath: string = AR_WALLET): Promise<
   return !!walletPath && (await exists(walletPath));
 }
 
-async function walletAddress(o: CliOptions): Promise<void> {
+// Derive the address a JWK spends from. Shared by `address` and `balance` so the two
+// can never disagree about WHICH wallet they are talking about — the exact confusion
+// #164 fixed for the default-path fallback, now that a second subcommand asks the same
+// question. `what` names the caller in the error, since "cannot read JWK wallet" is far
+// more useful when it says which command wanted it.
+async function addressFromWallet(o: CliOptions, what: string): Promise<string> {
   // Falls back to the same default `wallet create` writes to when neither --wallet nor
   // CIPHER_BRAIN_AR_WALLET is set, so `wallet create` (no --out) followed by `wallet
   // address` (no --wallet) just works (#164) instead of erroring out. If nothing exists
@@ -107,10 +115,96 @@ async function walletAddress(o: CliOptions): Promise<void> {
   try {
     jwk = JSON.parse(await readFile(walletPath, 'utf8'));
   } catch (e) {
-    throw new Error(`wallet address: cannot read JWK wallet at ${walletPath}: ${errMsg(e)}`);
+    throw new Error(`${what}: cannot read JWK wallet at ${walletPath}: ${errMsg(e)}`);
   }
   const ar = await getArweave();
-  console.log(await ar.wallets.jwkToAddress(jwk));
+  return ar.wallets.jwkToAddress(jwk);
+}
+
+async function walletAddress(o: CliOptions): Promise<void> {
+  console.log(await addressFromWallet(o, 'wallet address'));
+}
+
+// "expires 2026-08-11T14:05:07Z (in 6 days)" — the relative part is the one that
+// actually answers "do I need to redo this before my next push?", which an ISO timestamp
+// alone does not at a glance.
+function fmtExpiry(a: CreditApproval): string {
+  if (a.expires_at === null) return 'no expiry';
+  // Shown as UNKNOWN rather than quietly printed as if it were a date: this is the one
+  // line telling the operator whether the approval will still be there at push time.
+  if (!a.expiry_known) return `expiry UNKNOWN (unreadable: ${a.expires_at})`;
+  if (a.expired) return `EXPIRED ${a.expires_at}`;
+  const days = (Date.parse(a.expires_at) - Date.now()) / 86_400_000;
+  const rel = days >= 1 ? `in ${Math.floor(days)} day(s)` : `in under a day`;
+  return `expires ${a.expires_at} (${rel})`;
+}
+
+function printApprovals(list: CreditApproval[], heading: string, peerLabel: (a: CreditApproval) => string): void {
+  if (list.length === 0) return;
+  console.log(`\n${heading}`);
+  for (const a of list) {
+    console.log(`  ${peerLabel(a)}`);
+    console.log(`    remaining ${a.remaining} winc (of ${a.approved} approved, ${a.used} used) — ${fmtExpiry(a)}`);
+  }
+}
+
+async function walletBalance(o: CliOptions): Promise<void> {
+  // --address queries any address WITHOUT a key — the payment service serves balances by
+  // public address. That is the whole point for the funding flow: the wallet holding the
+  // credits you just bought (a browser/MetaMask wallet) is precisely the one whose JWK
+  // this machine does not have, so requiring a signer would put the most important
+  // address of the top-up out of reach. It also means this path needs neither the
+  // `arweave` package nor a wallet file.
+  const address = o.address ?? (await addressFromWallet(o, 'wallet balance'));
+  // Validated HERE, before any network call, even though fetchBalance re-checks: input we
+  // are about to reject should not first send a request anywhere (Codex review). The
+  // check inside fetchBalance stays — it guards the function itself, not just this path.
+  if (!isWalletAddress(address))
+    throw new Error(`wallet balance: not a wallet address (Arweave/Ethereum/Solana): ${JSON.stringify(address)}`);
+  // Fetched once and passed in, rather than let fetchBalance reach for it, so the JSON
+  // and human paths price the same numbers off the same rate. Null (rate unavailable)
+  // degrades to omitting USD, never to failing the balance — same posture as the cost
+  // estimate's USD line (#170).
+  const rate = await arUsdRate();
+  const bal = await fetchBalance(address, rate);
+  if (o.json) return printJson(bal);
+
+  const ar = (w: string) => `${w} winc (~${(Number(w) / 1e12).toFixed(8)} AR)`;
+  console.log(`address           : ${bal.address}`);
+  console.log(`own balance       : ${ar(bal.own)}`);
+  console.log(
+    `spendable balance : ${ar(bal.effective)}${rate !== null ? ` = ${usdApprox(BigInt(bal.effective), rate)}` : ''}`,
+  );
+  printApprovals(
+    bal.received_approvals,
+    'received credit share approvals (this address can spend these):',
+    (a) => `from ${a.payer}`,
+  );
+  printApprovals(
+    bal.given_approvals,
+    'given credit share approvals (delegated away to others):',
+    (a) => `to ${a.recipient}`,
+  );
+  // The gap #341 is about: an approval is only reachable at push time when
+  // CIPHER_BRAIN_AR_PAID_BY names its payer, so a balance that LOOKS spendable here can
+  // still fail an upload. Say so at the one moment the operator is looking at both.
+  // "Usable" means a push could actually draw on it: a known, unexpired deadline AND winc
+  // left. An exhausted or unevaluatable approval is the trap this whole command exists to
+  // expose — pointing at one and saying "set PAID_BY to spend this" is exactly the false
+  // green light #341 is about (Codex review). It also must not satisfy the PAID_BY-match
+  // check below, or such an approval would silence the warning that names the problem.
+  const usable = bal.received_approvals.filter((a) => a.expiry_known && !a.expired && BigInt(a.remaining) > 0n);
+  if (usable.length > 0 && !AR_PAID_BY) {
+    console.log(
+      `\n⚠  ${usable.length} received approval(s) above are NOT reachable by a push yet: set ` +
+        `CIPHER_BRAIN_AR_PAID_BY=<payer address> so the upload draws from one (see docs/arweave-upload-runbook.md).`,
+    );
+  } else if (AR_PAID_BY && !usable.some((a) => sameWalletAddress(a.payer, AR_PAID_BY))) {
+    console.log(
+      `\n⚠  CIPHER_BRAIN_AR_PAID_BY=${AR_PAID_BY} matches no live approval to this address — ` +
+        `a push using it will fall back to the own balance above.`,
+    );
+  }
 }
 
 export async function wallet(o: CliOptions): Promise<void> {
@@ -119,7 +213,9 @@ export async function wallet(o: CliOptions): Promise<void> {
       return walletCreate(o);
     case 'address':
       return walletAddress(o);
+    case 'balance':
+      return walletBalance(o);
     default:
-      throw new Error(`wallet: expected create | address, got: ${o._ || '(nothing)'}`);
+      throw new Error(`wallet: expected create | address | balance, got: ${o._ || '(nothing)'}`);
   }
 }

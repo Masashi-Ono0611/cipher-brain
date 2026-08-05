@@ -59,7 +59,8 @@ export interface CliOptions {
   at?: string;
   max_spend?: string;
   index_file?: string;
-  wallet?: string; // wallet address --wallet <path> (defaults to CIPHER_BRAIN_AR_WALLET)
+  wallet?: string; // wallet address/balance --wallet <path> (defaults to CIPHER_BRAIN_AR_WALLET)
+  address?: string; // wallet balance --address <addr>: query any address, no JWK needed (#345)
   ping_url?: string; // schedule install: dead man's switch success ping (healthchecks.io-style)
   ping_url_fail?: string; // schedule install: failure ping override (defaults to `${ping_url}/fail`)
 }

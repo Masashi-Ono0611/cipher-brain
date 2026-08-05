@@ -40,6 +40,7 @@ const ENV_NAMES = [
   'CIPHER_BRAIN_AR_GATEWAYS',
   'CIPHER_BRAIN_AR_HTTP_TIMEOUT',
   'CIPHER_BRAIN_AR_USD_RATE_URL',
+  'CIPHER_BRAIN_AR_TURBO_RATES_URL', // #343: Turbo's credit price sheet (fiat per GiB) — turbo-backend USD lines price with this, not AR spot
   'CIPHER_BRAIN_AR_BALANCE_URL',
   'CIPHER_BRAIN_AR_L1_MAX',
   'CIPHER_BRAIN_YES',
@@ -317,6 +318,13 @@ export const AR_HTTP_TIMEOUT_MS = Number(readEnv('CIPHER_BRAIN_AR_HTTP_TIMEOUT')
 // fetches this directly instead of going through @ardrive/turbo-sdk, so the USD line
 // works even when that optional peerDependency isn't installed.
 export const AR_USD_RATE_URL = readEnv('CIPHER_BRAIN_AR_USD_RATE_URL') || 'https://payment.ardrive.io/v1/rates/usd';
+// Turbo's own credit price sheet (#343): `GET /v1/rates` answers with the winc one GiB
+// costs AND its fiat price — i.e. what buying these credits actually costs, fees
+// included. The AR-spot rate above stays correct for the raw `arweave` L1 backend
+// (that spend is real AR at market value), but pricing a TURBO upload with it
+// understated the observed real cost by ~35%: turbo spends credits, and credits sell at
+// Turbo's rate, not at AR spot. Same #170 posture: plain unauthenticated GET, no SDK.
+export const AR_TURBO_RATES_URL = readEnv('CIPHER_BRAIN_AR_TURBO_RATES_URL') || 'https://payment.ardrive.io/v1/rates';
 // Public, unauthenticated account-balance endpoint on the same payment service, queried
 // as `<url>?address=<addr>` (#345). Same #170 reasoning as the rate URL above: the SDK
 // exposes this as turbo.getBalance(), but it is a plain GET keyed on a PUBLIC address —

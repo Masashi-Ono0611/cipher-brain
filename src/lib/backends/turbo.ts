@@ -10,7 +10,7 @@ import { resolve } from 'node:path';
 import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND, SKIP_FUNDS_CHECK } from '../config.js';
 import { warnIfLooseKeyPerms, fmtBytes, errMsg, isWalletAddress, sleep } from '../util.js';
 import { summarizeBalance, balanceLines, insufficientFundsError, type BalanceSummary } from '../balance.js';
-import { arUsdRate, usdApprox } from '../estimate.js';
+import { arUsdRate, turboUsdRate, usdApprox } from '../estimate.js';
 import { progressReporter } from '../progress.js';
 import { arweaveBackend } from './arweave.js';
 import type { StorageBackend, PutOpts, FetchShape } from '../types.js';
@@ -67,10 +67,30 @@ export function turboBackend(): StorageBackend {
         // Human-readable USD approximation next to the native estimate (#70). arUsdRate
         // never throws (null on any failure), so a dead pricing endpoint can neither
         // block the push nor skip the CIPHER_BRAIN_MAX_SPEND cap check below.
-        const rate = await arUsdRate();
-        if (rate !== null) {
+        //
+        // Priced at Turbo's OWN credit rate, not AR spot (#343). This backend spends
+        // credits, and credits sell at Turbo's fiat price, fees included; the AR-spot
+        // line here understated a real 459 MB push's out-of-pocket cost by ~35% ("~$8.71"
+        // shown, ≈$13.1 actually paid for the credits consumed, minutes apart). AR spot
+        // survives only as a labeled worse-than-this fallback when the price sheet is
+        // unreachable.
+        const turboRate = await turboUsdRate();
+        const spotRate = turboRate === null ? await arUsdRate() : null;
+        const pricing =
+          turboRate !== null
+            ? { rate: turboRate.ratePer1e12Winc, source: 'turbo-credit' as const }
+            : spotRate !== null
+              ? { rate: spotRate, source: 'ar-spot' as const }
+              : null;
+        if (turboRate !== null) {
           process.stderr.write(
-            `turbo: approx cost: ${fmtBytes(size)} -> ${usdApprox(uploadWinc, rate)} (at ~$${rate.toFixed(2)}/AR; rate-dependent estimate, not a quote)\n`,
+            `turbo: approx cost: ${fmtBytes(size)} -> ${usdApprox(uploadWinc, turboRate.ratePer1e12Winc)} ` +
+              `(at Turbo's credit rate ~$${turboRate.usdPerGiB.toFixed(2)}/GiB, fees included — what buying these credits with fiat costs; not a quote)\n`,
+          );
+        } else if (spotRate !== null) {
+          process.stderr.write(
+            `turbo: approx cost: ${fmtBytes(size)} -> ${usdApprox(uploadWinc, spotRate)} ` +
+              `(at AR SPOT ~$${spotRate.toFixed(2)}/AR — the credit price sheet was unavailable; buying the credits with fiat typically costs more than this)\n`,
           );
         }
         // The signer's OWN balance is structurally 0 whenever the credits were bought on
@@ -81,7 +101,7 @@ export function turboBackend(): StorageBackend {
         // push). Report what can ACTUALLY be spent alongside it, out of the same body the
         // SDK was already returning.
         try {
-          balForCheck = summarizeBalance(await turbo.getBalance(), rate);
+          balForCheck = summarizeBalance(await turbo.getBalance(), pricing);
           for (const line of balanceLines(balForCheck, AR_PAID_BY)) process.stderr.write(`${line}\n`);
         } catch (e) {
           // Advisory output beside a cost estimate: it must never fail a push. Say WHY it

@@ -43,6 +43,13 @@ export interface CreditApproval {
 // #341 is about. Split out so both surfaces summarize one wire body one way.
 export type BalanceSummary = Omit<WalletBalance, 'address'>;
 
+// Which price sheet produced usd_estimate. 'turbo-credit' = Turbo's own selling rate
+// (fees included — what replacing the credits costs); 'ar-spot' = AR market value, the
+// labeled fallback that understates fiat replacement cost; null = no rate at all. In the
+// JSON output this is the machine-readable form of the human line's provenance label —
+// without it a --json consumer cannot tell the two apart (Codex review round 2, #343).
+export type UsdRateSource = 'turbo-credit' | 'ar-spot' | null;
+
 export interface WalletBalance {
   address: string;
   own: string; // winc the address itself holds
@@ -50,6 +57,7 @@ export interface WalletBalance {
   unit: 'winc';
   approx_ar: number; // effective, in AR
   usd_estimate: number | null; // effective, in USD; null when the rate could not be fetched
+  usd_rate_source: UsdRateSource; // which sheet priced usd_estimate (#343)
   received_approvals: CreditApproval[];
   given_approvals: CreditApproval[];
 }
@@ -152,7 +160,16 @@ function parseApprovals(v: unknown, what: string): CreditApproval[] {
  * fail on it — the push path, where this is advisory output next to a cost estimate —
  * catch it themselves rather than have this guess.
  */
-export function summarizeBalance(body: unknown, rate: number | null = null): BalanceSummary {
+// Rate and provenance travel as ONE value: a rate whose source is unknown cannot exist
+// by construction (Codex review round 3 — separate parameters let a future caller pass
+// a rate and default the source to null, emitting a priced usd_estimate with
+// usd_rate_source: null).
+export interface UsdPricing {
+  rate: number; // USD per 1e12 winc
+  source: Exclude<UsdRateSource, null>;
+}
+
+export function summarizeBalance(body: unknown, pricing: UsdPricing | null = null): BalanceSummary {
   const w = (body ?? {}) as WireBalance;
   const own = wincField(w.winc, 'winc');
   // effectiveBalance is the service's own "own + what approvals let you draw" figure, so
@@ -168,7 +185,8 @@ export function summarizeBalance(body: unknown, rate: number | null = null): Bal
     effective: effective.toString(),
     unit: 'winc',
     approx_ar: approxAr,
-    usd_estimate: rate !== null ? Number((approxAr * rate).toFixed(6)) : null,
+    usd_estimate: pricing !== null ? Number((approxAr * pricing.rate).toFixed(6)) : null,
+    usd_rate_source: pricing !== null ? pricing.source : null,
     received_approvals: parseApprovals(w.receivedApprovals, 'receivedApprovals'),
     given_approvals: parseApprovals(w.givenApprovals, 'givenApprovals'),
   };
@@ -327,7 +345,7 @@ export function balanceLines(bal: BalanceSummary, paidBy: string): string[] {
  * spend on the answer. A silent null there would read as "no funds" or "fine, proceed"
  * depending on the caller — both wrong.
  */
-export async function fetchBalance(address: string, rate: number | null = null): Promise<WalletBalance> {
+export async function fetchBalance(address: string, pricing: UsdPricing | null = null): Promise<WalletBalance> {
   if (!isWalletAddress(address))
     throw new Error(`balance: not a wallet address (Arweave/Ethereum/Solana): ${JSON.stringify(address)}`);
   // Built through URL/searchParams rather than string concatenation so an override that
@@ -359,7 +377,8 @@ export async function fetchBalance(address: string, rate: number | null = null):
           effective: '0',
           unit: 'winc',
           approx_ar: 0,
-          usd_estimate: rate !== null ? 0 : null,
+          usd_estimate: pricing !== null ? 0 : null,
+          usd_rate_source: pricing !== null ? pricing.source : null,
           received_approvals: [],
           given_approvals: [],
         };
@@ -373,5 +392,5 @@ export async function fetchBalance(address: string, rate: number | null = null):
   } catch (e) {
     throw new Error(`balance: could not read ${address} from ${AR_BALANCE_URL}: ${errMsg(e)}`);
   }
-  return { address, ...summarizeBalance(body, rate) };
+  return { address, ...summarizeBalance(body, pricing) };
 }

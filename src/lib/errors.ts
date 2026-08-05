@@ -176,12 +176,16 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
     source:
       'src/lib/backends/arweave.ts + src/lib/backends/turbo.ts ("… needs CIPHER_BRAIN_AR_WALLET …" / "cannot read JWK wallet at …")',
   },
+  // CB-E012's wording is generated once in sdkImportAdvice() (#344) with the package
+  // name interpolated, so the pattern anchors on the generated invariant rather than
+  // the two spelled-out package names. Only the 'absent' class carries this code — an
+  // installed-but-broken SDK is a different condition (and message) on purpose.
   {
     code: 'CB-E012',
     title: 'optional storage SDK dependency not installed',
-    pattern: /run: npm install (?:@ardrive\/turbo-sdk|arweave)\b/,
+    pattern: /is not installed — run: npm install /,
     origin: 'ours',
-    source: 'src/lib/backends/turbo.ts + src/lib/backends/arweave.ts (SdkMissingError, "… run: npm install …")',
+    source: "src/lib/util.ts (sdkImportAdvice, kind: 'absent')",
   },
   {
     code: 'CB-E013',

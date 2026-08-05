@@ -267,5 +267,55 @@ if (!wallet.message.includes('$TMP/no-such-wallet.json')) throw new Error('walle
 " "$TMP/m.json"
 echo "[PASS] an explicitly-configured but missing CIPHER_BRAIN_AR_WALLET is a FAIL naming the path"
 
+echo "== (n) build provenance (#348): the age of the running code is visible, and the warn boundary holds =="
+# Run from this git checkout, the dev path derives commit/date live — the check must be
+# pass-or-warn (never skip here) and must carry a commit hash and an age in days. The
+# real incident (a 39-day-old hand-copied build silently missing features) would have
+# been visible as exactly this line.
+cb doctor --json > "$TMP/n.json" 2>&1 || true
+node -e "
+const j = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+const b = j.checks.find((c) => c.id === 'build-provenance');
+if (!b) throw new Error('no build-provenance check in doctor output');
+if (b.status !== 'pass' && b.status !== 'warn') throw new Error('expected pass|warn inside a git checkout, got ' + b.status);
+if (!/commit [0-9a-f]{7,}/.test(b.message)) throw new Error('no commit hash in: ' + b.message);
+if (!/day\(s\) ago/.test(b.message)) throw new Error('no age in: ' + b.message);
+" "$TMP/n.json"
+echo "[PASS] doctor reports the running build's commit and age from a git checkout"
+
+# The STAMPED path (dist bundle) must carry the same check with 'built from' — this
+# exercises the define plumbing end-to-end, not just the live-git dev path.
+if [ -f "$ROOT/dist/cli.mjs" ]; then
+  CIPHER_BRAIN_HOME="$TMP/stamp-home" node "$ROOT/dist/cli.mjs" doctor --json > "$TMP/n2.json" 2>&1 || true
+  node -e "
+const j = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+const b = j.checks.find((c) => c.id === 'build-provenance');
+if (!b) throw new Error('no build-provenance in the STAMPED dist run');
+if (!/built from commit [0-9a-f]{7,}/.test(b.message)) throw new Error('stamped run did not say built-from: ' + b.message);
+" "$TMP/n2.json"
+  echo "[PASS] the stamped dist bundle reports 'built from' provenance (define plumbing round-trips)"
+else
+  echo "[SKIP] dist/cli.mjs not built — stamped-path assertion skipped"
+fi
+
+# The classifier is pure: 90 days is the boundary (pass at exactly 90, warn past it),
+# an unparseable date classifies as null (UNKNOWN upstream), and a future date clamps
+# to 0 rather than going negative.
+node --experimental-strip-types --import ./scripts/dev-cli-loader.mjs -e "
+import('./src/lib/buildinfo.ts').then((m) => {
+  const now = Date.parse('2026-08-05T00:00:00Z');
+  const day = 86400000;
+  const at = (d) => new Date(now - d * day).toISOString();
+  if (m.buildAgeDays(at(90), now) !== 90) throw new Error('90d boundary broke');
+  if (m.BUILD_STALE_DAYS !== 90) throw new Error('threshold moved without updating this test');
+  if (m.buildAgeDays(at(89), now) !== 89) throw new Error('under-boundary age wrong (89 must stay pass-side)');
+  if (m.buildAgeDays(at(91), now) !== 91) throw new Error('past-boundary age wrong');
+  if (m.buildAgeDays('not-a-date', now) !== null) throw new Error('unparseable date did not classify null');
+  if (m.buildAgeDays(at(-3), now) !== 0) throw new Error('a future commit date must clamp to 0, not go negative');
+  console.log('boundaries OK');
+});
+" | grep -q "boundaries OK" || { echo "[FAIL] buildAgeDays boundary/edge cases"; exit 1; }
+echo "[PASS] buildAgeDays: 90-day boundary, unparseable-date null, future-date clamp"
+
 echo
 echo "all cipher-brain doctor selftests passed"

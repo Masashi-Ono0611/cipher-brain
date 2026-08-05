@@ -56,6 +56,7 @@ import { exists, errMsg } from './util.js';
 import { recipientEntries, resolvePinnedRecipients } from './keys.js';
 import { WALLET_DEFAULT_PATH } from './wallet.js';
 import { scheduleStatusReport, ScheduleNotInstalledError } from './schedule.js';
+import { buildInfo, buildAgeDays, BUILD_STALE_DAYS } from './buildinfo.js';
 import { printJson, printMascot, moodForVerdict } from './ui.js';
 import type { CliOptions } from './types.js';
 
@@ -443,6 +444,53 @@ async function checkOfflineBackupDisk(): Promise<DoctorCheck> {
   };
 }
 
+// How old is the code that is actually running (#348)? The real incident: a
+// hand-copied dist ran the snapshot host for 5+ weeks, silently missing documented
+// features — nothing surfaced its age, and the version string (0.0.1 on every build to
+// date) cannot. The age is ALWAYS in the message — the incident build was 39 days old,
+// under any sane warn threshold, and the visible line is what would have caught it;
+// WARN fires only at real drift (~3 missed monthly-push cycles). No network: comparing
+// against a "latest release" is deferred until releases exist to compare against
+// (#144) — a probe of an endpoint that answers 404 today would be untestable
+// against reality.
+function checkBuildProvenance(): DoctorCheck {
+  const info = buildInfo();
+  if (info === null) {
+    return {
+      id: 'build-provenance',
+      status: 'skip',
+      message:
+        'build provenance unknown — this build predates the #348 stamp, or was built/run without git; ' +
+        'rebuild from a git checkout (`npm run build`) to get a stamped dist',
+    };
+  }
+  const age = buildAgeDays(info.commit_date, Date.now());
+  const label =
+    `${info.source === 'stamped' ? 'built from' : 'running source at'} commit ${info.commit.slice(0, 12)}` +
+    `${info.dirty ? ' (+uncommitted changes)' : ''}, committed ${info.commit_date.slice(0, 10)}`;
+  // A stamp whose date cannot be parsed is NOT healthy: assessing the build's age is
+  // this check's entire job, and "pass" on garbage would be the same false green light
+  // doctor exists to remove (Codex review).
+  if (age === null) {
+    return {
+      id: 'build-provenance',
+      status: 'warn',
+      message: `${label} — the stamped commit date is unparseable, so the build's age cannot be assessed`,
+      remediation: 'rebuild dist from a current git checkout (`npm run build`) to get a well-formed stamp',
+    };
+  }
+  if (age >= BUILD_STALE_DAYS) {
+    return {
+      id: 'build-provenance',
+      status: 'warn',
+      message: `${label} (${age} day(s) ago) — ${BUILD_STALE_DAYS}+ days old`,
+      remediation:
+        'this deployment has drifted well behind development; rebuild and redeploy dist/cli.mjs from a current checkout',
+    };
+  }
+  return { id: 'build-provenance', status: 'pass', message: `${label} (${age} day(s) ago)` };
+}
+
 // Reuses schedule.ts's OWN status computation (scheduleStatusReport) rather than
 // re-parsing logs itself, so this can never disagree with `cipher-brain schedule
 // status` about what the last run did.
@@ -619,6 +667,7 @@ function printDoctorReport(report: DoctorReport): void {
 
 export async function computeDoctorReport(): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [
+    checkBuildProvenance(),
     await checkHomeDirPerms(),
     await checkKeyPerms('identity-perms', IDENTITY, 'age identity (private key)'),
     await checkKeyPerms('sign-identity-perms', SIGN_IDENTITY, 'signing identity (private key)'),

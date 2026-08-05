@@ -7,10 +7,14 @@
 // / "01" reflections in the lenses) is the source of truth for the motif. It
 // is a small, un-hooded-eared, sunglassed dog face, NOT the sibling project
 // mira-harness's cat (mira-harness src/ui.ts, commit 5f5e489) — no ears/paws,
-// a hood peak + rectangular lenses instead.
+// a flat-topped hood pulled down over a connected visor instead ("deep
+// visor", the cooler-not-cuter redesign that replaced the original
+// round-cheeked hood peak).
 //
 // The bracket style on each lens doubles as a verification signal: `[..]`
 // (square, "on straight") vs `(..)` (round, "slipping") — see FACES below.
+// The `==` between the lenses is the visor bridge joining them into one bar;
+// it never changes with mood, so the bracket signal reads against a constant.
 //
 // Kept strictly ASCII (no unicode, not even the accent glyphs mira-harness
 // allows itself) so it renders identically in any terminal/locale with zero
@@ -23,13 +27,17 @@
 export type Mood = 'neutral' | 'happy' | 'sad' | 'partial';
 
 /** lensL/lensR: `[10]` (square, "sunglasses on straight") vs `(10)` (round,
- *  "sunglasses slipping") — verification-completeness, not emotion. mouth is
- *  the emotion: `-` neutral, `u` grin, `n` frown, `~` uncertain. */
+ *  "sunglasses slipping") — verification-completeness, not emotion. mouth
+ *  (always exactly 2 chars — the row template pads for that width) is the
+ *  emotion, and for a verification tool it draws the verdict literally:
+ *  `__` neutral flat line, `,/` a check mark for PASS, `\.` the check's
+ *  fallen mirror for FAIL, `~/` a half-drawn check for PARTIAL ("half
+ *  verified" — same story the one-slipped-lens tells). */
 const FACES: Record<Mood, { lensL: string; lensR: string; mouth: string }> = {
-  neutral: { lensL: '[10]', lensR: '[01]', mouth: '-' },
-  happy: { lensL: '[10]', lensR: '[01]', mouth: 'u' },
-  sad: { lensL: '(10)', lensR: '(01)', mouth: 'n' },
-  partial: { lensL: '[10]', lensR: '(01)', mouth: '~' },
+  neutral: { lensL: '[10]', lensR: '[01]', mouth: '__' },
+  happy: { lensL: '[10]', lensR: '[01]', mouth: ',/' },
+  sad: { lensL: '(10)', lensR: '(01)', mouth: '\\.' },
+  partial: { lensL: '[10]', lensR: '(01)', mouth: '~/' },
 };
 
 /**
@@ -40,22 +48,25 @@ const FACES: Record<Mood, { lensL: string; lensR: string; mouth: string }> = {
 export function mascot(mood: Mood = 'neutral'): string[] {
   const f = FACES[mood];
   return [
-    // "Sharp hood" (#346). The face rows (lens/mouth, unchanged from #197's
-    // measurements) span columns 1-14, visual center 7.5. The 7-char hood peak
-    // "_,-^-,_" carries its "^" at index 3, so the same 5-space indent as before
-    // lands it at column 8 (closest integer to 7.5) — the #197 center math is
-    // untouched, only the ornament changed. The peak is a true mirror
-    // (left "_,-" / right "-,_"), the brim insets one column each side (2..13)
-    // under the face edges at 1/14, and the chin's quotes sit at columns 1 and
-    // 14 — exactly under both face edges (a first draft had the left quote at
-    // column 2, one inside, which review caught against the per-column claim) —
-    // each measured per column, since "looks centered" is what #197 was filed
-    // about.
-    '     _,-^-,_',
-    "  ,'        ',",
-    ` | ${f.lensL}  ${f.lensR} |`,
-    ` |     ${f.mouth}      |`,
-    " '.__________.'",
+    // "Deep visor" (#346 follow-up). Everything is measured per column against
+    // the face edges at columns 1 and 14 (visual center 7.5), because "looks
+    // centered" is what #197 was filed about:
+    //   row 1  hood top:  10 underscores at columns 3-12, centered on 7.5.
+    //   row 2  hood brim: "/" at 2, 10 underscores at 3-12, "\" at 13 — a
+    //          solid brim line sitting directly on the visor, which is what
+    //          makes the hood read as pulled down low.
+    //   row 3  visor:     lenses at 3-6 and 9-12 joined by "==" at 7-8 (the
+    //          bridge replaces #197's two blank columns, same width).
+    //   row 4  mouth:     2 chars at columns 7-8, five spaces each side —
+    //          exactly centered on 7.5, which the old 1-char mouth never was.
+    //   row 5  jaw:       "\" at 1, 12 underscores at 2-13, "/" at 14 —
+    //          angular corners under both face edges (the round '.  .' chin
+    //          was the cutest part of the old face, and the first to go).
+    '   __________',
+    '  /__________\\',
+    ` | ${f.lensL}==${f.lensR} |`,
+    ` |     ${f.mouth}     |`,
+    ' \\____________/',
   ];
 }
 

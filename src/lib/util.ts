@@ -243,3 +243,66 @@ export class RetryableError extends Error {
 export class SdkMissingError extends Error {
   readonly sdkMissing = true as const;
 }
+
+// Classify a lazy `import(pkg)` failure into ADVICE THAT ACTUALLY HELPS (#344).
+//
+// Two kinds, because the remedies differ and so do the CALLER semantics:
+//   'absent' — `pkg` itself is not installed. npm install <pkg> IS the fix, and the
+//              arweave chunk-fallback's "optional path, skip it" treatment
+//              (SdkMissingError) is legitimate: nothing is broken, something is absent.
+//   'broken' — pkg IS installed but unusable: a transitive dep is missing (measured on
+//              a real push: npm printed "added 575 packages" and the turbo-sdk -> x402
+//              -> viem chain still lacked viem — repeating npm install changes
+//              nothing), a subpath/file inside the package fails to resolve, or
+//              ERR_PACKAGE_PATH_NOT_EXPORTED (observed as an @noble/hashes './sha3'
+//              exports mismatch — commonly the surrounding project's tree resolving a
+//              shared dependency to an incompatible version, though an SDK's own bad
+//              release can produce it too). The working remedy is a directory whose
+//              node_modules contains only this package — see "Installing where
+//              dependencies clash" in docs/arweave-upload-runbook.md. Callers must NOT
+//              give 'broken' the skip-it treatment: a broken install silently skipped
+//              looks exactly like a feature that never runs (Codex review, Critical).
+// Returns null when the error is not an import-resolution failure at all (callers
+// re-throw those untouched).
+export interface SdkImportProblem {
+  kind: 'absent' | 'broken';
+  advice: string;
+}
+
+export function sdkImportAdvice(e: unknown, pkg: string): SdkImportProblem | null {
+  const code = (e as NodeJS.ErrnoException | null)?.code;
+  const msg = errMsg(e);
+  const isolated =
+    `Use an isolated directory containing only this package: see "Installing where dependencies clash" ` +
+    `in docs/arweave-upload-runbook.md.`;
+  if (code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+    return {
+      kind: 'broken',
+      advice:
+        `\`${pkg}\` is installed but a dependency's exports do not match what it needs (${msg}) — ` +
+        `usually the surrounding project's tree resolving a shared dependency to an incompatible version. ` +
+        `Running npm install again will not fix it. ${isolated}`,
+    };
+  }
+  // Both spellings: ESM resolution throws ERR_MODULE_NOT_FOUND, while a CommonJS
+  // require() inside a dual-published dependency throws bare MODULE_NOT_FOUND — the
+  // turbo-sdk chain contains both kinds (Codex review round 2).
+  if (code !== 'ERR_MODULE_NOT_FOUND' && code !== 'MODULE_NOT_FOUND') return null;
+  // "Cannot find package 'viem' imported from ..." / "Cannot find module '...'"
+  const missing = /Cannot find (?:package|module) '([^']+)'/.exec(msg)?.[1];
+  // ONLY the exact package name means "not installed" — a subpath or file path inside
+  // an installed pkg ("@ardrive/turbo-sdk/dist/x", "/…/node_modules/…/foo.js") means
+  // the install EXISTS and is broken, where a reinstall was measured not to help
+  // (Codex review: startsWith(pkg + '/') classified exactly backwards).
+  if (missing === pkg) {
+    return { kind: 'absent', advice: `the \`${pkg}\` package is not installed — run: npm install ${pkg}` };
+  }
+  return {
+    kind: 'broken',
+    advice:
+      `\`${pkg}\` is installed but '${missing ?? 'a module it needs'}' cannot be resolved from it — most ` +
+      `often the surrounding project's dependency tree interfering (npm can report success and still leave ` +
+      `this hole; a defective package release can look the same), so running npm install ${pkg} again is ` +
+      `unlikely to fix it. ${isolated}`,
+  };
+}

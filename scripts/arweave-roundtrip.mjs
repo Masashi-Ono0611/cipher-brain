@@ -114,7 +114,23 @@ const fail = (m) => {
   console.log(`[FAIL] ${m}`);
   failed = true;
 };
-const mine = () => fetch(`http://localhost:${PORT}/mine`).then((r) => r.text());
+// #360: a dropped connection to /mine was measured failing an otherwise-green run
+// twice in a row (a bare "fetch failed" with the server still alive), then vanishing
+// with no code change. A short, loud, bounded retry distinguishes "one dropped
+// connection" (recovers, and says so) from "server gone" (every attempt fails and the
+// catch at the bottom names the server's state). Loud on purpose: a retry that saves
+// the run must be visible, or the flake just hides one layer deeper.
+const mine = async () => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fetch(`http://localhost:${PORT}/mine`).then((r) => r.text());
+    } catch (e) {
+      if (attempt >= 3) throw e;
+      log(`mine attempt ${attempt}/3 failed (${e.cause?.code ?? e.cause?.message ?? e.message}) — retrying in 500ms`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+};
 
 try {
   // a funded test wallet (arlocal mint — no real AR)
@@ -733,12 +749,24 @@ try {
 } catch (e) {
   // Name the server's state in the failure: the #351 incident surfaced as a bare
   // "fetch failed" when the (orphaned) server vanished mid-test, and nothing said so.
+  // #360 hardened this in three ways, each one a thing the measured transient failure
+  // hid: (1) undici's "fetch failed" message is generic — the REAL network error
+  // (ECONNREFUSED, ECONNRESET, a socket hangup) rides in e.cause, so print it;
+  // (2) a STILL-ALIVE server is now named explicitly, not left as the absence of the
+  // exited-server suffix — a dead child and a transient socket error read identically
+  // otherwise; (3) the stack goes to stderr, so WHICH fetch threw stops being an
+  // inference from the last section banner.
+  const cause = e.cause
+    ? ` (cause: ${e.cause.code ? `${e.cause.code} — ` : ''}${e.cause.message ?? String(e.cause)})`
+    : '';
   fail(
-    `exception: ${e.message}` +
+    `exception: ${e.message}${cause} (` +
       (arExit !== null
-        ? ` (the arlocal server process had exited before this exception was reported: code ${arExit.code}, signal ${arExit.signal})`
-        : ''),
+        ? `the arlocal server process had exited before this exception was reported: code ${arExit.code}, signal ${arExit.signal}`
+        : `the arlocal server process (pid ${arproc.pid}) was still alive when this exception was reported`) +
+      ')',
   );
+  console.error(e.stack ?? String(e));
 } finally {
   await rm(tmp, { recursive: true, force: true });
   arproc.kill('SIGTERM');

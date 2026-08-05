@@ -22,7 +22,15 @@ import {
   AR_L1_MAX_BYTES,
   readEnv,
 } from '../config.js';
-import { warnIfLooseKeyPerms, readHead, fmtBytes, errMsg, RetryableError, SdkMissingError } from '../util.js';
+import {
+  warnIfLooseKeyPerms,
+  readHead,
+  fmtBytes,
+  errMsg,
+  RetryableError,
+  SdkMissingError,
+  sdkImportAdvice,
+} from '../util.js';
 import { arUsdRate, usdApprox } from '../estimate.js';
 import { progressReporter } from '../progress.js';
 import type { StorageBackend, PutOpts, FetchShape } from '../types.js';
@@ -390,8 +398,14 @@ export async function arweaveBackend(): Promise<StorageBackend> {
     try {
       ArweaveCtor = (await import('arweave')).default as unknown as typeof ArweaveCtor;
     } catch (e) {
-      if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND')
-        throw new SdkMissingError('arweave backend needs the `arweave` package — run: npm install arweave');
+      const problem = sdkImportAdvice(e, 'arweave');
+      // The L1 chunk-fallback treats SdkMissingError as "optional path, skip it" — that
+      // is only true for a genuinely ABSENT package. An installed-but-broken one
+      // (transitive dep missing, exports clash) silently skipped would make the
+      // fallback look like a feature that never fires; it throws plainly instead
+      // (Codex review, Critical).
+      if (problem?.kind === 'absent') throw new SdkMissingError(`arweave backend: ${problem.advice}`);
+      if (problem !== null) throw new Error(`arweave backend: ${problem.advice}`);
       throw e;
     }
     _ar = ArweaveCtor.init({ host: AR_HOST, port: AR_PORT, protocol: AR_PROTOCOL });

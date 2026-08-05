@@ -4,7 +4,7 @@
 // usdApprox) — one home so this math is never re-implemented per surface (#159).
 import { stat } from 'node:fs/promises';
 import { AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS, AR_USD_RATE_URL, AR_TURBO_RATES_URL } from './config.js';
-import { requireFile, errMsg, fmtBytes } from './util.js';
+import { requireFile, errMsg, fmtBytes, sdkImportAdvice } from './util.js';
 import { printJson } from './ui.js';
 import type { CliOptions } from './types.js';
 
@@ -151,12 +151,13 @@ async function estimateCostFor(backend: string, sizeBytes: number): Promise<Part
     try {
       ({ TurboFactory } = await import('@ardrive/turbo-sdk'));
     } catch (e) {
-      if (e && (e as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') {
+      const problem = sdkImportAdvice(e, '@ardrive/turbo-sdk');
+      if (problem !== null) {
         return {
           backend,
           size_bytes: sizeBytes,
           cost: null,
-          note: 'estimate unavailable (optional dependency not installed) — run: npm install @ardrive/turbo-sdk. Uploads <100KB are free; larger ones spend Turbo Credits.',
+          note: `estimate unavailable (optional dependency): ${problem.advice} Uploads <100KB are free; larger ones spend Turbo Credits.`,
         };
       }
       throw e;

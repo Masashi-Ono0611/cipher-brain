@@ -83,6 +83,28 @@ Credits, and Turbo charges the **signer's** reachable credits — so they must b
 
 The printed id is the **Data Tx ID**.
 
+### Installing where dependencies clash
+
+`npm install @ardrive/turbo-sdk` can succeed and still leave the SDK broken when it runs
+inside a project whose own dependency tree interferes (#344 — observed in this very
+repo's checkout: npm reported "added 575 packages" while the SDK's transitive `viem` was
+missing, and an alternative install hit an `@noble/hashes` `./sha3` exports clash with
+the host tree's pinned version). The CLI's error message tells you when you are in this
+situation. The fix is a directory whose `node_modules` contains **only** this package:
+
+```sh
+mkdir turbo-push && cd turbo-push
+npm init -y
+npm install @ardrive/turbo-sdk        # resolves cleanly — nothing to clash with
+# copy the bundled CLI beside it (version lookup reads the sibling package.json):
+mkdir -p cb/dist && cp <repo>/dist/cli.mjs cb/dist/ && cp <repo>/package.json cb/
+CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
+  node cb/dist/cli.mjs push --in brain.age --backend turbo
+```
+
+This is the exact pattern a real monthly push used after the in-repo install failed —
+nothing else about the flow changes, and `pull`/`verify` never need the SDK at all.
+
 > **Treat the JWK as a spend-capable bearer key.** While any Credit Share Approval names
 > its address, whoever holds the JWK can spend those credits — it is not "low value". So:
 > `chmod 600` it (cipher-brain warns on a group/other-readable wallet); keep it in the

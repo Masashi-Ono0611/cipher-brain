@@ -16,7 +16,7 @@
 // logic is separated from the upload and exercised directly here, against the ACTUAL wire
 // shape the payment service returns — the fixtures below are the real bodies observed
 // during that push and the top-up that preceded it, with the amounts kept verbatim.
-import { summarizeBalance, balanceLines, reachableCredit } from '../src/lib/balance.ts';
+import { summarizeBalance, balanceLines, reachableCredit, insufficientFundsError } from '../src/lib/balance.ts';
 
 let failed = 0;
 const check = (name, cond, detail) => {
@@ -178,6 +178,103 @@ const REAL_BODY = {
     threw = true;
   }
   check('summarize: a malformed winc throws rather than reporting a guessed balance', threw);
+}
+
+// --- funds check (#342): refuse ONLY the guaranteed post-signing failure -----------
+{
+  const bal = summarizeBalance(REAL_BODY); // reachable via PAYER: 626476237410
+  const reachable = 626476237410n;
+
+  // Exactly affordable must PASS: the check is a tripwire for the impossible, not a
+  // margin policy. One winc over must refuse.
+  check(
+    'funds: a cost equal to the reachable credit proceeds (boundary, negative control)',
+    insufficientFundsError(reachable, bal, PAYER) === null,
+  );
+  const refusal = insufficientFundsError(reachable + 1n, bal, PAYER);
+  check('funds: one winc past the reachable bound refuses', refusal !== null);
+  check('funds: the refusal names the exact shortfall', refusal?.includes('short 1 winc'), refusal);
+  check(
+    'funds: the refusal answers "what do I do" — both funding paths, the verify command, the runbook',
+    refusal?.includes("'cipher-brain wallet address'") &&
+      refusal.includes('Share Credits') &&
+      refusal.includes("'cipher-brain wallet balance'") &&
+      refusal.includes('docs/arweave-upload-runbook.md') &&
+      refusal.includes('CIPHER_BRAIN_SKIP_FUNDS_CHECK=1'),
+    refusal,
+  );
+  check('funds: it happens BEFORE signing, and says so', refusal?.includes('BEFORE signing'), refusal);
+
+  // A free upload (<100KB → 0 winc) can never be refused, even on a zero balance.
+  const broke = summarizeBalance({ winc: '0', effectiveBalance: '0' });
+  check('funds: a free upload is never refused (negative control)', insufficientFundsError(0n, broke, '') === null);
+
+  // The real incident's inverse: credit EXISTS but PAID_BY is unset, so none of it is
+  // reachable — the refusal must point at the stranded approvals and name the fix.
+  const refusalUnset = insufficientFundsError(reachable, bal, '');
+  check(
+    'funds: with PAID_BY unset, existing approvals are named as the likely fix',
+    refusalUnset?.includes('no CIPHER_BRAIN_AR_PAID_BY is set') &&
+      refusalUnset.includes('set CIPHER_BRAIN_AR_PAID_BY=<its payer address>'),
+    refusalUnset,
+  );
+
+  // 'warn' mode (unattended, no TTY): the SAME facts, but it must say it is proceeding
+  // and must NOT claim to abort — an unattended backup is never blocked on a balance
+  // read. Both modes fire on identical conditions (negative control below).
+  const warned = insufficientFundsError(reachable + 1n, bal, PAYER, 'warn');
+  check(
+    'funds: warn mode reports the shortfall but proceeds, and says the upload will fail if the read is accurate',
+    warned?.includes('proceeding anyway') && warned.includes('WILL fail') && !warned.includes('aborting'),
+    warned,
+  );
+  check(
+    'funds: warn mode still carries the full funding guidance',
+    warned?.includes('Share Credits') && warned.includes('docs/arweave-upload-runbook.md'),
+    warned,
+  );
+  // The closing advice must not cross modes: "re-run" after an ALREADY-proceeding upload
+  // invites a duplicate permanent spend, and there is nothing left to skip (Codex
+  // review round 3). The abort message keeps both.
+  check(
+    'funds: warn mode never tells an unattended log to re-run or to skip the check',
+    warned !== null && !warned.includes('re-run, or set') && !warned.includes('SKIP_FUNDS_CHECK'),
+    warned,
+  );
+  check(
+    'funds: warn mode warns that a blind re-push is a second permanent spend',
+    warned?.includes('duplicate push is a second permanent spend'),
+    warned,
+  );
+  check(
+    'funds: warn mode is quiet when funds suffice (negative control)',
+    insufficientFundsError(reachable, bal, PAYER, 'warn') === null,
+  );
+}
+
+// --- the bypass switch parses STRICTLY (#342, Codex review) ------------------------
+// CIPHER_BRAIN_SKIP_FUNDS_CHECK disables a protection, so any spelling other than
+// exactly '1' — including '0', 'false', or a typo — must leave the check ON. Loose
+// truthiness would turn the value that obviously means "off" into "on". Spawned per
+// value because the flag is read at config-module import.
+{
+  const { spawnSync } = await import('node:child_process');
+  const probe = (value) =>
+    spawnSync(
+      'node',
+      [
+        '--experimental-strip-types',
+        '--import',
+        './scripts/dev-cli-loader.mjs',
+        '-e',
+        "import('./src/lib/config.ts').then(c => console.log(c.SKIP_FUNDS_CHECK))",
+      ],
+      { env: { ...process.env, CIPHER_BRAIN_SKIP_FUNDS_CHECK: value }, encoding: 'utf8' },
+    ).stdout.trim();
+  check("skip: '1' enables the bypass", probe('1') === 'true', probe('1'));
+  for (const v of ['0', 'false', 'yes', 'true']) {
+    check(`skip: '${v}' does NOT disable the funds check (strict parse)`, probe(v) === 'false', probe(v));
+  }
 }
 
 console.log(failed ? 'PUSH BALANCE REPORT SELFTEST: FAIL' : 'PUSH BALANCE REPORT SELFTEST: PASS');

@@ -207,6 +207,73 @@ export function reachableCredit(bal: BalanceSummary, paidBy: string): { winc: bi
 }
 
 /**
+ * The refusal message for the pre-upload funds check (#342), or null when the upload can
+ * proceed. Pure decision + wording, kept here so it can be pinned by tests — the surface
+ * that calls it (a real paid upload) cannot be exercised without spending.
+ *
+ * The trigger condition is deliberately conservative: fire ONLY when the upload cost
+ * exceeds reachableCredit()'s figure, which is an UPPER bound on what this configured
+ * upload could possibly draw (#341) — anything short of that proceeds silently; this is
+ * a tripwire, not a gate that second-guesses the payment service. A balance read still
+ * has no freshness guarantee (there is no dry-run spend API to ask for one), which is
+ * why the ACTION taken on the trigger depends on who is present to bear a false
+ * positive: see `mode` below.
+ *
+ * The message must answer "so what do I DO?" — the whole #342 complaint is that the fix
+ * steps lived outside the CLI. Both funding paths are spelled out with the command that
+ * verifies each step, because during the real funding session every one of those
+ * questions had to be answered with a hand-written SDK script.
+ */
+export function insufficientFundsError(
+  uploadWinc: bigint,
+  bal: BalanceSummary,
+  paidBy: string,
+  // 'abort': a human is present (stderr is a TTY) and the refusal is recoverable in
+  // seconds — fail fast with the guidance. 'warn': nobody is present to act (a nightly
+  // runner, an MCP host); the SAME facts are reported but the upload proceeds, because a
+  // balance read with no freshness guarantee must never be what blocks an unattended
+  // backup — the payment service itself stays the authority (Codex review, Critical).
+  mode: 'abort' | 'warn' = 'abort',
+): string | null {
+  const { winc: reachable } = reachableCredit(bal, paidBy);
+  if (uploadWinc <= reachable) return null;
+  const shortfall = uploadWinc - reachable;
+  const stranded = BigInt(bal.effective) - reachable;
+  return (
+    `turbo: this upload needs ${uploadWinc} winc but only ${reachable} winc is reachable ` +
+    `(short ${shortfall} winc, ~${(Number(shortfall) / 1e12).toFixed(8)} AR) — ` +
+    (mode === 'abort'
+      ? `aborting BEFORE signing, because the payment service would refuse the spend after it.\n`
+      : `proceeding anyway (unattended run: a balance read has no freshness guarantee, and it must never be ` +
+        `what blocks a backup — the payment service is the authority), but if this read is accurate the ` +
+        `upload WILL fail after signing.\n`) +
+    (stranded > 0n
+      ? `NOTE: the service reports ${stranded} winc more on this signer that THIS upload cannot draw on` +
+        (paidBy
+          ? ` (approvals CIPHER_BRAIN_AR_PAID_BY=${paidBy} does not select, or expired/exhausted ones) — check 'cipher-brain wallet balance'.\n`
+          : ` — it sits on credit share approvals, and no CIPHER_BRAIN_AR_PAID_BY is set to draw on any of them. ` +
+            `If one of those approvals is yours, set CIPHER_BRAIN_AR_PAID_BY=<its payer address> and retry.\n`)
+      : '') +
+    `To fund it (details: docs/arweave-upload-runbook.md):\n` +
+    `  A) fund the signer directly: 'cipher-brain wallet address' prints the address; buy Turbo Credits ` +
+    `for it at turbo.ar.io, then confirm with 'cipher-brain wallet balance'.\n` +
+    `  B) buy on a wallet you already have (e.g. MetaMask at turbo.ar.io), use its Share Credits to ` +
+    `delegate to the signer's address, set CIPHER_BRAIN_AR_PAID_BY=<that wallet's address>, and confirm ` +
+    `with 'cipher-brain wallet balance' (the approval must be listed AND reachable).\n` +
+    // The closing advice differs by mode, and must (Codex review round 3): "re-run" is
+    // the right move after an abort, but in warn mode the upload is ALREADY proceeding —
+    // telling an unattended log to re-run invites a duplicate PERMANENT spend if this
+    // run in fact succeeds, and there is nothing left to skip.
+    (mode === 'abort'
+      ? `If you topped up seconds ago the balance read may be stale — re-run, or set ` +
+        `CIPHER_BRAIN_SKIP_FUNDS_CHECK=1 to bypass this check for one run.`
+      : `If this read was stale, this warning is spurious and the upload will simply succeed — ` +
+        `do NOT re-push without checking 'verify' / the locator first (a duplicate push is a second ` +
+        `permanent spend). If it was accurate, the upload will have failed: fund via A/B above before the next run.`)
+  );
+}
+
+/**
  * The balance lines `push` prints before an irreversible paid upload (#341).
  *
  * Returned as strings rather than written here for the same reason progress.ts takes an

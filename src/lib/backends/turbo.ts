@@ -7,9 +7,9 @@
 import { stat, readFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { resolve } from 'node:path';
-import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND } from '../config.js';
-import { warnIfLooseKeyPerms, fmtBytes, errMsg, isWalletAddress } from '../util.js';
-import { summarizeBalance, balanceLines } from '../balance.js';
+import { AR_WALLET, AR_PAID_BY, AR_MAX_SPEND, SKIP_FUNDS_CHECK } from '../config.js';
+import { warnIfLooseKeyPerms, fmtBytes, errMsg, isWalletAddress, sleep } from '../util.js';
+import { summarizeBalance, balanceLines, insufficientFundsError, type BalanceSummary } from '../balance.js';
 import { arUsdRate, usdApprox } from '../estimate.js';
 import { progressReporter } from '../progress.js';
 import { arweaveBackend } from './arweave.js';
@@ -46,6 +46,12 @@ export function turboBackend(): StorageBackend {
       // cost estimate + balance before committing to an irreversible spend.
       // Uploads <100KB are free (0 winc); larger ones draw from Turbo Credits.
       let uploadWinc: bigint | null = null;
+      // Captured for the funds check below. null = the balance could not be read, and
+      // the check does not run — an unreadable payment service must not block a backup
+      // (same availability posture the advisory lines take), whereas a READ balance that
+      // cannot cover the cost is a guaranteed post-signing failure and is worth refusing
+      // early (#342).
+      let balForCheck: BalanceSummary | null = null;
       try {
         const [{ winc: uploadWincStr }] = await turbo.getUploadCosts({ bytes: [size] });
         // BigInt('') is 0n (no throw) — a malformed-but-non-throwing winc would otherwise
@@ -75,8 +81,8 @@ export function turboBackend(): StorageBackend {
         // push). Report what can ACTUALLY be spent alongside it, out of the same body the
         // SDK was already returning.
         try {
-          for (const line of balanceLines(summarizeBalance(await turbo.getBalance(), rate), AR_PAID_BY))
-            process.stderr.write(`${line}\n`);
+          balForCheck = summarizeBalance(await turbo.getBalance(), rate);
+          for (const line of balanceLines(balForCheck, AR_PAID_BY)) process.stderr.write(`${line}\n`);
         } catch (e) {
           // Advisory output beside a cost estimate: it must never fail a push. Say WHY it
           // is missing, though — silently dropping the line (the old behaviour) leaves the
@@ -119,6 +125,69 @@ export function turboBackend(): StorageBackend {
           throw new Error(
             `turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`,
           );
+        }
+      }
+      // Funds check (#342) — like the cap check above, OUTSIDE the estimate try/catch so
+      // no exception path can swallow it (#105's lesson). It runs only when BOTH facts
+      // were actually established (cost estimated AND balance read): a missing estimate
+      // already has its own fail-open/fail-closed policy above, and an unreadable balance
+      // must not block a backup. When both are known and the cost exceeds even the UPPER
+      // bound of what this configured upload can draw, the spend is headed for a refusal
+      // by the payment service — just later, after minutes of signing.
+      //
+      // What happens next depends on who is present, because a balance read has no
+      // freshness guarantee (Codex review, Critical — there is no dry-run spend API that
+      // could give one), so a false positive is always possible and someone has to bear
+      // it:
+      //   - stderr is a TTY: a human is watching. Abort with the funding guidance — a
+      //     false positive costs them one re-run, and the fix steps are on screen. The
+      //     shortfall is still confirmed by a second read after a short settle first, so
+      //     a top-up landing that same moment does not trip it. (TTY-ness as the "is a
+      //     human watching" signal is this repo's existing pattern — progress.ts, #283.)
+      //   - not a TTY (nightly runner, MCP host): nobody can act, and a wrongly blocked
+      //     unattended backup would be this check causing the harm it exists to prevent.
+      //     The SAME facts are written as a warning and the upload proceeds — the
+      //     payment service stays the authority, exactly the pre-#342 behaviour plus an
+      //     explanation the morning log never had.
+      // Residual, accepted (Codex review round 3): isTTY detects a terminal, not a
+      // human, so a third-party harness that runs unattended INSIDE a PTY would get
+      // attended semantics and could see an abort. Both first-party unattended paths
+      // are structurally non-TTY — the schedule runner redirects stderr to its log
+      // (exec >>"$LOG" 2>&1) and MCP stdio is piped — and no stronger signal exists
+      // short of a config knob nobody would discover before it mattered; such a
+      // harness can set CIPHER_BRAIN_SKIP_FUNDS_CHECK=1.
+      // A re-read that ERRORS falls open (proceed): same availability rule as an
+      // unreadable first read. CIPHER_BRAIN_SKIP_FUNDS_CHECK=1 (strictly '1') remains
+      // the attended-path override, documented in the refusal itself.
+      if (uploadWinc !== null && balForCheck !== null && !SKIP_FUNDS_CHECK) {
+        if (insufficientFundsError(uploadWinc, balForCheck, AR_PAID_BY) !== null) {
+          if (!process.stderr.isTTY) {
+            const warning = insufficientFundsError(uploadWinc, balForCheck, AR_PAID_BY, 'warn');
+            if (warning !== null) process.stderr.write(`${warning}\n`);
+          } else {
+            // The throw sits OUTSIDE the try so the re-read's failure handling can never
+            // catch the refusal itself — no string-matching a message to tell them apart.
+            let confirmed: string | null = null;
+            let rereadOk = false;
+            try {
+              await sleep(2000);
+              confirmed = insufficientFundsError(
+                uploadWinc,
+                summarizeBalance(await turbo.getBalance(), null),
+                AR_PAID_BY,
+              );
+              rereadOk = true;
+            } catch (e) {
+              process.stderr.write(
+                `turbo: a shortfall was seen but the confirming re-read failed (${errMsg(e)}) — proceeding; the payment service is the authority\n`,
+              );
+            }
+            if (rereadOk && confirmed !== null) throw new Error(confirmed);
+            if (rereadOk)
+              process.stderr.write(
+                'turbo: the first balance read showed a shortfall but a re-read shows sufficient credit (a top-up settling) — proceeding\n',
+              );
+          }
         }
       }
       // paidBy (x-paid-by header): when set, Turbo pays from a Credit Share Approval the

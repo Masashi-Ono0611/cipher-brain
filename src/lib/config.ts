@@ -44,6 +44,7 @@ const ENV_NAMES = [
   'CIPHER_BRAIN_AR_L1_MAX',
   'CIPHER_BRAIN_YES',
   'CIPHER_BRAIN_MAX_SPEND',
+  'CIPHER_BRAIN_SKIP_FUNDS_CHECK', // #342: one-run bypass of the turbo pre-upload funds check (stale balance reads)
   'CIPHER_BRAIN_PIPE_TIMEOUT',
   'CIPHER_BRAIN_PULL_RETRY_MS',
   'CIPHER_BRAIN_NO_CONFIG_FILE', // set by the generated nightly runner so a scheduled run uses only baked values (#286)
@@ -332,6 +333,17 @@ export const AR_BALANCE_URL = readEnv('CIPHER_BRAIN_AR_BALANCE_URL') || 'https:/
 export const CIPHER_YES = !!readEnv('CIPHER_BRAIN_YES');
 const MAX_SPEND_RAW = readEnv('CIPHER_BRAIN_MAX_SPEND');
 export const AR_MAX_SPEND = MAX_SPEND_RAW ? BigInt(MAX_SPEND_RAW) : 0n;
+// Escape hatch for the turbo pre-upload funds check (#342). The check refuses an upload
+// whose cost exceeds even the upper bound of reachable credit — a spend the payment
+// service would reject anyway — but the balance read can lag a top-up made seconds
+// earlier, and a stale read must not strand an operator who KNOWS they just funded it.
+// One-run bypass, named in the refusal message itself. STRICTLY '1', unlike CIPHER_YES's
+// any-non-empty reading: this switch DISABLES a protection, so a stray
+// `CIPHER_BRAIN_SKIP_FUNDS_CHECK=0` (or `=false`) must keep the check ON — loose
+// truthiness here would turn the spelling that obviously means "off" into "on"
+// (Codex review). An unrecognized value self-corrects: the check still runs, and its
+// refusal message spells out the exact `=1` form.
+export const SKIP_FUNDS_CHECK = readEnv('CIPHER_BRAIN_SKIP_FUNDS_CHECK') === '1';
 // The raw `arweave` backend posts one inline L1 tx; gateways reject single-tx bodies
 // past ~12 MiB. Guard at a conservative 10 MiB and redirect large uploads to `turbo`
 // (which streams + ANS-104-bundles). Override for a deliberate large L1 post.

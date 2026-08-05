@@ -118,9 +118,6 @@ interface CaptureResult<T> {
 // snapshotted. Calls are serialized through a promise-chain mutex because the
 // capture mutates process-global state (console + exitCode).
 let callChain: Promise<void> = Promise.resolve();
-// Warnings recorded by a call that then FAILED (#347) — set by captureCall's catch,
-// consumed (and cleared) by structuredErr. Mutex-serialized calls make this safe.
-let failedCallWarnings: string[] = [];
 function captureCall<T>(fn: () => Promise<T>): Promise<CaptureResult<T>> {
   const run = callChain.then(async (): Promise<CaptureResult<T>> => {
     const out: string[] = [];
@@ -143,10 +140,13 @@ function captureCall<T>(fn: () => Promise<T>): Promise<CaptureResult<T>> {
     } catch (e) {
       // A warning recorded BEFORE the failure matters no less for having been
       // followed by one — losing it here would re-open the exact relay hole #347
-      // closes (multi-model review, Critical). Stash for structuredErr(), which every
-      // failed tool call funnels through; the calls are mutex-serialized, so the
-      // stash cannot cross calls.
-      failedCallWarnings = drainWarnings();
+      // closes (review round 1, Critical). Bound to the ERROR OBJECT itself, not to
+      // shared state: structuredErr() runs outside the callChain mutex, so a
+      // module-level stash could be consumed or overwritten by an interleaved failing
+      // call (review round 2, Critical). Residual, accepted: a handler that throws
+      // AFTER a successful capture (interpreting its output, say) abandons that
+      // capture's warnings — they still reached the server's stderr live.
+      if (e instanceof Error) (e as Error & { cbWarnings?: string[] }).cbWarnings = drainWarnings();
       throw e;
     } finally {
       console.log = prevLog;
@@ -176,10 +176,18 @@ class ToolError extends Error {
   }
 }
 
+// #347: module-load warnings, preserved by main()'s startup drain — attached to every
+// structured result below (session-scoped facts like a deprecated env var).
+let startupWarnings: string[] = [];
+
 function structuredOk(payload: Record<string, unknown>): CallToolResult {
+  const full = {
+    ...payload,
+    ...(startupWarnings.length ? { startup_warnings: startupWarnings } : {}),
+  };
   return {
-    content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
-    structuredContent: payload,
+    content: [{ type: 'text', text: JSON.stringify(full, null, 2) }],
+    structuredContent: full,
   };
 }
 
@@ -209,13 +217,15 @@ function structuredErr(errObj: unknown): CallToolResult {
   const cbCode = matchErrorCode(rawMessage)?.code;
   // Additive (#347): warnings the failing call recorded before it failed ride the
   // error result too — {code, message} consumers are unaffected by an extra field.
-  const warnings = failedCallWarnings;
-  failedCallWarnings = [];
+  // Read off the error object (captureCall's catch bound them there), never off
+  // shared state — this function runs outside the call mutex.
+  const warnings = (errObj as (Error & { cbWarnings?: string[] }) | null)?.cbWarnings ?? [];
   const payload = {
     code: errObj instanceof ToolError ? errObj.code : 'ERR_INTERNAL',
     message: annotateErrorMessage(rawMessage),
     ...(cbCode ? { cb_code: cbCode } : {}),
     ...(warnings.length ? { warnings } : {}),
+    ...(startupWarnings.length ? { startup_warnings: startupWarnings } : {}),
   };
   return {
     content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
@@ -2179,8 +2189,12 @@ async function main(): Promise<void> {
   if (IDEMPOTENCY_TTL_ERROR) throw IDEMPOTENCY_TTL_ERROR;
   // Module-load warnings (a deprecated env var, a loose-permissioned config file)
   // already printed to the server's stderr live; drain them here so they are not
-  // misattributed to whichever tool call happens to run first (#347).
-  drainWarnings();
+  // misattributed to whichever tool call happens to run first — but PRESERVED, not
+  // discarded: they ride every structured result as `startup_warnings` (review
+  // round 2 — silently dropping them from the structured channel would be the same
+  // relay hole one level up). They concern the server session as a whole, which is
+  // why every result carries them rather than only the first.
+  startupWarnings = drainWarnings();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

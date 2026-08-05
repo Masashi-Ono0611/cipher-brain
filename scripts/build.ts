@@ -37,6 +37,7 @@
 //     needs no npm dependency" recovery property (and the selftest that proves it).
 
 import { readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extractSection, RUNBOOK_HEADING } from '../src/lib/runbook.js';
@@ -69,6 +70,28 @@ if (!runbook) {
   process.exit(1);
 }
 
+// #348: stamp build provenance INTO the bundle, so a deployed dist/cli.mjs can answer
+// "how old is the thing I am actually invoking". A hand-copied build ran a snapshot
+// host for 5+ weeks silently missing documented features — nothing surfaced its age.
+// The stamp is the COMMIT hash (%H — the full hash: %h's abbreviation length varies
+// with git config/repository state) + COMMIT date (%cI), not wall-clock time:
+// rebuilding the same commit from a CLEAN tree yields the same bytes. A dirty tree is
+// deliberately marked — those builds differ by design, that is what the flag is for —
+// and a git-less build (a source tarball) stamps null rather than guessing; doctor
+// reports that state as "unknown", never as "fresh".
+function gitBuildInfo(): { commit: string; commit_date: string; dirty: boolean } | null {
+  try {
+    const out = execFileSync('git', ['log', '-1', '--format=%H %cI'], { cwd: root, encoding: 'utf8' }).trim();
+    const [commit, commit_date] = out.split(' ');
+    if (!commit || !commit_date) return null;
+    const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim() !== '';
+    return { commit, commit_date, dirty };
+  } catch {
+    return null;
+  }
+}
+const buildInfo = gitBuildInfo();
+
 rmSync(dist, { recursive: true, force: true });
 const result = await Bun.build({
   entrypoints: [join(root, 'src/cli.ts'), join(root, 'src/mcp.ts')],
@@ -78,7 +101,10 @@ const result = await Bun.build({
   external,
   naming: '[dir]/[name].mjs', // force the OUTPUT extension to .mjs (Bun defaults .ts sources to .js too)
   banner: '#!/usr/bin/env node',
-  define: { __CIPHER_BRAIN_RESTORE_RUNBOOK__: JSON.stringify(runbook) },
+  define: {
+    __CIPHER_BRAIN_RESTORE_RUNBOOK__: JSON.stringify(runbook),
+    __CIPHER_BRAIN_BUILD_INFO__: JSON.stringify(JSON.stringify(buildInfo)),
+  },
 });
 if (!result.success) {
   for (const message of result.logs) console.error(message);

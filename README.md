@@ -494,7 +494,10 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
 
   cipher-brain doctor [--json]
       Read-only environment health check (#201): inspects the EXISTING setup for the
-      permission/config problems several past issues were filed for (age identity 0600,
+      permission/config problems several past issues were filed for (the running
+      build's provenance — which commit it was built from and how many days old that
+      is, WARNing past 90 days; a hand-copied deployment once ran 5+ weeks stale with
+      documented features silently absent, #348 — plus: age identity 0600,
       $CIPHER_BRAIN_HOME 0700, an Arweave JWK wallet's permissions, an identity/recipient
       pairing mismatch (including an unexpected EXTRA recipient in recipient.txt that the
       identity does not derive), an empty CIPHER_BRAIN_PIN_RECIPIENTS fail-closing every

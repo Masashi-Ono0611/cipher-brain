@@ -13,37 +13,99 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
+import { createServer as createTcpServer } from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
 import { DEV_ARGS } from './dev-node-flags.mjs';
 
-const PORT = Number(process.env.CB_ARLOCAL_PORT || 1984);
+// A dynamically-picked free port, not a fixed 1984 (#351). Measured failure with the
+// fixed port: a suite killed mid-run left its arlocal orphaned and listening; the next
+// run's own server died instantly on EADDRINUSE — invisibly, stdio was ignored — while
+// the /info readiness probe below got a 200 from the ORPHAN and reported "ready". The
+// whole suite then ran against a dead run's server, and failed with a bare
+// "fetch failed" pointing nowhere near the cause when the orphan later vanished
+// mid-test. A fresh port per run makes the collision vanishingly unlikely — not
+// impossible: the reservation closes before arlocal rebinds it (TOCTOU), so a loser of
+// that tiny race still fails, but fails FAST through the readiness gate below instead
+// of adopting a squatter. CB_ARLOCAL_PORT still pins a port when needed.
+const freePort = () =>
+  new Promise((resolve, reject) => {
+    const srv = createTcpServer();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+const PORT = Number(process.env.CB_ARLOCAL_PORT || (await freePort()));
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, '..', 'bin', 'cipher-brain.mjs');
 const sha = (buf) => createHash('sha256').update(buf).digest('hex');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TX_RE = /^[A-Za-z0-9_-]{43}$/; // base64url Arweave tx id
 
 const log = (m) => console.error(`· ${m}`);
 // arlocal runs in a SEPARATE process (scripts/arlocal-server.mjs) so the cb()
 // spawns below don't inherit its sockets and deadlock — see that file's header.
 log(`starting arlocal on :${PORT}`);
-const arproc = spawn('node', [join(HERE, 'arlocal-server.mjs'), String(PORT)], { stdio: 'ignore' });
-let ready = false;
-for (let i = 0; i < 80; i++) {
-  try {
-    await fetch(`http://localhost:${PORT}/info`);
-    ready = true;
-    break;
-  } catch {
-    await sleep(250);
-  }
-}
-if (!ready) {
+// Readiness comes from OUR CHILD's own announcement, never from probing the port:
+// arlocal-server.mjs prints "arlocal listening on <port>" only after its await
+// arlocal.start() succeeds, so seeing that line guarantees the listener is ours. A
+// port probe cannot — an orphaned arlocal from a killed previous run answers /info
+// with the identical protocol, and it was measured winning the probe race (~1ms)
+// against our own child's EADDRINUSE death (~300ms of node startup) — the
+// adopt-the-orphan failure #351 documents. Racing the child's stderr line against the
+// child's exit closes it by construction.
+const arproc = spawn('node', [join(HERE, 'arlocal-server.mjs'), String(PORT)], {
+  stdio: ['ignore', 'ignore', 'pipe'],
+});
+let arExit = null;
+arproc.on('exit', (code, signal) => {
+  arExit = { code, signal };
+});
+// A spawn-level failure (node binary missing, EAGAIN) emits 'error', not 'exit' —
+// without a handler it would crash unhandled instead of resolving readiness as failed.
+let arSpawnError = null;
+arproc.on('error', (e) => {
+  arSpawnError = e;
+});
+arproc.stderr.setEncoding('utf8');
+const arReady = await new Promise((resolve) => {
+  let buf = '';
+  let settled = false;
+  const onData = (d) => {
+    buf += d;
+    if (buf.includes(`arlocal listening on ${PORT}`)) done(true);
+  };
+  const onDeath = () => done(false);
+  // Settle exactly once, and detach everything that could fire again: the data
+  // listener would otherwise keep accumulating the child's stderr for the whole run,
+  // and a later exit would call a spent resolve (Codex review).
+  const done = (v) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    arproc.stderr.removeListener('data', onData);
+    arproc.removeListener('exit', onDeath);
+    arproc.removeListener('error', onDeath);
+    resolve(v);
+  };
+  const timer = setTimeout(() => done(false), 20_000);
+  arproc.stderr.on('data', onData);
+  arproc.on('exit', onDeath);
+  arproc.on('error', onDeath);
+});
+if (!arReady) {
   arproc.kill('SIGKILL');
-  console.log('[FAIL] arlocal did not start');
+  console.log(
+    arExit !== null
+      ? `[FAIL] the arlocal server process exited before becoming ready (code ${arExit.code}, signal ${arExit.signal}) — ` +
+          `port ${PORT} already taken (an orphaned previous run?), or arlocal failed to start`
+      : arSpawnError !== null
+        ? `[FAIL] could not spawn the arlocal server process: ${arSpawnError.message}`
+        : '[FAIL] arlocal did not announce readiness within 20s',
+  );
   process.exit(1);
 }
-log('arlocal ready');
+log('arlocal ready (announced by our own server process)');
 const ar = Arweave.init({ host: 'localhost', port: PORT, protocol: 'http' });
 const tmp = await mkdtemp(join(tmpdir(), 'cb-arweave-'));
 let failed = false;
@@ -669,7 +731,14 @@ try {
     ssrfSrv.kill('SIGKILL');
   }
 } catch (e) {
-  fail(`exception: ${e.message}`);
+  // Name the server's state in the failure: the #351 incident surfaced as a bare
+  // "fetch failed" when the (orphaned) server vanished mid-test, and nothing said so.
+  fail(
+    `exception: ${e.message}` +
+      (arExit !== null
+        ? ` (the arlocal server process had exited before this exception was reported: code ${arExit.code}, signal ${arExit.signal})`
+        : ''),
+  );
 } finally {
   await rm(tmp, { recursive: true, force: true });
   arproc.kill('SIGTERM');

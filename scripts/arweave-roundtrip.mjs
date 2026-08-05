@@ -114,7 +114,31 @@ const fail = (m) => {
   console.log(`[FAIL] ${m}`);
   failed = true;
 };
-const mine = () => fetch(`http://localhost:${PORT}/mine`).then((r) => r.text());
+// #360: a dropped connection to /mine was measured failing an otherwise-green run
+// twice in a row (a bare "fetch failed" with the server still alive), then vanishing
+// with no code change. A short, loud, bounded retry distinguishes "one dropped
+// connection" (recovers, and says so) from "server gone" (every attempt fails and the
+// catch at the bottom names the server's state). Loud on purpose: a retry that saves
+// the run must be visible, or the flake just hides one layer deeper. The budget is
+// RUN-WIDE, not per-call (Codex review): mine() is called several times, and a
+// per-call budget would let a systematic every-first-request-drops regression burn a
+// retry at every call site and still come out green — 2 rescues per run is flake
+// territory, more is a real problem this test must fail on.
+let mineRetriesLeft = 2;
+const mine = async () => {
+  for (;;) {
+    try {
+      return await fetch(`http://localhost:${PORT}/mine`).then((r) => r.text());
+    } catch (e) {
+      if (mineRetriesLeft <= 0) throw e;
+      mineRetriesLeft--;
+      log(
+        `mine failed (${e?.cause?.code ?? e?.cause?.message ?? e?.message ?? String(e)}) — retrying in 500ms (${mineRetriesLeft} run-wide mine retries left)`,
+      );
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+};
 
 try {
   // a funded test wallet (arlocal mint — no real AR)
@@ -733,12 +757,33 @@ try {
 } catch (e) {
   // Name the server's state in the failure: the #351 incident surfaced as a bare
   // "fetch failed" when the (orphaned) server vanished mid-test, and nothing said so.
+  // #360 hardened this in three ways, each one a thing the measured transient failure
+  // hid: (1) undici's "fetch failed" message is generic — the REAL network error
+  // (ECONNREFUSED, ECONNRESET, a socket hangup) rides in e.cause, so print it;
+  // (2) a not-exited server is now named explicitly, not left as the absence of the
+  // exited-server suffix — a dead child and a transient socket error read identically
+  // otherwise; (3) the stack goes to stderr, so WHICH fetch threw stops being an
+  // inference from the last section banner. All e accesses are optional-chained: a
+  // null/string throw must degrade the report, never replace it with a TypeError
+  // (Codex review). The exited check consults arproc.exitCode/signalCode as well as
+  // the 'exit' handler's arExit — a rejection can race the exit EVENT, and "had not
+  // reported exit" is the honest claim, not "was still alive" (Codex review).
+  const exited =
+    arExit ??
+    (arproc.exitCode !== null || arproc.signalCode !== null
+      ? { code: arproc.exitCode, signal: arproc.signalCode }
+      : null);
+  const cause = e?.cause
+    ? ` (cause: ${e.cause.code ? `${e.cause.code} — ` : ''}${e.cause.message ?? String(e.cause)})`
+    : '';
   fail(
-    `exception: ${e.message}` +
-      (arExit !== null
-        ? ` (the arlocal server process had exited before this exception was reported: code ${arExit.code}, signal ${arExit.signal})`
-        : ''),
+    `exception: ${e?.message ?? String(e)}${cause} (` +
+      (exited !== null
+        ? `the arlocal server process had exited before this exception was reported: code ${exited.code}, signal ${exited.signal}`
+        : `the arlocal server process (pid ${arproc.pid}) had not reported exit when this exception was reported`) +
+      ')',
   );
+  console.error(e?.stack ?? String(e));
 } finally {
   await rm(tmp, { recursive: true, force: true });
   arproc.kill('SIGTERM');

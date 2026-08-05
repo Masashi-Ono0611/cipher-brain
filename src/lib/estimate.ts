@@ -3,7 +3,7 @@
 // own pre-flight cost estimate (src/lib/backends/{arweave,turbo}.ts, via arUsdRate/
 // usdApprox) — one home so this math is never re-implemented per surface (#159).
 import { stat } from 'node:fs/promises';
-import { AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS, AR_USD_RATE_URL } from './config.js';
+import { AR_HOST, AR_PORT, AR_PROTOCOL, AR_HTTP_TIMEOUT_MS, AR_USD_RATE_URL, AR_TURBO_RATES_URL } from './config.js';
 import { requireFile, errMsg, fmtBytes } from './util.js';
 import { printJson } from './ui.js';
 import type { CliOptions } from './types.js';
@@ -60,6 +60,48 @@ export const usdApprox = (nativeAmount: bigint | number, rate: number): string =
   const usd = (Number(nativeAmount) / 1e12) * rate;
   return `~$${usd.toFixed(usd >= 0.01 ? 2 : 6)} USD`;
 };
+
+// What a winc actually COSTS in USD, from Turbo's own price sheet (#343). Measured
+// motivation: a real 459 MB push printed "~$8.71 USD (at ~$1.81/AR)" — the AR-spot value
+// of the winc — while the credits it consumed had been bought minutes earlier at Turbo's
+// fiat rate for ≈$13.1, a ~35% understatement. Turbo sells winc at `GET /v1/rates`
+// ({ winc: <winc per GiB>, fiat: { usd: <USD per GiB>, ... } }, fees included), so
+// usd-per-winc is fiat.usd / winc. Returned SCALED to "USD per 1e12 winc" — the same
+// unit arUsdRate() uses for winston — so every existing usdApprox()/rate parameter
+// consumes either rate unchanged, and the two stay distinguishable only by which
+// fetcher produced them, not by unit gymnastics at each call site.
+//
+// The distinction is per-BACKEND and deliberate: the raw `arweave` L1 backend spends
+// actual AR, where the spot rate IS the truthful price — it keeps arUsdRate(). Only the
+// turbo backend (and the wallet-balance view of turbo credits) prices with this.
+// Same never-throw/timeout posture as arUsdRate: a dead pricing endpoint may cost the
+// USD line, never the push.
+export async function turboUsdRate(): Promise<{ ratePer1e12Winc: number; usdPerGiB: number } | null> {
+  try {
+    const ctl = AbortSignal.timeout(AR_HTTP_TIMEOUT_MS);
+    const res = await fetch(AR_TURBO_RATES_URL, { signal: ctl });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { winc?: unknown; fiat?: { usd?: unknown } } | null;
+    // winc arrives as a decimal string (same wire convention as everywhere else on this
+    // service); a malformed one must yield null, not NaN-derived garbage in a USD line.
+    const wincPerGiB = typeof body?.winc === 'string' && /^\d+$/.test(body.winc) ? Number(body.winc) : Number.NaN;
+    // typeof-checked, not coerced: Number(true) is 1 and Number("1") is 1, so a
+    // malformed sheet could otherwise launder a wrong type into a plausible rate
+    // (Codex review round 2).
+    const usdPerGiB = typeof body?.fiat?.usd === 'number' ? body.fiat.usd : Number.NaN;
+    if (!Number.isFinite(wincPerGiB) || wincPerGiB <= 0 || !Number.isFinite(usdPerGiB) || usdPerGiB <= 0) return null;
+    // A winc past Number's integer precision would make the division quietly wrong, and
+    // the DERIVED rate needs its own finite/positive gate: valid-looking inputs can
+    // still overflow or round to 0 across the arithmetic, and a USD line built from
+    // Infinity or 0 is worse than no line (Codex review).
+    if (wincPerGiB > Number.MAX_SAFE_INTEGER) return null;
+    const ratePer1e12Winc = (usdPerGiB / wincPerGiB) * 1e12;
+    if (!Number.isFinite(ratePer1e12Winc) || ratePer1e12Winc <= 0) return null;
+    return { ratePer1e12Winc, usdPerGiB };
+  } catch {
+    return null;
+  }
+}
 
 // Estimate what pushing `sizeBytes` to `backend` would cost, WITHOUT uploading
 // anything (price queries only). `backend` must be one of file|arweave|turbo|rclone —
@@ -143,9 +185,14 @@ async function estimateCostFor(backend: string, sizeBytes: number): Promise<Part
         };
       }
       const [{ winc }] = res;
-      // usd_estimate is OPTIONAL: arUsdRate returns null on any rate-fetch failure,
-      // and a missing rate must never fail the (still useful) native estimate.
-      const rate = await arUsdRate();
+      // usd_estimate is OPTIONAL: a rate-fetch failure must never fail the (still
+      // useful) native estimate. Priced at Turbo's OWN credit rate, not AR spot (#343):
+      // a turbo upload spends credits, and credits sell at Turbo's fiat price (fees
+      // included) — pricing them at AR market value understated a real push's cost by
+      // ~35%. AR spot remains only as a labeled fallback when the price sheet is down.
+      const credit = await turboUsdRate();
+      const spot = credit === null ? await arUsdRate() : null;
+      const rate = credit?.ratePer1e12Winc ?? spot;
       return {
         backend,
         size_bytes: sizeBytes,
@@ -153,7 +200,13 @@ async function estimateCostFor(backend: string, sizeBytes: number): Promise<Part
         unit: 'winc',
         approx_ar: Number(BigInt(winc)) / 1e12,
         ...(rate !== null ? { usd_estimate: Number(((Number(BigInt(winc)) / 1e12) * rate).toFixed(6)) } : {}),
-        note: 'Turbo upload cost estimate (uploads <100KB are free). Paid with Turbo Credits (fundable via ETH/USDC/fiat).',
+        note:
+          'Turbo upload cost estimate (uploads <100KB are free). Paid with Turbo Credits (fundable via ETH/USDC/fiat).' +
+          (credit !== null
+            ? ` USD at Turbo's credit rate (~$${credit.usdPerGiB.toFixed(2)}/GiB, fees included) — what buying these credits with fiat costs, not the AR market value of the winc.`
+            : spot !== null
+              ? ' USD at AR SPOT (the credit price sheet was unavailable or unusable) — buying the credits with fiat typically costs more than this.'
+              : ''),
       };
     } catch (e) {
       return {

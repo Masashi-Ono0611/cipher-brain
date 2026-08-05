@@ -19,7 +19,7 @@ import { HOME, AR_WALLET, AR_PAID_BY } from './config.js';
 import { writeKeyFile } from './keys.js';
 import { exists, errMsg, warnIfLooseKeyPerms, SdkMissingError, isWalletAddress, sameWalletAddress } from './util.js';
 import { fetchBalance, type CreditApproval } from './balance.js';
-import { arUsdRate, usdApprox } from './estimate.js';
+import { arUsdRate, turboUsdRate, usdApprox } from './estimate.js';
 import { printJson } from './ui.js';
 import type { CliOptions } from './types.js';
 
@@ -164,16 +164,29 @@ async function walletBalance(o: CliOptions): Promise<void> {
   // Fetched once and passed in, rather than let fetchBalance reach for it, so the JSON
   // and human paths price the same numbers off the same rate. Null (rate unavailable)
   // degrades to omitting USD, never to failing the balance — same posture as the cost
-  // estimate's USD line (#170).
-  const rate = await arUsdRate();
-  const bal = await fetchBalance(address, rate);
+  // estimate's USD line (#170). Turbo's credit rate, not AR spot (#343): these ARE turbo
+  // credits, and their honest USD value is what replacing them with fiat costs; AR spot
+  // is only the fallback when the price sheet is down.
+  // Provenance is kept, not just the number (Codex review): a USD figure that might be
+  // the credit price or might be the visibly-lower AR spot must say which it is, or the
+  // fallback silently changes the meaning of the line.
+  const credit = await turboUsdRate();
+  const spot = credit === null ? await arUsdRate() : null;
+  const pricing =
+    credit !== null
+      ? { rate: credit.ratePer1e12Winc, source: 'turbo-credit' as const }
+      : spot !== null
+        ? { rate: spot, source: 'ar-spot' as const }
+        : null;
+  const rateLabel = credit !== null ? 'Turbo credit rate' : 'AR spot — credit price sheet unavailable';
+  const bal = await fetchBalance(address, pricing);
   if (o.json) return printJson(bal);
 
   const ar = (w: string) => `${w} winc (~${(Number(w) / 1e12).toFixed(8)} AR)`;
   console.log(`address           : ${bal.address}`);
   console.log(`own balance       : ${ar(bal.own)}`);
   console.log(
-    `spendable balance : ${ar(bal.effective)}${rate !== null ? ` = ${usdApprox(BigInt(bal.effective), rate)}` : ''}`,
+    `spendable balance : ${ar(bal.effective)}${pricing !== null ? ` = ${usdApprox(BigInt(bal.effective), pricing.rate)} (${rateLabel})` : ''}`,
   );
   printApprovals(
     bal.received_approvals,

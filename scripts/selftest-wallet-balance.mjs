@@ -85,6 +85,25 @@ try {
     res.end(JSON.stringify({ rate: RATE }));
   });
 
+  // Turbo's credit price sheet (#343): USD is priced from THIS by preference (credits
+  // are valued at what replacing them costs, not at AR spot). The mock's winc/usd pair
+  // is chosen to derive rate 4.0 USD per 1e12 winc — deliberately DIFFERENT from the
+  // AR-spot mock's 2.0, so which endpoint fed the USD line is visible in the amount
+  // (on the 1e12-winc happy-path fixture: $4.00 = credit rate won, $2.00 = spot won).
+  let turboRateHits = 0;
+  let turboRatesUp = true;
+  let turboRatesBody = { winc: '250000000000', fiat: { usd: 1.0 } };
+  const turboRatesServer = await startServer((_req, res) => {
+    turboRateHits++;
+    if (!turboRatesUp) {
+      res.writeHead(500);
+      res.end('boom');
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(turboRatesBody));
+  });
+
   // The balance mock: `body` decides what the next request answers, `hits` proves whether
   // a request happened at all (the malformed-address case asserts it did NOT), and
   // `lastQuery` proves the address actually arrived in the query string — without that,
@@ -108,6 +127,7 @@ try {
           ...process.env,
           CIPHER_BRAIN_AR_BALANCE_URL: urlOf(balServer),
           CIPHER_BRAIN_AR_USD_RATE_URL: urlOf(rateServer),
+          CIPHER_BRAIN_AR_TURBO_RATES_URL: urlOf(turboRatesServer),
           // Inherited values would otherwise leak into the PAID_BY assertions below.
           CIPHER_BRAIN_AR_PAID_BY: '',
           ...extraEnv,
@@ -163,11 +183,79 @@ try {
     fail(`the queried address was not the one asked for: ${lastQuery?.get('address')}`);
   else if (!r.stdout.includes('own balance       : 0 winc')) fail(`own balance not reported: ${r.stdout}`);
   else if (!r.stdout.includes('spendable balance : 1000000000000 winc')) fail(`spendable not reported: ${r.stdout}`);
-  else if (!r.stdout.includes('~$2.00 USD')) fail(`USD line missing/wrong: ${r.stdout}`);
+  else if (!r.stdout.includes('~$4.00 USD') || !r.stdout.includes('(Turbo credit rate)'))
+    fail(`USD line not priced+labeled at Turbo's credit rate: ${r.stdout}`);
   else if (!r.stdout.includes(`from ${PAYER}`)) fail(`received approval not listed: ${r.stdout}`);
   else if (!r.stdout.includes(`remaining ${BIG_REMAINING} winc (of ${BIG_APPROVED} approved, ${BIG_USED} used)`))
     fail(`approval arithmetic not rendered exactly (bigint precision lost?): ${r.stdout}`);
   else pass('wallet balance: own vs spendable, USD, and the received approval all reported without the SDK (#345)');
+
+  // 1b. the credit price sheet going down must DEGRADE to AR spot, visibly: same body,
+  // same command, but the USD amount now derives from the spot mock (2.0), not the
+  // credit mock (4.0). Proves the preference order in both directions with one pair.
+  turboRatesUp = false;
+  r = await run(['--address', ADDR]);
+  turboRatesUp = true;
+  if (r.code !== 0) fail(`spot-fallback run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
+  else if (!r.stdout.includes('~$2.00 USD') || !r.stdout.includes('AR spot — credit price sheet unavailable'))
+    fail(`with the credit price sheet down, USD did not fall back to LABELED AR spot: ${r.stdout}`);
+  else
+    pass('wallet balance: prices USD at the credit rate, falling back to labeled AR spot only when the sheet is down');
+
+  // 1c. turboUsdRate() itself must refuse garbage rather than derive a misleading rate
+  // (Codex review): malformed/zero winc, and winc past Number's integer precision, all
+  // yield null (spot fallback); the well-formed sheet yields exactly the mocked rate.
+  {
+    const probe = (envUrl) =>
+      new Promise((resolve, reject) => {
+        const child = spawn(
+          'node',
+          [
+            '--experimental-strip-types',
+            '--import',
+            './scripts/dev-cli-loader.mjs',
+            '-e',
+            "import('./src/lib/estimate.ts').then(async (m) => console.log(JSON.stringify(await m.turboUsdRate())))",
+          ],
+          {
+            cwd: ROOT,
+            env: { ...process.env, CIPHER_BRAIN_AR_TURBO_RATES_URL: envUrl },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        );
+        let out = '';
+        child.stdout.on('data', (d) => (out += d));
+        const to = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error('rate probe timed out'));
+        }, 15000);
+        child.on('close', () => {
+          clearTimeout(to);
+          resolve(out.trim().split('\n').pop());
+        });
+        child.on('error', reject);
+      });
+    const url = urlOf(turboRatesServer);
+    const good = JSON.parse(await probe(url));
+    if (good?.ratePer1e12Winc === 4 && good?.usdPerGiB === 1)
+      pass('turboUsdRate: a well-formed sheet derives exactly the mocked rate (4.0 per 1e12 winc)');
+    else fail(`turboUsdRate mis-derived the mocked sheet: ${JSON.stringify(good)}`);
+    for (const [label, bodyCase] of [
+      ['a malformed winc string', { winc: 'abc', fiat: { usd: 1.0 } }],
+      ['a zero winc', { winc: '0', fiat: { usd: 1.0 } }],
+      ['a winc past Number precision', { winc: '9007199254740993000', fiat: { usd: 1.0 } }],
+      ['a missing fiat.usd', { winc: '250000000000', fiat: {} }],
+      ['a non-number fiat.usd (boolean true)', { winc: '250000000000', fiat: { usd: true } }],
+      ['a sheet whose derived rate overflows to Infinity', { winc: '1', fiat: { usd: 1e308 } }],
+      ['a sheet whose derived rate underflows to 0', { winc: '9007199254740991', fiat: { usd: 5e-324 } }],
+    ]) {
+      turboRatesBody = bodyCase;
+      const got = await probe(url);
+      if (got === 'null') pass(`turboUsdRate: ${label} yields null, not a derived guess`);
+      else fail(`turboUsdRate accepted ${label}: ${got}`);
+    }
+    turboRatesBody = { winc: '250000000000', fiat: { usd: 1.0 } };
+  }
 
   // 2. the reachability warning — an approval a push cannot draw on because
   // CIPHER_BRAIN_AR_PAID_BY does not name its payer.
@@ -293,6 +381,7 @@ try {
     'unit',
     'approx_ar',
     'usd_estimate',
+    'usd_rate_source',
     'received_approvals',
     'given_approvals',
   ];
@@ -305,7 +394,9 @@ try {
       fail(`--json approval remaining wrong (bigint precision lost?): ${JSON.stringify(parsed.received_approvals[0])}`);
     else if (parsed.received_approvals[0]?.expiry_known !== true)
       fail(`--json approval omitted/miscomputed expiry_known: ${JSON.stringify(parsed.received_approvals[0])}`);
-    else pass('wallet balance --json: all eight documented keys present, winc values kept as strings');
+    else if (parsed.usd_rate_source !== 'turbo-credit')
+      fail(`--json did not carry the rate provenance (expected 'turbo-credit'): ${parsed.usd_rate_source}`);
+    else pass('wallet balance --json: all nine documented keys present, winc strings intact, rate provenance carried');
   }
 
   // 5. a malformed address must be refused BEFORE any request leaves the process —
@@ -313,11 +404,14 @@ try {
   // outbound destinations are checked: the balance service AND the rate endpoint.
   const before = hits;
   const rateBefore = rateHits;
+  const turboRateBefore = turboRateHits;
   r = await run(['--address', 'evil?&injected=1']);
   if (r.code === 0) fail('a malformed address exited 0');
   else if (hits !== before) fail(`a malformed address still hit the payment service (${hits - before} request(s))`);
-  else if (rateHits !== rateBefore)
-    fail(`a malformed address still hit the USD rate endpoint (${rateHits - rateBefore} request(s))`);
+  else if (rateHits !== rateBefore || turboRateHits !== turboRateBefore)
+    fail(
+      `a malformed address still hit a rate endpoint (spot +${rateHits - rateBefore}, credit +${turboRateHits - turboRateBefore})`,
+    );
   else if (!r.stderr.includes('not a wallet address')) fail(`unexpected error for a malformed address: ${r.stderr}`);
   else pass('wallet balance: a malformed address is refused locally — nothing is sent to either endpoint');
 

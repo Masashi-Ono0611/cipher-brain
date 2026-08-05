@@ -49,15 +49,16 @@ export function mascot(mood: Mood = 'neutral'): string[] {
   const f = FACES[mood];
   return [
     // "Deep visor" (#346 follow-up). Everything is measured per column against
-    // the face edges at columns 1 and 14 (visual center 7.5), because "looks
-    // centered" is what #197 was filed about:
-    //   row 1  hood top:  10 underscores at columns 3-12, centered on 7.5.
+    // the face edges (visual center 7.5), because "looks centered" is what #197
+    // was filed about. All positions below are ZERO-BASED string indices (the
+    // face edge pipes sit at indices 1 and 14 of their 15-char rows):
+    //   row 1  hood top:  10 underscores at indices 3-12, centered on 7.5.
     //   row 2  hood brim: "/" at 2, 10 underscores at 3-12, "\" at 13 — a
     //          solid brim line sitting directly on the visor, which is what
     //          makes the hood read as pulled down low.
     //   row 3  visor:     lenses at 3-6 and 9-12 joined by "==" at 7-8 (the
     //          bridge replaces #197's two blank columns, same width).
-    //   row 4  mouth:     2 chars at columns 7-8, five spaces each side —
+    //   row 4  mouth:     2 chars at indices 7-8, five spaces each side —
     //          exactly centered on 7.5, which the old 1-char mouth never was.
     //   row 5  jaw:       "\" at 1, 12 underscores at 2-13, "/" at 14 —
     //          angular corners under both face edges (the round '.  .' chin

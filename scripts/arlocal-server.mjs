@@ -20,8 +20,18 @@ try {
   await new Promise((resolve, reject) => {
     if (server?.listening) return resolve(undefined);
     if (!server) return reject(new Error('arlocal.getServer() returned nothing — bind state unknowable'));
-    server.once('listening', resolve);
-    server.once('error', reject);
+    // Each outcome detaches the other's listener: the loser would otherwise stay
+    // installed for the life of the server (Codex review).
+    const onListening = () => {
+      server.removeListener('error', onError);
+      resolve(undefined);
+    };
+    const onError = (e) => {
+      server.removeListener('listening', onListening);
+      reject(e);
+    };
+    server.once('listening', onListening);
+    server.once('error', onError);
   });
 } catch (e) {
   console.error(`arlocal failed to bind :${port}: ${e?.message ?? e}`);

@@ -23,9 +23,10 @@ import { DEV_ARGS } from './dev-node-flags.mjs';
 // the /info readiness probe below got a 200 from the ORPHAN and reported "ready". The
 // whole suite then ran against a dead run's server, and failed with a bare
 // "fetch failed" pointing nowhere near the cause when the orphan later vanished
-// mid-test. A fresh port per run makes the collision itself impossible;
-// CB_ARLOCAL_PORT still pins one when needed. (The probe-side hole — adopting ANY
-// answerer — is closed separately below by racing the child's own exit.)
+// mid-test. A fresh port per run makes the collision vanishingly unlikely — not
+// impossible: the reservation closes before arlocal rebinds it (TOCTOU), so a loser of
+// that tiny race still fails, but fails FAST through the readiness gate below instead
+// of adopting a squatter. CB_ARLOCAL_PORT still pins a port when needed.
 const freePort = () =>
   new Promise((resolve, reject) => {
     const srv = createTcpServer();
@@ -60,18 +61,37 @@ let arExit = null;
 arproc.on('exit', (code, signal) => {
   arExit = { code, signal };
 });
+// A spawn-level failure (node binary missing, EAGAIN) emits 'error', not 'exit' —
+// without a handler it would crash unhandled instead of resolving readiness as failed.
+let arSpawnError = null;
+arproc.on('error', (e) => {
+  arSpawnError = e;
+});
+arproc.stderr.setEncoding('utf8');
 const arReady = await new Promise((resolve) => {
   let buf = '';
+  let settled = false;
+  const onData = (d) => {
+    buf += d;
+    if (buf.includes(`arlocal listening on ${PORT}`)) done(true);
+  };
+  const onDeath = () => done(false);
+  // Settle exactly once, and detach everything that could fire again: the data
+  // listener would otherwise keep accumulating the child's stderr for the whole run,
+  // and a later exit would call a spent resolve (Codex review).
   const done = (v) => {
+    if (settled) return;
+    settled = true;
     clearTimeout(timer);
+    arproc.stderr.removeListener('data', onData);
+    arproc.removeListener('exit', onDeath);
+    arproc.removeListener('error', onDeath);
     resolve(v);
   };
   const timer = setTimeout(() => done(false), 20_000);
-  arproc.stderr.on('data', (d) => {
-    buf += d;
-    if (buf.includes(`arlocal listening on ${PORT}`)) done(true);
-  });
-  arproc.on('exit', () => done(false));
+  arproc.stderr.on('data', onData);
+  arproc.on('exit', onDeath);
+  arproc.on('error', onDeath);
 });
 if (!arReady) {
   arproc.kill('SIGKILL');
@@ -79,7 +99,9 @@ if (!arReady) {
     arExit !== null
       ? `[FAIL] the arlocal server process exited before becoming ready (code ${arExit.code}, signal ${arExit.signal}) — ` +
           `port ${PORT} already taken (an orphaned previous run?), or arlocal failed to start`
-      : '[FAIL] arlocal did not announce readiness within 20s',
+      : arSpawnError !== null
+        ? `[FAIL] could not spawn the arlocal server process: ${arSpawnError.message}`
+        : '[FAIL] arlocal did not announce readiness within 20s',
   );
   process.exit(1);
 }
@@ -714,7 +736,7 @@ try {
   fail(
     `exception: ${e.message}` +
       (arExit !== null
-        ? ` (the arlocal server process exited mid-run: code ${arExit.code}, signal ${arExit.signal})`
+        ? ` (the arlocal server process had exited before this exception was reported: code ${arExit.code}, signal ${arExit.signal})`
         : ''),
   );
 } finally {

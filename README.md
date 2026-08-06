@@ -1,11 +1,10 @@
 # cipher-brain
 
 ```text
-   __________
-  /__________\     hi — I encrypt your second brain so only YOUR key opens it.
- | [10]==[01] |    ( sunglasses stay on for verify PASS, slip for FAIL,
- |     __     |      one lens shifts for PARTIAL — see `verify` below )
- \____________/
+  /\        /\
+ | [10]==[01] |    hi — I encrypt your second brain so only YOUR key opens it.
+ |     -      |    ( sunglasses stay on for verify PASS, slip for FAIL,
+ '.__________.'      one lens shifts for PARTIAL — see `verify` below )
 ```
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Masashi-Ono0611/cipher-brain/ci.yml?branch=main&label=CI&logo=github)](https://github.com/Masashi-Ono0611/cipher-brain/actions/workflows/ci.yml)

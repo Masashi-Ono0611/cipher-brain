@@ -29,11 +29,13 @@ export type Mood = 'neutral' | 'happy' | 'sad' | 'partial';
 
 /** lensL/lensR: `[10]` (square, "sunglasses on straight") vs `(10)` (round,
  *  "sunglasses slipping") — verification-completeness, not emotion. mouth is
- *  a single centered smile/frown character carrying the emotion: `-` neutral,
- *  `v` grin for PASS, `x` for FAIL, `~` uncertain for PARTIAL. deco is a
- *  small accent flanking the ears, ONLY on the two strong-emotion moods (a
- *  `+` shine for happy, a `!` for sad) — neutral/partial stay plain so the
- *  accent reads as signal, not noise on every render. */
+ *  a single smile/frown character at index 7, one column short of the face's
+ *  own 7.5 center (the `==` bridge and face edges split evenly; a single
+ *  character can't) — carrying the emotion: `-` neutral, `v` grin for PASS,
+ *  `x` for FAIL, `~` uncertain for PARTIAL. deco is a small accent flanking
+ *  the ears, ONLY on the two strong-emotion moods (a `+` shine for happy, a
+ *  `!` for sad) — neutral/partial stay plain so the accent reads as signal,
+ *  not noise on every render. */
 const FACES: Record<Mood, { lensL: string; lensR: string; mouth: string; deco: string }> = {
   neutral: { lensL: '[10]', lensR: '[01]', mouth: '-', deco: '' },
   happy: { lensL: '[10]', lensR: '[01]', mouth: 'v', deco: '+' },
@@ -48,16 +50,19 @@ const FACES: Record<Mood, { lensL: string; lensR: string; mouth: string; deco: s
  */
 export function mascot(mood: Mood = 'neutral'): string[] {
   const f = FACES[mood];
-  // The ear peaks ("/\" each side) are anchored to the lens row's own
-  // bracket columns (index 3 and index 12 of ` | [10]==[01] |`) so they sit
-  // directly above the sunglasses regardless of mood — this is measured
-  // against that literal row below, not assumed from a symmetry formula (an
+  // Each ear is "/\" (indices 2-3 and 12-13); only its INNER stroke (the "\"
+  // at 3, the "/" at 12) lands on the lens row's own bracket columns below
+  // (` | [10]==[01] |`, brackets at index 3 and 12), which is what puts the
+  // ears directly over the sunglasses regardless of mood — this is measured
+  // against that literal row, not assumed from a symmetry formula (an
   // earlier attempt used the row's own center-column mirror instead of the
   // lens row's actual bracket positions, which put the right ear a column
-  // off from the lens under it). Undecorated rows stay 15 chars (2-space
-  // left margin, 1-space right, matching the lens/mouth/jaw rows below);
-  // deco'd rows widen to 16 to fit the accent with a 1-space gap outside
-  // each ear, still landing the ear peaks on the same two columns.
+  // off from the lens under it). Decoration doesn't move either ear; it only
+  // adds a column outside them. Undecorated rows total 15 chars (2 leading
+  // spaces, 1 trailing) to match the lens/mouth/jaw rows' own 15-char total
+  // below — the per-side margins don't match (those rows run 1 leading, 0
+  // trailing), only the total width does. Deco'd rows widen to 16 (the
+  // accent plus a 1-space gap outside each ear) without shifting either ear.
   const ears = f.deco ? `${f.deco} /\\        /\\ ${f.deco}` : '  /\\        /\\ ';
   return [ears, ` | ${f.lensL}==${f.lensR} |`, ` |     ${f.mouth}      |`, " '.__________.'"];
 }

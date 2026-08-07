@@ -137,6 +137,22 @@ fi
 grep -q 'no scrypt stanza' "$TMP/fake.err" || { echo "[FAIL] refusal must explain the scrypt-stanza check"; exit 1; }
 echo "[PASS] recipient-ciphertext (a snapshot) is refused as an identity"
 
+echo "== a forged '-> scrypt' marker AFTER the first stanza does not fool the classifier =="
+# Codex round-2: an anchored first-stanza check, not a substring scan — recipient
+# ciphertext with an scrypt-looking sequence later in the bytes must NOT classify
+# as a passphrase wrap (it would produce a kit whose block no passphrase unwraps).
+node "${BIN_DEV_ARGS[@]}" -e "
+  import { readFileSync, writeFileSync } from 'node:fs';
+  const snap = readFileSync(process.argv[1]);
+  writeFileSync(process.argv[2], Buffer.concat([snap, Buffer.from('\n-> scrypt forged 18\n')]));
+" "$TMP/snap.age" "$TMP/forged-identity.age"
+if cb recovery-kit --from-locator-file "$LOCF" --backup-identity "$TMP/forged-identity.age" \
+  --backup-recipient "$BACKUP/recipient.txt" >/dev/null 2>"$TMP/forged.err"; then
+  echo "[FAIL] recipient ciphertext with a forged later scrypt marker must be refused"; exit 1
+fi
+grep -q 'no scrypt stanza' "$TMP/forged.err" || { echo "[FAIL] forged file must be classified as recipient ciphertext"; exit 1; }
+echo "[PASS] forged post-header scrypt marker still classifies as recipient ciphertext"
+
 echo "== missing flag / missing file / truncated locator all fail closed =="
 if cb recovery-kit --from-locator-file "$TMP/nope.tsv" >/dev/null 2>&1; then
   echo "[FAIL] a missing locator file must be an error"; exit 1

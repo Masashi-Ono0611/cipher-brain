@@ -184,11 +184,14 @@ export async function classifyIdentityFileAtRest(path: string): Promise<Identity
     armored = true;
   }
   if (bytes.subarray(0, AGE_MAGIC.length).toString('latin1') === AGE_MAGIC) {
-    // The age header is plain text up to its MAC line: "age-encryption.org/v1\n-> <stanza> …".
-    // An scrypt first stanza IS the passphrase wrap (age -p / keygen --passphrase); anything
-    // else (X25519, PQ hybrid) is ordinary recipient ciphertext, not an identity wrap.
-    const head = bytes.subarray(0, 512).toString('latin1');
-    const scrypt = head.includes('\n-> scrypt ');
+    // The age header is plain text: "age-encryption.org/v1\n-> <stanza> …". A passphrase
+    // wrap (age -p / keygen --passphrase) always has scrypt as its FIRST stanza, so the
+    // check is ANCHORED right after the version line — a substring scan over the first N
+    // bytes would also match an "-> scrypt " sequence sitting in a later stanza or in
+    // ciphertext payload, classifying recipient ciphertext as a passphrase wrap (Codex
+    // round-2 finding, demonstrated with a forged file).
+    const prefix = `${AGE_MAGIC}\n-> scrypt `;
+    const scrypt = bytes.subarray(0, prefix.length).toString('latin1') === prefix;
     return { kind: scrypt ? 'wrapped' : 'ciphertext-not-passphrase', armored, bytes, text };
   }
   if (armored) return { kind: 'unrecognized', armored, bytes, text };

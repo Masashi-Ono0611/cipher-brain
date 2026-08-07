@@ -114,6 +114,35 @@ for (const rel of ['src', 'scripts', 'bin']) {
   if (fs.existsSync(path.join(installedRoot, rel))) fail(`installed package must not contain ${rel}/`);
 }
 
+// ─── 2b. #363: the optionalDependency resolves from the npm-installed tree ──
+// npm's resolution of the packed artifact is a DIFFERENT path from the dev
+// checkout's bun install — and the broken-hoist failure class #363 replaces was
+// npm-shaped. selftest-turbo-dep.mjs only covers the checkout, so assert here
+// that @ardrive/turbo-sdk loads from INSIDE the installed package and carries
+// the upload-facing exports backends/turbo.ts actually uses (Codex review: a
+// dev-checkout-only pass would let the npm path regress while every gate
+// stayed green).
+log('importing @ardrive/turbo-sdk from the npm sandbox…');
+const sdkProbe = spawnSync(
+  process.execPath,
+  [
+    '--input-type=module',
+    '-e',
+    "const m = await import('@ardrive/turbo-sdk');" +
+      "const missing = ['unauthenticated', 'authenticated'].filter((k) => typeof m.TurboFactory?.[k] !== 'function');" +
+      "if (typeof m.ArweaveSigner !== 'function') missing.push('ArweaveSigner');" +
+      "if (missing.length > 0) { console.error('missing exports: ' + missing.join(', ')); process.exit(1); }",
+  ],
+  { cwd: installedRoot, encoding: 'utf8' },
+);
+if (sdkProbe.status !== 0) {
+  fail(
+    `@ardrive/turbo-sdk did not load from the npm sandbox (status=${sdkProbe.status}): ` +
+      `${(sdkProbe.stderr || sdkProbe.stdout || '').slice(0, 400)}`,
+  );
+}
+log('turbo-sdk resolves from the installed tree (TurboFactory.unauthenticated/authenticated + ArweaveSigner)');
+
 // ─── 3. CLI bin: --help + a real keygen in a temp CIPHER_BRAIN_HOME ──────
 log('running installed CLI bin (--help + keygen)…');
 const cliBin = path.join(sandbox, 'node_modules', '.bin', 'cipher-brain');

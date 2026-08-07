@@ -60,7 +60,8 @@ Then push — it prints the data item id, no browser needed:
 
 ```sh
 # @ardrive/turbo-sdk ships as an optionalDependency (#363) — a normal install
-# already has it; only an --omit=optional install needs a manual:
+# carries it. If it is absent anyway (an --omit=optional install, or npm
+# tolerating an optional-dep install failure), follow the CLI's own advice:
 #   npm install @ardrive/turbo-sdk
 CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
   cipher-brain push --in brain.age --backend turbo  # <100KB free; larger spends Turbo Credits

@@ -13,8 +13,14 @@
 // docs/arweave-upload-runbook.md, and #363 for the failure class.
 try {
   const sdk = await import('@ardrive/turbo-sdk');
-  if (typeof sdk.TurboFactory?.unauthenticated !== 'function') {
-    console.error('[FAIL] @ardrive/turbo-sdk loaded but TurboFactory.unauthenticated is not a function');
+  // All three exports the turbo backend actually uses (backends/turbo.ts:
+  // unauthenticated for estimate, authenticated + ArweaveSigner for the
+  // upload) — asserting only one would let a broken upload-facing API pass
+  // (Codex review).
+  const missing = ['unauthenticated', 'authenticated'].filter((k) => typeof sdk.TurboFactory?.[k] !== 'function');
+  if (typeof sdk.ArweaveSigner !== 'function') missing.push('ArweaveSigner');
+  if (missing.length > 0) {
+    console.error(`[FAIL] @ardrive/turbo-sdk loaded but is missing exports: ${missing.join(', ')}`);
     process.exit(1);
   }
   console.log('[PASS] @ardrive/turbo-sdk resolves and loads (optionalDependency, #363)');

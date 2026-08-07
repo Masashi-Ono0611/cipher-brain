@@ -649,7 +649,7 @@ export async function init(_o: CliOptions): Promise<void> {
       });
       // Secret-bearing write: exclusive-create 0600 temp + atomic rename — shared
       // with the standalone command in recoverykit.ts (one write path, #364).
-      await writeRecoveryKitFile(kitPath, kitText);
+      await writeRecoveryKitFile(kitPath, kitText, { clobber: true });
 
       console.log('\n=== cipher-brain init: complete ===');
       console.log(`primary identity:  ${IDENTITY}`);

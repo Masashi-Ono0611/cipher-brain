@@ -26,7 +26,8 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { identityToRecipient } from 'age-encryption';
 import { IDENTITY, PIN_RECIPIENTS, RECIPIENT, SIGN_IDENTITY, SIGN_RECIPIENT } from './config.js';
-import { readSavedLocatorLine } from './pushpull.js';
+import { armorCiphertext, classifyIdentityFileAtRest } from './crypt.js';
+import { promoteNoClobber, readSavedLocatorLine } from './pushpull.js';
 import type { CliOptions } from './types.js';
 import { exists, redactPgConn } from './util.js';
 import { warn } from './warn.js';
@@ -256,23 +257,25 @@ export function buildRecoveryKit(k: KitInputs): string {
 // temp-then-rename convention pushpull.ts's save-locator write and snapshot.ts's
 // promote step use. (Moved verbatim from wizard.ts so init and `recovery-kit`
 // share one secret-bearing write path.)
-export async function writeRecoveryKitFile(path: string, text: string): Promise<void> {
+export async function writeRecoveryKitFile(path: string, text: string, opts: { clobber: boolean }): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   try {
     await writeFile(tmp, text, { flag: 'wx', mode: 0o600 });
-    await rename(tmp, path);
+    if (opts.clobber) {
+      await rename(tmp, path);
+    } else {
+      // Atomic no-clobber: link()/wx-gated promote, NOT exists()-then-rename —
+      // a check-then-act pair leaves a window where a concurrent create at
+      // `path` gets silently replaced (Codex review). Same primitive pull's
+      // --out write uses.
+      await promoteNoClobber(tmp, path, 'a recovery kit');
+    }
   } catch (e) {
     await rm(tmp, { force: true });
     throw e;
   }
 }
-
-/** True when an identity file's content is an UNWRAPPED age secret key (the thing
- *  that must never land in a paste-anywhere document unnoticed). An unwrapped
- *  identity always carries an AGE-SECRET-KEY-1… line; a wrapped one (binary age or
- *  ASCII armor) never does. */
-const isUnwrappedIdentity = (text: string): boolean => text.includes('AGE-SECRET-KEY-1');
 
 /** `cipher-brain recovery-kit` (#364) — regenerate the kit for the CURRENT latest
  *  push, from a save-locator file + on-disk key material. CLI-only (see file header). */
@@ -283,11 +286,22 @@ export async function recoveryKit(o: CliOptions): Promise<void> {
         'save-locator file that push wrote (push --save-locator <file>)',
     );
   }
+  if (o.backup_recipient && !o.backup_identity) {
+    throw new Error('--backup-recipient only makes sense WITH --backup-identity — pass both, or neither');
+  }
   const saved = await readSavedLocatorLine(o.from_locator_file);
   if (!saved) {
     throw new Error(
       `${o.from_locator_file} has no locator line — run a push with --save-locator first, and point ` +
         '--from-locator-file at the file it wrote',
+    );
+  }
+  // Same truncated-file guard pull's --from-locator-file applies: a kit whose
+  // "Backend used" column reads undefined is a broken recovery document.
+  if (!saved.locator || !saved.backend) {
+    throw new Error(
+      `locator file ${o.from_locator_file} must contain "<locator>\t<backend>[\t<sha256>…]" — its first ` +
+        'locator line is missing the locator and/or backend column',
     );
   }
   const savedLocatorLine =
@@ -296,9 +310,13 @@ export async function recoveryKit(o: CliOptions): Promise<void> {
       .map((l) => l.trim())
       .find((l) => l && !l.startsWith('#')) ?? '';
 
-  const identityPath = o.identity ?? IDENTITY;
-  if (!(await exists(identityPath))) {
-    throw new Error(`no identity at ${identityPath} — pass --identity <path>, or run "cipher-brain keygen" first`);
+  // Deliberately the standard layout only — no per-file --identity override: the kit
+  // pairs the identity with $CIPHER_BRAIN_HOME/recipient.txt, and letting one half be
+  // swapped per-flag lets the kit claim a recipient the embedded/referenced private
+  // key cannot satisfy (Codex review). Relocation is CIPHER_BRAIN_HOME's job, which
+  // moves both halves coherently.
+  if (!(await exists(IDENTITY))) {
+    throw new Error(`no identity at ${IDENTITY} — run "cipher-brain keygen" first (relocate with CIPHER_BRAIN_HOME)`);
   }
   if (!(await exists(RECIPIENT))) {
     throw new Error(
@@ -308,28 +326,33 @@ export async function recoveryKit(o: CliOptions): Promise<void> {
   }
   const primaryRecipient = (await readFile(RECIPIENT, 'utf8')).trim();
 
-  // --inline-identity: opt-in, and ONLY for a passphrase-wrapped, ASCII-armored
-  // identity. Refusing the unwrapped case (rather than warning) is the point of
-  // the flag existing at all: an unwrapped private key in a paste-anywhere
-  // document is exactly the accident this tool would otherwise industrialize
-  // (#364). Refusing the binary-wrapped case is practical, not security: a
-  // binary blob cannot survive print/copy-paste, which is the kit's only medium.
+  // --inline-identity: opt-in, and ONLY for a genuinely passphrase-wrapped identity
+  // (classified from the file's bytes: age ciphertext whose first stanza is scrypt —
+  // NOT a marker-string sniff, which malformed armor or an armored SNAPSHOT would
+  // pass; Codex review). Refusing the unwrapped case is the point of the flag
+  // existing at all: a bare private key in a paste-anywhere document is exactly the
+  // accident this tool would otherwise industrialize (#364). A binary wrap is
+  // re-armored here (pure re-encoding, `age -p -a` compatible) so it can survive
+  // the print/copy-paste the kit exists for.
   let primaryInline: { text: string } | null = null;
   if (o.inline_identity) {
-    const text = await readFile(identityPath, 'utf8');
-    if (isUnwrappedIdentity(text)) {
+    const at = await classifyIdentityFileAtRest(IDENTITY);
+    if (at.kind === 'plaintext') {
       throw new Error(
-        `${identityPath} is NOT passphrase-wrapped — refusing to inline a bare private key into a printable ` +
+        `${IDENTITY} is NOT passphrase-wrapped — refusing to inline a bare private key into a printable ` +
           'document. Wrap it first ("cipher-brain keygen --wrap-in-place", or age -p -a), then rerun.',
       );
     }
-    if (!text.includes('BEGIN AGE ENCRYPTED FILE')) {
+    if (at.kind !== 'wrapped') {
       throw new Error(
-        `${identityPath} is wrapped but not ASCII-armored — a binary blob cannot survive the print/copy-paste ` +
-          'this kit exists for. Re-wrap armored (age -p -a), then rerun.',
+        `${IDENTITY} is not a passphrase-wrapped identity (${
+          at.kind === 'ciphertext-not-passphrase'
+            ? 'it is age ciphertext, but to a recipient — no scrypt stanza, so no passphrase can unwrap it'
+            : 'unrecognized contents'
+        }) — refusing to inline it as the primary identity.`,
       );
     }
-    primaryInline = { text };
+    primaryInline = { text: at.armored ? at.text : armorCiphertext(new Uint8Array(at.bytes)) };
   }
 
   // --backup-identity: same shape init's wizard inlines (the kit IS the off-box
@@ -338,19 +361,29 @@ export async function recoveryKit(o: CliOptions): Promise<void> {
   let backup: BackupKey | null = null;
   if (o.backup_identity) {
     if (!(await exists(o.backup_identity))) throw new Error(`no backup identity at ${o.backup_identity}`);
-    const identityText = await readFile(o.backup_identity, 'utf8');
-    const unwrapped = isUnwrappedIdentity(identityText);
+    const at = await classifyIdentityFileAtRest(o.backup_identity);
+    if (at.kind !== 'plaintext' && at.kind !== 'wrapped') {
+      throw new Error(
+        `${o.backup_identity} is not an identity file (${
+          at.kind === 'ciphertext-not-passphrase'
+            ? 'age ciphertext to a recipient — no scrypt stanza'
+            : 'unrecognized contents'
+        }) — refusing to inline it as a backup identity.`,
+      );
+    }
     let recipient: string;
     if (o.backup_recipient) {
       recipient = o.backup_recipient.startsWith('age1')
         ? o.backup_recipient
         : (await readFile(o.backup_recipient, 'utf8')).trim();
-    } else if (unwrapped) {
-      const secret = identityText
+    } else if (at.kind === 'plaintext') {
+      // Generic AGE-SECRET-KEY- prefix, not the X25519-only …-1: PQ hybrid
+      // identities (AGE-SECRET-KEY-PQ-1…) must derive identically (Codex review).
+      const secret = at.text
         .split('\n')
         .map((l) => l.trim())
-        .find((l) => l.startsWith('AGE-SECRET-KEY-1'));
-      if (!secret) throw new Error(`${o.backup_identity} has no AGE-SECRET-KEY-1 line to derive a recipient from`);
+        .find((l) => l.startsWith('AGE-SECRET-KEY-'));
+      if (!secret) throw new Error(`${o.backup_identity} has no AGE-SECRET-KEY-… line to derive a recipient from`);
       recipient = await identityToRecipient(secret);
     } else {
       throw new Error(
@@ -358,13 +391,17 @@ export async function recoveryKit(o: CliOptions): Promise<void> {
           'passphrase — pass --backup-recipient <age1…-or-path> alongside it',
       );
     }
-    if (unwrapped) {
+    if (at.kind === 'plaintext') {
       warn(
         `the backup identity being inlined (${o.backup_identity}) is NOT passphrase-wrapped — anyone holding ` +
           'the printed kit can decrypt every snapshot encrypted to it. Store the kit accordingly, or wrap the ' +
           'identity first (age -p -a) and pass --backup-recipient.',
       );
     }
+    // A binary wrap is re-armored (bytes, not the utf8-mangled text — reading a
+    // binary file as utf8 replaces invalid sequences and would print an
+    // UNRECOVERABLE identity into the kit; Codex review P1).
+    const identityText = at.kind === 'wrapped' && !at.armored ? armorCiphertext(new Uint8Array(at.bytes)) : at.text;
     backup = { identityPath: o.backup_identity, recipientPath: o.backup_recipient ?? '', recipient, identityText };
   }
 
@@ -378,7 +415,7 @@ export async function recoveryKit(o: CliOptions): Promise<void> {
   }
 
   const kitText = buildRecoveryKit({
-    primaryIdentityPath: identityPath,
+    primaryIdentityPath: IDENTITY,
     primaryInline,
     primaryRecipient,
     backup,
@@ -392,10 +429,7 @@ export async function recoveryKit(o: CliOptions): Promise<void> {
   });
 
   if (o.out) {
-    if (!o.force && (await exists(o.out))) {
-      throw new Error(`${o.out} already exists — refusing to overwrite a prior kit (pass --force to replace it)`);
-    }
-    await writeRecoveryKitFile(o.out, kitText);
+    await writeRecoveryKitFile(o.out, kitText, { clobber: o.force === true });
     console.log(`recovery kit written: ${o.out} (mode 0600)`);
   } else {
     console.log(kitText);

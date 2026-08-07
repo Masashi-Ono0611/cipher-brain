@@ -425,10 +425,10 @@ export async function writeReplayedSavedLocator(
 // between the create and the rename can leave an empty placeholder at `out` — but that
 // fails SAFE (a later run sees EEXIST and refuses with the same clobberErr) rather than
 // a silent, undetectable clobber.
-async function promoteNoClobber(part: string, out: string): Promise<void> {
+export async function promoteNoClobber(part: string, out: string, what = 'a pull result'): Promise<void> {
   const clobberErr = () =>
     new Error(
-      `${out} already exists — refusing to overwrite it with a pull result (move it aside, choose a new --out, or pass --force)`,
+      `${out} already exists — refusing to overwrite it with ${what} (move it aside, choose a new --out, or pass --force)`,
     );
   try {
     await link(part, out);

@@ -59,7 +59,10 @@ Fund that address — either send it AR/ETH/USDC directly, or top it up with a c
 Then push — it prints the data item id, no browser needed:
 
 ```sh
-npm install @ardrive/turbo-sdk                      # optional, heavy — only for this backend
+# @ardrive/turbo-sdk ships as an optionalDependency (#363) — a normal install
+# carries it. If it is absent anyway (an --omit=optional install, or npm
+# tolerating an optional-dep install failure), follow the CLI's own advice:
+#   npm install @ardrive/turbo-sdk
 CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
   cipher-brain push --in brain.age --backend turbo  # <100KB free; larger spends Turbo Credits
 ```
@@ -89,7 +92,11 @@ The printed id is the **Data Tx ID**.
 inside a project whose own dependency tree interferes (#344 — observed in this very
 repo's checkout: npm reported "added 575 packages" while the SDK's transitive `viem` was
 missing, and an alternative install hit an `@noble/hashes` `./sha3` exports clash with
-the host tree's pinned version). The CLI's error message tells you when you are in this
+the host tree's pinned version). Since #363 the SDK is a resolver-owned
+`optionalDependency`, so a normal install of THIS package no longer hits the clash —
+this section is the fallback for environments that still can (a hand-copied `dist/`
+bundle running inside an unrelated dependency-heavy project, or an `--omit=optional`
+install repaired by hand). The CLI's error message tells you when you are in this
 situation. The fix is a directory whose `node_modules` contains **only** this package:
 
 ```sh

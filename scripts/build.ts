@@ -14,8 +14,9 @@
 //   - a shebang banner is prepended so dist/cli.mjs is directly executable.
 //
 // The externals list is DERIVED from package.json (dependencies +
-// peerDependencies) so it never drifts when a dep is added — minus the INLINE
-// set, which is bundled INTO dist so the shipped artifacts stay self-contained:
+// peerDependencies + optionalDependencies) so it never drifts when a dep is
+// added — minus the INLINE set, which is bundled INTO dist so the shipped
+// artifacts stay self-contained:
 //   - `age-encryption` (typage) IS the crypto layer — it must land inside
 //     dist/cli.mjs so the shipped CLI runs with zero runtime deps (#64).
 //   - `@modelcontextprotocol/sdk` is inlined so dist/mcp.mjs runs on a fresh
@@ -32,9 +33,15 @@
 //     just `init` itself), so leaving it external would break the same nodeps
 //     property `ignore` was inlined to preserve — an isolated dist/cli.mjs copy with no
 //     node_modules would fail to even start `pull`, not just `init`.
-//   - the lazily-imported optional backends — `arweave` and `@ardrive/turbo-sdk`
-//     — stay external: bundling them would break the documented "a gateway pull
-//     needs no npm dependency" recovery property (and the selftest that proves it).
+//   - the lazily-imported optional backends — `arweave` (optional peer) and
+//     `@ardrive/turbo-sdk` (optionalDependency since #363) — stay external:
+//     bundling them would break the documented "a gateway pull needs no npm
+//     dependency" recovery property (and the selftest that proves it). This is
+//     why optionalDependencies feed the externals derivation: when turbo-sdk
+//     moved out of peerDependencies, deriving from deps+peers alone silently
+//     bundled it — dragging its own eager `arweave` imports into dist/cli.mjs
+//     and breaking exactly that nodeps property (caught by
+//     selftest-arweave-nodeps before it shipped).
 
 import { readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -48,13 +55,16 @@ const dist = join(root, 'dist');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
   dependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
 };
 
 const INLINE = new Set(['age-encryption', '@modelcontextprotocol/sdk', 'ignore', '@clack/prompts']);
 
-const external = [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.peerDependencies ?? {})].filter(
-  (d) => !INLINE.has(d),
-);
+const external = [
+  ...Object.keys(pkg.dependencies ?? {}),
+  ...Object.keys(pkg.peerDependencies ?? {}),
+  ...Object.keys(pkg.optionalDependencies ?? {}),
+].filter((d) => !INLINE.has(d));
 
 // #285: the MCP `restore-runbook` prompt serves MANAGEMENT.md's "## Restore runbook"
 // section, but MANAGEMENT.md is NOT part of the published package (`files: ["dist"]`),

@@ -4,17 +4,18 @@
 // This ASCII-fies the repo's OWN existing mascot brand rather than inventing a
 // new one: `mascot.svg` / `favicon.svg` (both already in this repo — the
 // landing page's cypherpunk hooded dog in sunglasses, with binary-digit "10"
-// / "01" reflections in the lenses) is the source of truth for the motif. It
-// is a small, un-hooded-eared, sunglassed dog face, NOT the sibling project
-// mira-harness's cat (mira-harness src/ui.ts, commit 5f5e489) — no ears/paws,
-// a flat-topped hood pulled down over a connected visor instead ("deep
-// visor", the cooler-not-cuter redesign that replaced the original
-// round-cheeked hood peak).
+// / "01" reflections in the lenses) is the source of truth for the motif.
+// This is a deliberate deforme of that SVG down to its essentials for a 4-line
+// terminal face: the SVG's floppy ear flaps (small peaks either side of the
+// head) and connected sunglasses bar, with everything else (the SVG's rounder
+// full-face outline, nose) dropped — the earlier "full face" attempt that
+// tried to also carry a nose/hood/jaw outline read as cluttered, not cool.
 //
 // The bracket style on each lens doubles as a verification signal: `[..]`
 // (square, "on straight") vs `(..)` (round, "slipping") — see FACES below.
-// The `==` between the lenses is the visor bridge joining them into one bar;
-// it never changes with mood, so the bracket signal reads against a constant.
+// The `==` between the lenses is the sunglasses bridge joining them into one
+// bar; it never changes with mood, so the bracket signal reads against a
+// constant.
 //
 // Kept strictly ASCII (no unicode, not even the accent glyphs mira-harness
 // allows itself) so it renders identically in any terminal/locale with zero
@@ -27,48 +28,43 @@
 export type Mood = 'neutral' | 'happy' | 'sad' | 'partial';
 
 /** lensL/lensR: `[10]` (square, "sunglasses on straight") vs `(10)` (round,
- *  "sunglasses slipping") — verification-completeness, not emotion. mouth
- *  (always exactly 2 chars — the row template pads for that width) is the
- *  emotion, and for a verification tool it draws the verdict literally:
- *  `__` neutral flat line, `,/` a check mark for PASS, `\.` the check's
- *  fallen mirror for FAIL, `~/` a half-drawn check for PARTIAL ("half
- *  verified" — same story the one-slipped-lens tells). */
-const FACES: Record<Mood, { lensL: string; lensR: string; mouth: string }> = {
-  neutral: { lensL: '[10]', lensR: '[01]', mouth: '__' },
-  happy: { lensL: '[10]', lensR: '[01]', mouth: ',/' },
-  sad: { lensL: '(10)', lensR: '(01)', mouth: '\\.' },
-  partial: { lensL: '[10]', lensR: '(01)', mouth: '~/' },
+ *  "sunglasses slipping") — verification-completeness, not emotion. mouth is
+ *  a single smile/frown character at index 7, one column short of the face's
+ *  own 7.5 center (the `==` bridge and face edges split evenly; a single
+ *  character can't) — carrying the emotion: `-` neutral, `v` grin for PASS,
+ *  `x` for FAIL, `~` uncertain for PARTIAL. deco is a small accent flanking
+ *  the ears, ONLY on the two strong-emotion moods (a `+` shine for happy, a
+ *  `!` for sad) — neutral/partial stay plain so the accent reads as signal,
+ *  not noise on every render. */
+const FACES: Record<Mood, { lensL: string; lensR: string; mouth: string; deco: string }> = {
+  neutral: { lensL: '[10]', lensR: '[01]', mouth: '-', deco: '' },
+  happy: { lensL: '[10]', lensR: '[01]', mouth: 'v', deco: '+' },
+  sad: { lensL: '(10)', lensR: '(01)', mouth: 'x', deco: '!' },
+  partial: { lensL: '[10]', lensR: '(01)', mouth: '~', deco: '' },
 };
 
 /**
- * The hooded-dog-in-sunglasses mascot, faced for `mood`. Used by the README
- * banner (neutral), `cipher-brain --help` (neutral), and `verify`'s VERDICT
- * line (mood mapped from PASS/FAIL/PARTIAL via `moodForVerdict`).
+ * The floppy-eared, sunglassed dog mascot, faced for `mood`. Used by the
+ * README banner (neutral), `cipher-brain --help` (neutral), and `verify`'s
+ * VERDICT line (mood mapped from PASS/FAIL/PARTIAL via `moodForVerdict`).
  */
 export function mascot(mood: Mood = 'neutral'): string[] {
   const f = FACES[mood];
-  return [
-    // "Deep visor" (#346 follow-up). Everything is measured per column against
-    // the face edges (visual center 7.5), because "looks centered" is what #197
-    // was filed about. All positions below are ZERO-BASED string indices (the
-    // face edge pipes sit at indices 1 and 14 of their 15-char rows):
-    //   row 1  hood top:  10 underscores at indices 3-12, centered on 7.5.
-    //   row 2  hood brim: "/" at 2, 10 underscores at 3-12, "\" at 13 — a
-    //          solid brim line sitting directly on the visor, which is what
-    //          makes the hood read as pulled down low.
-    //   row 3  visor:     lenses at 3-6 and 9-12 joined by "==" at 7-8 (the
-    //          bridge replaces #197's two blank columns, same width).
-    //   row 4  mouth:     2 chars at indices 7-8, five spaces each side —
-    //          exactly centered on 7.5, which the old 1-char mouth never was.
-    //   row 5  jaw:       "\" at 1, 12 underscores at 2-13, "/" at 14 —
-    //          angular corners under both face edges (the round '.  .' chin
-    //          was the cutest part of the old face, and the first to go).
-    '   __________',
-    '  /__________\\',
-    ` | ${f.lensL}==${f.lensR} |`,
-    ` |     ${f.mouth}     |`,
-    ' \\____________/',
-  ];
+  // Each ear is "/\" (indices 2-3 and 12-13); only its INNER stroke (the "\"
+  // at 3, the "/" at 12) lands on the lens row's own bracket columns below
+  // (` | [10]==[01] |`, brackets at index 3 and 12), which is what puts the
+  // ears directly over the sunglasses regardless of mood — this is measured
+  // against that literal row, not assumed from a symmetry formula (an
+  // earlier attempt used the row's own center-column mirror instead of the
+  // lens row's actual bracket positions, which put the right ear a column
+  // off from the lens under it). Decoration doesn't move either ear; it only
+  // adds a column outside them. Undecorated rows total 15 chars (2 leading
+  // spaces, 1 trailing) to match the lens/mouth/jaw rows' own 15-char total
+  // below — the per-side margins don't match (those rows run 1 leading, 0
+  // trailing), only the total width does. Deco'd rows widen to 16 (the
+  // accent plus a 1-space gap outside each ear) without shifting either ear.
+  const ears = f.deco ? `${f.deco} /\\        /\\ ${f.deco}` : '  /\\        /\\ ';
+  return [ears, ` | ${f.lensL}==${f.lensR} |`, ` |     ${f.mouth}      |`, " '.__________.'"];
 }
 
 /** Maps `verify`'s three VERDICT strings onto a mascot mood: PASS is happy,

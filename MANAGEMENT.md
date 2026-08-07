@@ -102,7 +102,10 @@ cipher-brain push --in brain-$(date +%F).age --backend turbo --yes \
 
 Back this file up **off-box, next to the backup identity** (same encrypted USB / secure
 note). Recovery on a fresh machine then needs only those two things — no `index.tsv`. The
-saved sha256 is applied automatically, so a substituted ciphertext is rejected:
+saved sha256 is applied automatically, so a substituted ciphertext is rejected.
+After each push, `cipher-brain recovery-kit --from-locator-file <this file>` regenerates
+the printable kit `init` produced, pointed at the NEW locator — the printed copy goes
+stale each cycle otherwise (#364):
 
 ```sh
 cipher-brain pull --from-locator-file ~/restore/latest-locator.tsv --out latest.age

@@ -799,6 +799,33 @@ cipher-brain — encrypt a gbrain snapshot so only you can read it
       missing sidecar as a warning, not a failure). Omit it and pull behaves exactly as
       before #214 (ciphertext only).
 
+  cipher-brain recovery-kit --from-locator-file <path> [--out <file>] [--force]
+                            [--inline-identity] [--backup-identity <path>] [--backup-recipient <age1…|file>]
+      Regenerate the printable recovery kit "init" prints once — pointed at the CURRENT
+      latest push instead of the first one (#364: every push changes the locator/sha the
+      kit exists to carry, so a printed kit goes stale each cycle). Renders through the
+      SAME builder init uses, from --from-locator-file (a file push --save-locator wrote)
+      plus the standard key layout under CIPHER_BRAIN_HOME (deliberately no per-file
+      identity override: the kit pairs the identity with recipient.txt, and swapping one
+      half per-flag could claim a recipient the embedded key cannot satisfy). Prints to
+      stdout by default; --out writes 0600 via an exclusive-create temp and an ATOMIC
+      no-clobber promote (same primitive as pull's --out) — --force replaces instead.
+      --inline-identity ALSO embeds the primary identity — accepted only when the file
+      really is a passphrase wrap (age ciphertext whose first stanza is scrypt; classified
+      from the bytes, not a marker sniff). A bare private key in a printable,
+      paste-anywhere document is refused outright; a BINARY wrap is re-armored to the
+      printable age -p -a encoding. The wrap passphrase is never part of the kit.
+      --backup-identity <path> inlines a backup identity the way init's wizard does (the
+      kit IS how a backup key goes off-box). An unwrapped one is accepted but warned about
+      loudly; a wrapped one is re-armored if binary and needs --backup-recipient
+      <age1…-or-path>, since its public recipient cannot be derived without the
+      passphrase. PQ hybrid identities (AGE-SECRET-KEY-PQ-1…) classify and derive the
+      same as X25519 ones.
+      A regenerated kit marks the profile/Postgres columns "unknown" rather than guessing —
+      the locator file does not record them.
+      CLI-only by design: no MCP tool exposes this (the kit can embed PRIVATE key blocks,
+      which must never land in an agent's tool-result context or logs).
+
   cipher-brain schedule install --backend <file|arweave|turbo> [--at HH:MM] [--max-spend <n>] [--no-load]
                                 [--profile <name>] [--pg <conn>] [--pg-table <t>]...
                                 [--pg-filter <file>] [--pg-exclude-table-data <t>]... [--dir <path>]...

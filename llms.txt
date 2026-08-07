@@ -51,7 +51,9 @@ stderr is load-bearing, not decoration. If you run cipher-brain on a human's beh
   latest locator, and restore steps. Kit-only recovery on a fresh machine needs
   both the backup key (`init` defaults to generating one, but it can be
   declined) and a portable backend (`turbo`/`arweave` — `file` locators are
-  machine-local).
+  machine-local). After later pushes, the CLI-only `cipher-brain recovery-kit`
+  regenerates it against the current locator (no MCP tool on purpose: the kit
+  can embed private key blocks, which must never enter agent context).
 - **signing keypair** (optional, `keygen --sign`) — age gives confidentiality +
   tamper detection but not *authenticity* (a recipient's public key is not a
   secret, so anyone holding it can forge decryptable ciphertext). A separate

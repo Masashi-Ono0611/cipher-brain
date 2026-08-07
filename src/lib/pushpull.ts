@@ -132,7 +132,7 @@ async function signingStateFor(o: CliOptions): Promise<SigningState | null> {
   }
 }
 
-interface SavedLocator {
+export interface SavedLocator {
   locator: string;
   backend: string;
   sha: string | undefined;
@@ -147,7 +147,7 @@ interface SavedLocator {
 // push recorded". The 3-field legacy format, the 4-field one (+content_digest), the
 // 5-field one (+recipients_fingerprint), the 6-field one (+sig_locator, #214) and the
 // 7-field one (+sign_key_id, #250) all parse here identically.
-async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> {
+export async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> {
   let text: string;
   try {
     text = await readFile(path, 'utf8');
@@ -425,10 +425,10 @@ export async function writeReplayedSavedLocator(
 // between the create and the rename can leave an empty placeholder at `out` — but that
 // fails SAFE (a later run sees EEXIST and refuses with the same clobberErr) rather than
 // a silent, undetectable clobber.
-async function promoteNoClobber(part: string, out: string): Promise<void> {
+export async function promoteNoClobber(part: string, out: string, what = 'a pull result'): Promise<void> {
   const clobberErr = () =>
     new Error(
-      `${out} already exists — refusing to overwrite it with a pull result (move it aside, choose a new --out, or pass --force)`,
+      `${out} already exists — refusing to overwrite it with ${what} (move it aside, choose a new --out, or pass --force)`,
     );
   try {
     await link(part, out);

@@ -155,6 +155,59 @@ export async function unwrapTextFile(path: string): Promise<string> {
   return raw.toString('utf8');
 }
 
+// Classify an identity file's AT-REST shape WITHOUT unwrapping it (no passphrase
+// touched) — for callers that must decide what a file IS before embedding it
+// somewhere (recovery-kit, #364). Reuses unwrapTextFile's exact detection order
+// (dearmor first, then the age magic) so the two can never disagree, and adds
+// the one check unwrap-time code never needed: whether the ciphertext's header
+// carries an scrypt stanza (a passphrase wrap) or a recipient stanza (ordinary
+// ciphertext that merely LOOKS like a wrapped identity — e.g. an armored
+// snapshot pasted to the wrong path). `bytes` is the dearmored ciphertext (or
+// the raw file when not armored) so a caller can re-armor without re-reading.
+export interface IdentityAtRest {
+  kind: 'plaintext' | 'wrapped' | 'ciphertext-not-passphrase' | 'unrecognized';
+  armored: boolean;
+  bytes: Buffer;
+  text: string;
+}
+export async function classifyIdentityFileAtRest(path: string): Promise<IdentityAtRest> {
+  const raw = await readFile(path);
+  const text = raw.toString('utf8');
+  let bytes = raw;
+  let armored = false;
+  if (text.trimStart().startsWith(AGE_ARMOR_HEADER)) {
+    try {
+      bytes = Buffer.from(armor.decode(text));
+    } catch (e) {
+      throw new Error(`could not dearmor ${path}: ${errMsg(e)}`);
+    }
+    armored = true;
+  }
+  if (bytes.subarray(0, AGE_MAGIC.length).toString('latin1') === AGE_MAGIC) {
+    // The age header is plain text: "age-encryption.org/v1\n-> <stanza> …". A passphrase
+    // wrap (age -p / keygen --passphrase) always has scrypt as its FIRST stanza, so the
+    // check is ANCHORED right after the version line — a substring scan over the first N
+    // bytes would also match an "-> scrypt " sequence sitting in a later stanza or in
+    // ciphertext payload, classifying recipient ciphertext as a passphrase wrap (Codex
+    // round-2 finding, demonstrated with a forged file).
+    const prefix = `${AGE_MAGIC}\n-> scrypt `;
+    const scrypt = bytes.subarray(0, prefix.length).toString('latin1') === prefix;
+    return { kind: scrypt ? 'wrapped' : 'ciphertext-not-passphrase', armored, bytes, text };
+  }
+  if (armored) return { kind: 'unrecognized', armored, bytes, text };
+  // A plaintext identity file always carries an AGE-SECRET-KEY-… line — the
+  // generic prefix, NOT the X25519-only "AGE-SECRET-KEY-1": PQ hybrid identities
+  // (#PQ support) use AGE-SECRET-KEY-PQ-1… and must classify identically.
+  const hasSecret = text.split('\n').some((l) => l.trim().startsWith('AGE-SECRET-KEY-'));
+  return { kind: hasSecret ? 'plaintext' : 'unrecognized', armored, bytes, text };
+}
+
+/** ASCII-armor age ciphertext bytes (the `age -p -a` encoding) — for embedding a
+ *  binary wrap into a printable document (recovery-kit, #364). */
+export function armorCiphertext(bytes: Uint8Array): string {
+  return armor.encode(bytes);
+}
+
 async function unwrap(raw: Buffer, pass: string): Promise<string> {
   const d = new Decrypter();
   d.addPassphrase(pass);

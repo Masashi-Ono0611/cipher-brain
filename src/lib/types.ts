@@ -52,6 +52,9 @@ export interface CliOptions {
   locator?: string;
   scan_secrets?: string; // snapshot --scan-secrets warn|deny|off (gitleaks, #215/#301) — validated in snapshot.ts, not here (parseArgs can't know the enum)
   from_locator_file?: string;
+  inline_identity?: boolean; // recovery-kit: inline the (wrapped+armored ONLY) primary identity into the kit (#364)
+  backup_identity?: string; // recovery-kit: path to a backup identity to inline, wizard-style (#364)
+  backup_recipient?: string; // recovery-kit: the backup identity's public recipient (age1… literal or a file path) — required when the backup identity is wrapped (#364)
   sign_identity?: string; // keygen/snapshot: signing PRIVATE key path override (default $CIPHER_BRAIN_HOME/sign-identity.key, #214)
   sign_recipient?: string; // snapshot/restore/verify: signing PUBLIC key path override (default $CIPHER_BRAIN_HOME/sign-recipient.pub, #214)
   sig_locator?: string; // pull: explicit locator for the <out>.minisig sidecar (mirrors --locator; usually read from --from-locator-file's 6th field instead, #214)

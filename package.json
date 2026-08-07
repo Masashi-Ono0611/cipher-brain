@@ -54,6 +54,7 @@
     "selftest:storage": "bash scripts/selftest-storage.sh",
     "selftest:rclone": "bash scripts/selftest-rclone.sh",
     "selftest:recovery": "bash scripts/selftest-recovery.sh",
+    "selftest:recovery-kit": "bash scripts/selftest-recovery-kit.sh",
     "selftest:restore-security": "bash scripts/selftest-restore-security.sh",
     "selftest:pq": "bash scripts/selftest-pq.sh",
     "selftest:minisign": "bash scripts/selftest-minisign.sh",
@@ -76,7 +77,7 @@
     "selftest:properties": "node --experimental-strip-types --import ./scripts/dev-cli-loader.mjs scripts/selftest-properties.mjs",
     "selftest:cctv-age": "node scripts/selftest-cctv-age.mjs",
     "mutation-test": "stryker run",
-    "verify:suite": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:restore-security && npm run selftest:pq && npm run selftest:minisign && npm run selftest:push-partial-failure && npm run selftest:idempotency-lib && npm run selftest:verify-levels && npm run selftest:schedule && npm run selftest:config-file && npm run selftest:init && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && npm run selftest:wallet-balance && npm run selftest:sdk-advice && npm run selftest:error-codes && npm run selftest:progress && npm run selftest:push-balance-report && npm run selftest:doctor && npm run selftest:properties && npm run selftest:cctv-age && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs"
+    "verify:suite": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:recovery-kit && npm run selftest:restore-security && npm run selftest:pq && npm run selftest:minisign && npm run selftest:push-partial-failure && npm run selftest:idempotency-lib && npm run selftest:verify-levels && npm run selftest:schedule && npm run selftest:config-file && npm run selftest:init && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && npm run selftest:wallet-balance && npm run selftest:sdk-advice && npm run selftest:error-codes && npm run selftest:progress && npm run selftest:push-balance-report && npm run selftest:doctor && npm run selftest:properties && npm run selftest:cctv-age && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs"
   },
   "engines": {
     "node": ">=22.6.0"

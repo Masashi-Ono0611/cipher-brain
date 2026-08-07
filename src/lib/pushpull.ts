@@ -132,7 +132,7 @@ async function signingStateFor(o: CliOptions): Promise<SigningState | null> {
   }
 }
 
-interface SavedLocator {
+export interface SavedLocator {
   locator: string;
   backend: string;
   sha: string | undefined;
@@ -147,7 +147,7 @@ interface SavedLocator {
 // push recorded". The 3-field legacy format, the 4-field one (+content_digest), the
 // 5-field one (+recipients_fingerprint), the 6-field one (+sig_locator, #214) and the
 // 7-field one (+sign_key_id, #250) all parse here identically.
-async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> {
+export async function readSavedLocatorLine(path: string): Promise<SavedLocator | null> {
   let text: string;
   try {
     text = await readFile(path, 'utf8');

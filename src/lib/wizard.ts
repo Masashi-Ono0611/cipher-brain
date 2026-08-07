@@ -32,10 +32,9 @@
 // is not a TTY — the same non-interactive-safety posture promptHidden already has —
 // rather than hanging or behaving unpredictably under a CI/pipe invocation.
 import { text, confirm, isCancel } from '@clack/prompts';
-import { readFile, writeFile, mkdir, rm, rename, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile, writeFile, rm, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { homedir, userInfo } from 'node:os';
-import { randomBytes } from 'node:crypto';
 import { HOME, CONFIG_FILE_PATH, IDENTITY, RECIPIENT, SIGN_IDENTITY, SIGN_RECIPIENT, readEnv } from './config.js';
 import { keygen, keygenAt } from './keys.js';
 import { askNewPassphrase, wrapIdentity } from './crypt.js';
@@ -46,7 +45,9 @@ import { push, PushPartialSuccessError } from './pushpull.js';
 import { estimateCost, formatEstimate } from './estimate.js';
 import { BACKEND_NAMES } from './backends/index.js';
 import { walletConfigured } from './wallet.js';
-import { exists, errMsg, redactPgConn } from './util.js';
+import { exists, errMsg } from './util.js';
+import { buildRecoveryKit, writeRecoveryKitFile } from './recoverykit.js';
+import type { BackupKey, SigningKey } from './recoverykit.js';
 import type { CliOptions } from './types.js';
 
 // Thrown when a clack prompt reports a cancel (Ctrl+C, or Esc on the ones that support
@@ -144,188 +145,11 @@ async function askYesNo(question: string, def: boolean): Promise<boolean> {
   return answer;
 }
 
-interface BackupKey {
-  identityPath: string;
-  recipientPath: string;
-  recipient: string;
-  identityText: string; // the raw file contents (unwrapped) — inlined into the kit
-}
-
-// The recovery kit: one printable plain-text page, after 1Password's Emergency Kit
-// (https://support.1password.com/emergency-kit/ — a single printable sheet carrying
-// what you need to get back in, kept physically). This used to say
-// "Bitwarden-emergency-kit style", which credited the wrong project: Bitwarden's
-// Emergency Access is a different mechanism entirely — an approval-or-time-delayed
-// grant to a trusted contact, not a document (docs/prior-art.md carries both).
-// Plain text was chosen over HTML->PDF deliberately (see issue #68 / cli.ts's file-header comment on
-// the INLINE-vs-external Bun.build split) — zero new dependencies, greppable, and
-// printable from any editor. Content mirrors MANAGEMENT.md's "Key recovery" section:
-// the backup identity (if any) is INLINED here since printing this page IS how it
-// leaves the machine to go offline; the primary identity is only referenced by
-// location (it is already durably on this machine and duplicating a live secret into
-// a file whose whole purpose is to also leave the building would only multiply risk).
-interface SigningKey {
-  identityPath: string;
-  recipientPath: string;
-  pubkeyText: string; // the minisign-wire-format public key file's content — PUBLIC, safe to inline verbatim (unlike the backup identity above, this is never secret)
-}
-
-interface KitInputs {
-  primaryIdentityPath: string;
-  primaryRecipient: string;
-  backup: BackupKey | null;
-  signing: SigningKey | null; // #214: authenticity signing keypair, if generated during this run
-  pinRecipientsLine: string | null;
-  savedLocatorLine: string;
-  profile: string;
-  backend: string;
-  pg: string | null; // the --pg connection string used, if a Postgres dump was included (issue #84)
-  generatedAt: string;
-}
-
-function buildRecoveryKit(k: KitInputs): string {
-  const lines: string[] = [];
-  lines.push('='.repeat(72));
-  lines.push('CIPHER-BRAIN RECOVERY KIT — KEEP THIS OFFLINE / PHYSICALLY SECURE');
-  lines.push('This file contains SECRET key material. Anyone holding it can decrypt');
-  lines.push('every cipher-brain snapshot encrypted to the key(s) below. Print it,');
-  lines.push('store it somewhere physically secure (a safe, a password manager secure');
-  lines.push('note, a trusted person) AWAY from this machine, then treat it like cash.');
-  lines.push('='.repeat(72));
-  lines.push('');
-  lines.push(`Kit generated: ${k.generatedAt}`);
-  lines.push(`Profile used:  ${k.profile}`);
-  lines.push(`Backend used:  ${k.backend}`);
-  lines.push(`Postgres dump: ${k.pg ? `included (connection: ${redactPgConn(k.pg)})` : 'not included'}`);
-  lines.push('');
-  lines.push('--- PRIMARY IDENTITY (already on this machine — not duplicated here) ---');
-  lines.push(`Location:  ${k.primaryIdentityPath}`);
-  lines.push(`Recipient (public, safe to share): ${k.primaryRecipient}`);
-  lines.push('');
-  if (k.backup) {
-    lines.push('--- BACKUP IDENTITY (SECRET — this is what lets a fresh machine restore) ---');
-    lines.push(`Location on THIS machine (move it off-box): ${k.backup.identityPath}`);
-    lines.push(`Recipient (public, safe to share): ${k.backup.recipient}`);
-    lines.push('');
-    lines.push('BEGIN BACKUP IDENTITY FILE');
-    lines.push(k.backup.identityText.replace(/\n+$/, ''));
-    lines.push('END BACKUP IDENTITY FILE');
-    lines.push('');
-  } else {
-    lines.push('--- BACKUP IDENTITY ---');
-    lines.push('None was generated during init. The PRIMARY identity above is the only key');
-    lines.push('that can restore — losing it loses the brain. MANAGEMENT.md "Key recovery #1"');
-    lines.push('recommends adding an offline backup key: CIPHER_BRAIN_HOME=<path> cipher-brain keygen');
-    lines.push('');
-  }
-  if (k.signing) {
-    lines.push('--- SIGNING PUBLIC KEY (authenticity, #214 — PUBLIC, safe to keep with this kit or share) ---');
-    lines.push('age proves confidentiality but not authenticity: anyone holding a recipient public key can');
-    lines.push('forge decryptable ciphertext. This signing key closes that gap — snapshot signs each *.age it');
-    lines.push('writes, and restore/verify check the signature BEFORE decrypting. Keep this public key alongside');
-    lines.push(`the recovery locator so restore on ANY machine can verify: ${k.signing.recipientPath}`);
-    lines.push('');
-    lines.push('BEGIN SIGNING PUBLIC KEY');
-    lines.push(k.signing.pubkeyText.replace(/\n+$/, ''));
-    lines.push('END SIGNING PUBLIC KEY');
-    lines.push('(The matching PRIVATE signing key stays on this machine only — see MANAGEMENT.md "Key recovery" —');
-    lines.push(
-      ' it is not needed to VERIFY a signature, only to CREATE new ones, so it is deliberately not inlined here.)',
-    );
-    lines.push('');
-  } else {
-    lines.push('--- SIGNING PUBLIC KEY (authenticity, #214) ---');
-    lines.push('None was generated during init. Snapshots restore exactly as before (age confidentiality +');
-    lines.push('tamper detection), just without the extra authenticity check. Add one later at any time:');
-    lines.push('cipher-brain keygen --sign');
-    lines.push('');
-  }
-  lines.push('--- LATEST SAVE-LOCATOR (back this up off-box, next to the backup identity) ---');
-  lines.push('BEGIN SAVE-LOCATOR LINE');
-  lines.push(k.savedLocatorLine);
-  lines.push('END SAVE-LOCATOR LINE');
-  lines.push('');
-  // The kit is a sheet of paper someone acts on later, possibly on a different machine —
-  // so it names the config file the way README/MANAGEMENT.md do ($CIPHER_BRAIN_HOME-
-  // relative), not this machine's resolved path, which would not be the right one there.
-  lines.push('--- CIPHER_BRAIN_PIN_RECIPIENTS (add to $CIPHER_BRAIN_HOME/config.env; shell rc: prefix "export ") ---');
-  lines.push(
-    k.pinRecipientsLine ?? '(skipped during init — see MANAGEMENT.md / "cipher-brain help" for what this does)',
-  );
-  lines.push('');
-  lines.push('--- RECOVERY STEPS (run these on ANY machine with Node >=22.6 and this npm package installed) ---');
-  // Deliberately do NOT auto-append --pg (with the SOURCE connection string) to the
-  // restore commands below: pg_restore --clean --if-exists DROPS/replaces objects in
-  // whatever database --pg names, so blindly reusing the dump's SOURCE as the restore
-  // TARGET on a verbatim copy-paste risks clobbering a live database. MANAGEMENT.md's
-  // own restore runbook is explicit about this ("rebuild into a SCRATCH database, never
-  // straight over a live one") — the Postgres block below points there instead of
-  // encouraging a single dangerous copy-paste command (Fugu review finding).
-  if (k.backend === 'file') {
-    lines.push('!!! LOCATOR IS LOCAL-ONLY: this backup used the "file" backend, so the save-locator line above');
-    lines.push('    points at a path inside a local object store (CIPHER_BRAIN_FILE_DIR) on THIS machine — it');
-    lines.push('    is NOT reachable from a different machine unless that whole store directory is also copied');
-    lines.push('    there. Step 4 below (pull --from-locator-file) will fail on another machine as written. For');
-    lines.push('    genuine cross-machine recovery, re-run push with a network backend (arweave/turbo), or');
-    lines.push('    manually copy the file-backend store alongside this kit. See MANAGEMENT.md "Key recovery #3".');
-    lines.push('');
-  }
-  if (k.backup) {
-    lines.push('An operator with ZERO prior knowledge of this repo can follow these verbatim. The two marker');
-    lines.push('blocks above (each a single BEGIN/END pair, unique in this file) are the two things you copy:');
-    lines.push('  1) npm install -g cipher-brain          (or: npx cipher-brain@latest <command>)');
-    lines.push('  2) Copy the BACKUP IDENTITY block above (the lines between its BEGIN and END markers,');
-    lines.push('     not including the marker lines themselves) into its own file, e.g.: ~/restore-identity.age');
-    lines.push('  3) Copy the SAVE-LOCATOR line above (between its BEGIN and END markers) into its own');
-    lines.push('     file, e.g.: ~/restore-locator.tsv');
-    lines.push('  4) cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
-    lines.push('  5) cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ~/restore-identity.age');
-    lines.push('     (if the identity above is passphrase-wrapped, this step prompts for that passphrase)');
-  } else {
-    lines.push('!!! NO BACKUP IDENTITY IS IN THIS KIT: true kit-only recovery — restoring on a fresh machine');
-    lines.push('    with ZERO other prior knowledge — is NOT possible right now. The only thing that can');
-    lines.push('    decrypt any snapshot encrypted so far is the PRIMARY identity above, and it was');
-    lines.push('    deliberately NOT copied into this kit (it already lives durably on THIS machine — printing');
-    lines.push('    a backup identity into the kit is how a SECOND key leaves the machine; there is no second');
-    lines.push('    key here). See MANAGEMENT.md "Key recovery #1".');
-    lines.push('');
-    lines.push('Your actual options:');
-    lines.push('  * Restore using the PRIMARY identity itself, wherever it currently lives (this machine, or');
-    lines.push(`    a copy of it you separately made outside of this kit): ${k.primaryIdentityPath}`);
-    lines.push('    (possibly passphrase-protected, per step 3 of the wizard — restore then prompts for it).');
-    lines.push('    Copy the SAVE-LOCATOR line above into its own file, e.g. ~/restore-locator.tsv, then:');
-    lines.push('      cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
-    lines.push(
-      `      cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ${k.primaryIdentityPath}`,
-    );
-    lines.push('  * For real kit-based portable recovery (any machine, zero prior knowledge), a backup');
-    lines.push('    identity has to exist and be inlined in the kit. To get there: generate one —');
-    lines.push('    "CIPHER_BRAIN_HOME=<path> cipher-brain keygen" — then re-snapshot encrypting to BOTH the');
-    lines.push('    primary recipient.txt (next to the primary identity above) and the new backup');
-    lines.push('    recipient.txt (see MANAGEMENT.md "Key recovery #1"), then generate a fresh kit so it');
-    lines.push('    inlines the new backup identity.');
-    lines.push('  * The SAVE-LOCATOR and CIPHER_BRAIN_PIN_RECIPIENTS sections above are still valid, useful');
-    lines.push('    information regardless of the above — only "restore using just this kit alone" carries');
-    lines.push('    this caveat.');
-  }
-  if (k.pg) {
-    lines.push('');
-    lines.push('!!! THIS BACKUP ALSO INCLUDES A POSTGRES DUMP: the restore command(s) above extract db.dump into');
-    lines.push('    --out-dir but deliberately do NOT pg_restore it (no --pg is included above).');
-    lines.push(`    Its SOURCE connection was: ${redactPgConn(k.pg)}`);
-    lines.push('    Do NOT pg_restore into that same database — "pg_restore --clean --if-exists" DROPS/replaces');
-    lines.push('    objects in whatever database --pg names. Add --pg pointing at a SCRATCH database (never the');
-    lines.push('    source above) to the restore command; see MANAGEMENT.md "Restore runbook" step 4 for the');
-    lines.push('    exact pattern.');
-  }
-  lines.push('');
-  lines.push('--- WHAT TO DO WITH THIS FILE ---');
-  lines.push('Print this page and store it securely, physically away from this machine. Once it');
-  lines.push('is secured, you MAY delete this file from disk — that is a manual step; cipher-brain');
-  lines.push('does not delete it for you.');
-  lines.push('');
-  return lines.join('\n');
-}
+// BackupKey/SigningKey/KitInputs and buildRecoveryKit() moved to
+// src/lib/recoverykit.ts (#364) so `init` and the standalone
+// `cipher-brain recovery-kit` command render ONE canonical kit that cannot
+// drift. The wizard-era design notes (1Password Emergency Kit lineage,
+// plain-text-over-PDF, primary-not-duplicated) live there now.
 
 export async function init(_o: CliOptions): Promise<void> {
   requireTTY();
@@ -812,6 +636,7 @@ export async function init(_o: CliOptions): Promise<void> {
       const kitPath = expandHome(await askLine(`Path to write the recovery kit [${defaultKitPath}]`, defaultKitPath));
       const kitText = buildRecoveryKit({
         primaryIdentityPath: IDENTITY,
+        primaryInline: null, // init never inlines the primary — see recoverykit.ts's design note
         primaryRecipient,
         backup,
         signing,
@@ -819,31 +644,12 @@ export async function init(_o: CliOptions): Promise<void> {
         savedLocatorLine,
         profile: profileChoice,
         backend,
-        pg: snapshotOpts.pg ?? null,
+        pg: snapshotOpts.pg ? { conn: snapshotOpts.pg } : 'none',
         generatedAt: new Date().toISOString(),
       });
-      // Write-then-chmod (the prior approach) has a real exposure window: if kitPath
-      // already exists at a looser mode (e.g. a stray 0644 file, a re-run at the same
-      // path), writeFile() replaces its CONTENT first — the secret (the inlined backup
-      // identity) briefly sits in a world/group-readable file — and only chmod()
-      // AFTERWARD narrows it to 0600. Eliminate the window entirely instead: create a
-      // distinctly-named temp sibling with `wx` (exclusive create — refuses to reuse an
-      // existing, possibly-loose-mode inode) and `mode: 0o600` from the instant of
-      // creation, so the secret is never observable at a loose mode even momentarily,
-      // then atomically rename() it over kitPath — same temp-then-rename convention
-      // pushpull.ts's save-locator write and snapshot.ts's promote-on-success step
-      // already use for this codebase's other durable/secret-bearing writes. rename()
-      // replacing an existing kitPath is fine here: only the NEW content must never be
-      // exposed insecurely, the old kit content (if any) does not need preserving.
-      await mkdir(dirname(kitPath), { recursive: true });
-      const kitTmpPath = `${kitPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-      try {
-        await writeFile(kitTmpPath, kitText, { flag: 'wx', mode: 0o600 });
-        await rename(kitTmpPath, kitPath);
-      } catch (e) {
-        await rm(kitTmpPath, { force: true });
-        throw e;
-      }
+      // Secret-bearing write: exclusive-create 0600 temp + atomic rename — shared
+      // with the standalone command in recoverykit.ts (one write path, #364).
+      await writeRecoveryKitFile(kitPath, kitText);
 
       console.log('\n=== cipher-brain init: complete ===');
       console.log(`primary identity:  ${IDENTITY}`);

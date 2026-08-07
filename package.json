@@ -68,6 +68,7 @@
     "selftest:usd-rate": "node scripts/selftest-usd-rate.mjs",
     "selftest:wallet-balance": "node scripts/selftest-wallet-balance.mjs",
     "selftest:sdk-advice": "node scripts/selftest-sdk-advice.mjs",
+    "selftest:turbo-dep": "node scripts/selftest-turbo-dep.mjs",
     "selftest:error-codes": "node scripts/selftest-error-codes.mjs",
     "selftest:progress": "node --experimental-strip-types --import ./scripts/dev-cli-loader.mjs scripts/selftest-progress.mjs",
     "selftest:push-balance-report": "node --experimental-strip-types --import ./scripts/dev-cli-loader.mjs scripts/selftest-push-balance-report.mjs",
@@ -76,23 +77,22 @@
     "selftest:properties": "node --experimental-strip-types --import ./scripts/dev-cli-loader.mjs scripts/selftest-properties.mjs",
     "selftest:cctv-age": "node scripts/selftest-cctv-age.mjs",
     "mutation-test": "stryker run",
-    "verify:suite": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:restore-security && npm run selftest:pq && npm run selftest:minisign && npm run selftest:push-partial-failure && npm run selftest:idempotency-lib && npm run selftest:verify-levels && npm run selftest:schedule && npm run selftest:config-file && npm run selftest:init && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && npm run selftest:wallet-balance && npm run selftest:sdk-advice && npm run selftest:error-codes && npm run selftest:progress && npm run selftest:push-balance-report && npm run selftest:doctor && npm run selftest:properties && npm run selftest:cctv-age && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs"
+    "verify:suite": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:restore-security && npm run selftest:pq && npm run selftest:minisign && npm run selftest:push-partial-failure && npm run selftest:idempotency-lib && npm run selftest:verify-levels && npm run selftest:schedule && npm run selftest:config-file && npm run selftest:init && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && npm run selftest:wallet-balance && npm run selftest:sdk-advice && npm run selftest:turbo-dep && npm run selftest:error-codes && npm run selftest:progress && npm run selftest:push-balance-report && npm run selftest:doctor && npm run selftest:properties && npm run selftest:cctv-age && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs"
   },
   "engines": {
     "node": ">=22.6.0"
   },
   "license": "MIT",
   "peerDependencies": {
-    "@ardrive/turbo-sdk": "^1.42.0",
     "arweave": "^1.15.0"
   },
   "peerDependenciesMeta": {
-    "@ardrive/turbo-sdk": {
-      "optional": true
-    },
     "arweave": {
       "optional": true
     }
+  },
+  "optionalDependencies": {
+    "@ardrive/turbo-sdk": "^1.42.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",

@@ -227,11 +227,14 @@ CLI/MCP smoke) should both pass. `npm run format` applies biome's formatting.
 `brew install libpq` or your distro's `postgresql-client`) — without them the
 headline `--pg` flow fails with a cryptic `spawn pg_dump ENOENT`. If they are not
 on `PATH`, point `CIPHER_BRAIN_PG_BIN` at their directory. `tar` is assumed
-present. The paid **upload** backends need their optional peer package next to
-your project: `npm install arweave` for `--backend arweave`,
-`npm install @ardrive/turbo-sdk` for `--backend turbo` (a from-source checkout
-already has `arweave` from its `npm install`). Recovery pulls from an Arweave
-gateway need no extra dependency.
+present. For the paid **upload** backends: `--backend turbo` needs
+`@ardrive/turbo-sdk`, which ships as an `optionalDependency` — a normal
+registry or from-source install already carries it, with the package manager
+resolving its transitive tree (#363; an install run with `--omit=optional`
+falls back to the CLI's own install advice). `--backend arweave` still needs
+its optional peer next to your project: `npm install arweave` (a from-source
+checkout already has it from its `npm install`). Recovery pulls from an
+Arweave gateway need no extra dependency.
 
 ## Usage
 

@@ -58,7 +58,10 @@ echo "[PASS] stdout kit: verbatim locator line + honest unknown/local-only/no-ba
 echo "== --out writes 0600 and no-clobbers without --force =="
 OUT="$TMP/kit.txt"
 cb recovery-kit --from-locator-file "$LOCF" --out "$OUT" >/dev/null
-MODE="$(stat -f %Lp "$OUT" 2>/dev/null || stat -c %a "$OUT")"
+# GNU first, BSD fallback — trying BSD `stat -f` FIRST does not error on Linux
+# (GNU reads -f as filesystem status and exits 0 with junk), so the fallback
+# never fires; same trap selftest-init.sh documents. Caught by ubuntu CI.
+MODE="$(stat -c '%a' "$OUT" 2>/dev/null || stat -f '%Lp' "$OUT")"
 [ "$MODE" = "600" ] || { echo "[FAIL] kit written with mode $MODE, expected 600"; exit 1; }
 if cb recovery-kit --from-locator-file "$LOCF" --out "$OUT" >/dev/null 2>"$TMP/clobber.err"; then
   echo "[FAIL] second --out to the same path must refuse without --force"; exit 1

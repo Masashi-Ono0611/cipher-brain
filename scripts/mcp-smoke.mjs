@@ -85,7 +85,7 @@
 // Exits 0 on success, 1 on any failure with a descriptive message on stderr.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -121,6 +121,7 @@ async function main() {
     await runIdempotencyTtlTest(tmp);
     await runIdempotencyTtlValidationTest(tmp);
     await runIdempotencyCorruptedLogTest(tmp);
+    await runSignalCleanupTest(tmp);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
@@ -2192,6 +2193,174 @@ async function run(tmp) {
       /* ignore */
     }
   }
+}
+
+// A SIGTERM to this long-lived server must not leave its fetch dirs behind. verify_restore
+// and restore_now pull/copy into `cipher-brain-mcp-*` temp dirs and erase them in a
+// finally-block — which a signal skips entirely, exactly like the snapshot stage dir
+// (scripts/selftest.sh "P1 regression") and the drill scratch dir
+// (scripts/selftest-verify-levels.sh). Those two are CLI one-shots where a signal is
+// exceptional; here it is the ORDINARY way the process ends (launchd stop, machine
+// shutdown, an operator Ctrl-C on a foreground server).
+//
+// Held open deterministically rather than raced: a stub `tar` on PATH intercepts verify's
+// listing pass (`tar -tf -`, the first tar the call makes AFTER the pull has finished
+// writing pulled.age), touches a marker and becomes `sleep`. Polling for that marker is
+// what proves the SIGTERM lands inside the window instead of before or after it. The stub
+// exec's sleep rather than backgrounding it so it IS the registered child process, which
+// the guard's own SIGKILL sweep then reaps.
+async function runSignalCleanupTest(tmp) {
+  const home = join(tmp, 'home-signal');
+  const store = join(tmp, 'store-signal');
+  const data = join(tmp, 'data-signal');
+  const isolatedTmp = join(tmp, 'tmpdir-signal');
+  const stubBin = join(tmp, 'stubbin-signal');
+  const marker = join(tmp, 'tar-stub-started');
+  await mkdir(data, { recursive: true });
+  await mkdir(isolatedTmp, { recursive: true });
+  await mkdir(stubBin, { recursive: true });
+  await writeFile(join(data, 'hello.txt'), 'cipher-brain mcp signal-cleanup payload\n');
+
+  const realTar = spawnSync('sh', ['-c', 'command -v tar'], { encoding: 'utf8' }).stdout.trim();
+  if (!realTar) throw new Error('signal-cleanup test: no tar on PATH (test setup)');
+  await writeFile(
+    join(stubBin, 'tar'),
+    `#!/usr/bin/env bash\nif [ "$1" = "-tf" ]; then\n  : > ${JSON.stringify(marker)}\n  exec sleep 20\nfi\nexec ${JSON.stringify(realTar)} "$@"\n`,
+    { mode: 0o755 },
+  );
+
+  const keygenRes = spawnSync(process.execPath, [SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs'), 'keygen'], {
+    env: { ...process.env, CIPHER_BRAIN_HOME: home },
+    encoding: 'utf8',
+  });
+  if (keygenRes.status !== 0) {
+    throw new Error(
+      `signal-cleanup test: keygen failed (${keygenRes.status}): ${keygenRes.stderr || keygenRes.stdout}`,
+    );
+  }
+
+  const child = spawn(process.execPath, [SERVER_PATH], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      CIPHER_BRAIN_HOME: home,
+      CIPHER_BRAIN_FILE_DIR: store,
+      TMPDIR: isolatedTmp, // os.tmpdir() — so the only cipher-brain-mcp-* dirs here are this server's
+      PATH: `${stubBin}:${process.env.PATH}`,
+    },
+  });
+  const { send, waitFor } = makeRpcClient(child);
+  const leftovers = async () => (await readdir(isolatedTmp)).filter((n) => n.startsWith('cipher-brain-mcp-'));
+
+  let signalled = false;
+  try {
+    send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ci-smoke', version: '0.0.0' } },
+    });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    await wait(100);
+
+    // A real snapshot to have something to verify. The stub only intercepts `-tf`, so
+    // snapshot's own `tar -cf -` / `-czf` run for real.
+    send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'snapshot_now',
+        arguments: {
+          dirs: [data],
+          recipients: [join(home, 'recipient.txt')],
+          out: join(tmp, 'signal-cleanup.age'),
+          backend: 'file',
+        },
+      },
+    });
+    const snap = await waitFor(2);
+    if (snap.result?.isError)
+      throw new Error(`signal-cleanup test: snapshot_now failed: ${JSON.stringify(snap.result).slice(0, 500)}`);
+    const locator = snap.result?.structuredContent?.locator;
+    if (typeof locator !== 'string') throw new Error('signal-cleanup test: snapshot_now returned no locator');
+
+    // TWO calls, fired and deliberately never awaited — both are meant to be interrupted.
+    // Two rather than one because the guard tracks these dirs in a SET: with a single
+    // in-flight call, a scalar "last registration wins" implementation would pass this
+    // test unchanged. The first call reaches the stub tar and parks there; the second gets
+    // as far as creating (and registering) its own dir before queueing behind captureCall's
+    // mutex — so both directories are on disk when the signal lands, which is the state the
+    // set exists for.
+    for (const id of [3, 4]) {
+      send({
+        jsonrpc: '2.0',
+        id,
+        method: 'tools/call',
+        params: { name: 'verify_restore', arguments: { locator, backend: 'file' } },
+      });
+    }
+
+    let inWindow = false;
+    for (let i = 0; i < 300; i++) {
+      if (existsSync(marker) && (await leftovers()).length >= 2) {
+        inWindow = true;
+        break;
+      }
+      await wait(100);
+    }
+    if (!inWindow) {
+      throw new Error(
+        'signal-cleanup test: the two verify_restore calls never reached the held-open window with both fetch ' +
+          `dirs on disk (marker=${existsSync(marker)}, dirs=${JSON.stringify(await leftovers())}) — test setup`,
+      );
+    }
+
+    child.kill('SIGTERM');
+    signalled = true;
+    // Bounded: a handler that cleans up but never re-raises would otherwise hang the whole
+    // smoke suite instead of failing it.
+    const exited = await Promise.race([
+      new Promise((res) => child.once('exit', (code, signal) => res({ code, signal }))),
+      wait(15_000).then(() => null),
+    ]);
+    if (exited === null) throw new Error('signal-cleanup test: server never exited within 15s of SIGTERM');
+
+    const left = await leftovers();
+    if (left.length > 0) {
+      throw new Error(
+        `signal-cleanup test: SIGTERM left ${left.length} cipher-brain-mcp-* dir(s) behind: ${left.join(', ')}`,
+      );
+    }
+    // The guard removes its own listener and re-raises, so the process must die OF the
+    // signal. Exiting 0 (or throwing its way to 1) would still leave the temp dir gone —
+    // and would still be a regression: `kill` reporting success while the exit status says
+    // "ordinary exit" is how a supervisor mislabels an interrupted run as a clean one.
+    if (exited.signal !== 'SIGTERM' || exited.code !== null) {
+      throw new Error(
+        `signal-cleanup test: server did not die of SIGTERM (code=${exited.code}, signal=${exited.signal}) — ` +
+          'the handler must re-raise rather than exit on its own',
+      );
+    }
+  } finally {
+    if (!signalled) {
+      try {
+        child.stdin.end();
+      } catch {
+        /* ignore */
+      }
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  process.stdout.write(
+    'MCP SMOKE (signal cleanup): PASS — SIGTERM with two verify_restore calls in flight left no ' +
+      'cipher-brain-mcp-* fetch dir behind, and the server died of the signal it was sent\n',
+  );
 }
 
 main().catch((err) => {

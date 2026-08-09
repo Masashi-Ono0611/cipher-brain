@@ -20,7 +20,8 @@
 // `RuleID` is extracted back out, so no file path, line number, or match text from
 // gitleaks' report ever reaches the manifest or console (matches the issue's "rule ID・
 // 件数のみ" scope exactly).
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GITLEAKS_BIN } from './config.js';
@@ -97,7 +98,11 @@ export async function assertGitleaksAvailable(): Promise<void> {
 // corrupt --config, a gitleaks crash) — "leaks were found" is instead read back out of
 // the JSON report body, so it can never be confused with a genuine invocation error.
 export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
-  const reportDir = await mkdtemp(join(tmpdir(), 'cipher-brain-gitleaks-'));
+  // mkdtempSync, not the async mkdtemp: creation and registration have to land in ONE
+  // tick, the same discipline snapshot() applies to its stage dir. With an await between
+  // them the directory is already on disk while the continuation sits queued, and a signal
+  // arriving in that gap runs the handler with ACTIVE_SCAN_REPORT_DIR still null.
+  const reportDir = mkdtempSync(join(tmpdir(), 'cipher-brain-gitleaks-'));
   const reportPath = join(reportDir, 'report.json');
   // Registered for the SAME reason snapshot() registers its stage dir: the finally below
   // does not run when a signal tears the process down mid-scan. Cleared in that finally so
@@ -139,8 +144,14 @@ export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
       .map(([rule_id, count]) => ({ rule_id, count }))
       .sort((a, b) => a.rule_id.localeCompare(b.rule_id));
   } finally {
-    setActiveScanReportDir(null);
+    // rm FIRST, deregister only once the directory is actually gone. Clearing the slot
+    // before the removal has finished hands a signal arriving mid-rm a partially-deleted
+    // directory that nothing is tracking any more — the deregistration has to be the LAST
+    // thing, not the first. If the rm throws (EACCES under the dir, say) the entry
+    // deliberately stays registered: the handler's forceRmSync chmods and retries, so a
+    // signal becomes the one path left that can still clear it.
     await rm(reportDir, { recursive: true, force: true });
+    setActiveScanReportDir(null);
   }
 }
 

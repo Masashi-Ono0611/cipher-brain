@@ -916,6 +916,58 @@ set -e
 if printf '%s' "$PGONLY_ERR" | grep -q 'nothing to scan'; then echo "[FAIL] a --pg-only snapshot WITHOUT --scan-secrets was refused by the new check"; echo "$PGONLY_ERR"; exit 1; fi
 echo "[PASS] --scan-secrets is refused when no --dir/--profile source would be scanned, without needing gitleaks, and only when the flag is present"
 
+echo "== SIGINT mid-scan must not leave the gitleaks report dir behind =="
+# scanForSecrets() erases its report dir in a finally-block, and a signal skips that block
+# exactly the way it skips the stage dir's (the "P1 regression" test above). Since #301
+# made the scan run by DEFAULT, this window is open on an ordinary snapshot rather than
+# only when someone asked for the gate. A stub scanner via CIPHER_BRAIN_GITLEAKS_BIN holds
+# the run open at precisely that point, so this needs no real gitleaks binary and runs on
+# every platform in the matrix. `exec sleep` rather than a backgrounded one: the stub then
+# IS the registered child, which the guard's own SIGKILL sweep reaps.
+printf '#!/usr/bin/env bash\nexec sleep 20\n' > "$STUBBIN/gitleaks-hang"
+chmod +x "$STUBBIN/gitleaks-hang"
+SCANSIG_SRC="$TMP/scansig-src"; mkdir -p "$SCANSIG_SRC"
+printf 'nothing secret here\n' > "$SCANSIG_SRC/plain.txt"
+# Restored below rather than unset — the rest of this file inherits whatever it was, and
+# `unset` would silently drop the suite-wide TMPDIR isolation (#330). Set-ness is tracked
+# separately so this does not depend on an earlier `export TMPDIR` 500 lines up: under
+# `set -u` a bare "$TMPDIR" would abort if it were ever unset here.
+SCANSIG_HAD_TMPDIR=0
+if [ -n "${TMPDIR+x}" ]; then SCANSIG_HAD_TMPDIR=1; SCANSIG_PREV_TMPDIR="$TMPDIR"; fi
+export TMPDIR="$TMP/scansig-tmpdir"; mkdir -p "$TMPDIR"
+# node DIRECTLY, not the cb() function — backgrounding a shell function makes $! the
+# subshell's pid, so the signal would never reach the process under test.
+CIPHER_BRAIN_GITLEAKS_BIN="$STUBBIN/gitleaks-hang" CIPHER_BRAIN_HOME="$TMP/keys" \
+  node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SCANSIG_SRC" --out "$TMP/scansig.age" --scan-secrets warn >/dev/null 2>&1 &
+SCANSIG_PID=$!
+APPEARED=0
+for _ in $(seq 1 100); do
+  if find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-gitleaks-*' -type d 2>/dev/null | grep -q .; then APPEARED=1; break; fi
+  sleep 0.1
+done
+if [ "$APPEARED" != "1" ]; then
+  echo "[FAIL] the gitleaks report dir never appeared (test setup)"; kill "$SCANSIG_PID" 2>/dev/null || true; exit 1
+fi
+kill -INT "$SCANSIG_PID"
+set +e
+wait "$SCANSIG_PID" 2>/dev/null; SCANSIG_RC=$?
+set -e
+# Assert it died OF the signal (128+SIGINT=130), not merely that it stopped. Without this
+# a handler that swallowed SIGINT and let the run continue would still satisfy every
+# leftover check below — the stub eventually exits, the ordinary finally-blocks then run,
+# and the scan fails for its own unrelated reason. "Nothing left behind" would be true for
+# the wrong reason, which is the false PASS this test exists to avoid.
+[ "$SCANSIG_RC" = "130" ] || { echo "[FAIL] SIGINT mid-scan: expected exit 130 (killed by SIGINT), got $SCANSIG_RC — the handler must re-raise rather than swallow the signal"; exit 1; }
+SCANSIG_LEFT=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-gitleaks-*' 2>/dev/null | wc -l | tr -d ' ')
+[ "$SCANSIG_LEFT" = "0" ] || { echo "[FAIL] SIGINT mid-scan left $SCANSIG_LEFT gitleaks report dir(s) behind"; exit 1; }
+# The staged PLAINTEXT is live at this moment too (the scan reads it) — the same signal
+# has to take that with it, which is the higher-stakes half of the same guarantee.
+SCANSIG_STAGE=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | wc -l | tr -d ' ')
+[ "$SCANSIG_STAGE" = "0" ] || { echo "[FAIL] SIGINT mid-scan left $SCANSIG_STAGE staged dir(s) behind"; exit 1; }
+test ! -f "$TMP/scansig.age" || { echo "[FAIL] SIGINT mid-scan left a partial scansig.age"; exit 1; }
+if [ "$SCANSIG_HAD_TMPDIR" = "1" ]; then export TMPDIR="$SCANSIG_PREV_TMPDIR"; else unset TMPDIR; fi
+echo "[PASS] SIGINT mid-scan died of the signal (exit 130) and left no gitleaks report dir, no staged plaintext, no partial ciphertext"
+
 echo "== #307: --scan-secrets + --dry-run is refused (a dry run stages nothing, so the preview would exit 0 having scanned nothing) =="
 set +e
 DRYSCAN_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run --scan-secrets deny 2>&1); DRYSCAN_RC=$?

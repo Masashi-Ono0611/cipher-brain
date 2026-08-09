@@ -296,10 +296,12 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       found and the include/exclude file list with an approximate byte total for each side,
       PLUS the largest contributors (up to the top 10 by bytes, aggregated one directory
       level deep, with each one's share of the total; beyond 10 the rest are folded into
-      one "other (N more)" remainder line so the printed shares always add up to the whole
-      source) — with or without a .cipherbrainignore, so you can see what you are about to
-      pay to store permanently before you have written a filter for it — the "capacity
-      difference" a --recipient/--pg pipeline never touches until you drop --dry-run and
+      one "other (N more)" remainder line so every byte of the source is accounted for
+      across what's shown plus that line — the percentages are rounded to one decimal
+      place and are not guaranteed to sum to exactly 100%) — with or without a
+      .cipherbrainignore, so you can see what you are about to pay to store permanently
+      before you have written a filter for it — the "capacity difference" a
+      --recipient/--pg pipeline never touches until you drop --dry-run and
       actually run the snapshot.
       Also records a deterministic PLAINTEXT content digest (mtime-independent) in the
       manifest and in a "<out>.digest" sidecar, PLUS a recipients fingerprint (the

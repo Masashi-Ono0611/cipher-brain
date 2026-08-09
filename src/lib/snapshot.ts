@@ -896,13 +896,15 @@ function allContributors(entries: ScanEntry[]): Contributor[] {
 // with no accounting for what it cut is the wrong failure mode for a report whose whole
 // point is "what am I paying to store" — with more than CONTRIBUTORS_LIMIT buckets, many
 // similar-sized ones that collectively dominate would each look individually negligible
-// and the true dominant mass would be invisible, while the shown shares silently stopped
-// summing to the source total. Below CONTRIBUTORS_LIMIT buckets, EVERY bucket is shown,
-// so "top N" would overclaim a truncation that never happened — the heading says exactly
-// what is being shown either way, and a trailing "other (N more)" line carries the
-// dropped buckets' combined bytes/share when (and only when) something was cut, so the
-// printed lines reconcile to totalBytes in EVERY case, not just when there happen to be
-// <= CONTRIBUTORS_LIMIT of them.
+// and the true dominant mass would be invisible, while the shown BYTES silently stopped
+// accounting for the whole source. Below CONTRIBUTORS_LIMIT buckets, EVERY bucket is
+// shown, so "top N" would overclaim a truncation that never happened — the heading says
+// exactly what is being shown either way, and a trailing "other (N more)" line carries
+// the dropped buckets' combined bytes/share when (and only when) something was cut, so
+// the printed lines reconcile to totalBytes in EVERY case (see the loop below — this is
+// a BYTES guarantee, not a percentages one: each `share` is independently `toFixed(1)`,
+// so the printed percentages can be off by up to a few tenths from summing to exactly
+// 100.0 — a rounding artifact of display, never a sign that bytes went unaccounted for).
 function printContributors(entries: ScanEntry[], totalBytes: number): void {
   if (totalBytes <= 0) return;
   const all = allContributors(entries);

@@ -318,6 +318,18 @@ REALTAR="$(command -v tar)"
 STUBBIN="$TMP/stubbin"; mkdir -p "$STUBBIN"
 cat > "$STUBBIN/tar" <<EOF
 #!/usr/bin/env bash
+# block-* modes announce that a named snapshot phase has been REACHED and then park there,
+# so the SIGINT test far below can pin its signal to that exact phase instead of racing a
+# poll loop (see the P1 regression block). Every other invocation falls through to the real
+# tar, so these modes are invisible to the cases above. `exec sleep` rather than a bare
+# `sleep`: the guard SIGKILLs the process it spawned, which is THIS shell — a bare sleep
+# would be a grandchild and survive it, leaving a stray process per phase (measured).
+case "\${TAR_STUB_MODE:-}" in
+  block-staging-tar)                                 # per-component "tar -czf <stage>/x.tar.gz"
+    if [ "\$1" = "-czf" ]; then printf 'reached\n' > "\$CB_PHASE_SENTINEL"; exec sleep 30; fi ;;
+  block-pipeline-tar)                                # the streaming "tar -cf - -C <stage> ."
+    if [ "\$1" = "-cf" ] && [ "\$2" = "-" ]; then printf 'reached\n' > "\$CB_PHASE_SENTINEL"; exec sleep 30; fi ;;
+esac
 if [ "\$1" = "-cf" ] && [ "\$2" = "-" ]; then
   case "\${TAR_STUB_MODE:-}" in
     slow)  sleep "\${TAR_STUB_SLEEP:-3}" ;;          # hold the pipeline open, then behave
@@ -339,34 +351,108 @@ LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/nul
 echo "[PASS] a tar that dies mid-stream fails the snapshot and leaves nothing behind"
 
 echo "== P1 regression: SIGINT mid-snapshot must not leave staged plaintext =="
-# A signal tears the process down WITHOUT running the finally-block, so this is the
-# gap the failure cases above do NOT cover. Use a slow pipeline tar to hold the run
-# open while the staged plaintext exists, observe the stage dir appear, then SIGINT
-# and assert the signal handler erased it.
+# A signal tears the process down WITHOUT running the finally-blocks, so this is the gap
+# the failure cases above do NOT cover. Every temp directory a snapshot creates has to be
+# registered with the signal guard BEFORE it can exist unobserved on disk, and deregistered
+# only AFTER it is gone; a gap at either end leaks a directory the finally would have taken.
+#
+# The signal is pinned to a NAMED phase, which is what makes this deterministic. The earlier
+# version polled for the stage dir and fired the instant it appeared, so the phase the signal
+# landed in was chosen by machine speed rather than by the test — it was written to hold the
+# run open in the streaming tar, but the poll returns long before the run gets there. Sampling
+# a different phase per machine is how the gitleaks scan's own report dir — cipher-brain-*,
+# so the leftover glob below counts it — stayed unexamined until the day the signal landed in
+# a window where it was not yet tracked and one CI cell went red. Each stub announces that its
+# phase has been reached and then parks, so the signal lands inside that phase every run.
+#
+# What this canNOT reach, so nobody reads a pass here as proof of it: the two registration
+# gaps that caused that red cell both sit between a completed filesystem syscall and the JS
+# continuation that records it. A stub cannot announce from inside them — it only runs once
+# registration has already happened — so reverting the secrets-scan.ts ordering leaves this
+# block green. Only an async signal observes those windows, and pinning one there needs a
+# lifecycle hook in production code, which is not worth shipping to be able to test it. The
+# guarantee there is structural (create+register in one tick, rm before clear), not asserted.
 export TMPDIR="$TMP/stagedir-sig"; mkdir -p "$TMPDIR"
-# Invoke `node` DIRECTLY (not the cb() function): backgrounding a shell function makes
-# $! the subshell's pid, so `kill -INT $!` would hit the subshell and leave node
-# orphaned to run to completion — the signal would never reach the handler under test.
-PATH="$STUBBIN:$PATH" TAR_STUB_MODE=slow TAR_STUB_SLEEP=5 node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/sig.age" >/dev/null 2>&1 &
-SNAP_PID=$!
-APPEARED=0
-for _ in $(seq 1 50); do
-  if find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | grep -q .; then APPEARED=1; break; fi
-  sleep 0.1
-done
-if [ "$APPEARED" != "1" ]; then
-  echo "FAIL: stage dir never appeared (test setup)"; kill "$SNAP_PID" 2>/dev/null || true; exit 1
-fi
-kill -INT "$SNAP_PID"
-wait "$SNAP_PID" 2>/dev/null || true   # signal exit is non-zero — expected
-LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | wc -l | tr -d ' ')
-if [ "$LEFTOVERS" != "0" ]; then
-  echo "FAIL: $LEFTOVERS staged plaintext dir(s) left behind after SIGINT"; exit 1
-fi
-# the signal handler also kills the pipeline children, so no partial ciphertext lingers
-[ "$(npart "$TMP" "$TMP/sig.age")" = "0" ] || { echo "FAIL: SIGINT left a sig.age .part (child not killed)"; exit 1; }
-test ! -f "$TMP/sig.age" || { echo "FAIL: SIGINT left a partial sig.age"; exit 1; }
-echo "[PASS] SIGINT mid-snapshot left no staged plaintext / no partial ciphertext"
+
+# gitleaks stand-in for the scan phase: announce, then park. Pinning the scan needs a
+# scanner that will not finish on its own, and pointing CIPHER_BRAIN_GITLEAKS_BIN at this
+# also makes the case run identically on a machine with no real gitleaks installed.
+# Announce ONLY for the real scan invocation ("gitleaks dir <path>"), never for a probe:
+# today's availability check is a `command -v` that does not execute this at all, but a
+# probe that DID run it would otherwise fire the sentinel before the report dir exists and
+# the test would signal the wrong phase while still reporting a pass.
+cat > "$STUBBIN/gitleaks-block" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" != "dir" ]; then exit 0; fi
+printf 'reached\n' > "$CB_PHASE_SENTINEL"
+exec sleep 30
+EOF
+chmod +x "$STUBBIN/gitleaks-block"
+
+# Park a snapshot in $1, SIGINT it there, and assert the guard erased everything it owned.
+sigint_at_phase() {
+  local phase="$1"
+  local phase_tmp="$TMPDIR/$phase"; mkdir -p "$phase_tmp"
+  local sentinel="$TMP/sig-$phase.sentinel"; rm -f "$sentinel"
+  local out="$TMP/sig-$phase.age"
+  # Invoke `node` DIRECTLY (not the cb() function): backgrounding a shell function makes $!
+  # the subshell's pid, so `kill -INT $!` would hit the subshell and leave node orphaned to
+  # run to completion — the signal would never reach the handler under test.
+  case "$phase" in
+    staging-tar)   PATH="$STUBBIN:$PATH" TMPDIR="$phase_tmp" CB_PHASE_SENTINEL="$sentinel" TAR_STUB_MODE=block-staging-tar \
+                     node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$out" >/dev/null 2>&1 & ;;
+    scan)          PATH="$STUBBIN:$PATH" TMPDIR="$phase_tmp" CB_PHASE_SENTINEL="$sentinel" CIPHER_BRAIN_GITLEAKS_BIN="$STUBBIN/gitleaks-block" \
+                     node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$out" >/dev/null 2>&1 & ;;
+    pipeline-tar)  PATH="$STUBBIN:$PATH" TMPDIR="$phase_tmp" CB_PHASE_SENTINEL="$sentinel" TAR_STUB_MODE=block-pipeline-tar \
+                     node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$out" >/dev/null 2>&1 & ;;
+    *) echo "FAIL: unknown phase '$phase' (test bug)"; exit 1 ;;
+  esac
+  local pid=$!
+  # Wait for the phase to be REACHED, never for a fixed duration. A timeout here is BLOCKED,
+  # not a pass: the assertions below would be vacuous if the signal never landed in-phase.
+  local waited=0
+  while [ ! -s "$sentinel" ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "FAIL: snapshot exited before reaching phase '$phase' — the assertions below never ran"; exit 1
+    fi
+    sleep 0.1; waited=$((waited + 1))
+    if [ "$waited" -ge 300 ]; then
+      echo "FAIL: phase '$phase' not reached within 30s — BLOCKED, refusing to report a pass"
+      kill "$pid" 2>/dev/null || true; exit 1
+    fi
+  done
+  # Not `|| true`: a kill that cannot land means the run under test is already gone, so the
+  # assertions below would be checking a process that never got signalled. Say that out loud
+  # rather than dying bare under `set -e`.
+  kill -INT "$pid" || { echo "FAIL: could not SIGINT the snapshot parked in '$phase' — it exited early"; exit 1; }
+  # Require death BY SIGINT (128+2), never just "exited non-zero". Without this the whole
+  # block degrades into a false PASS: if the signal were ignored, the parked stub would
+  # eventually exit on its own, the snapshot would fail through its ORDINARY error path,
+  # its finally-blocks would tidy everything up, and all three assertions below would pass
+  # while having tested none of the signal handling they exist for.
+  set +e; wait "$pid"; local rc=$?; set -e
+  [ "$rc" = "130" ] || { echo "FAIL: snapshot in '$phase' exited $rc, expected 130 (SIGINT) — the handler under test never ran"; exit 1; }
+  # Name what survived: the prefix says WHICH tracked resource leaked (the plaintext stage,
+  # the gitleaks report dir, a verify scratch dir), which a bare count cannot.
+  local leftovers
+  leftovers=$(find "$phase_tmp" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null)
+  if [ -n "$leftovers" ]; then
+    echo "FAIL: SIGINT during '$phase' left staged temp dir(s) behind:"
+    printf '%s\n' "$leftovers" | sed 's/^/  /'
+    exit 1
+  fi
+  # the signal handler also kills the pipeline children, so no partial ciphertext lingers
+  [ "$(npart "$TMP" "$out")" = "0" ] || { echo "FAIL: SIGINT during '$phase' left a $(basename "$out") .part (child not killed)"; exit 1; }
+  test ! -f "$out" || { echo "FAIL: SIGINT during '$phase' left a partial $(basename "$out")"; exit 1; }
+  echo "[PASS] SIGINT during '$phase' left no staged plaintext / no partial ciphertext"
+}
+
+# The three phases that hold a tracked temp dir open, earliest to latest: the stage dir
+# alone; the stage dir plus the fully-extracted plaintext AND the scan's report dir; the
+# stage dir plus the .part being streamed into.
+sigint_at_phase staging-tar
+sigint_at_phase scan
+sigint_at_phase pipeline-tar
 
 echo "== race: an --out that appears mid-snapshot is NOT clobbered (link promote is exclusive) =="
 # Start a slow snapshot (passes the early exists() check while --out is absent), then

@@ -319,13 +319,19 @@ are `PG_VERSION` plus `pg_wal/`. Two limits worth knowing, both deliberate:
 
 It is a warning and never a refusal, because an unattended nightly run must still produce
 a backup. A data directory the ignore file has cut into pieces gets a **stronger** warning
-instead, in one of two strengths, and the fix in both cases is to remove the rule:
+instead, in one of three strengths — each says only what the exclusion actually proves,
+and the fix in every case is to remove the rule:
 
-- the exclusion hits `PG_VERSION`, `pg_wal/`, `base/` or `global/` — components a cluster
-  cannot start without — so the restored copy **cannot be opened at all**, which is worse
-  than merely maybe-inconsistent;
-- the exclusion hits only other files (`postmaster.pid`, a log, transient stats), so the
-  copy **may** still open. It is still reported, because a data directory is meant to be
+- the exclusion removes a **marker file** (`PG_VERSION`, `global/pg_control`) or an
+  **entire required directory** (`pg_wal/`, `base/`, `global/`) → the restored copy
+  **cannot be opened at all**, which is worse than merely maybe-inconsistent;
+- the exclusion takes paths from **inside** one of those directories without removing it
+  → it **may** prevent the copy opening, and the warning names the directory. Some of
+  what lives there is disposable (`pg_wal/archive_status/*.done`, for instance) and some
+  is load-bearing; nothing in a backup tool can tell which you cut, so it does not
+  pretend to;
+- the exclusion hits only other files (`postmaster.pid`, a log, transient stats) → the
+  copy **may still open**. Still reported, because a data directory is meant to be
   archived whole and `verify` cannot tell you whether what went missing mattered.
 
 ## Minimal recovery profile (`--pg-filter` / `--pg-exclude-table-data`)

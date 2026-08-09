@@ -32,6 +32,14 @@ export interface GbrainEngineInfo {
    * The raw `database_path` when it is RELATIVE, in which case its location is NOT
    * knowable from here — see detectGbrainEngine. Never set together with `dataPath`;
    * exposed so a caller can quote the configured value while declining to resolve it.
+   *
+   * SHOWING THE RAW VALUE IS DELIBERATE, and is not a widening of the privacy boundary
+   * (raised in review and rejected on the maintainer's call). It is a filesystem path —
+   * the same category `dataPath` already returns — and an operator told only "your store
+   * path is relative and I cannot resolve it", without being shown WHICH path, has been
+   * handed a warning they cannot act on. The boundary that matters is unchanged: `engine`
+   * and `database_path` are the only fields read, and a verdict plus a path is all that
+   * leaves this module.
    */
   relativeDataPath?: string;
 }
@@ -182,15 +190,45 @@ async function confirmDataDir(absDir: string): Promise<boolean> {
 }
 
 /**
- * Top-level entries a PostgreSQL cluster cannot start without. Deliberately a SHORT,
- * uncontroversial floor rather than an attempt at the full layout: the two markers, plus
- * the two directories holding the actual relations (`global/` carries `pg_control`).
- * Excluding any of these makes "will not open" a fact; excluding `postmaster.pid`, a log
- * file or transient stats does not, and must not be reported as though it did (review
- * round 2). Erring short is the safe direction — an omission here downgrades a warning
- * from certain to hedged, never the reverse.
+ * Directories a PostgreSQL cluster cannot start without. Deliberately a SHORT,
+ * uncontroversial floor rather than an attempt at the full layout: the WAL, and the two
+ * directories holding the actual relations.
  */
-const REQUIRED_COMPONENTS = new Set([PG_VERSION, PG_WAL, 'base', 'global']);
+const REQUIRED_DIRS = new Set([PG_WAL, 'base', 'global']);
+
+/**
+ * Single files whose absence alone stops a cluster starting, relative to the store root.
+ * These are the only paths where losing ONE entry is by itself decisive.
+ */
+const MARKER_FILES = new Set([PG_VERSION, 'global/pg_control']);
+
+/**
+ * How much damage one excluded path does to a store. THREE levels, because the evidence
+ * comes in three strengths and the wording has to match each (review round 3 — the third
+ * appearance of the same over-claiming reflex, closed properly rather than narrowly):
+ *
+ *   'fatal'   — a marker FILE is gone, or an ENTIRE required directory is. Nothing opens
+ *               without these, so "cannot be opened at all" is a fact.
+ *   'partial' — paths were taken from INSIDE a required directory without removing it.
+ *               Some of what lives in `pg_wal/`, `base/` or `global/` is disposable
+ *               (`pg_wal/archive_status/*.done` is the canonical example — a cluster
+ *               starts fine without those) and some is load-bearing, and NOTHING here can
+ *               tell which was cut. So: "may prevent it opening", naming the component.
+ *   'none'    — `postmaster.pid`, a log, transient stats. Reportable, not decisive.
+ *
+ * Deliberately NOT an enumeration of disposable paths. That list is long, version-
+ * dependent, and a single wrong entry errs in the dangerous direction — silently
+ * downgrading a fatal exclusion. Keying on what is provably decisive instead means the
+ * uncertain middle stays uncertain, which is the honest place for it.
+ */
+type ExclusionImpact = 'fatal' | 'partial' | 'none';
+
+/** Classify one excluded path (store-relative) against the layout above. */
+const classifyExclusion = (inner: string): ExclusionImpact => {
+  if (MARKER_FILES.has(inner)) return 'fatal'; // a decisive single file
+  if (REQUIRED_DIRS.has(inner)) return 'fatal'; // the WHOLE directory pruned
+  return REQUIRED_DIRS.has(inner.split('/', 1)[0]) ? 'partial' : 'none';
+};
 
 /** One PostgreSQL data directory found at or under a scanned source root. */
 export interface PgDataDirFinding {
@@ -201,23 +239,19 @@ export interface PgDataDirFinding {
    * archive. 0 = the whole store is archived (the ordinary case).
    */
   excludedInside: number;
-  /**
-   * Of those, how many fall in a REQUIRED_COMPONENTS entry. Above 0 is what licenses the
-   * certain "cannot be opened at all" wording; `excludedInside` alone only licenses "may
-   * not be openable".
-   */
-  excludedRequired: number;
+  /** Of those, how many are 'fatal' — the only count that licenses a certainty. */
+  excludedFatal: number;
+  /** Of those, how many are 'partial' — licenses "may prevent it opening", nothing more. */
+  excludedPartial: number;
+  /** Required directories a 'partial' exclusion reached into, named in that warning. */
+  touchedComponents: string[];
 }
 
 /** A path that lies strictly INSIDE `dir` (`''` = the scan root, so everything is inside it). */
 const strictlyUnder = (p: string, dir: string): boolean => (dir === '' ? p.length > 0 : p.startsWith(`${dir}/`));
 
-/** Is `p` (relative to the scan root) a required component of the store at `dir`, or inside one? */
-const hitsRequiredComponent = (p: string, dir: string): boolean => {
-  const inner = dir === '' ? p : p.slice(dir.length + 1);
-  const firstSegment = inner.split('/', 1)[0];
-  return REQUIRED_COMPONENTS.has(firstSegment);
-};
+/** A scan-root-relative path, re-expressed relative to the store at `dir`. */
+const innerPath = (p: string, dir: string): string => (dir === '' ? p : p.slice(dir.length + 1));
 
 /**
  * PostgreSQL data directories at or under `rootAbs`.
@@ -282,10 +316,17 @@ export async function findPgDataDirs(
   for (const rel of candidates.sort()) {
     if (!(await confirmDataDir(rel ? join(rootAbs, rel) : rootAbs))) continue;
     const inside = listing ? listing.excluded.filter((p) => strictlyUnder(p, rel)) : [];
+    const classified = inside.map((p) => {
+      const inner = innerPath(p, rel);
+      return { inner, impact: classifyExclusion(inner) };
+    });
+    const touched = new Set(classified.filter((c) => c.impact === 'partial').map((c) => c.inner.split('/', 1)[0]));
     findings.push({
       rel,
       excludedInside: inside.length,
-      excludedRequired: inside.filter((p) => hitsRequiredComponent(p, rel)).length,
+      excludedFatal: classified.filter((c) => c.impact === 'fatal').length,
+      excludedPartial: classified.filter((c) => c.impact === 'partial').length,
+      touchedComponents: [...touched].sort(),
     });
   }
   return findings;
@@ -332,28 +373,43 @@ export const pgDataDirCopyWarning = (sourceLabel: string, rel: string): string =
  * pre-fix code silently swallowed, because the excluded marker was the very thing
  * detection was looking for. Quiescing gbrain does not help here; removing the rule does.
  *
- * TWO STRENGTHS, because the certainty has to be earned (review round 2). Excluding
- * `PG_VERSION`, `pg_wal/`, `base/` or `global/` makes "will not open" a fact. Excluding
- * `postmaster.pid`, a log, or transient stats does not — that copy may well be fine, and
- * claiming otherwise is the same over-reach the hedging round already corrected once. The
- * split is on REQUIRED_COMPONENTS; when in doubt the wording degrades to "may", never up.
+ * THREE STRENGTHS, because the certainty has to be earned and the evidence arrives in
+ * three grades (review rounds 2 and 3 — see ExclusionImpact for the classification and
+ * for why enumerating disposable paths would have been the wrong fix):
+ *
+ *   fatal   — a marker file or a whole required directory is gone: "cannot be opened at
+ *             all", stated flatly, because it is.
+ *   partial — paths taken from inside `pg_wal/`, `base/` or `global/`: "MAY prevent the
+ *             restored copy from opening", naming the component, because some of what
+ *             lives there is disposable and nothing here can tell what was cut.
+ *   none    — nothing required was touched: reportable, hedged to "may still open".
+ *
+ * When in doubt the wording degrades, never escalates.
  */
-export const pgDataDirTruncatedWarning = (
-  sourceLabel: string,
-  rel: string,
-  excludedInside: number,
-  excludedRequired: number,
-): string => {
+export const pgDataDirTruncatedWarning = (sourceLabel: string, finding: PgDataDirFinding): string => {
+  const { rel, excludedInside, excludedFatal, excludedPartial, touchedComponents } = finding;
   const head =
     `"${storeLabel(sourceLabel, rel)}" is a PostgreSQL data directory (gbrain's PGLite store is one) and a ` +
     `.cipherbrainignore rule keeps ${excludedInside} path(s) INSIDE it out of this snapshot`;
   const tail = `Remove the ignore rule that matches inside this directory, or point --dir somewhere that does not contain it.`;
-  return excludedRequired > 0
-    ? `${head}, ${excludedRequired} of them in a component a cluster cannot start without ` +
-        `(${[...REQUIRED_COMPONENTS].join(', ')}). A data directory is only usable whole: this is not the "maybe ` +
-        `inconsistent" risk of copying a live cluster, it is a copy that cannot be opened at all, and verify will ` +
-        `still pass on it. ${tail}`
-    : `${head}. None of them is a component a cluster cannot start without, so the copy may still open — but a ` +
-        `data directory is meant to be archived whole, and verify cannot tell you whether what is missing ` +
-        `mattered. ${tail}`;
+  if (excludedFatal > 0) {
+    return (
+      `${head}, ${excludedFatal} of them removing a marker file or an entire directory a cluster cannot start ` +
+      `without (${PG_VERSION}, ${[...REQUIRED_DIRS].join('/, ')}/). A data directory is only usable whole: this is ` +
+      `not the "maybe inconsistent" risk of copying a live cluster, it is a copy that cannot be opened at all, and ` +
+      `verify will still pass on it. ${tail}`
+    );
+  }
+  if (excludedPartial > 0) {
+    return (
+      `${head}, ${excludedPartial} of them from inside ${touchedComponents.map((c) => `${c}/`).join(' and ')} — a ` +
+      `directory the cluster needs, though not everything in it is load-bearing. Removing paths from inside it MAY ` +
+      `prevent the restored copy from opening, and nothing here can tell whether what you cut was disposable. ` +
+      `verify will pass either way. ${tail}`
+    );
+  }
+  return (
+    `${head}. None of them is inside a component a cluster needs, so the copy may still open — but a data ` +
+    `directory is meant to be archived whole, and verify cannot tell you whether what is missing mattered. ${tail}`
+  );
 };

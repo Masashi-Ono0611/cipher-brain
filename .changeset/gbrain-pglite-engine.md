@@ -26,9 +26,10 @@ always rescues such a copy, and `verify` cannot tell you either way, because the
 ciphertext is well-formed regardless. It is a warning and never a refusal, so an
 unattended nightly backup is never blocked by it, and it reaches both the CLI run summary
 and the MCP `warnings` array. A store that a `.cipherbrainignore` rule has cut into pieces
-gets a stronger warning of its own — stated as a certainty when the excluded paths hit
-something a cluster cannot start without (`PG_VERSION`, `pg_wal/`, `base/`, `global/`),
-and hedged when they do not.
+gets a stronger warning of its own, in whichever of three strengths the exclusion actually
+earns: a certainty when it removes a marker file or a whole required directory, a
+component-naming "this may stop it opening" when it only reaches inside one, and a hedge
+when it touches nothing a cluster needs.
 
 Two limits are stated rather than glossed. Without a `.cipherbrainignore` the search
 reads the source root and one level below it (with one, the walk has already happened and

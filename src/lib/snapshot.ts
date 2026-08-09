@@ -680,11 +680,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
       // reported in the same sentence.
       if (kind === 'dir') {
         for (const store of await findPgDataDirs(abs, scanned)) {
-          warn(
-            store.excludedInside > 0
-              ? pgDataDirTruncatedWarning(abs, store.rel, store.excludedInside, store.excludedRequired)
-              : pgDataDirCopyWarning(abs, store.rel),
-          );
+          warn(store.excludedInside > 0 ? pgDataDirTruncatedWarning(abs, store) : pgDataDirCopyWarning(abs, store.rel));
         }
       }
       // content_digest AFTER the tar, computed from the ARCHIVE'S OWN bytes (extract to a

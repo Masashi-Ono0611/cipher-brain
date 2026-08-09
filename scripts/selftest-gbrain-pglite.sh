@@ -45,10 +45,16 @@ with_timeout() {
 # always carries, plus a plausible file or two. Keyed on the markers rather than the
 # directory's name, because the name is whatever the operator put in `database_path`.
 make_pglite_store() {
-  mkdir -p "$1/pg_wal" "$1/base" "$1/global"
+  mkdir -p "$1/pg_wal/archive_status" "$1/base" "$1/global"
   printf '17\n' > "$1/PG_VERSION"
   printf '# synthetic fixture\n' > "$1/postgresql.conf"
   printf 'fixture-wal-segment\n' > "$1/pg_wal/000000010000000000000001"
+  # archive_status holds disposable bookkeeping — a cluster starts without it. Present so
+  # the "partial hit inside a required directory" case has a realistic thing to exclude.
+  printf '' > "$1/pg_wal/archive_status/000000010000000000000001.done"
+  # pg_control is the other decisive single file (alongside PG_VERSION); losing it alone
+  # stops a cluster, which is why the classifier treats it separately from the rest of global/.
+  printf 'fixture-control\n' > "$1/global/pg_control"
 }
 
 # The exact sentence fragments each wizard branch is required to print. Grepped as
@@ -62,9 +68,12 @@ WARN_MARK="is a PostgreSQL data directory"
 # one sentence (multi-model review) — a partial copy cannot be opened at all, whereas a
 # live-copy may merely be inconsistent.
 TRUNCATED_MARK="INSIDE it out of this snapshot"
-# Within the truncated warning, the two strengths. Certainty is earned only when what was
-# excluded is a component a cluster cannot start without (review round 2).
+# Within the truncated warning, THREE strengths — each says exactly what the evidence
+# supports, no more (review rounds 2 and 3). Certainty needs a marker file or a whole
+# required directory gone; a partial hit inside one only licenses "may"; anything else is
+# reportable but hedged.
 TRUNCATED_CERTAIN_MARK="cannot be opened at all"
+TRUNCATED_PARTIAL_MARK="MAY prevent the restored copy from opening"
 TRUNCATED_HEDGED_MARK="the copy may still open"
 NOT_COVERED_MARK="NONE of the paths you gave above covers it"
 COVERED_MARK="The path(s) you gave above cover it"
@@ -439,7 +448,45 @@ grep -qF "$TRUNCATED_HEDGED_MARK" "$TMP/snap-cut-minor.log" \
 if grep -qF "$TRUNCATED_CERTAIN_MARK" "$TMP/snap-cut-minor.log"; then
   echo "[FAIL] excluding only postmaster.pid and a log claimed the copy 'cannot be opened at all' — certainty must be earned by hitting a required component"; cat "$TMP/snap-cut-minor.log"; exit 1
 fi
+if grep -qF "$TRUNCATED_PARTIAL_MARK" "$TMP/snap-cut-minor.log"; then echo "[FAIL] a non-essential exclusion was reported as reaching into a required directory"; cat "$TMP/snap-cut-minor.log"; exit 1; fi
 echo "[PASS] excluding only non-essential files (postmaster.pid, log/) is reported, but HEDGED — the certain wording is reserved for required components"
+
+# THE MIDDLE STRENGTH (review round 3). "First segment is pg_wal/base/global" was too
+# coarse: pg_wal/archive_status/*.done is disposable and a cluster starts without it, so
+# claiming "cannot be opened at all" there was the same over-claiming reflex a third time.
+# Certainty now needs a marker FILE or a WHOLE required directory; a partial hit inside one
+# gets its own wording that names the component and says "MAY". Fixed by making the
+# certainty conditional on evidence rather than by enumerating disposables — that list is
+# long, version-dependent, and errs in the dangerous direction when one entry is wrong.
+FIX_CUT_PARTIAL="$TMP/fix-ignore-cuts-inside-required"; mkdir -p "$FIX_CUT_PARTIAL"
+make_pglite_store "$FIX_CUT_PARTIAL/brain.pglite"
+printf 'brain.pglite/pg_wal/archive_status/\n' > "$FIX_CUT_PARTIAL/.cipherbrainignore"
+cb snapshot --dir "$FIX_CUT_PARTIAL" --out "$TMP/fix-cut-partial.age" > "$TMP/snap-cut-partial.log" 2>&1 \
+  || { echo "[FAIL] snapshotting a store with a partial exclusion inside pg_wal/ failed"; cat "$TMP/snap-cut-partial.log"; exit 1; }
+grep -qF "$TRUNCATED_MARK" "$TMP/snap-cut-partial.log" \
+  || { echo "[FAIL] a partial exclusion inside a required directory was not reported at all"; cat "$TMP/snap-cut-partial.log"; exit 1; }
+grep -qF "$TRUNCATED_PARTIAL_MARK" "$TMP/snap-cut-partial.log" \
+  || { echo "[FAIL] a partial exclusion inside pg_wal/ did not get the middle-strength wording"; cat "$TMP/snap-cut-partial.log"; exit 1; }
+grep -qF "pg_wal/" "$TMP/snap-cut-partial.log" \
+  || { echo "[FAIL] the middle-strength warning does not name the component that was reached into"; cat "$TMP/snap-cut-partial.log"; exit 1; }
+if grep -qF "$TRUNCATED_CERTAIN_MARK" "$TMP/snap-cut-partial.log"; then
+  echo "[FAIL] excluding only pg_wal/archive_status/ (disposable) claimed the copy 'cannot be opened at all'"; cat "$TMP/snap-cut-partial.log"; exit 1
+fi
+if grep -qF "$TRUNCATED_HEDGED_MARK" "$TMP/snap-cut-partial.log"; then
+  echo "[FAIL] a hit inside a required directory was downgraded to the nothing-required wording"; cat "$TMP/snap-cut-partial.log"; exit 1
+fi
+echo "[PASS] a partial exclusion inside pg_wal/ names the component and says MAY — neither the certain nor the nothing-required wording"
+
+# The other half of the new rule: a decisive single FILE. Losing global/pg_control alone
+# stops a cluster, so that IS a certainty even though the rest of global/ is archived.
+FIX_CUT_CONTROL="$TMP/fix-ignore-cuts-pg-control"; mkdir -p "$FIX_CUT_CONTROL"
+make_pglite_store "$FIX_CUT_CONTROL/brain.pglite"
+printf 'brain.pglite/global/pg_control\n' > "$FIX_CUT_CONTROL/.cipherbrainignore"
+cb snapshot --dir "$FIX_CUT_CONTROL" --out "$TMP/fix-cut-control.age" > "$TMP/snap-cut-control.log" 2>&1 \
+  || { echo "[FAIL] snapshotting a store missing global/pg_control failed"; cat "$TMP/snap-cut-control.log"; exit 1; }
+grep -qF "$TRUNCATED_CERTAIN_MARK" "$TMP/snap-cut-control.log" \
+  || { echo "[FAIL] excluding global/pg_control — a decisive single file — did not get the CERTAIN wording"; cat "$TMP/snap-cut-control.log"; exit 1; }
+echo "[PASS] excluding the single file global/pg_control is certain, even though the rest of global/ is archived"
 
 # ---------------------------------------------------------------------------
 # (d) both relay surfaces (#347)

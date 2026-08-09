@@ -20,7 +20,8 @@
 // `RuleID` is extracted back out, so no file path, line number, or match text from
 // gitleaks' report ever reaches the manifest or console (matches the issue's "rule ID・
 // 件数のみ" scope exactly).
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GITLEAKS_BIN } from './config.js';
@@ -97,13 +98,21 @@ export async function assertGitleaksAvailable(): Promise<void> {
 // corrupt --config, a gitleaks crash) — "leaks were found" is instead read back out of
 // the JSON report body, so it can never be confused with a genuine invocation error.
 export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
-  const reportDir = await mkdtemp(join(tmpdir(), 'cipher-brain-gitleaks-'));
-  const reportPath = join(reportDir, 'report.json');
   // Registered for the SAME reason snapshot() registers its stage dir: the finally below
-  // does not run when a signal tears the process down mid-scan. Cleared in that finally so
-  // a LATER signal cannot try to remove a path that is already gone (or, worse, one a
-  // subsequent scan has since reused).
+  // does not run when a signal tears the process down mid-scan.
+  //
+  // mkdtempSync (not the async mkdtemp) so dir-creation and the registration happen in ONE
+  // tick — the identical reasoning, and identical fix, snapshot() already spells out for
+  // its plaintext stage dir. An `await` between them yields to the event loop, and a signal
+  // landing in that gap fires the handler while ACTIVE_SCAN_REPORT_DIR is still null,
+  // leaving the just-created directory behind. Not theoretical: holding a SIGINT inside that
+  // window leaked the directory on every one of 5 runs with the async call and none with this
+  // one, and unheld it still surfaced about once in 30 unmodified runs locally — which is
+  // what took down a CI cell of the SIGINT regression test in scripts/selftest.sh, whose
+  // "cipher-brain-*" leftover glob counts this directory too.
+  const reportDir = mkdtempSync(join(tmpdir(), 'cipher-brain-gitleaks-'));
   setActiveScanReportDir(reportDir);
+  const reportPath = join(reportDir, 'report.json');
   try {
     await run(GITLEAKS_BIN, [
       'dir',
@@ -139,8 +148,25 @@ export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
       .map(([rule_id, count]) => ({ rule_id, count }))
       .sort((a, b) => a.rule_id.localeCompare(b.rule_id));
   } finally {
-    setActiveScanReportDir(null);
+    // Remove FIRST, deregister only once the directory is actually gone — the mirror image
+    // of the create-then-register ordering above, and the same order snapshot()'s own
+    // finally uses (`await rm(stage)` then `setActiveStage(null)`). Clearing the slot
+    // before the await left the second half of the same gap: a signal arriving during the
+    // rm found nothing tracked and left the half-removed directory behind. A signal landing
+    // DURING the rm is now handled rather than missed: the dir is still tracked, and the
+    // handler's forceRmSync is idempotent against a partially-removed tree. Nothing yields
+    // between the rm resolving and this clear, so the "tracked but already gone" state the
+    // old ordering was avoiding lasts no turns at all.
+    //
+    // What this does NOT fix, because it predates and outlives this function: the guard
+    // holds ONE slot per resource kind, so it is only correct for one scan at a time.
+    // snapshot() satisfies that — it scans its --dir components sequentially — but mcp.ts is
+    // a long-lived server that can have two snapshot_now calls in flight, where the second
+    // scan's registration evicts the first and the first scan's clear pulls the slot out
+    // from under the second. Every other slot in signal-guard.ts has the same shape, so the
+    // fix belongs there (a per-path set) rather than here.
     await rm(reportDir, { recursive: true, force: true });
+    setActiveScanReportDir(null);
   }
 }
 

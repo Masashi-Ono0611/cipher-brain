@@ -33,6 +33,23 @@ let ACTIVE_RESTORE_OUT_DIR_PREEXISTED = false; // whether restore() created out-
 let ACTIVE_RESTORE_SCRATCH_DIR: string | null = null;
 let ACTIVE_SCAN_REPORT_DIR: string | null = null; // secrets-scan's gitleaks report temp dir while a scan is in flight
 let ACTIVE_VERIFY_SCRATCH_DIR: string | null = null; // verify --level remote/drill's pulled-ciphertext (+, for drill, decrypted-plaintext) scratch dir, for its ENTIRE lifetime
+// The MCP server's own fetch dirs (src/mcp.ts): verify_restore and restore_now each pull
+// a locator into a private temp dir (`pulled.age`), and restore_now additionally copies a
+// caller-given `file` into one before pinning it (`given.age`). Ciphertext, not plaintext
+// — lower stakes than the stage dir above — but the finally-blocks that erase them are
+// skipped by a signal exactly the same way, and the process they live in is a LONG-LIVED
+// server: an operator Ctrl-C or a launchd/shutdown SIGTERM is the ordinary way it ends,
+// not an exceptional one.
+//
+// A Set rather than a scalar slot, unlike every field above it. Those all belong to
+// one-shot CLI invocations that hold at most one such resource at a time; this server can
+// have two verify_restore calls (or a verify_restore and a restore_now) in flight at once
+// — the request handlers interleave, only captureCall()'s console capture is serialized —
+// so a single slot would let the second call's registration silently orphan the first
+// call's dir, and the first call's finally then deregister a dir belonging to the second.
+// That is the same "two unrelated resources must not share one slot" reasoning that gave
+// ACTIVE_RESTORE_SCRATCH_DIR its own field, applied WITHIN one resource kind.
+const ACTIVE_MCP_FETCH_DIRS = new Set<string>();
 let SIGNAL_GUARD_INSTALLED = false;
 
 // fs.rmSync({force: true}) only swallows ENOENT (already gone) — it does NOT retry past
@@ -125,6 +142,18 @@ export const setActiveRestoreScratchDir = (v: string | null): void => {
 export const setActiveVerifyScratchDir = (v: string | null): void => {
   ACTIVE_VERIFY_SCRATCH_DIR = v;
 };
+// mcp.ts registers a fetch dir in the SAME tick it is created (mkdtempSync, no await in
+// between — an `await mkdtemp()` would leave the directory on disk but untracked for as
+// long as the continuation is queued) and deregisters it only AFTER its own `rm` has
+// actually finished removing it. Both halves matter: registering late leaves a window
+// where a signal finds an untracked dir, and deregistering early leaves one where it
+// finds a tracked dir nobody will erase.
+export const addActiveMcpFetchDir = (dir: string): void => {
+  ACTIVE_MCP_FETCH_DIRS.add(dir);
+};
+export const removeActiveMcpFetchDir = (dir: string): void => {
+  ACTIVE_MCP_FETCH_DIRS.delete(dir);
+};
 
 export function installStageSignalGuard(): void {
   if (SIGNAL_GUARD_INSTALLED) return;
@@ -190,6 +219,12 @@ export function installStageSignalGuard(): void {
         forceRmSync(ACTIVE_VERIFY_SCRATCH_DIR);
         ACTIVE_VERIFY_SCRATCH_DIR = null;
       }
+      // Every MCP fetch dir currently in flight (see ACTIVE_MCP_FETCH_DIRS above) — a set,
+      // so concurrent tool calls are each erased rather than only whichever registered
+      // last. Always safe to erase outright: each one is a directory mcp.ts mkdtempSync'd
+      // itself, never a caller-owned path.
+      for (const dir of ACTIVE_MCP_FETCH_DIRS) forceRmSync(dir);
+      ACTIVE_MCP_FETCH_DIRS.clear();
       // adding a listener suppressed Node's default auto-terminate — remove only our
       // own handler (not any unrelated listener) and re-raise so the process exits
       // with the correct signal code instead of hanging.

@@ -20,7 +20,8 @@
 // env escape hatch the CLI honors is deliberately NOT honored here, so an
 // agent can never spend without saying so in the call itself.
 
-import { stat, readFile, mkdtemp, rm, copyFile } from 'node:fs/promises';
+import { stat, readFile, rm, copyFile } from 'node:fs/promises';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -68,6 +69,7 @@ import { wallet } from './lib/wallet.js';
 import { SCAN_SECRETS_MODES, isScanSecretsMode } from './lib/secrets-scan.js';
 import { exists, requireFile, MissingPathError, sha256, errMsg } from './lib/util.js';
 import { annotateErrorMessage, matchErrorCode } from './lib/errors.js';
+import { installStageSignalGuard, addActiveMcpFetchDir, removeActiveMcpFetchDir } from './lib/signal-guard.js';
 import { didYouMean, nearestName } from './lib/suggest.js';
 import type { CliOptions } from './lib/types.js';
 
@@ -205,6 +207,39 @@ async function requireCallerFile(file: string): Promise<void> {
     if (e instanceof MissingPathError) throw new ToolError('ERR_INVALID_INPUT', e.message);
     throw e;
   }
+}
+
+// verify_restore and restore_now each stage bytes in a private temp dir: an artifact
+// pulled by locator (`pulled.age`), or a caller-given `file` copied in (`given.age`) so
+// the sha256 pin applies to a path nothing else can swap underneath it. Both erase it in
+// a finally-block — which a signal skips, and unlike the CLI's one-shot runs this server
+// is LONG-LIVED: a launchd/shutdown SIGTERM or an operator Ctrl-C is how it ordinarily
+// ends, not an exceptional event. Ciphertext rather than plaintext, so this is a smaller
+// leak than the snapshot stage dir, but the same class of one.
+//
+// These two helpers are the ONLY way those dirs are created and removed, so the ordering
+// the signal guard depends on cannot drift from one call site to the next:
+//   - mkdtempSync, then register, with no await between them. An `await mkdtemp()` leaves
+//     the directory on disk but untracked for as long as its continuation sits queued.
+//   - rm FIRST, deregister only once it is gone. Deregistering first leaves a window
+//     where a signal finds nothing to erase and the finally never finishes. If the rm
+//     itself fails (EACCES under the dir, say) the entry deliberately STAYS registered:
+//     the handler's forceRmSync chmods and retries, so a signal is the one path left
+//     that can still clear it.
+// installStageSignalGuard() is idempotent. The lib calls that follow (pull/verify/restore)
+// install it themselves too, but only once they are REACHED — by then the dir has already
+// existed for the whole fetch.
+function makeFetchDir(): string {
+  installStageSignalGuard();
+  const dir = mkdtempSync(join(tmpdir(), 'cipher-brain-mcp-'));
+  addActiveMcpFetchDir(dir);
+  return dir;
+}
+
+async function discardFetchDir(dir: string | null): Promise<void> {
+  if (!dir) return;
+  await rm(dir, { recursive: true, force: true });
+  removeActiveMcpFetchDir(dir);
 }
 
 function structuredErr(errObj: unknown): CallToolResult {
@@ -1538,7 +1573,7 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
         if (!isStr(locator)) throw new ToolError('ERR_INVALID_INPUT', 'locator must be a string');
         requireBackend(backend, 'backend (required with locator)');
       }
-      tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-mcp-'));
+      tdir = makeFetchDir();
       target = join(tdir, 'pulled.age');
       // pull() natively understands from_locator_file — the SAME parsing + pin
       // application as the CLI recovery path (src/lib/pushpull.ts) — and fills
@@ -1621,7 +1656,7 @@ async function handleVerifyRestore(args: ToolArgs): Promise<CallToolResult> {
         : {}),
     });
   } finally {
-    if (tdir) await rm(tdir, { recursive: true, force: true });
+    await discardFetchDir(tdir);
   }
 }
 
@@ -1713,7 +1748,7 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
         if (!isStr(locator)) throw new ToolError('ERR_INVALID_INPUT', 'locator must be a string');
         requireBackend(backend, 'backend (required with locator)');
       }
-      tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-mcp-'));
+      tdir = makeFetchDir();
       target = join(tdir, 'pulled.age');
       // pull() natively understands from_locator_file and applies the sha256 pin
       // (explicit or read from the locator file) BEFORE the fetched bytes are
@@ -1758,7 +1793,7 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
       // and restore that copy — never re-open the caller-given path a second time
       // (a hash-then-reopen would leave a window where the file at that path
       // could change between the two operations; copying once removes it).
-      tdir = await mkdtemp(join(tmpdir(), 'cipher-brain-mcp-'));
+      tdir = makeFetchDir();
       const pinnedCopy = join(tdir, 'given.age');
       await copyFile(file, pinnedCopy);
       // The authenticity sidecar has to come WITH it. restore() looks for "<in>.minisig"
@@ -1821,7 +1856,7 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
       ...(res.warnings.length ? { warnings: res.warnings } : {}),
     });
   } finally {
-    if (tdir) await rm(tdir, { recursive: true, force: true });
+    await discardFetchDir(tdir);
   }
 }
 

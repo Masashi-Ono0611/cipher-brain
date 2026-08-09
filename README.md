@@ -29,8 +29,9 @@ the network's endowment keeps the bytes replicated with no server of yours to
 keep alive. Recovery is deliberately minimal: a fresh machine restores with
 just the locator and your identity file — the pull is a plain HTTP gateway
 fetch, no wallet, no npm package. (*gbrain* is the second brain this was built
-for: a local Postgres + `~/.gbrain` knowledge store that re-synthesizes
-nightly.)
+for: a local knowledge store under `~/.gbrain` that re-synthesizes nightly. It
+runs on either of two engines — **PGLite**, its zero-config default, which keeps
+the whole database as a directory on disk, or a **Postgres** server.)
 
 This repo is the **Cipher layer** of Cipher Brain: the part that turns your
 growing second brain into a single encrypted artifact. Storage is a pluggable
@@ -49,9 +50,9 @@ Arweave via the **`turbo`** backend is the recommended mainline; a local
 - Not a key management service — there is no server holding your keys. The
   identity file is yours to keep offline; lose it and the snapshots are
   unrecoverable (see Threat model below).
-- Not gbrain itself — gbrain is the second-brain product (Postgres + `~/.gbrain`)
-  that produces the plaintext. cipher-brain only ever touches it long enough to
-  encrypt.
+- Not gbrain itself — gbrain is the second-brain product (`~/.gbrain`, on PGLite
+  or Postgres) that produces the plaintext. cipher-brain only ever touches it
+  long enough to encrypt.
 - Not a crypto wallet or exchange integration — an Arweave upload goes through a
   bundler ([Turbo](https://ardrive.io)) paid with **ETH/USDC**; no native AR
   purchase and no exchange account are needed (see [Backends](#backends)).
@@ -75,7 +76,8 @@ key**. It can produce snapshots forever but can never read them back: the
 only** — that is the property this design guarantees.
 
 Three honest caveats, since this is a security tool. (1) That box also *runs* gbrain,
-so the live plaintext (its Postgres + `~/.gbrain`) is on it regardless — cipher-brain
+so the live plaintext (`~/.gbrain`, plus a Postgres server if that is the engine in
+use) is on it regardless — cipher-brain
 protects the snapshots you ship off-box, not the source machine; keep it
 full-disk-encrypted. (2) A box that can rewrite `recipient.txt` (or inject an extra
 `--recipient`) could silently re-key *future* snapshots to an attacker while your own
@@ -270,6 +272,13 @@ cipher-brain keygen                 # one-time: creates ~/.cipher-brain/{identit
 # encrypt a gbrain snapshot (pg_dump + the ~/.gbrain dir) to your PUBLIC key.
 # Add a second --recipient (an OFFLINE backup public key) so losing one identity
 # never loses the brain — single-key snapshots warn on stderr. See MANAGEMENT.md.
+#
+# This example is a POSTGRES-backed gbrain. On PGLite (gbrain's default engine)
+# there is no server: the database is a directory at the configured database_path,
+# so drop --pg and let --dir cover that path. snapshot then warns that a running
+# cluster's files are being copied without pg_dump's point-in-time consistency, so
+# the copy may be inconsistent — stop gbrain first when you can. See MANAGEMENT.md
+# "Avoid the write window", which also states how deep the detection looks.
 cipher-brain snapshot \
   --pg "postgres://user@localhost:5432/gbrain" \
   --dir ~/.gbrain \
@@ -293,6 +302,11 @@ cipher-brain pull --locator "$TX" --backend turbo --out got.age \
   --wait 1200    # fetch it back, anywhere (a fresh upload takes minutes to hit gateways)
 
 # later, on the machine that holds your PRIVATE identity:
+# (a PGLite brain has nothing to pg_restore — drop --pg and point gbrain at the
+# extracted store directory. If it will not open, gbrain's own
+# "gbrain pglite-repair" targets a torn write-ahead log and is worth trying against
+# the extracted copy, never a live store — no guarantee it fixes every case. See
+# MANAGEMENT.md "Restore runbook".)
 cipher-brain restore \
   --in got.age \
   --out-dir ./restored \

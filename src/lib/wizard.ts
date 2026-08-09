@@ -39,6 +39,7 @@ import { HOME, CONFIG_FILE_PATH, IDENTITY, RECIPIENT, SIGN_IDENTITY, SIGN_RECIPI
 import { keygen, keygenAt } from './keys.js';
 import { askNewPassphrase, wrapIdentity } from './crypt.js';
 import { keygenSignAt } from './minisign.js';
+import { detectGbrainEngine, pathCoveredBy } from './gbrain.js';
 import { PROFILE_NAMES } from './profiles.js';
 import { snapshot } from './snapshot.js';
 import { push, PushPartialSuccessError } from './pushpull.js';
@@ -461,34 +462,83 @@ export async function init(_o: CliOptions): Promise<void> {
         throw new Error(`unknown profile "${profileChoice}" — valid choices: none, ${PROFILE_NAMES.join(', ')}`);
       }
 
-      // gbrain (this project's headline use case — README/MANAGEMENT.md) keeps its
-      // ACTUAL data (pages, embeddings, timeline, graph) in Postgres — the ~/.gbrain
-      // directory above is only its config/cache. There is no gbrain-specific profile
-      // (PROFILE_NAMES), so the natural-looking answer above ("none" + ~/.gbrain)
-      // silently backs up only the config and never the real data (issue #84). Only
-      // ask when a local gbrain config is actually detected: everyone else's flow is
-      // completely unchanged, and init already documents that anything beyond its
-      // opinionated fast path is driven by hand (see requireTTY's own message above).
+      // gbrain (this project's headline use case — README/MANAGEMENT.md) stores its
+      // ACTUAL data (pages, embeddings, timeline, graph) in one of TWO engines, and
+      // which one decides what a useful backup even looks like. On Postgres the
+      // ~/.gbrain directory is only config/cache, so the natural-looking answer above
+      // ("none" + ~/.gbrain) silently backs up the config and never the real data
+      // (issue #84). On PGLite — gbrain's zero-config DEFAULT — the opposite is true:
+      // the data IS a directory on disk and there is no server to dump, so the same
+      // prose sends the user looking for a Postgres that does not exist and the --pg
+      // default of yes hands them a pg_dump failure (issue #367). Only ask when a local
+      // gbrain config is actually detected: everyone else's flow is completely
+      // unchanged, and init already documents that anything beyond its opinionated fast
+      // path is driven by hand (see requireTTY's own message above).
       const gbrainConfigPath = join(homedir(), '.gbrain', 'config.json');
       if (await exists(gbrainConfigPath)) {
-        console.log(`\nDetected a gbrain config at ${gbrainConfigPath} — gbrain's actual data (pages, embeddings,`);
-        console.log('timeline, graph) lives in Postgres, not in that directory alone. Requires pg_dump/pg_restore');
-        console.log('on PATH — see README "Prerequisites for --pg".');
-        if (await askYesNo('Include a Postgres database dump (--pg) for gbrain in this backup?', true)) {
-          // Default to the CURRENT machine's OS user — local Postgres setups commonly use
-          // peer auth keyed to it (matches README's own --pg examples), so this is a real
-          // guess rather than a literal "you" placeholder nobody's account is ever named
-          // (Fugu review finding: a bare-Enter accept should not likely fail pg_dump).
-          let osUser = 'you';
-          try {
-            osUser = userInfo().username;
-          } catch {
-            /* keep the 'you' fallback */
+        // Reads the engine verdict and, on PGLite, the configured store path — and
+        // nothing else out of config.json, which holds API keys (see detectGbrainEngine's
+        // own doc comment for why that one field is the single deliberate exemption).
+        const gbrain = await detectGbrainEngine(gbrainConfigPath);
+        if (gbrain.engine === 'pglite') {
+          console.log(`\nDetected a gbrain config at ${gbrainConfigPath} — engine: PGLite (gbrain's default).`);
+          console.log('PGLite keeps the whole database as a directory on disk, so there is no Postgres server to');
+          console.log('dump: backing up that directory IS backing up the brain. No --pg is needed, and it is not');
+          console.log('offered here.');
+          // Answer the coverage question against the path the CONFIG names, never against
+          // an assumed ~/.gbrain (review round 1). A brain configured at, say, /srv/gbrain
+          // would otherwise be reported as covered by a backup containing no database at
+          // all — the very mistake #367 exists to remove, wearing new clothes.
+          //
+          // Three outcomes, and only the first one is a coverage claim. A judgement is
+          // made ONLY when the config gives an absolute path; otherwise this says it
+          // cannot tell (review round 2). Half-knowing where the store is must not
+          // produce a confident answer — that is how the original bug happened.
+          if (gbrain.dataPath) {
+            console.log(`\nIts config records the store at:\n  ${gbrain.dataPath}`);
+            if (pathCoveredBy(gbrain.dataPath, snapshotOpts.dirs)) {
+              console.log('The path(s) you gave above cover it, so the snapshot will contain the database.');
+            } else {
+              console.log('NONE of the paths you gave above covers it — as answered, this backup would NOT contain');
+              console.log('the database. Re-run init with that path included, or add it as another --dir when you');
+              console.log('drive "cipher-brain snapshot" by hand.');
+            }
+          } else if (gbrain.relativeDataPath) {
+            console.log(`\nIts config records the store as a RELATIVE path:\n  ${gbrain.relativeDataPath}`);
+            console.log('gbrain turns that into a real location using the directory it is RUN from, which this');
+            console.log('wizard cannot observe — so the store could be almost anywhere and no coverage check here');
+            console.log('would mean anything. Confirm yourself that the path(s) you gave above cover it. (Making');
+            console.log('database_path absolute in the config removes this ambiguity for every tool, not just this');
+            console.log('one.)');
+          } else {
+            console.log('\nIts config does not record a database_path, so this wizard cannot tell where the store');
+            console.log('actually lives and will not guess. Check yourself that the path(s) you gave above cover');
+            console.log("gbrain's data directory — a backup that misses it looks completely successful.");
           }
-          // percent-encode: a username with '@', ':', '/', or a space would otherwise
-          // corrupt the URI's own authority parsing (Fugu review finding).
-          const defaultPg = `postgres://${encodeURIComponent(osUser)}@localhost:5432/gbrain`;
-          snapshotOpts.pg = await askLine(`Postgres connection string [${defaultPg}]`, defaultPg);
+          console.log('\nOne caveat this backup cannot solve for you: PostgreSQL (which is what PGLite is) does not');
+          console.log('support file-level copies of a running cluster, so a directory copied while gbrain is');
+          console.log('writing may be internally inconsistent. Stop gbrain for the duration of the snapshot when');
+          console.log('you can. snapshot warns whenever it sees such a store.');
+        } else {
+          console.log(`\nDetected a gbrain config at ${gbrainConfigPath} — gbrain's actual data (pages, embeddings,`);
+          console.log('timeline, graph) lives in Postgres, not in that directory alone. Requires pg_dump/pg_restore');
+          console.log('on PATH — see README "Prerequisites for --pg".');
+          if (await askYesNo('Include a Postgres database dump (--pg) for gbrain in this backup?', true)) {
+            // Default to the CURRENT machine's OS user — local Postgres setups commonly use
+            // peer auth keyed to it (matches README's own --pg examples), so this is a real
+            // guess rather than a literal "you" placeholder nobody's account is ever named
+            // (Fugu review finding: a bare-Enter accept should not likely fail pg_dump).
+            let osUser = 'you';
+            try {
+              osUser = userInfo().username;
+            } catch {
+              /* keep the 'you' fallback */
+            }
+            // percent-encode: a username with '@', ':', '/', or a space would otherwise
+            // corrupt the URI's own authority parsing (Fugu review finding).
+            const defaultPg = `postgres://${encodeURIComponent(osUser)}@localhost:5432/gbrain`;
+            snapshotOpts.pg = await askLine(`Postgres connection string [${defaultPg}]`, defaultPg);
+          }
         }
       }
 

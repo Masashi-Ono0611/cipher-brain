@@ -292,15 +292,35 @@ boundary needs aligning.)
 
 **On PGLite, the write window is the whole story.** gbrain's default engine keeps the
 entire database as a directory on disk, so there is no `pg_dump` and nothing gives that
-directory point-in-time consistency: it is tar'd like any other `--dir` while a
-single-writer engine may be mid-write. `snapshot` prints a ⚠ warning (it reaches the
-run summary and the MCP `warnings` array) whenever a source is, or contains, such a
-store — `PG_VERSION` plus `pg_wal/` — but it is a warning and never a refusal, because
-an unattended nightly run must still produce a backup. Stop gbrain for the duration
-when you can; the nightly `--at` default of 03:30 does not do that for you. A copy
-taken mid-write is not detectable by `verify`, whose checks pass on a torn store just
-as they do on a clean one — see the Restore runbook for what to do if one will not
-open.
+directory point-in-time consistency: it is tar'd like any other `--dir` while the engine
+may be mid-write. PostgreSQL — which is what PGLite is — does not support file-level
+copies of a running cluster outside its own backup API, because a copy that spans time
+captures different files at different instants and can tear a page. Crash recovery
+salvages most such copies, but it is not guaranteed to, and an inconsistent copy can
+also open carrying latent damage. Stop gbrain for the duration when you can; the nightly
+`--at` default of 03:30 does not do that for you. `verify` will not tell you either way
+— it checks the ciphertext, which is well-formed regardless — so see the Restore runbook
+for what to do if a restored store will not open.
+
+`snapshot` prints a ⚠ warning (it reaches the run summary and the MCP `warnings` array)
+when a source **is** such a directory, or has one **directly inside it** — the markers
+are `PG_VERSION` plus `pg_wal/`. Two limits worth knowing, both deliberate:
+
+- **How deep it looks.** Without a `.cipherbrainignore`, detection reads the source root
+  and one level below it — enough for `--dir <store>` and for `--dir ~/.gbrain` with the
+  store at the configured `database_path`, and bounded so pointing `--dir` at a large
+  tree does not pay for a full recursive walk to produce an advisory. *With* an ignore
+  file the walk has already happened, so detection is exact at any depth. A store nested
+  deeper than one level under a source with no ignore file is not warned about.
+- **What the markers prove.** They identify a Postgres-format data directory, which is
+  what a PGLite store is — but an ordinary PostgreSQL server's datadir under a `--dir`
+  looks identical, and nothing inside distinguishes the two. The warning says "PostgreSQL
+  data directory" for that reason. The hazard is the same either way.
+
+It is a warning and never a refusal, because an unattended nightly run must still produce
+a backup. The one case that gets a **stronger** warning is a data directory the ignore
+file has cut into pieces: a cluster is only usable whole, so that copy cannot be opened
+at all rather than merely maybe-inconsistent, and the fix is to remove the rule.
 
 ## Minimal recovery profile (`--pg-filter` / `--pg-exclude-table-data`)
 
@@ -391,14 +411,19 @@ not clobber a prior expansion (same no-clobber posture as the outer extract). Pa
 behavior, still there either way as the fallback).
 
 **A restored PGLite store that will not open.** On gbrain's default engine there is no
-`--pg` step: step 4 just extracts the store's directory and you point gbrain at it. If
-it was copied while gbrain was writing (see "Avoid the write window" above) the copy can
-carry a torn write-ahead log, and gbrain fails to open it — upstream's reported signature
-is a `RuntimeError: Aborted()` on connect. That is repairable in place with gbrain's own
-`gbrain pglite-repair`
+`--pg` step: step 4 just extracts the store's directory and you point gbrain at it. If it
+was copied while gbrain was writing (see "Avoid the write window" above) the copy may be
+internally inconsistent — one reported shape is a torn write-ahead log, which upstream
+describes as a `RuntimeError: Aborted()` on connect.
+
+For that shape, gbrain's own `gbrain pglite-repair`
 ([garrytan/gbrain#3901](https://github.com/garrytan/gbrain/pull/3901), shipped in
-v0.42.75.0); run it against the *extracted copy*, never the live store. cipher-brain has
-no equivalent and deliberately adds none — this is gbrain's data format, not ours.
+v0.42.75.0) is worth trying; run it against the *extracted copy*, never the live store.
+Treat it as a thing to try, not a guarantee: it targets the write-ahead log, and not
+every inconsistency a file-level copy can produce is WAL-shaped. If it does not help,
+fall back to an earlier version from `index.tsv` — which is the real argument for keeping
+more than one. cipher-brain has no repair of its own and deliberately adds none; this is
+gbrain's data format, not ours.
 
 ## Verification levels (`quick` / `remote` / `drill`)
 

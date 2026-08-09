@@ -56,7 +56,15 @@ make_pglite_store() {
 PGLITE_BRANCH_MARK="engine: PGLite (gbrain's default)"
 POSTGRES_BRANCH_MARK="lives in Postgres, not in that directory alone"
 PG_PROMPT_MARK="Include a Postgres database dump"
-WARN_MARK="contains a live PGLite data directory"
+WARN_MARK="is a PostgreSQL data directory"
+# The STRONGER warning, for a store an ignore rule has cut into pieces. Distinct from
+# WARN_MARK on purpose: the two describe different hazards and must never collapse into
+# one sentence (multi-model review) — a partial copy cannot be opened at all, whereas a
+# live-copy may merely be inconsistent.
+TRUNCATED_MARK="INSIDE it out of this snapshot"
+NOT_COVERED_MARK="NONE of the paths you gave above covers it"
+COVERED_MARK="The path(s) you gave above cover it"
+UNKNOWN_PATH_MARK="does not record a database_path"
 
 CB_SRC="$TMP/plain-src"; mkdir -p "$CB_SRC"
 printf 'gbrain-pglite-selftest\n' > "$CB_SRC/note.txt"
@@ -79,13 +87,22 @@ DECOY_SECRET="sk-selftest-decoy-DO-NOT-LOG-8f2a1c"
 # (never an interpolated string — see scripts/dev-node-flags.sh on why argv arrays are
 # the only safe shape here). Reset by wizard_case itself, so it applies to one case.
 WIZARD_EXTRA_ENV=()
+# What the next wizard_case answers to "Directory path(s) to back up". The literal token
+# @HOME@ expands to that case's own HOME, which is how a case can answer "~/.gbrain"
+# without the caller having to re-derive the per-case home path. Reset after each call.
+WIZARD_ANSWER_DIR=""
 
 wizard_case() {
   local label="$1" config_json="$2" expect="$3" logfile="$4"
   local home="$TMP/case-$label-home"
   local cbhome="$TMP/case-$label-cb-home"
   mkdir -p "$home/.gbrain"
-  printf '%s\n' "$config_json" > "$home/.gbrain/config.json"
+  # @HOME@ in the config too, so a fixture can point database_path at this case's own
+  # ~/.gbrain (the ordinary layout) as easily as at somewhere else entirely.
+  printf '%s\n' "${config_json//@HOME@/$home}" > "$home/.gbrain/config.json"
+  local answer_dir="${WIZARD_ANSWER_DIR:-$CB_SRC}"
+  answer_dir="${answer_dir//@HOME@/$home}"
+  WIZARD_ANSWER_DIR=""
   local qa="$TMP/qa-$label.json"
   # The Postgres branch has one extra prompt. Scripting the WRONG list is itself an
   # assertion: the driver only sends an answer once its prompt has really appeared,
@@ -100,7 +117,7 @@ wizard_case() {
   ["Protect the primary identity with a passphrase now?", "n"],
   ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
-  ["Directory path(s) to back up", "$CB_SRC"],
+  ["Directory path(s) to back up", "$answer_dir"],
 $pg_line
   ["Backend [file/", "not-a-real-backend"]
 ]
@@ -150,12 +167,56 @@ wizard_case dbpath-with-env-url "{\"database_path\":\"/somewhere/.pglite\",\"api
 echo "[PASS] an exported DATABASE_URL/GBRAIN_DATABASE_URL does NOT flip a file-configured PGLite brain to Postgres"
 
 # The PGLite branch's own coverage check: those runs answered the directory prompt
-# with $CB_SRC, which does NOT cover ~/.gbrain, so the wizard must say so — the
-# mistake #84 exists to prevent, in its PGLite form (backing up everything EXCEPT
+# with $CB_SRC, which does NOT cover the configured store, so the wizard must say so —
+# the mistake #84 exists to prevent, in its PGLite form (backing up everything EXCEPT
 # the brain).
-grep -qF "none of the paths you gave above covers" "$TMP/case-dbpath.log" \
+grep -qF "$NOT_COVERED_MARK" "$TMP/case-dbpath.log" \
   || { echo "[FAIL] a PGLite brain whose store is not covered by any --dir was not told so"; cat "$TMP/case-dbpath.log"; exit 1; }
-echo "[PASS] a PGLite brain whose answered directories do not cover ~/.gbrain is told the store is being left out"
+grep -qF "/somewhere/.pglite" "$TMP/case-dbpath.log" \
+  || { echo "[FAIL] the wizard did not print the store path it checked coverage against"; cat "$TMP/case-dbpath.log"; exit 1; }
+echo "[PASS] a PGLite brain whose answered directories do not cover the configured store is told so, and the path checked is shown"
+
+# P1 (multi-model review): the coverage answer must come from the CONFIG's database_path,
+# never from an assumed ~/.gbrain. A brain kept at /srv-style path elsewhere, with the
+# operator answering ~/.gbrain, is the exact case the hard-coded check got WRONG — it
+# confirmed coverage for a backup with no database in it. Both directions are pinned:
+# answering ~/.gbrain must be refused as coverage, and answering the real store path must
+# be accepted.
+ELSEWHERE_STORE="$TMP/store-elsewhere"; make_pglite_store "$ELSEWHERE_STORE"
+WIZARD_ANSWER_DIR="@HOME@/.gbrain"
+wizard_case dbpath-elsewhere-miss "{\"engine\":\"pglite\",\"database_path\":\"$ELSEWHERE_STORE\",\"api_key\":\"$DECOY_SECRET\"}" pglite "$TMP/case-elsewhere-miss.log"
+grep -qF "$NOT_COVERED_MARK" "$TMP/case-elsewhere-miss.log" \
+  || { echo "[FAIL] answering ~/.gbrain for a brain configured ELSEWHERE was accepted as covering the store — the #367 failure in a new form"; cat "$TMP/case-elsewhere-miss.log"; exit 1; }
+grep -qF "$ELSEWHERE_STORE" "$TMP/case-elsewhere-miss.log" \
+  || { echo "[FAIL] the wizard did not name the configured store path it found to be uncovered"; cat "$TMP/case-elsewhere-miss.log"; exit 1; }
+echo "[PASS] a store configured outside ~/.gbrain is NOT reported as covered just because ~/.gbrain was answered"
+
+WIZARD_ANSWER_DIR="$ELSEWHERE_STORE"
+wizard_case dbpath-elsewhere-hit "{\"engine\":\"pglite\",\"database_path\":\"$ELSEWHERE_STORE\",\"api_key\":\"$DECOY_SECRET\"}" pglite "$TMP/case-elsewhere-hit.log"
+grep -qF "$COVERED_MARK" "$TMP/case-elsewhere-hit.log" \
+  || { echo "[FAIL] answering the real store path was not recognised as covering it"; cat "$TMP/case-elsewhere-hit.log"; exit 1; }
+if grep -qF "$NOT_COVERED_MARK" "$TMP/case-elsewhere-hit.log"; then echo "[FAIL] the covered case ALSO printed the not-covered warning"; cat "$TMP/case-elsewhere-hit.log"; exit 1; fi
+echo "[PASS] answering the configured store path IS recognised as covering it (the check is not simply always-negative)"
+
+# A parent directory of the store counts as covering it, but a sibling whose name merely
+# shares a prefix must not — the containment test is on path segments, not string prefix.
+WIZARD_ANSWER_DIR="$TMP"
+wizard_case dbpath-parent-covers "{\"engine\":\"pglite\",\"database_path\":\"$ELSEWHERE_STORE\",\"api_key\":\"$DECOY_SECRET\"}" pglite "$TMP/case-parent.log"
+grep -qF "$COVERED_MARK" "$TMP/case-parent.log" \
+  || { echo "[FAIL] a --dir that is a PARENT of the store was not recognised as covering it"; cat "$TMP/case-parent.log"; exit 1; }
+WIZARD_ANSWER_DIR="${ELSEWHERE_STORE}-sibling"
+mkdir -p "${ELSEWHERE_STORE}-sibling"
+wizard_case dbpath-prefix-sibling "{\"engine\":\"pglite\",\"database_path\":\"$ELSEWHERE_STORE\",\"api_key\":\"$DECOY_SECRET\"}" pglite "$TMP/case-sibling.log"
+grep -qF "$NOT_COVERED_MARK" "$TMP/case-sibling.log" \
+  || { echo "[FAIL] a sibling directory sharing a name PREFIX with the store was accepted as covering it (string-prefix containment bug)"; cat "$TMP/case-sibling.log"; exit 1; }
+echo "[PASS] coverage matches on path segments: a parent covers the store, a same-prefix sibling does not"
+
+# PGLite with no database_path recorded: the wizard must SAY it cannot tell, never claim
+# coverage either way.
+grep -qF "$UNKNOWN_PATH_MARK" "$TMP/case-explicit-pglite.log" \
+  || { echo "[FAIL] a PGLite brain with no database_path did not say the store location is unknown"; cat "$TMP/case-explicit-pglite.log"; exit 1; }
+if grep -qF "$COVERED_MARK" "$TMP/case-explicit-pglite.log"; then echo "[FAIL] a PGLite brain with no database_path still claimed the store was covered"; cat "$TMP/case-explicit-pglite.log"; exit 1; fi
+echo "[PASS] a PGLite brain with no database_path is told the location is unknown, and no coverage claim is made"
 
 # ---------------------------------------------------------------------------
 # (b) end-to-end: a PGLite brain goes init -> snapshot -> push -> kit with no --pg
@@ -190,7 +251,8 @@ CIPHER_BRAIN_HOME="$E2E_CB_HOME" CIPHER_BRAIN_FILE_DIR="$E2E_STORE_DIR" HOME="$E
   || { echo "[FAIL] the PGLite end-to-end wizard run did not complete"; cat "$TMP/e2e.log"; exit 1; }
 grep -q 'cipher-brain init: complete' "$TMP/e2e.log" || { echo "[FAIL] PGLite e2e run lacks the wizard's completion marker"; cat "$TMP/e2e.log"; exit 1; }
 if grep -qF "$PG_PROMPT_MARK" "$TMP/e2e.log"; then echo "[FAIL] the PGLite e2e run was offered --pg"; cat "$TMP/e2e.log"; exit 1; fi
-if grep -qF "none of the paths you gave above covers" "$TMP/e2e.log"; then echo "[FAIL] the store WAS covered by the answered directory, but the wizard still said it was not"; cat "$TMP/e2e.log"; exit 1; fi
+if grep -qF "$NOT_COVERED_MARK" "$TMP/e2e.log"; then echo "[FAIL] the store WAS covered by the answered directory, but the wizard still said it was not"; cat "$TMP/e2e.log"; exit 1; fi
+grep -qF "$COVERED_MARK" "$TMP/e2e.log" || { echo "[FAIL] the wizard did not confirm coverage for a store the answered directory really does contain"; cat "$TMP/e2e.log"; exit 1; }
 grep -qF "$WARN_MARK" "$TMP/e2e.log" || { echo "[FAIL] the wizard's own snapshot of a PGLite store did not carry the consistency warning"; cat "$TMP/e2e.log"; exit 1; }
 echo "[PASS] init on a PGLite brain completes without ever proposing --pg, confirms the store IS covered, and still warns about copying it live"
 
@@ -228,6 +290,11 @@ printf '{"schema_pack":"gbrain-base-v2"}\n' > "$FIX_BARE/config.json"
 # warning about things nobody is writing to.
 FIX_HALF="$TMP/fix-half-marker"; mkdir -p "$FIX_HALF"
 printf '17\n' > "$FIX_HALF/PG_VERSION"
+# Fixture 5 — both NAMES present with the wrong TYPES: a directory called PG_VERSION and
+# a plain file called pg_wal. Name-only matching accepted this (multi-model review); a
+# cluster has PG_VERSION as a file and pg_wal as a directory, and nothing else counts.
+FIX_TYPES="$TMP/fix-wrong-types"; mkdir -p "$FIX_TYPES/PG_VERSION"
+printf 'not a directory\n' > "$FIX_TYPES/pg_wal"
 
 cb snapshot --dir "$FIX_PGLITE" --out "$TMP/fix-pglite.age" > "$TMP/snap-pglite.log" 2>&1 \
   || { echo "[FAIL] snapshotting a PGLite store failed — this must be a warning, never a refusal"; cat "$TMP/snap-pglite.log"; exit 1; }
@@ -235,15 +302,15 @@ grep -qF "$WARN_MARK" "$TMP/snap-pglite.log" || { echo "[FAIL] no PGLite warning
 [ -f "$TMP/fix-pglite.age" ] || { echo "[FAIL] the warned-about snapshot produced no artifact"; exit 1; }
 echo "[PASS] a synthetic PGLite data directory is detected, and the snapshot still succeeds (exit 0, artifact written)"
 
-for fix in "$FIX_POSTGRES:a Postgres-configured ~/.gbrain" "$FIX_BARE:a ~/.gbrain with neither marker" "$FIX_HALF:a directory with PG_VERSION but no pg_wal/"; do
+for fix in "$FIX_POSTGRES:a Postgres-configured ~/.gbrain" "$FIX_BARE:a ~/.gbrain with neither marker" "$FIX_HALF:a directory with PG_VERSION but no pg_wal/" "$FIX_TYPES:a directory with both marker NAMES but the wrong types"; do
   path="${fix%%:*}"; what="${fix#*:}"
   cb snapshot --dir "$path" --out "$TMP/$(basename "$path").age" > "$TMP/snap-$(basename "$path").log" 2>&1 \
     || { echo "[FAIL] snapshotting $what failed"; cat "$TMP/snap-$(basename "$path").log"; exit 1; }
   if grep -qF "$WARN_MARK" "$TMP/snap-$(basename "$path").log"; then
-    echo "[FAIL] $what was wrongly reported as a PGLite store"; cat "$TMP/snap-$(basename "$path").log"; exit 1
+    echo "[FAIL] $what was wrongly reported as a data directory"; cat "$TMP/snap-$(basename "$path").log"; exit 1
   fi
 done
-echo "[PASS] a Postgres-configured ~/.gbrain, a ~/.gbrain with neither marker, and a PG_VERSION-only directory are all left alone"
+echo "[PASS] a Postgres-configured ~/.gbrain, a ~/.gbrain with neither marker, a PG_VERSION-only directory, and a wrong-types look-alike are all left alone"
 
 # The on-disk evidence is the authority, and it answers alone. A store whose config
 # says Postgres, with a DATABASE_URL exported on top, is still a directory that tears
@@ -267,6 +334,21 @@ cb snapshot --dir "$FIX_NEST" --out "$TMP/fix-nested.age" > "$TMP/snap-nested.lo
 grep -qF "$WARN_MARK" "$TMP/snap-nested.log" || { echo "[FAIL] a PGLite store one level under the --dir was not detected"; cat "$TMP/snap-nested.log"; exit 1; }
 echo "[PASS] a store nested under the --dir (the real ~/.gbrain layout) is detected too"
 
+# THE DOCUMENTED BOUNDARY, pinned in the negative direction (multi-model review). With no
+# .cipherbrainignore there is no walk to borrow, so the search reads the source root and
+# ONE level below it and stops — a store deeper than that is not warned about. README and
+# MANAGEMENT.md say exactly this rather than promising "anywhere under the source"; this
+# case is what keeps the promise and the code from drifting apart. If a future change
+# widens the search, this assertion is meant to fail and be replaced along with the prose.
+FIX_DEEP="$TMP/fix-deep-no-ignore"; mkdir -p "$FIX_DEEP/data/brains/main"
+make_pglite_store "$FIX_DEEP/data/brains/main/.pglite"
+cb snapshot --dir "$FIX_DEEP" --out "$TMP/fix-deep.age" > "$TMP/snap-deep.log" 2>&1 \
+  || { echo "[FAIL] snapshotting a deeply-nested store failed"; cat "$TMP/snap-deep.log"; exit 1; }
+if grep -qF "$WARN_MARK" "$TMP/snap-deep.log"; then
+  echo "[FAIL] a store 4 levels down was detected with no ignore file — good news, but README/MANAGEMENT.md still document the one-level bound; widen the prose in the same change"; cat "$TMP/snap-deep.log"; exit 1
+fi
+echo "[PASS] documented bound holds: with no .cipherbrainignore, a store deeper than one level below the source is NOT warned about (and the docs say so)"
+
 # The .cipherbrainignore path takes a DIFFERENT route into the detector: an ignore
 # file makes snapshot walk the tree itself (#216), and the detection reuses that
 # walk's own path list instead of touching disk again. Nest the store deeper than
@@ -279,7 +361,33 @@ make_pglite_store "$FIX_IGN/data/brains/main/.pglite"
 cb snapshot --dir "$FIX_IGN" --out "$TMP/fix-ignore.age" > "$TMP/snap-ignore.log" 2>&1 \
   || { echo "[FAIL] snapshotting an ignore-filtered tree containing a PGLite store failed"; cat "$TMP/snap-ignore.log"; exit 1; }
 grep -qF "$WARN_MARK" "$TMP/snap-ignore.log" || { echo "[FAIL] a deeply-nested store was not detected from the .cipherbrainignore walk this snapshot already did"; cat "$TMP/snap-ignore.log"; exit 1; }
+if grep -qF "$TRUNCATED_MARK" "$TMP/snap-ignore.log"; then echo "[FAIL] a store the ignore file does not touch was reported as partially excluded"; cat "$TMP/snap-ignore.log"; exit 1; fi
 echo "[PASS] with a .cipherbrainignore present, the store is found from the walk snapshot already performed — at any depth, with no second traversal"
+
+# THE CASE THE PRE-FIX CODE SWALLOWED (multi-model review, measured). Handing the detector
+# only the ARCHIVED half of the walk meant an ignore rule matching pg_wal/ deleted one of
+# the two markers it looks for, so the warning went silent — on precisely the run whose
+# output cannot be opened AT ALL, which is worse than the merely-maybe-inconsistent copy
+# the warning is normally about. Both halves now go in, and this case gets the stronger of
+# the two warnings.
+FIX_CUT="$TMP/fix-ignore-cuts-store"; mkdir -p "$FIX_CUT"
+make_pglite_store "$FIX_CUT/brain.pglite"
+printf 'brain.pglite/pg_wal/\n' > "$FIX_CUT/.cipherbrainignore"
+cb snapshot --dir "$FIX_CUT" --out "$TMP/fix-cut.age" > "$TMP/snap-cut.log" 2>&1 \
+  || { echo "[FAIL] snapshotting a partially-ignored store failed — still a warning, never a refusal"; cat "$TMP/snap-cut.log"; exit 1; }
+grep -qF "$WARN_MARK" "$TMP/snap-cut.log" \
+  || { echo "[FAIL] an ignore rule that hides pg_wal/ silenced the detector — the exact regression this case exists for"; cat "$TMP/snap-cut.log"; exit 1; }
+grep -qF "$TRUNCATED_MARK" "$TMP/snap-cut.log" \
+  || { echo "[FAIL] a store archived in PIECES got the ordinary live-copy warning instead of the stronger partial-store one"; cat "$TMP/snap-cut.log"; exit 1; }
+grep -qF "cannot be opened at all" "$TMP/snap-cut.log" \
+  || { echo "[FAIL] the partial-store warning does not say the archive is unopenable, only that it might be inconsistent"; cat "$TMP/snap-cut.log"; exit 1; }
+# And the archive really is missing the marker, which is what makes the warning true.
+cb restore --in "$TMP/fix-cut.age" --out-dir "$TMP/cut-restored" > /dev/null 2>&1 \
+  || { echo "[FAIL] restoring the partially-ignored snapshot failed"; exit 1; }
+tar -tzf "$TMP/cut-restored/fix-ignore-cuts-store.tar.gz" > "$TMP/cut-listing.txt"
+grep -qF 'brain.pglite/PG_VERSION' "$TMP/cut-listing.txt" || { echo "[FAIL] test setup: the archive does not even contain the store"; cat "$TMP/cut-listing.txt"; exit 1; }
+if grep -qF 'brain.pglite/pg_wal' "$TMP/cut-listing.txt"; then echo "[FAIL] test setup: pg_wal was NOT actually excluded, so this proves nothing"; cat "$TMP/cut-listing.txt"; exit 1; fi
+echo "[PASS] an ignore rule that removes part of a store still warns — with the stronger 'cannot be opened at all' wording — and the archive really is missing pg_wal/"
 
 # ---------------------------------------------------------------------------
 # (d) both relay surfaces (#347)

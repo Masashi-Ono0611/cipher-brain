@@ -10,7 +10,7 @@ import { run } from './proc.js';
 import { newEncrypter, encryptToFile } from './crypt.js';
 import { exists, fmtBytes, requirePath, sha256, errMsg, redactPgConn } from './util.js';
 import { warn } from './warn.js';
-import { findPgliteDataDirs, pgliteQuiesceWarning } from './gbrain.js';
+import { findPgDataDirs, pgDataDirCopyWarning, pgDataDirTruncatedWarning } from './gbrain.js';
 import { recipientEntries, resolvePinnedRecipients } from './keys.js';
 import { loadSignIdentity, signDetached } from './minisign.js';
 import { assertExportRequiresO2bProfile, resolveProfilePaths } from './profiles.js';
@@ -601,10 +601,18 @@ export async function snapshot(o: CliOptions): Promise<void> {
       // so every pre-#216 --dir (no ignore file yet) archives byte-for-byte as before.
       const ig = kind === 'dir' ? await loadIgnoreFile(abs) : null;
       let excludedCount: number | undefined;
-      // #367: the complete relative-path listing of this source, when a walk of it
-      // already happened for filtering. Handed to findPgliteDataDirs below so the
-      // PGLite check costs no second traversal of a tree we just finished walking.
-      let scannedRels: string[] | undefined;
+      // #367: the COMPLETE relative-path listing of this source, when a walk of it
+      // already happened for filtering — BOTH halves, what tar will archive and what the
+      // ignore file filtered out. Handed to findPgDataDirs below so the data-directory
+      // check costs no second traversal of a tree we just finished walking.
+      //
+      // Both halves, not just tarEntries (multi-model review, measured): an ignore rule
+      // matching `pg_wal/` deletes one of the two markers detection looks for, so passing
+      // only the archived paths went SILENT on exactly the run that produces a store
+      // which cannot be opened at all. The excluded half is also what tells the detector
+      // a store is being archived in pieces, which earns a stronger warning than the
+      // ordinary live-copy one.
+      let scanned: { included: string[]; excluded: string[] } | undefined;
       if (ig) {
         // withSizes: false — building the real archive only needs WHICH paths to
         // include (tarEntries), never their byte sizes (that's --dry-run's job, via
@@ -613,7 +621,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
         // the very subtree it just pruned.
         const { tarEntries, excluded } = await scanDir(abs, ig, { withSizes: false });
         excludedCount = excluded.length;
-        scannedRels = tarEntries;
+        scanned = { included: tarEntries, excluded: excluded.map((e) => e.rel) };
         // tar --no-recursion -T <listFile>: named directory entries are archived as
         // bare directory nodes (no auto-descend), so listing EVERY included dir/file/
         // symlink explicitly — parent before child, exactly what scanDir returns — is
@@ -654,18 +662,30 @@ export async function snapshot(o: CliOptions): Promise<void> {
           timeoutMs: PIPE_TIMEOUT_MS,
         }); // a FIFO/special file under --dir can't hang the pre-stage tar; the -- guards a basename that could otherwise be parsed as an option (e.g. a leading '-')
       }
-      // #367: a --dir/--profile source that IS, or contains, a PGLite data directory was
-      // just tar'd as a plain directory tree — with none of the point-in-time consistency
-      // the --pg path gets from pg_dump -Fc. Say so. A WARNING and never a refusal: the
-      // whole point of `schedule install` is an unattended nightly run, and blocking that
-      // would trade a possibly-torn backup for a certainly-absent one. Sited here, right
-      // after the archive step, because `scannedRels` (the ignore-file walk's own complete
-      // listing, when one ran) makes the detection a pure in-memory pass over paths this
-      // loop already walked — a source with no ignore file falls back to the bounded
-      // readdir in findPgliteDataDirs, which is the only case that touches disk again.
+      // #367: a --dir/--profile source that IS, or has directly inside it, a PostgreSQL
+      // data directory (gbrain's default PGLite engine keeps its whole database as one)
+      // was just tar'd as a plain directory tree — with none of the point-in-time
+      // consistency the --pg path gets from pg_dump -Fc. Say so. A WARNING and never a
+      // refusal: the whole point of `schedule install` is an unattended nightly run, and
+      // blocking that would trade a possibly-inconsistent backup for a certainly-absent
+      // one. Sited here, right after the archive step, because `scanned` (the ignore-file
+      // walk's own complete listing, when one ran) makes the detection a pure in-memory
+      // pass over paths this loop already walked — a source with no ignore file falls back
+      // to the bounded readdir in findPgDataDirs, which is the only case that touches disk
+      // again, and the only case whose reach stops one level below the source root.
+      //
+      // One warning per store, and a store the ignore file has cut into pieces gets the
+      // stronger of the two: that copy cannot be opened at all, which is a different (and
+      // worse) problem than the copy that merely might be inconsistent, so it must not be
+      // reported in the same sentence.
       if (kind === 'dir') {
-        const pgliteStores = await findPgliteDataDirs(abs, scannedRels);
-        if (pgliteStores.length > 0) warn(pgliteQuiesceWarning(abs));
+        for (const store of await findPgDataDirs(abs, scanned)) {
+          warn(
+            store.excludedInside > 0
+              ? pgDataDirTruncatedWarning(abs, store.rel, store.excludedInside)
+              : pgDataDirCopyWarning(abs, store.rel),
+          );
+        }
       }
       // content_digest AFTER the tar, computed from the ARCHIVE'S OWN bytes (extract to a
       // throwaway dir and hash THAT with the unchanged contentDigestOfPath) rather than a

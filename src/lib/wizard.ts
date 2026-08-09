@@ -39,7 +39,7 @@ import { HOME, CONFIG_FILE_PATH, IDENTITY, RECIPIENT, SIGN_IDENTITY, SIGN_RECIPI
 import { keygen, keygenAt } from './keys.js';
 import { askNewPassphrase, wrapIdentity } from './crypt.js';
 import { keygenSignAt } from './minisign.js';
-import { detectGbrainEngine } from './gbrain.js';
+import { detectGbrainEngine, pathCoveredBy } from './gbrain.js';
 import { PROFILE_NAMES } from './profiles.js';
 import { snapshot } from './snapshot.js';
 import { push, PushPartialSuccessError } from './pushpull.js';
@@ -476,22 +476,37 @@ export async function init(_o: CliOptions): Promise<void> {
       // path is driven by hand (see requireTTY's own message above).
       const gbrainConfigPath = join(homedir(), '.gbrain', 'config.json');
       if (await exists(gbrainConfigPath)) {
-        // Reads the engine verdict ONLY — never any other field out of config.json,
-        // which holds API keys (see detectGbrainEngine's own doc comment).
-        const engine = await detectGbrainEngine(gbrainConfigPath);
-        if (engine === 'pglite') {
-          const gbrainDir = join(homedir(), '.gbrain');
+        // Reads the engine verdict and, on PGLite, the configured store path — and
+        // nothing else out of config.json, which holds API keys (see detectGbrainEngine's
+        // own doc comment for why that one field is the single deliberate exemption).
+        const gbrain = await detectGbrainEngine(gbrainConfigPath);
+        if (gbrain.engine === 'pglite') {
           console.log(`\nDetected a gbrain config at ${gbrainConfigPath} — engine: PGLite (gbrain's default).`);
           console.log('PGLite keeps the whole database as a directory on disk, so there is no Postgres server to');
-          console.log(`dump: backing up the directory tree under ${gbrainDir} IS backing up the brain. No --pg is`);
-          console.log('needed, and it is not offered here.');
-          if (!snapshotOpts.dirs.some((d) => d === gbrainDir || gbrainDir.startsWith(`${d}/`))) {
-            console.log(`\nNote: none of the paths you gave above covers ${gbrainDir}. If the PGLite store lives`);
-            console.log('there, re-run with it included (or pass it as another --dir to "cipher-brain snapshot").');
+          console.log('dump: backing up that directory IS backing up the brain. No --pg is needed, and it is not');
+          console.log('offered here.');
+          // Answer the coverage question against the path the CONFIG names, never against
+          // an assumed ~/.gbrain (multi-model review, P1). A brain configured at, say,
+          // /srv/gbrain would otherwise be reported as covered by a backup containing no
+          // database at all — the very mistake #367 exists to remove, wearing new clothes.
+          if (gbrain.dataPath) {
+            console.log(`\nIts config records the store at:\n  ${gbrain.dataPath}`);
+            if (pathCoveredBy(gbrain.dataPath, snapshotOpts.dirs)) {
+              console.log('The path(s) you gave above cover it, so the snapshot will contain the database.');
+            } else {
+              console.log('NONE of the paths you gave above covers it — as answered, this backup would NOT contain');
+              console.log('the database. Re-run init with that path included, or add it as another --dir when you');
+              console.log('drive "cipher-brain snapshot" by hand.');
+            }
+          } else {
+            console.log('\nIts config does not record a database_path, so this wizard cannot tell where the store');
+            console.log('actually lives and will not guess. Check yourself that the path(s) you gave above cover');
+            console.log("gbrain's data directory — a backup that misses it looks completely successful.");
           }
-          console.log('\nOne caveat this backup cannot solve for you: PGLite is single-writer, and a directory');
-          console.log('copied while gbrain is writing to it can be torn. Stop gbrain for the duration of the');
-          console.log('snapshot when you can. snapshot warns about this whenever it sees such a store.');
+          console.log('\nOne caveat this backup cannot solve for you: PostgreSQL (which is what PGLite is) does not');
+          console.log('support file-level copies of a running cluster, so a directory copied while gbrain is');
+          console.log('writing may be internally inconsistent. Stop gbrain for the duration of the snapshot when');
+          console.log('you can. snapshot warns whenever it sees such a store.');
         } else {
           console.log(`\nDetected a gbrain config at ${gbrainConfigPath} — gbrain's actual data (pages, embeddings,`);
           console.log('timeline, graph) lives in Postgres, not in that directory alone. Requires pg_dump/pg_restore');

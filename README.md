@@ -274,10 +274,11 @@ cipher-brain keygen                 # one-time: creates ~/.cipher-brain/{identit
 # never loses the brain — single-key snapshots warn on stderr. See MANAGEMENT.md.
 #
 # This example is a POSTGRES-backed gbrain. On PGLite (gbrain's default engine)
-# there is no server: the database is a directory under ~/.gbrain, so drop --pg
-# and let --dir cover it. snapshot then warns that a live single-writer store is
-# being copied without pg_dump's point-in-time consistency — stop gbrain first
-# when you can. See MANAGEMENT.md "Avoid the write window".
+# there is no server: the database is a directory at the configured database_path,
+# so drop --pg and let --dir cover that path. snapshot then warns that a running
+# cluster's files are being copied without pg_dump's point-in-time consistency, so
+# the copy may be inconsistent — stop gbrain first when you can. See MANAGEMENT.md
+# "Avoid the write window", which also states how deep the detection looks.
 cipher-brain snapshot \
   --pg "postgres://user@localhost:5432/gbrain" \
   --dir ~/.gbrain \
@@ -303,8 +304,9 @@ cipher-brain pull --locator "$TX" --backend turbo --out got.age \
 # later, on the machine that holds your PRIVATE identity:
 # (a PGLite brain has nothing to pg_restore — drop --pg and point gbrain at the
 # extracted store directory. If it will not open, gbrain's own
-# "gbrain pglite-repair" fixes a torn write-ahead log in place; run it against the
-# extracted copy, never a live store. See MANAGEMENT.md "Restore runbook".)
+# "gbrain pglite-repair" targets a torn write-ahead log and is worth trying against
+# the extracted copy, never a live store — no guarantee it fixes every case. See
+# MANAGEMENT.md "Restore runbook".)
 cipher-brain restore \
   --in got.age \
   --out-dir ./restored \

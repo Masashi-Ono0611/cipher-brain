@@ -97,6 +97,66 @@ printf '%s' "$OUT" | grep -q '\.git/' || { echo "[FAIL] --dry-run exclude list m
 test ! -f "$TMP/dry-run-should-not-exist.age"
 echo "[PASS] --dry-run reports accurate include/exclude counts, no --out required"
 
+# #368 (WITH an ignore file present): the breakdown is added detail alongside the
+# existing include/exclude report, not a replacement for it — the assertions above
+# already proved the include/exclude report is unchanged; this proves the breakdown of
+# what SURVIVED filtering is now there too, and its byte totals reconcile with the
+# per-source total (#368 acceptance: "Byte totals in the breakdown reconcile with the
+# existing per-source total"). $SRC's 3 included files are exact byte counts on purpose
+# (a/keep.txt=6B, a/b/keep2.txt=6B, .cipherbrainignore=20B) so the shares below are
+# clean percentages, not rounding artifacts.
+echo "== --dry-run (#368): with .cipherbrainignore present, still reports the largest contributors =="
+printf '%s' "$OUT" | grep -q "largest contributors" || { echo "[FAIL] with-ignore-file --dry-run missing the largest-contributors breakdown"; echo "$OUT"; exit 1; }
+printf '%s' "$OUT" | grep -qE '\.cipherbrainignore +20 B \(62\.5% of this source\)' || { echo "[FAIL] .cipherbrainignore contributor line missing or wrong share"; echo "$OUT"; exit 1; }
+printf '%s' "$OUT" | grep -qE '^    a/ +12 B \(37\.5% of this source\)' || { echo "[FAIL] aggregated a/ contributor line missing or wrong share"; echo "$OUT"; exit 1; }
+echo "[PASS] --dry-run with an ignore file present still reports the largest contributors of what survived filtering"
+
+# #368 acceptance: "snapshot --dry-run against a source with no .cipherbrainignore lists
+# the largest contributors with their byte shares" — the branch this issue exists for. A
+# --dir with no .cipherbrainignore used to print exactly ONE aggregate line and nothing
+# else; this is the state nobody has audited yet, so it is the one that most needs the
+# breakdown. Sizes below are exact byte counts (bigdir/a.bin=700B, bigdir/b.bin=200B,
+# root.txt=100B) so the shares are clean percentages the assertions can pin exactly, and
+# the reconciliation check below can sum contributor bytes back to the reported total
+# without any KB/MB rounding ambiguity.
+echo "== --dry-run (#368): NO .cipherbrainignore lists the largest contributors, dominant subtree first =="
+CONTRIB="$TMP/contrib"
+mkdir -p "$CONTRIB/bigdir"
+head -c 700 /dev/urandom > "$CONTRIB/bigdir/a.bin"
+head -c 200 /dev/urandom > "$CONTRIB/bigdir/b.bin"
+head -c 100 /dev/urandom > "$CONTRIB/root.bin"
+set +e
+CONTRIB_OUT=$(cb snapshot --dir "$CONTRIB" --dry-run 2>&1); CONTRIB_RC=$?
+set -e
+[ "$CONTRIB_RC" = "0" ] || { echo "[FAIL] --dry-run (no ignore file, #368) exited non-zero"; echo "$CONTRIB_OUT"; exit 1; }
+printf '%s' "$CONTRIB_OUT" | grep -q "no .cipherbrainignore — all 3 file(s) included (1000 B)" || { echo "[FAIL] unexpected no-ignore-file summary line"; echo "$CONTRIB_OUT"; exit 1; }
+printf '%s' "$CONTRIB_OUT" | grep -q "largest contributors" || { echo "[FAIL] no-ignore-file --dry-run missing the largest-contributors breakdown"; echo "$CONTRIB_OUT"; exit 1; }
+printf '%s' "$CONTRIB_OUT" | grep -qE '^    bigdir/ +900 B \(90\.0% of this source\)' || { echo "[FAIL] the dominant bigdir/ subtree is not reported first with the right share"; echo "$CONTRIB_OUT"; exit 1; }
+printf '%s' "$CONTRIB_OUT" | grep -qE '^    root\.bin +100 B \(10\.0% of this source\)' || { echo "[FAIL] the small root.bin contributor is not reported with the right share"; echo "$CONTRIB_OUT"; exit 1; }
+# reconciliation: the two contributor byte counts printed above must sum to EXACTLY the
+# per-source total already reported in the (unchanged) summary line, not just look right.
+BIGDIR_BYTES=$(printf '%s' "$CONTRIB_OUT" | grep -oE '^    bigdir/ +[0-9]+ B' | grep -oE '[0-9]+')
+ROOT_BYTES=$(printf '%s' "$CONTRIB_OUT" | grep -oE '^    root\.bin +[0-9]+ B' | grep -oE '[0-9]+')
+[ "$((BIGDIR_BYTES + ROOT_BYTES))" = "1000" ] || { echo "[FAIL] contributor bytes ($BIGDIR_BYTES + $ROOT_BYTES) do not reconcile with the reported 1000 B per-source total"; echo "$CONTRIB_OUT"; exit 1; }
+echo "[PASS] no .cipherbrainignore --dry-run breaks down the largest contributors, dominant subtree first, bytes reconcile"
+
+# #368 acceptance: "A source whose contents are one flat set of small files produces a
+# sane, short report (no pathological output when there is no dominant path)" — every
+# file sits directly at the root (no subdirectory to aggregate under), so each is its own
+# bucket; the check is that the breakdown stays exactly as long as the file list (3 lines
+# here, well under the top-10 cap) rather than ballooning or crashing.
+echo "== --dry-run (#368): a flat set of small files produces a short, sane breakdown =="
+FLAT="$TMP/flat368"
+mkdir -p "$FLAT"
+for i in 1 2 3; do printf 'x\n' > "$FLAT/file$i.txt"; done
+set +e
+FLAT_OUT=$(cb snapshot --dir "$FLAT" --dry-run 2>&1); FLAT_RC=$?
+set -e
+[ "$FLAT_RC" = "0" ] || { echo "[FAIL] --dry-run (flat small files, #368) exited non-zero"; echo "$FLAT_OUT"; exit 1; }
+FLAT_LINES=$(printf '%s' "$FLAT_OUT" | grep -cE '^    file[0-9]\.txt  ')
+[ "$FLAT_LINES" = "3" ] || { echo "[FAIL] flat-file breakdown printed $FLAT_LINES contributor line(s), expected exactly 3"; echo "$FLAT_OUT"; exit 1; }
+echo "[PASS] a flat set of small files produces a short breakdown with no dominant path"
+
 echo "== --dry-run never stages, encrypts, or contacts pg_dump (an unreachable --pg is fine) =="
 set +e
 OUT=$(cb snapshot --pg "postgres://nouser:nopass@127.0.0.1:1/does-not-exist" --dir "$PLAIN" --dry-run 2>&1); RC=$?

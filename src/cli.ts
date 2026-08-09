@@ -293,9 +293,12 @@ const HELP = `cipher-brain — encrypt a gbrain snapshot so only you can read it
       --dir source (a --profile file/zip) is archived as-is; it has no tree to filter.
       --dry-run previews --dir/--profile filtering WITHOUT writing, staging or encrypting
       anything (--out is not required): prints, per --dir, whether a .cipherbrainignore was
-      found and the include/exclude file list with an approximate byte total for each side
-      — the "capacity difference" a --recipient/--pg pipeline never touches until you drop
-      --dry-run and actually run the snapshot.
+      found and the include/exclude file list with an approximate byte total for each side,
+      PLUS the largest contributors (top 10 by bytes, aggregated one directory level deep,
+      with each one's share of the total) — with or without a .cipherbrainignore, so you can
+      see what you are about to pay to store permanently before you have written a filter
+      for it — the "capacity difference" a --recipient/--pg pipeline never touches until you
+      drop --dry-run and actually run the snapshot.
       Also records a deterministic PLAINTEXT content digest (mtime-independent) in the
       manifest and in a "<out>.digest" sidecar, PLUS a recipients fingerprint (the
       effective age1… recipient set actually encrypted to) in a

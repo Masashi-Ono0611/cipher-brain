@@ -3,8 +3,11 @@
 ---
 
 `snapshot --dry-run` now reports the largest contributors to each `--dir`/`--profile`
-source — the top 10 by bytes, aggregated one directory level deep (so a big nested tree
-reads as one line, not thousands of files), with each one's share of that source's total.
+source — up to the top 10 by bytes, aggregated one directory level deep (so a big nested
+tree reads as one line, not thousands of files), with each one's share of that source's
+total. With more than 10, the rest are folded into one `other (N more)` remainder line
+carrying their combined bytes/share, so the printed shares always add up to the whole
+source instead of silently truncating.
 
 Shown in both branches: **with no `.cipherbrainignore` present** (previously a single
 aggregate line and nothing else — the state nobody has audited yet) and with one present,

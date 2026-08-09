@@ -870,7 +870,9 @@ interface Contributor {
 
 const CONTRIBUTORS_LIMIT = 10;
 
-function topContributors(entries: ScanEntry[]): Contributor[] {
+// ALL buckets, sorted, unsliced — printContributors below owns the top-N cut so it can
+// see (and report) what got left off, rather than this function silently discarding it.
+function allContributors(entries: ScanEntry[]): Contributor[] {
   const buckets = new Map<string, number>();
   for (const e of entries) {
     const slash = e.rel.indexOf('/');
@@ -883,21 +885,43 @@ function topContributors(entries: ScanEntry[]): Contributor[] {
   // ordering guarantee visible here rather than borrowed silently from scanDir above).
   return [...buckets.entries()]
     .map(([label, bytes]) => ({ label, bytes }))
-    .sort((a, b) => b.bytes - a.bytes || a.label.localeCompare(b.label))
-    .slice(0, CONTRIBUTORS_LIMIT);
+    .sort((a, b) => b.bytes - a.bytes || a.label.localeCompare(b.label));
 }
 
 // Prints nothing when there is nothing worth breaking down: zero included bytes (an
 // empty --dir, or every included entry is a zero-byte file/symlink) would otherwise print
 // a heading followed by a division-by-zero-shaped 0.0% list, which is noise, not signal.
+//
+// Multi-model review (PR #370, Codex + Claude, independently): a bare `.slice(0, LIMIT)`
+// with no accounting for what it cut is the wrong failure mode for a report whose whole
+// point is "what am I paying to store" — with more than CONTRIBUTORS_LIMIT buckets, many
+// similar-sized ones that collectively dominate would each look individually negligible
+// and the true dominant mass would be invisible, while the shown shares silently stopped
+// summing to the source total. Below CONTRIBUTORS_LIMIT buckets, EVERY bucket is shown,
+// so "top N" would overclaim a truncation that never happened — the heading says exactly
+// what is being shown either way, and a trailing "other (N more)" line carries the
+// dropped buckets' combined bytes/share when (and only when) something was cut, so the
+// printed lines reconcile to totalBytes in EVERY case, not just when there happen to be
+// <= CONTRIBUTORS_LIMIT of them.
 function printContributors(entries: ScanEntry[], totalBytes: number): void {
   if (totalBytes <= 0) return;
-  const top = topContributors(entries);
-  if (top.length === 0) return;
-  console.log(`  largest contributors (top ${CONTRIBUTORS_LIMIT} by bytes, aggregated one directory level deep):`);
-  for (const c of top) {
+  const all = allContributors(entries);
+  if (all.length === 0) return;
+  const shown = all.slice(0, CONTRIBUTORS_LIMIT);
+  const dropped = all.slice(CONTRIBUTORS_LIMIT);
+  const heading =
+    dropped.length > 0
+      ? `  largest contributors (top ${CONTRIBUTORS_LIMIT} of ${all.length} by bytes, aggregated one directory level deep):`
+      : `  largest contributors (${shown.length} by bytes, aggregated one directory level deep):`;
+  console.log(heading);
+  for (const c of shown) {
     const share = ((c.bytes / totalBytes) * 100).toFixed(1);
     console.log(`    ${c.label}  ${fmtBytes(c.bytes)} (${share}% of this source)`);
+  }
+  if (dropped.length > 0) {
+    const droppedBytes = dropped.reduce((s, c) => s + c.bytes, 0);
+    const share = ((droppedBytes / totalBytes) * 100).toFixed(1);
+    console.log(`    other (${dropped.length} more)  ${fmtBytes(droppedBytes)} (${share}% of this source)`);
   }
 }
 

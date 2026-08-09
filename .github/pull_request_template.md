@@ -14,6 +14,20 @@ Thanks for sending a PR! Quick checklist below.
       `verify`/`restore` output (see README's [Threat model](README.md#threat-model--the-key-is-only-mine)
       for what `PASS`/`FAIL`/`PARTIAL` mean)
 
+## Evidence — paste what the change actually printed
+
+<!--
+Not a gate, and not a screenshot requirement: just the terminal output of the
+thing you changed, doing the thing you changed it to do. A reviewer can check
+that in seconds, and it costs you nothing you were not already running to
+convince yourself.
+
+A comment-only or docs-only fix still qualifies — call the function the comment
+describes and paste the value it returned. If the behaviour genuinely cannot be
+executed here (a paid backend, another machine), say so and paste the closest
+thing you could run instead.
+-->
+
 ## Architecture impact
 
 <!-- Tick whichever applies; leave others unchecked. -->

@@ -62,9 +62,14 @@ WARN_MARK="is a PostgreSQL data directory"
 # one sentence (multi-model review) — a partial copy cannot be opened at all, whereas a
 # live-copy may merely be inconsistent.
 TRUNCATED_MARK="INSIDE it out of this snapshot"
+# Within the truncated warning, the two strengths. Certainty is earned only when what was
+# excluded is a component a cluster cannot start without (review round 2).
+TRUNCATED_CERTAIN_MARK="cannot be opened at all"
+TRUNCATED_HEDGED_MARK="the copy may still open"
 NOT_COVERED_MARK="NONE of the paths you gave above covers it"
 COVERED_MARK="The path(s) you gave above cover it"
 UNKNOWN_PATH_MARK="does not record a database_path"
+RELATIVE_PATH_MARK="records the store as a RELATIVE path"
 
 CB_SRC="$TMP/plain-src"; mkdir -p "$CB_SRC"
 printf 'gbrain-pglite-selftest\n' > "$CB_SRC/note.txt"
@@ -210,6 +215,32 @@ wizard_case dbpath-prefix-sibling "{\"engine\":\"pglite\",\"database_path\":\"$E
 grep -qF "$NOT_COVERED_MARK" "$TMP/case-sibling.log" \
   || { echo "[FAIL] a sibling directory sharing a name PREFIX with the store was accepted as covering it (string-prefix containment bug)"; cat "$TMP/case-sibling.log"; exit 1; }
 echo "[PASS] coverage matches on path segments: a parent covers the store, a same-prefix sibling does not"
+
+# The filesystem ROOT as a --dir must cover everything (review round 2). resolve('/') is
+# '/', so a naive "${root}/" prefix became '//' and '--dir /' covered nothing at all — a
+# false negative on a coverage claim, the same family of bug as the false positive above.
+# Safe to answer here: this run stops at the backend prompt, so snapshot() never runs and
+# nothing under / is ever read, let alone archived.
+WIZARD_ANSWER_DIR="/"
+wizard_case dbpath-root-dir "{\"engine\":\"pglite\",\"database_path\":\"$ELSEWHERE_STORE\",\"api_key\":\"$DECOY_SECRET\"}" pglite "$TMP/case-root.log"
+grep -qF "$COVERED_MARK" "$TMP/case-root.log" \
+  || { echo "[FAIL] '--dir /' was not recognised as covering an absolute store path (the resolve('/') double-separator bug)"; cat "$TMP/case-root.log"; exit 1; }
+echo "[PASS] the filesystem root as a --dir covers an absolute store path (no '//' prefix bug)"
+
+# A RELATIVE database_path is NOT resolvable from here and must not be guessed at (review
+# round 2). gbrain absolutizes it with a bare resolve(), i.e. against ITS OWN cwd, which
+# this process cannot observe — so the store could be anywhere and any coverage verdict
+# would be a confident guess. An earlier version anchored it to the config's directory;
+# that is the residual P1 this case exists to prevent from coming back.
+WIZARD_ANSWER_DIR="@HOME@/.gbrain"
+wizard_case dbpath-relative "{\"engine\":\"pglite\",\"database_path\":\"brain.pglite\",\"api_key\":\"$DECOY_SECRET\"}" pglite "$TMP/case-relative.log"
+grep -qF "$RELATIVE_PATH_MARK" "$TMP/case-relative.log" \
+  || { echo "[FAIL] a relative database_path was not reported as relative"; cat "$TMP/case-relative.log"; exit 1; }
+grep -qF "brain.pglite" "$TMP/case-relative.log" \
+  || { echo "[FAIL] the wizard did not quote the configured (relative) value back to the operator"; cat "$TMP/case-relative.log"; exit 1; }
+if grep -qF "$COVERED_MARK" "$TMP/case-relative.log"; then echo "[FAIL] a relative database_path produced a COVERAGE CLAIM — it cannot be resolved from here, so no verdict is honest"; cat "$TMP/case-relative.log"; exit 1; fi
+if grep -qF "$NOT_COVERED_MARK" "$TMP/case-relative.log"; then echo "[FAIL] a relative database_path produced a not-covered verdict — equally a guess"; cat "$TMP/case-relative.log"; exit 1; fi
+echo "[PASS] a RELATIVE database_path is quoted, explained as unresolvable, and yields NO coverage verdict in either direction"
 
 # PGLite with no database_path recorded: the wizard must SAY it cannot tell, never claim
 # coverage either way.
@@ -379,15 +410,36 @@ grep -qF "$WARN_MARK" "$TMP/snap-cut.log" \
   || { echo "[FAIL] an ignore rule that hides pg_wal/ silenced the detector — the exact regression this case exists for"; cat "$TMP/snap-cut.log"; exit 1; }
 grep -qF "$TRUNCATED_MARK" "$TMP/snap-cut.log" \
   || { echo "[FAIL] a store archived in PIECES got the ordinary live-copy warning instead of the stronger partial-store one"; cat "$TMP/snap-cut.log"; exit 1; }
-grep -qF "cannot be opened at all" "$TMP/snap-cut.log" \
-  || { echo "[FAIL] the partial-store warning does not say the archive is unopenable, only that it might be inconsistent"; cat "$TMP/snap-cut.log"; exit 1; }
+grep -qF "$TRUNCATED_CERTAIN_MARK" "$TMP/snap-cut.log" \
+  || { echo "[FAIL] excluding pg_wal/ — a component a cluster cannot start without — did not get the CERTAIN wording"; cat "$TMP/snap-cut.log"; exit 1; }
 # And the archive really is missing the marker, which is what makes the warning true.
 cb restore --in "$TMP/fix-cut.age" --out-dir "$TMP/cut-restored" > /dev/null 2>&1 \
   || { echo "[FAIL] restoring the partially-ignored snapshot failed"; exit 1; }
 tar -tzf "$TMP/cut-restored/fix-ignore-cuts-store.tar.gz" > "$TMP/cut-listing.txt"
 grep -qF 'brain.pglite/PG_VERSION' "$TMP/cut-listing.txt" || { echo "[FAIL] test setup: the archive does not even contain the store"; cat "$TMP/cut-listing.txt"; exit 1; }
 if grep -qF 'brain.pglite/pg_wal' "$TMP/cut-listing.txt"; then echo "[FAIL] test setup: pg_wal was NOT actually excluded, so this proves nothing"; cat "$TMP/cut-listing.txt"; exit 1; fi
-echo "[PASS] an ignore rule that removes part of a store still warns — with the stronger 'cannot be opened at all' wording — and the archive really is missing pg_wal/"
+echo "[PASS] an ignore rule that removes a REQUIRED component still warns — with the certain 'cannot be opened at all' wording — and the archive really is missing pg_wal/"
+
+# THE OTHER HALF OF THAT CERTAINTY (review round 2). Excluding postmaster.pid or a log
+# does NOT make a data directory unopenable, so "cannot be opened at all" would be the
+# same over-claiming reflex the hedging round already corrected once. The exclusion is
+# still worth reporting — a data directory is meant to be archived whole and verify cannot
+# tell you whether what went missing mattered — but the wording has to earn its certainty.
+FIX_CUT_MINOR="$TMP/fix-ignore-cuts-nonessential"; mkdir -p "$FIX_CUT_MINOR"
+make_pglite_store "$FIX_CUT_MINOR/brain.pglite"
+printf 'running\n' > "$FIX_CUT_MINOR/brain.pglite/postmaster.pid"
+mkdir -p "$FIX_CUT_MINOR/brain.pglite/log"; printf 'chatter\n' > "$FIX_CUT_MINOR/brain.pglite/log/postgresql.log"
+printf 'brain.pglite/postmaster.pid\nbrain.pglite/log/\n' > "$FIX_CUT_MINOR/.cipherbrainignore"
+cb snapshot --dir "$FIX_CUT_MINOR" --out "$TMP/fix-cut-minor.age" > "$TMP/snap-cut-minor.log" 2>&1 \
+  || { echo "[FAIL] snapshotting a store with non-essential exclusions failed"; cat "$TMP/snap-cut-minor.log"; exit 1; }
+grep -qF "$TRUNCATED_MARK" "$TMP/snap-cut-minor.log" \
+  || { echo "[FAIL] a partially-excluded store was not reported at all"; cat "$TMP/snap-cut-minor.log"; exit 1; }
+grep -qF "$TRUNCATED_HEDGED_MARK" "$TMP/snap-cut-minor.log" \
+  || { echo "[FAIL] non-essential exclusions did not get the HEDGED wording"; cat "$TMP/snap-cut-minor.log"; exit 1; }
+if grep -qF "$TRUNCATED_CERTAIN_MARK" "$TMP/snap-cut-minor.log"; then
+  echo "[FAIL] excluding only postmaster.pid and a log claimed the copy 'cannot be opened at all' — certainty must be earned by hitting a required component"; cat "$TMP/snap-cut-minor.log"; exit 1
+fi
+echo "[PASS] excluding only non-essential files (postmaster.pid, log/) is reported, but HEDGED — the certain wording is reserved for required components"
 
 # ---------------------------------------------------------------------------
 # (d) both relay surfaces (#347)

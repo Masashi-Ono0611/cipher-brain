@@ -318,9 +318,15 @@ are `PG_VERSION` plus `pg_wal/`. Two limits worth knowing, both deliberate:
   data directory" for that reason. The hazard is the same either way.
 
 It is a warning and never a refusal, because an unattended nightly run must still produce
-a backup. The one case that gets a **stronger** warning is a data directory the ignore
-file has cut into pieces: a cluster is only usable whole, so that copy cannot be opened
-at all rather than merely maybe-inconsistent, and the fix is to remove the rule.
+a backup. A data directory the ignore file has cut into pieces gets a **stronger** warning
+instead, in one of two strengths, and the fix in both cases is to remove the rule:
+
+- the exclusion hits `PG_VERSION`, `pg_wal/`, `base/` or `global/` — components a cluster
+  cannot start without — so the restored copy **cannot be opened at all**, which is worse
+  than merely maybe-inconsistent;
+- the exclusion hits only other files (`postmaster.pid`, a log, transient stats), so the
+  copy **may** still open. It is still reported, because a data directory is meant to be
+  archived whole and `verify` cannot tell you whether what went missing mattered.
 
 ## Minimal recovery profile (`--pg-filter` / `--pg-exclude-table-data`)
 

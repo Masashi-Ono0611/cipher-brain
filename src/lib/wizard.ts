@@ -486,9 +486,14 @@ export async function init(_o: CliOptions): Promise<void> {
           console.log('dump: backing up that directory IS backing up the brain. No --pg is needed, and it is not');
           console.log('offered here.');
           // Answer the coverage question against the path the CONFIG names, never against
-          // an assumed ~/.gbrain (multi-model review, P1). A brain configured at, say,
-          // /srv/gbrain would otherwise be reported as covered by a backup containing no
-          // database at all — the very mistake #367 exists to remove, wearing new clothes.
+          // an assumed ~/.gbrain (review round 1). A brain configured at, say, /srv/gbrain
+          // would otherwise be reported as covered by a backup containing no database at
+          // all — the very mistake #367 exists to remove, wearing new clothes.
+          //
+          // Three outcomes, and only the first one is a coverage claim. A judgement is
+          // made ONLY when the config gives an absolute path; otherwise this says it
+          // cannot tell (review round 2). Half-knowing where the store is must not
+          // produce a confident answer — that is how the original bug happened.
           if (gbrain.dataPath) {
             console.log(`\nIts config records the store at:\n  ${gbrain.dataPath}`);
             if (pathCoveredBy(gbrain.dataPath, snapshotOpts.dirs)) {
@@ -498,6 +503,13 @@ export async function init(_o: CliOptions): Promise<void> {
               console.log('the database. Re-run init with that path included, or add it as another --dir when you');
               console.log('drive "cipher-brain snapshot" by hand.');
             }
+          } else if (gbrain.relativeDataPath) {
+            console.log(`\nIts config records the store as a RELATIVE path:\n  ${gbrain.relativeDataPath}`);
+            console.log('gbrain turns that into a real location using the directory it is RUN from, which this');
+            console.log('wizard cannot observe — so the store could be almost anywhere and no coverage check here');
+            console.log('would mean anything. Confirm yourself that the path(s) you gave above cover it. (Making');
+            console.log('database_path absolute in the config removes this ambiguity for every tool, not just this');
+            console.log('one.)');
           } else {
             console.log('\nIts config does not record a database_path, so this wizard cannot tell where the store');
             console.log('actually lives and will not guess. Check yourself that the path(s) you gave above cover');

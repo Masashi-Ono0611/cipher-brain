@@ -682,7 +682,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
         for (const store of await findPgDataDirs(abs, scanned)) {
           warn(
             store.excludedInside > 0
-              ? pgDataDirTruncatedWarning(abs, store.rel, store.excludedInside)
+              ? pgDataDirTruncatedWarning(abs, store.rel, store.excludedInside, store.excludedRequired)
               : pgDataDirCopyWarning(abs, store.rel),
           );
         }

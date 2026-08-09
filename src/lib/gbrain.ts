@@ -15,7 +15,7 @@
 // config contract and described here in our own words.
 import type { Dirent } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 
 export type GbrainEngine = 'pglite' | 'postgres';
 
@@ -23,11 +23,17 @@ export type GbrainEngine = 'pglite' | 'postgres';
 export interface GbrainEngineInfo {
   engine: GbrainEngine;
   /**
-   * The configured PGLite store, as an ABSOLUTE path — present only on a PGLite brain
-   * whose config records `database_path`. Absent means "PGLite, but the config does not
-   * say where", which callers must treat as unknown rather than guessing a location.
+   * The configured PGLite store, as an absolute path — set ONLY when `database_path` is
+   * itself absolute, which is what gbrain writes in practice. This is the one case where
+   * the store's location is actually knowable from the config alone.
    */
   dataPath?: string;
+  /**
+   * The raw `database_path` when it is RELATIVE, in which case its location is NOT
+   * knowable from here — see detectGbrainEngine. Never set together with `dataPath`;
+   * exposed so a caller can quote the configured value while declining to resolve it.
+   */
+  relativeDataPath?: string;
 }
 
 /**
@@ -51,12 +57,17 @@ export interface GbrainEngineInfo {
  * The field is a filesystem path, not a credential, and it is the only way to answer
  * the question correctly. Nothing else follows it out of this function.
  *
- * A relative `database_path` is resolved against the CONFIG FILE's own directory. gbrain
- * itself hands the raw value to PGLite, which resolves it against whatever process cwd
- * gbrain happens to have — not something we can know from here, and not stable enough to
- * copy. The config's directory is the one anchor that is always well-defined, and the
- * wizard prints the resolved path, so an operator can see the assumption and correct it.
- * In practice gbrain writes an absolute path and this never comes up.
+ * A relative `database_path` is reported as `relativeDataPath` and NOT resolved, because
+ * it cannot be (review round 2). An earlier version anchored it to the config file's own
+ * directory, which sounds reasonable and is wrong: gbrain absolutizes the value with a
+ * bare `resolve(cfg.database_path)` (see its `doctor.ts` and `migrate-engine.ts`), and
+ * `resolve()` on a single relative argument is CWD-relative — so the store's real
+ * location depends on which directory the operator happened to launch gbrain from, which
+ * nothing here can observe. Guessing an anchor and then telling the operator their backup
+ * covers the store would reproduce this issue's original failure in a narrower case: a
+ * confident coverage claim that can be wrong. Saying "I cannot tell" is the honest answer
+ * and the whole point of #367. In practice gbrain writes an absolute path, so this branch
+ * is rare and costs nothing when it is not taken.
  *
  * FILE ONLY — `GBRAIN_DATABASE_URL` / `DATABASE_URL` are deliberately NOT consulted,
  * and gbrain's own runtime resolution must not be imported here to "fix" that. gbrain
@@ -77,10 +88,15 @@ export async function detectGbrainEngine(configPath: string): Promise<GbrainEngi
     if (typeof parsed !== 'object' || parsed === null) return { engine: 'postgres' };
     const cfg = parsed as { engine?: unknown; database_path?: unknown };
     const raw = typeof cfg.database_path === 'string' && cfg.database_path.length > 0 ? cfg.database_path : null;
-    const dataPath = raw ? (isAbsolute(raw) ? resolve(raw) : resolve(dirname(configPath), raw)) : undefined;
-    if (cfg.engine === 'pglite') return { engine: 'pglite', ...(dataPath ? { dataPath } : {}) };
+    // Absolute: knowable, hand it over. Relative: quotable but NOT resolvable — see above.
+    const where: Partial<GbrainEngineInfo> = raw
+      ? isAbsolute(raw)
+        ? { dataPath: resolve(raw) }
+        : { relativeDataPath: raw }
+      : {};
+    if (cfg.engine === 'pglite') return { engine: 'pglite', ...where };
     if (cfg.engine === 'postgres') return { engine: 'postgres' }; // an explicit engine wins; a stale path is not the store
-    return raw ? { engine: 'pglite', ...(dataPath ? { dataPath } : {}) } : { engine: 'postgres' };
+    return raw ? { engine: 'pglite', ...where } : { engine: 'postgres' };
   } catch {
     return { engine: 'postgres' };
   }
@@ -88,14 +104,21 @@ export async function detectGbrainEngine(configPath: string): Promise<GbrainEngi
 
 /**
  * Is `storePath` inside (or equal to) at least one of `dirs`? Both sides are resolved
- * first, and the containment test is on path SEGMENTS (`${d}/`), never a bare string
- * prefix — otherwise `--dir /srv/gb` would report `/srv/gbrain` as covered.
+ * first, and the containment test is on path SEGMENTS, never a bare string prefix —
+ * otherwise `--dir /srv/gb` would report `/srv/gbrain` as covered.
+ *
+ * The separator is appended only when the root does not already end in one. `resolve()`
+ * strips trailing separators from every path EXCEPT the filesystem root, where it
+ * returns `/` — so the naive `${root}/` produced `//` and made `--dir /` fail to cover
+ * anything at all (review round 2). A false negative on a coverage claim is the same
+ * family of bug as the false positive this function was written to prevent.
  */
 export function pathCoveredBy(storePath: string, dirs: readonly string[]): boolean {
   const target = resolve(storePath);
   return dirs.some((d) => {
     const root = resolve(d);
-    return target === root || target.startsWith(`${root}/`);
+    const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
+    return target === root || target.startsWith(prefix);
   });
 }
 
@@ -158,20 +181,43 @@ async function confirmDataDir(absDir: string): Promise<boolean> {
   }
 }
 
+/**
+ * Top-level entries a PostgreSQL cluster cannot start without. Deliberately a SHORT,
+ * uncontroversial floor rather than an attempt at the full layout: the two markers, plus
+ * the two directories holding the actual relations (`global/` carries `pg_control`).
+ * Excluding any of these makes "will not open" a fact; excluding `postmaster.pid`, a log
+ * file or transient stats does not, and must not be reported as though it did (review
+ * round 2). Erring short is the safe direction — an omission here downgrades a warning
+ * from certain to hedged, never the reverse.
+ */
+const REQUIRED_COMPONENTS = new Set([PG_VERSION, PG_WAL, 'base', 'global']);
+
 /** One PostgreSQL data directory found at or under a scanned source root. */
 export interface PgDataDirFinding {
   /** POSIX path relative to the scanned root; `''` means the root itself is the store. */
   rel: string;
   /**
    * How many paths inside this store a `.cipherbrainignore` rule keeps OUT of the
-   * archive. 0 = the whole store is archived (the ordinary case). Anything above 0 is
-   * strictly worse than an inconsistent copy — see pgDataDirTruncatedWarning.
+   * archive. 0 = the whole store is archived (the ordinary case).
    */
   excludedInside: number;
+  /**
+   * Of those, how many fall in a REQUIRED_COMPONENTS entry. Above 0 is what licenses the
+   * certain "cannot be opened at all" wording; `excludedInside` alone only licenses "may
+   * not be openable".
+   */
+  excludedRequired: number;
 }
 
 /** A path that lies strictly INSIDE `dir` (`''` = the scan root, so everything is inside it). */
 const strictlyUnder = (p: string, dir: string): boolean => (dir === '' ? p.length > 0 : p.startsWith(`${dir}/`));
+
+/** Is `p` (relative to the scan root) a required component of the store at `dir`, or inside one? */
+const hitsRequiredComponent = (p: string, dir: string): boolean => {
+  const inner = dir === '' ? p : p.slice(dir.length + 1);
+  const firstSegment = inner.split('/', 1)[0];
+  return REQUIRED_COMPONENTS.has(firstSegment);
+};
 
 /**
  * PostgreSQL data directories at or under `rootAbs`.
@@ -235,9 +281,11 @@ export async function findPgDataDirs(
   const findings: PgDataDirFinding[] = [];
   for (const rel of candidates.sort()) {
     if (!(await confirmDataDir(rel ? join(rootAbs, rel) : rootAbs))) continue;
+    const inside = listing ? listing.excluded.filter((p) => strictlyUnder(p, rel)) : [];
     findings.push({
       rel,
-      excludedInside: listing ? listing.excluded.filter((p) => strictlyUnder(p, rel)).length : 0,
+      excludedInside: inside.length,
+      excludedRequired: inside.filter((p) => hitsRequiredComponent(p, rel)).length,
     });
   }
   return findings;
@@ -278,16 +326,34 @@ export const pgDataDirCopyWarning = (sourceLabel: string, rel: string): string =
 /**
  * The STRONGER warning: an ignore rule removes part of a data directory from the archive.
  *
- * This is not the same hazard and must not share the sentence above (multi-model review,
- * measured): a mid-write copy MAY be inconsistent, whereas a data directory missing
- * pieces of itself cannot be opened at all — a cluster is only usable whole. It is also
- * the case the pre-fix code silently swallowed, because the excluded marker was the very
- * thing detection was looking for. Quiescing gbrain does not help here; removing the
- * rule does, so that is what this says.
+ * This is not the same hazard as the one above and must not share its sentence (review
+ * round 1, measured): a mid-write copy MAY be inconsistent, whereas a data directory
+ * missing required pieces of itself cannot be opened at all. It is also the case the
+ * pre-fix code silently swallowed, because the excluded marker was the very thing
+ * detection was looking for. Quiescing gbrain does not help here; removing the rule does.
+ *
+ * TWO STRENGTHS, because the certainty has to be earned (review round 2). Excluding
+ * `PG_VERSION`, `pg_wal/`, `base/` or `global/` makes "will not open" a fact. Excluding
+ * `postmaster.pid`, a log, or transient stats does not — that copy may well be fine, and
+ * claiming otherwise is the same over-reach the hedging round already corrected once. The
+ * split is on REQUIRED_COMPONENTS; when in doubt the wording degrades to "may", never up.
  */
-export const pgDataDirTruncatedWarning = (sourceLabel: string, rel: string, excludedInside: number): string =>
-  `"${storeLabel(sourceLabel, rel)}" is a PostgreSQL data directory (gbrain's PGLite store is one) and a ` +
-  `.cipherbrainignore rule keeps ${excludedInside} path(s) INSIDE it out of this snapshot. A data directory is ` +
-  `only usable whole: this is not the "maybe inconsistent" risk of copying a live cluster, it is a copy that ` +
-  `cannot be opened at all, and verify will still pass on it. Remove the ignore rule that matches inside this ` +
-  `directory, or point --dir somewhere that does not contain it.`;
+export const pgDataDirTruncatedWarning = (
+  sourceLabel: string,
+  rel: string,
+  excludedInside: number,
+  excludedRequired: number,
+): string => {
+  const head =
+    `"${storeLabel(sourceLabel, rel)}" is a PostgreSQL data directory (gbrain's PGLite store is one) and a ` +
+    `.cipherbrainignore rule keeps ${excludedInside} path(s) INSIDE it out of this snapshot`;
+  const tail = `Remove the ignore rule that matches inside this directory, or point --dir somewhere that does not contain it.`;
+  return excludedRequired > 0
+    ? `${head}, ${excludedRequired} of them in a component a cluster cannot start without ` +
+        `(${[...REQUIRED_COMPONENTS].join(', ')}). A data directory is only usable whole: this is not the "maybe ` +
+        `inconsistent" risk of copying a live cluster, it is a copy that cannot be opened at all, and verify will ` +
+        `still pass on it. ${tail}`
+    : `${head}. None of them is a component a cluster cannot start without, so the copy may still open — but a ` +
+        `data directory is meant to be archived whole, and verify cannot tell you whether what is missing ` +
+        `mattered. ${tail}`;
+};

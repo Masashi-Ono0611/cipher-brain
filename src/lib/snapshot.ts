@@ -853,6 +853,80 @@ export async function snapshot(o: CliOptions): Promise<void> {
   }
 }
 
+// #368: the per-source total --dry-run already prints is a useful gate, but tells you
+// nothing about WHAT is in it — the exact gap that let a dead 906 MB brain.pglite ride
+// along on paid, permanent storage for two and a half months before it was found by hand
+// with `du`. This is a REDUCTION over scanDir()'s already-collected `included` sizes,
+// never a second traversal or stat() call: bucket each included entry by its top-level
+// path segment (one directory level deep, not full depth) so a huge nested tree — the
+// pglite case was thousands of files several directories deep — reads as ONE line instead
+// of drowning the report in per-file output. A root-level file (no '/' in `rel`) is its
+// own bucket, unchanged; a root-level directory's bucket key carries a trailing '/' and
+// sums every file anywhere beneath it, however deep.
+interface Contributor {
+  label: string;
+  bytes: number;
+}
+
+const CONTRIBUTORS_LIMIT = 10;
+
+// ALL buckets, sorted, unsliced — printContributors below owns the top-N cut so it can
+// see (and report) what got left off, rather than this function silently discarding it.
+function allContributors(entries: ScanEntry[]): Contributor[] {
+  const buckets = new Map<string, number>();
+  for (const e of entries) {
+    const slash = e.rel.indexOf('/');
+    const label = slash === -1 ? e.rel : `${e.rel.slice(0, slash)}/`;
+    buckets.set(label, (buckets.get(label) ?? 0) + e.size);
+  }
+  // Ties broken by label so the printed order is deterministic run to run (Map iteration
+  // order is insertion order, which is scanDir's already-sorted readdir order — stable,
+  // but not obviously so to a reader of this file alone; the explicit tiebreak makes the
+  // ordering guarantee visible here rather than borrowed silently from scanDir above).
+  return [...buckets.entries()]
+    .map(([label, bytes]) => ({ label, bytes }))
+    .sort((a, b) => b.bytes - a.bytes || a.label.localeCompare(b.label));
+}
+
+// Prints nothing when there is nothing worth breaking down: zero included bytes (an
+// empty --dir, or every included entry is a zero-byte file/symlink) would otherwise print
+// a heading followed by a division-by-zero-shaped 0.0% list, which is noise, not signal.
+//
+// Multi-model review (PR #370, Codex + Claude, independently): a bare `.slice(0, LIMIT)`
+// with no accounting for what it cut is the wrong failure mode for a report whose whole
+// point is "what am I paying to store" — with more than CONTRIBUTORS_LIMIT buckets, many
+// similar-sized ones that collectively dominate would each look individually negligible
+// and the true dominant mass would be invisible, while the shown BYTES silently stopped
+// accounting for the whole source. Below CONTRIBUTORS_LIMIT buckets, EVERY bucket is
+// shown, so "top N" would overclaim a truncation that never happened — the heading says
+// exactly what is being shown either way, and a trailing "other (N more)" line carries
+// the dropped buckets' combined bytes/share when (and only when) something was cut, so
+// the printed lines reconcile to totalBytes in EVERY case (see the loop below — this is
+// a BYTES guarantee, not a percentages one: each `share` is independently `toFixed(1)`,
+// so the printed percentages can be off by up to a few tenths from summing to exactly
+// 100.0 — a rounding artifact of display, never a sign that bytes went unaccounted for).
+function printContributors(entries: ScanEntry[], totalBytes: number): void {
+  if (totalBytes <= 0) return;
+  const all = allContributors(entries);
+  if (all.length === 0) return;
+  const shown = all.slice(0, CONTRIBUTORS_LIMIT);
+  const dropped = all.slice(CONTRIBUTORS_LIMIT);
+  const heading =
+    dropped.length > 0
+      ? `  largest contributors (top ${CONTRIBUTORS_LIMIT} of ${all.length} by bytes, aggregated one directory level deep):`
+      : `  largest contributors (${shown.length} by bytes, aggregated one directory level deep):`;
+  console.log(heading);
+  for (const c of shown) {
+    const share = ((c.bytes / totalBytes) * 100).toFixed(1);
+    console.log(`    ${c.label}  ${fmtBytes(c.bytes)} (${share}% of this source)`);
+  }
+  if (dropped.length > 0) {
+    const droppedBytes = dropped.reduce((s, c) => s + c.bytes, 0);
+    const share = ((droppedBytes / totalBytes) * 100).toFixed(1);
+    console.log(`    other (${dropped.length} more)  ${fmtBytes(droppedBytes)} (${share}% of this source)`);
+  }
+}
+
 // #216: `snapshot --dry-run` — preview --dir/--profile .cipherbrainignore filtering
 // WITHOUT staging, encrypting or writing anything (no --out, no temp stage dir, no
 // recipient resolution: none of that machinery is exercised here, on purpose — this is
@@ -890,11 +964,20 @@ async function dryRun(o: CliOptions): Promise<void> {
     totalExcluded += excBytes;
     if (!ig) {
       console.log(`  no ${IGNORE_FILE_NAME} — all ${included.length} file(s) included (${fmtBytes(incBytes)})`);
+      // #368: this is the branch the issue exists for — no ignore file means nobody has
+      // audited this source yet, and it is the state that got the LEAST information
+      // before this. Same breakdown as the filtered branch below, over the same
+      // `included` entries scanDir() already sized.
+      printContributors(included, incBytes);
       continue;
     }
     console.log(
       `  ${IGNORE_FILE_NAME} found — ${included.length} file(s) included (${fmtBytes(incBytes)}), ${excluded.length} path(s) excluded (${fmtBytes(excBytes)})`,
     );
+    // #368: breakdown of what SURVIVED filtering — a dominant contributor still hiding
+    // behind an already-present .cipherbrainignore is exactly as worth surfacing as one
+    // hiding behind no ignore file at all.
+    printContributors(included, incBytes);
     console.log('  include:');
     for (const e of included) console.log(`    ${e.rel}`);
     console.log('  exclude:');

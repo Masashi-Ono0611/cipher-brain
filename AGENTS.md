@@ -109,6 +109,68 @@ how a "single recipient — UNRECOVERABLE" warning vanished from an agent-driven
 `run summary` block and the MCP results' `warnings` array. If you add a warning a
 human must see, call `warn()`; if you add prose that is merely narrative, don't.
 
+## A temp dir the signal guard owns must be tracked for its whole life on disk
+
+A signal tears the process down without running `finally` blocks, so any temp dir a
+`finally` would have removed has to be registered with `src/lib/signal-guard.ts`
+instead — that is what the `setActive*Dir` setters are for. Registering it is not
+enough; the registration has to cover the directory's ENTIRE life on disk. Two
+ordering mistakes have shipped, one at each end:
+
+- **Create and register in ONE tick.** Use `mkdtempSync`, never `await mkdtemp`. An
+  `await` between creation and the setter yields to the event loop, and a signal in
+  that gap runs the handler while the slot is still `null` — the directory it just
+  created survives.
+- **Remove first, deregister second.** `await rm(dir, …)` and THEN call the setter
+  with `null`, never the reverse. Clearing the slot before the await leaves the same
+  gap at the other end: a signal during the removal finds nothing tracked and the
+  half-removed tree stays. This order has a harmless window of its own — a signal
+  after the `rm` resolves but before the clear — and that is fine for the reason the
+  other order is not: the directory is already gone, so the handler's `forceRmSync`
+  finds nothing and does nothing. It tolerates a partly-removed tree for the same
+  reason. Prefer the window where the handler is a no-op over the one where it is
+  absent.
+
+Measured on the real thing, not reasoned about — on #373's gitleaks report dir, each
+window held open in turn: the directory survived 5 times out of 5 before the ordering
+was fixed and 0 out of 5 after, for both windows. Unheld, it surfaced about once in 30
+runs, which is how it reached CI as a flake rather than as a failure.
+
+Give each distinct resource its OWN slot rather than reusing another one. Several are
+live at the same moment inside a single call — a snapshot holds its plaintext stage
+dir, the scan's report dir under it, and the `.part` it is streaming into — so a
+shared slot would let one resource's cleanup deregister another that is still on disk.
+
+That buys separation between DIFFERENT resources; it does not make the guard safe for
+overlapping instances of the SAME one. Every slot holds a single path, so two
+concurrent calls through the same setter overwrite each other's registration and the
+loser's directory survives a signal. Nothing in the tree hits that today, and the
+reasons are load-bearing rather than incidental: `snapshot()` awaits its per-component
+scans one at a time, and `src/mcp.ts` serializes whole tool calls through a
+promise-chain mutex (`captureCall`, needed anyway because the output capture mutates
+process globals). Parallelise that loop or drop that mutex, and the slot has to become
+a set in the same change.
+
+When the removal itself fails, leaving the registration in place is correct, not a
+leak — `forceRmSync` chmods and retries, so a later signal is the one remaining path
+that can clear it. Rule two gives you this for free: if the `rm` throws, the setter on
+the next line never runs.
+
+`makeFetchDir()` / `discardFetchDir()` in `src/mcp.ts` (#372) are the shape to copy:
+three call sites needed that directory, and routing every create and remove through
+one pair of helpers is what stops the ordering drifting between them.
+
+Do not lean on the SIGINT block in `scripts/selftest.sh` to catch a violation of the
+two rules above. That test works by pinning its signal to a phase a stub announces it
+has reached, and neither window offers such a point. The creation window sits between
+a completed syscall and the JS continuation that would record it — no code runs there
+to announce anything. The cleanup window is the opposite shape: it opens the moment
+synchronous JS clears the slot and stays open for the whole async `rm`, which is wide
+enough to hit but has nothing marking its start, so aiming at it means betting on how
+long the preceding read and parse take. That is the timing guesswork the test was
+rewritten to remove, so it does not try. Reverting either ordering leaves the block
+green. The guarantee here is structural, which is why it is written down as a rule.
+
 ## Everything else
 
 For CLI usage, architecture, and the quality bar PRs must meet, see

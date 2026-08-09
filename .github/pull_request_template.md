@@ -18,14 +18,22 @@ Thanks for sending a PR! Quick checklist below.
 
 <!--
 Not a gate, and not a screenshot requirement: just the terminal output of the
-thing you changed, doing the thing you changed it to do. A reviewer can check
-that in seconds, and it costs you nothing you were not already running to
-convince yourself.
+thing you changed, doing the thing you changed it to do, trimmed to the lines
+that make the point. A reviewer can check that in seconds, and it costs you
+nothing you were not already running to convince yourself.
 
-A comment-only or docs-only fix still qualifies — call the function the comment
-describes and paste the value it returned. If the behaviour genuinely cannot be
-executed here (a paid backend, another machine), say so and paste the closest
-thing you could run instead.
+REDACT FIRST. This tool's output routinely carries things that must not land in
+a public PR: recipient/identity values and key file paths, wallet addresses,
+Arweave locators and transaction IDs, `--pg` connection strings, real paths off
+your own machine. Replace them with placeholders, or reproduce the run against
+a scratch fixture instead of your own backup. Never paste a private key, a
+passphrase, a recovery kit, or anything out of a `config.json`.
+
+A comment-only or docs-only change still qualifies when there is something to
+run — call the function the comment describes and paste the value it returned,
+or show the rendered result. When there is genuinely nothing executable, or the
+behaviour needs a paid backend or another machine, say so in a line and paste
+the closest thing you could run instead.
 -->
 
 ## Architecture impact

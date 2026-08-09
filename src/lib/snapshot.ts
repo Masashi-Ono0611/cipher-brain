@@ -10,6 +10,7 @@ import { run } from './proc.js';
 import { newEncrypter, encryptToFile } from './crypt.js';
 import { exists, fmtBytes, requirePath, sha256, errMsg, redactPgConn } from './util.js';
 import { warn } from './warn.js';
+import { findPgliteDataDirs, pgliteQuiesceWarning } from './gbrain.js';
 import { recipientEntries, resolvePinnedRecipients } from './keys.js';
 import { loadSignIdentity, signDetached } from './minisign.js';
 import { assertExportRequiresO2bProfile, resolveProfilePaths } from './profiles.js';
@@ -600,6 +601,10 @@ export async function snapshot(o: CliOptions): Promise<void> {
       // so every pre-#216 --dir (no ignore file yet) archives byte-for-byte as before.
       const ig = kind === 'dir' ? await loadIgnoreFile(abs) : null;
       let excludedCount: number | undefined;
+      // #367: the complete relative-path listing of this source, when a walk of it
+      // already happened for filtering. Handed to findPgliteDataDirs below so the
+      // PGLite check costs no second traversal of a tree we just finished walking.
+      let scannedRels: string[] | undefined;
       if (ig) {
         // withSizes: false — building the real archive only needs WHICH paths to
         // include (tarEntries), never their byte sizes (that's --dry-run's job, via
@@ -608,6 +613,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
         // the very subtree it just pruned.
         const { tarEntries, excluded } = await scanDir(abs, ig, { withSizes: false });
         excludedCount = excluded.length;
+        scannedRels = tarEntries;
         // tar --no-recursion -T <listFile>: named directory entries are archived as
         // bare directory nodes (no auto-descend), so listing EVERY included dir/file/
         // symlink explicitly — parent before child, exactly what scanDir returns — is
@@ -647,6 +653,19 @@ export async function snapshot(o: CliOptions): Promise<void> {
         await run('tar', ['-czf', archivePath, '-C', dirname(abs), '--', basename(abs)], {
           timeoutMs: PIPE_TIMEOUT_MS,
         }); // a FIFO/special file under --dir can't hang the pre-stage tar; the -- guards a basename that could otherwise be parsed as an option (e.g. a leading '-')
+      }
+      // #367: a --dir/--profile source that IS, or contains, a PGLite data directory was
+      // just tar'd as a plain directory tree — with none of the point-in-time consistency
+      // the --pg path gets from pg_dump -Fc. Say so. A WARNING and never a refusal: the
+      // whole point of `schedule install` is an unattended nightly run, and blocking that
+      // would trade a possibly-torn backup for a certainly-absent one. Sited here, right
+      // after the archive step, because `scannedRels` (the ignore-file walk's own complete
+      // listing, when one ran) makes the detection a pure in-memory pass over paths this
+      // loop already walked — a source with no ignore file falls back to the bounded
+      // readdir in findPgliteDataDirs, which is the only case that touches disk again.
+      if (kind === 'dir') {
+        const pgliteStores = await findPgliteDataDirs(abs, scannedRels);
+        if (pgliteStores.length > 0) warn(pgliteQuiesceWarning(abs));
       }
       // content_digest AFTER the tar, computed from the ARCHIVE'S OWN bytes (extract to a
       // throwaway dir and hash THAT with the unchanged contentDigestOfPath) rather than a

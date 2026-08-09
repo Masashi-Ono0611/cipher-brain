@@ -290,6 +290,18 @@ now records a top-level `created_at` and a per-component `captured_at` (echoed b
 is itself point-in-time consistent via one REPEATABLE READ txn — only the DB↔file
 boundary needs aligning.)
 
+**On PGLite, the write window is the whole story.** gbrain's default engine keeps the
+entire database as a directory on disk, so there is no `pg_dump` and nothing gives that
+directory point-in-time consistency: it is tar'd like any other `--dir` while a
+single-writer engine may be mid-write. `snapshot` prints a ⚠ warning (it reaches the
+run summary and the MCP `warnings` array) whenever a source is, or contains, such a
+store — `PG_VERSION` plus `pg_wal/` — but it is a warning and never a refusal, because
+an unattended nightly run must still produce a backup. Stop gbrain for the duration
+when you can; the nightly `--at` default of 03:30 does not do that for you. A copy
+taken mid-write is not detectable by `verify`, whose checks pass on a torn store just
+as they do on a clean one — see the Restore runbook for what to do if one will not
+open.
+
 ## Minimal recovery profile (`--pg-filter` / `--pg-exclude-table-data`)
 
 A full `--pg` snapshot dumps the whole database — every table, including large or
@@ -377,6 +389,16 @@ NEW directories under `--out-dir`, and re-running restore into the same `--out-d
 not clobber a prior expansion (same no-clobber posture as the outer extract). Pass
 `--no-expand-components` to skip this and get only the raw `*.tar.gz` files (the pre-#181
 behavior, still there either way as the fallback).
+
+**A restored PGLite store that will not open.** On gbrain's default engine there is no
+`--pg` step: step 4 just extracts the store's directory and you point gbrain at it. If
+it was copied while gbrain was writing (see "Avoid the write window" above) the copy can
+carry a torn write-ahead log, and gbrain fails to open it — upstream's reported signature
+is a `RuntimeError: Aborted()` on connect. That is repairable in place with gbrain's own
+`gbrain pglite-repair`
+([garrytan/gbrain#3901](https://github.com/garrytan/gbrain/pull/3901), shipped in
+v0.42.75.0); run it against the *extracted copy*, never the live store. cipher-brain has
+no equivalent and deliberately adds none — this is gbrain's data format, not ours.
 
 ## Verification levels (`quick` / `remote` / `drill`)
 

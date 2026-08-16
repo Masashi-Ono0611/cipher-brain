@@ -7,14 +7,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_HOME="$TMP/keys"
+export CYPHER_BRAIN_HOME="$TMP/keys"
 cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 
 MARKER="secret-thought-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
@@ -25,8 +25,8 @@ head -c 1048576 /dev/urandom > "$SRC/blob.bin"   # 1 MB binary, to exercise stre
 
 echo "== keygen =="
 cb keygen >/dev/null
-test -f "$CIPHER_BRAIN_HOME/identity.age"
-test -f "$CIPHER_BRAIN_HOME/recipient.txt"
+test -f "$CYPHER_BRAIN_HOME/identity.age"
+test -f "$CYPHER_BRAIN_HOME/recipient.txt"
 
 echo "== snapshot =="
 cb snapshot --dir "$SRC" --out "$TMP/snap.age"
@@ -180,7 +180,7 @@ else
   tar -czf "$FORGE_STAGE/legit.tar.gz" -C "$TMP" "forge-legit-src"
   cat > "$FORGE_STAGE/manifest.json" <<MANIFEST
 {
-  "tool": "cipher-brain",
+  "tool": "cypher-brain",
   "schema": 1,
   "host": "forged-test-fixture",
   "created_at": "2026-01-01T00:00:00.000Z",
@@ -243,7 +243,7 @@ grep -rq 'symlink guard test content' "$README_OUT/expanded" || { echo "FAIL: th
 echo "[PASS] a pre-existing symlink at expanded/README.txt is refused (write skipped, external target untouched), while the component itself still expands"
 
 echo "== wrong key really cannot restore (defense in depth) =="
-export CIPHER_BRAIN_HOME="$TMP/keys2"
+export CYPHER_BRAIN_HOME="$TMP/keys2"
 cb keygen >/dev/null
 set +e
 WRONGKEY_ERR=$(cb restore --in "$TMP/snap.age" --out-dir "$TMP/out-wrong" 2>&1); WRONGKEY_RC=$?
@@ -263,7 +263,7 @@ printf 'not-a-valid-age-recipient\n' > "$TMP/bad-recipient.txt"
 if cb snapshot --dir "$SRC" --recipient "$TMP/bad-recipient.txt" --out "$TMP/bad.age" 2>/dev/null; then
   echo "FAIL: snapshot with a bad recipient unexpectedly succeeded"; exit 1
 fi
-LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | wc -l | tr -d ' ')
+LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cypher-brain-*' -type d 2>/dev/null | wc -l | tr -d ' ')
 if [ "$LEFTOVERS" != "0" ]; then
   echo "FAIL: $LEFTOVERS staged plaintext dir(s) left behind after a failed snapshot"; exit 1
 fi
@@ -297,12 +297,12 @@ echo "== restore of a corrupt artifact fails and removes the tree it created =="
 # Drop the LAST bytes of a valid snapshot (snap.age holds a 1 MB blob => multiple age
 # STREAM chunks): the leading chunks still decrypt and tar extracts a PARTIAL tree, then
 # age fails on the broken final chunk. Use the ORIGINAL keypair ($TMP/keys) so the
-# failure is the truncation, not a wrong key (CIPHER_BRAIN_HOME is $TMP/keys2 here).
+# failure is the truncation, not a wrong key (CYPHER_BRAIN_HOME is $TMP/keys2 here).
 SNAPSZ=$(wc -c < "$TMP/snap.age" | tr -d ' ')
 head -c $((SNAPSZ - 500)) "$TMP/snap.age" > "$TMP/trunc.age"
 RDIR="$TMP/restore-corrupt"   # does NOT pre-exist -> restore creates it -> must remove it on failure
 set +e
-CIPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/trunc.age" --out-dir "$RDIR" >/dev/null 2>&1; RC=$?
+CYPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/trunc.age" --out-dir "$RDIR" >/dev/null 2>&1; RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: restore of a truncated artifact unexpectedly succeeded"; exit 1; fi
 test ! -e "$RDIR" || { echo "FAIL: restore left a partial tree at $RDIR"; exit 1; }
@@ -346,7 +346,7 @@ set -e
 [ "$RC" != "0" ] || { echo "FAIL: snapshot with a mid-stream tar death exited 0"; exit 1; }
 test ! -f "$TMP/midfail.age" || { echo "FAIL: mid-stream tar death left a truncated midfail.age"; exit 1; }
 [ "$(npart "$TMP" "$TMP/midfail.age")" = "0" ] || { echo "FAIL: mid-stream tar death left a .part"; exit 1; }
-LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | wc -l | tr -d ' ')
+LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cypher-brain-*' -type d 2>/dev/null | wc -l | tr -d ' ')
 [ "$LEFTOVERS" = "0" ] || { echo "FAIL: mid-stream tar death left staged plaintext"; exit 1; }
 echo "[PASS] a tar that dies mid-stream fails the snapshot and leaves nothing behind"
 
@@ -360,7 +360,7 @@ echo "== P1 regression: SIGINT mid-snapshot must not leave staged plaintext =="
 # version polled for the stage dir and fired the instant it appeared, so the phase the signal
 # landed in was chosen by machine speed rather than by the test — it was written to hold the
 # run open in the streaming tar, but the poll returns long before the run gets there. Sampling
-# a different phase per machine is how the gitleaks scan's own report dir — cipher-brain-*,
+# a different phase per machine is how the gitleaks scan's own report dir — cypher-brain-*,
 # so the leftover glob below counts it — stayed unexamined until the day the signal landed in
 # a window where it was not yet tracked and one CI cell went red. Each stub announces that its
 # phase has been reached and then parks, so the signal lands inside that phase every run.
@@ -375,7 +375,7 @@ echo "== P1 regression: SIGINT mid-snapshot must not leave staged plaintext =="
 export TMPDIR="$TMP/stagedir-sig"; mkdir -p "$TMPDIR"
 
 # gitleaks stand-in for the scan phase: announce, then park. Pinning the scan needs a
-# scanner that will not finish on its own, and pointing CIPHER_BRAIN_GITLEAKS_BIN at this
+# scanner that will not finish on its own, and pointing CYPHER_BRAIN_GITLEAKS_BIN at this
 # also makes the case run identically on a machine with no real gitleaks installed.
 # Announce ONLY for the real scan invocation ("gitleaks dir <path>"), never for a probe:
 # today's availability check is a `command -v` that does not execute this at all, but a
@@ -401,7 +401,7 @@ sigint_at_phase() {
   case "$phase" in
     staging-tar)   PATH="$STUBBIN:$PATH" TMPDIR="$phase_tmp" CB_PHASE_SENTINEL="$sentinel" TAR_STUB_MODE=block-staging-tar \
                      node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$out" >/dev/null 2>&1 & ;;
-    scan)          PATH="$STUBBIN:$PATH" TMPDIR="$phase_tmp" CB_PHASE_SENTINEL="$sentinel" CIPHER_BRAIN_GITLEAKS_BIN="$STUBBIN/gitleaks-block" \
+    scan)          PATH="$STUBBIN:$PATH" TMPDIR="$phase_tmp" CB_PHASE_SENTINEL="$sentinel" CYPHER_BRAIN_GITLEAKS_BIN="$STUBBIN/gitleaks-block" \
                      node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$out" >/dev/null 2>&1 & ;;
     pipeline-tar)  PATH="$STUBBIN:$PATH" TMPDIR="$phase_tmp" CB_PHASE_SENTINEL="$sentinel" TAR_STUB_MODE=block-pipeline-tar \
                      node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$out" >/dev/null 2>&1 & ;;
@@ -435,7 +435,7 @@ sigint_at_phase() {
   # Name what survived: the prefix says WHICH tracked resource leaked (the plaintext stage,
   # the gitleaks report dir, a verify scratch dir), which a bare count cannot.
   local leftovers
-  leftovers=$(find "$phase_tmp" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null)
+  leftovers=$(find "$phase_tmp" -maxdepth 1 -name 'cypher-brain-*' -type d 2>/dev/null)
   if [ -n "$leftovers" ]; then
     echo "FAIL: SIGINT during '$phase' left staged temp dir(s) behind:"
     printf '%s\n' "$leftovers" | sed 's/^/  /'
@@ -461,7 +461,7 @@ echo "== race: an --out that appears mid-snapshot is NOT clobbered (link promote
 RACE="$TMP/race-out.age"
 PATH="$STUBBIN:$PATH" TAR_STUB_MODE=slow TAR_STUB_SLEEP=3 node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$RACE" >/dev/null 2>&1 &
 RACE_PID=$!
-for _ in $(seq 1 50); do find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-*' -type d 2>/dev/null | grep -q . && break; sleep 0.1; done
+for _ in $(seq 1 50); do find "$TMPDIR" -maxdepth 1 -name 'cypher-brain-*' -type d 2>/dev/null | grep -q . && break; sleep 0.1; done
 printf 'PRE-EXISTING-WINNER\n' > "$RACE"   # a "concurrent run" finished first
 set +e
 wait "$RACE_PID"; RC=$?
@@ -478,7 +478,7 @@ echo "== verify on a public-key-only box is PARTIAL (exit 2), never a false-gree
 PUBONLY="$TMP/pubonly"; mkdir -p "$PUBONLY"
 cp "$TMP/keys/recipient.txt" "$PUBONLY/recipient.txt"   # public key only — deliberately NO identity.age
 set +e
-OUT=$(CIPHER_BRAIN_HOME="$PUBONLY" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/snap.age" 2>&1); RC=$?
+OUT=$(CYPHER_BRAIN_HOME="$PUBONLY" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/snap.age" 2>&1); RC=$?
 set -e
 if [ "$RC" != "2" ]; then echo "FAIL: public-key-only verify exited $RC, expected 2"; echo "$OUT"; exit 1; fi
 if ! printf '%s' "$OUT" | grep -q "VERDICT: PARTIAL"; then echo "FAIL: expected VERDICT: PARTIAL"; echo "$OUT"; exit 1; fi
@@ -486,7 +486,7 @@ if printf '%s' "$OUT" | grep -q "VERDICT: PASS"; then echo "FAIL: public-key-onl
 echo "[PASS] public-key-only verify is PARTIAL/exit 2"
 
 set +e
-JOUT_PARTIAL=$(CIPHER_BRAIN_HOME="$PUBONLY" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/snap.age" --json); RC=$?
+JOUT_PARTIAL=$(CYPHER_BRAIN_HOME="$PUBONLY" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/snap.age" --json); RC=$?
 set -e
 [ "$RC" = "2" ] || { echo "FAIL: public-key-only verify --json exited $RC, expected 2"; echo "$JOUT_PARTIAL"; exit 1; }
 node -e "
@@ -501,15 +501,15 @@ echo "== recipient pin: snapshot refuses an out-of-allowlist recipient =="
 PINHOME="$TMP/keys"   # the original keypair from the top of this test
 MYPUB=$(cat "$PINHOME/recipient.txt")
 # (a) matching allowlist -> snapshot succeeds
-CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$MYPUB" \
+CYPHER_BRAIN_HOME="$PINHOME" CYPHER_BRAIN_PIN_RECIPIENTS="$MYPUB" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-ok.age" >/dev/null
 echo "[PASS] snapshot allowed when the recipient is on the allowlist"
 # (b) a DIFFERENT key's pin -> snapshot must refuse (the injected-recipient case)
 OTHER="$TMP/other-key"; mkdir -p "$OTHER"
-CIPHER_BRAIN_HOME="$OTHER" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+CYPHER_BRAIN_HOME="$OTHER" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
 OTHERPUB=$(cat "$OTHER/recipient.txt")
 set +e
-PINBAD_ERR=$(CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$OTHERPUB" \
+PINBAD_ERR=$(CYPHER_BRAIN_HOME="$PINHOME" CYPHER_BRAIN_PIN_RECIPIENTS="$OTHERPUB" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-bad.age" 2>&1 >/dev/null); RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: snapshot encrypted to a non-allowlisted recipient"; exit 1; fi
@@ -523,7 +523,7 @@ echo "[PASS] recipient-pin refusal error carries [CB-E005]"
 SSHMIX="$TMP/recipient-ssh-mix.txt"
 printf '%s\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIINJECTEDATTACKERKEYxxxxxxxxxxxxxxxxxxxxxx attacker\n' "$MYPUB" > "$SSHMIX"
 set +e
-CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$MYPUB" \
+CYPHER_BRAIN_HOME="$PINHOME" CYPHER_BRAIN_PIN_RECIPIENTS="$MYPUB" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --recipient "$SSHMIX" --out "$TMP/pin-ssh.age" >/dev/null 2>&1; RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: pin let through a file with an injected ssh recipient"; exit 1; fi
@@ -532,7 +532,7 @@ echo "[PASS] snapshot refused a recipient file with an injected ssh recipient"
 # (d) a FILE allowlist whose path contains "age1" must be read as a file, not parsed
 # as an inline key (regression for the includes('age1') path-detection bug).
 PINFILE="$TMP/age1-pins.txt"; printf '%s\n' "$MYPUB" > "$PINFILE"
-CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="$PINFILE" \
+CYPHER_BRAIN_HOME="$PINHOME" CYPHER_BRAIN_PIN_RECIPIENTS="$PINFILE" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-file.age" >/dev/null
 test -f "$TMP/pin-file.age"
 echo "[PASS] snapshot honored a file-based allowlist whose path contains 'age1'"
@@ -541,26 +541,26 @@ echo "[PASS] snapshot honored a file-based allowlist whose path contains 'age1'"
 PINCOMMENT="$TMP/pins-with-comment.txt"
 printf '%s\n# rotated-out: %s\n' "$MYPUB" "$OTHERPUB" > "$PINCOMMENT"
 set +e
-CIPHER_BRAIN_HOME="$OTHER" CIPHER_BRAIN_PIN_RECIPIENTS="$PINCOMMENT" \
+CYPHER_BRAIN_HOME="$OTHER" CYPHER_BRAIN_PIN_RECIPIENTS="$PINCOMMENT" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --recipient "$OTHER/recipient.txt" --out "$TMP/pin-comment.age" >/dev/null 2>&1; RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: pin allowed a key that was only in a comment line"; exit 1; fi
 test ! -f "$TMP/pin-comment.age"
 echo "[PASS] snapshot refused a recipient whose key was only commented-out in the allowlist"
-# (f) #101: an explicitly EMPTY CIPHER_BRAIN_PIN_RECIPIENTS="" (e.g. a broken
+# (f) #101: an explicitly EMPTY CYPHER_BRAIN_PIN_RECIPIENTS="" (e.g. a broken
 # cron/systemd template expansion) must fail CLOSED, not be silently treated the
 # same as an unset var (which would disable the allowlist entirely — fail-open).
 set +e
-CIPHER_BRAIN_HOME="$PINHOME" CIPHER_BRAIN_PIN_RECIPIENTS="" \
+CYPHER_BRAIN_HOME="$PINHOME" CYPHER_BRAIN_PIN_RECIPIENTS="" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/pin-empty.age" >"$TMP/pin-empty.log" 2>&1; RC=$?
 set -e
-if [ "$RC" = "0" ]; then echo "FAIL: snapshot succeeded with CIPHER_BRAIN_PIN_RECIPIENTS=\"\" (fail-open regression)"; cat "$TMP/pin-empty.log"; exit 1; fi
+if [ "$RC" = "0" ]; then echo "FAIL: snapshot succeeded with CYPHER_BRAIN_PIN_RECIPIENTS=\"\" (fail-open regression)"; cat "$TMP/pin-empty.log"; exit 1; fi
 test ! -f "$TMP/pin-empty.age"
-grep -q "CIPHER_BRAIN_PIN_RECIPIENTS is set but empty" "$TMP/pin-empty.log" || { echo "FAIL: expected the fail-closed empty-pin error message"; cat "$TMP/pin-empty.log"; exit 1; }
-echo "[PASS] snapshot fails closed when CIPHER_BRAIN_PIN_RECIPIENTS is explicitly empty"
+grep -q "CYPHER_BRAIN_PIN_RECIPIENTS is set but empty" "$TMP/pin-empty.log" || { echo "FAIL: expected the fail-closed empty-pin error message"; cat "$TMP/pin-empty.log"; exit 1; }
+echo "[PASS] snapshot fails closed when CYPHER_BRAIN_PIN_RECIPIENTS is explicitly empty"
 
 echo "== push arweave/turbo --yes guard: requires explicit opt-in before a paid permanent store =="
-# #160: push now computes + prints the cost estimate BEFORE the --yes/CIPHER_BRAIN_YES
+# #160: push now computes + prints the cost estimate BEFORE the --yes/CYPHER_BRAIN_YES
 # gate (previously the gate fired first, and the estimate only ran INSIDE backend.put(),
 # i.e. only after consent was already given). That estimate is a real, unauthenticated
 # price query (arweave: GET <gateway>/price/<bytes>; turbo: the SDK's pricing call) —
@@ -574,16 +574,16 @@ echo "== push arweave/turbo --yes guard: requires explicit opt-in before a paid 
 # "(dependency not installed)" branches). Either way, the wallet/SDK signing path is
 # still never reached without --yes (put() is never called), so the gate itself remains
 # a no-signing, no-spend check.
-AR_OFFLINE=(CIPHER_BRAIN_AR_HOST=127.0.0.1 CIPHER_BRAIN_AR_PORT=1 CIPHER_BRAIN_AR_PROTOCOL=http)
+AR_OFFLINE=(CYPHER_BRAIN_AR_HOST=127.0.0.1 CYPHER_BRAIN_AR_PORT=1 CYPHER_BRAIN_AR_PROTOCOL=http)
 set +e
 OUT_AR=$(env "${AR_OFFLINE[@]}" node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC_AR=$?
 OUT_TU=$(env "${AR_OFFLINE[@]}" node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend turbo  2>&1); RC_TU=$?
 set -e
 [ "$RC_AR" != "0" ] || { echo "[FAIL] push arweave without --yes exited 0"; exit 1; }
 [ "$RC_TU" != "0" ] || { echo "[FAIL] push turbo without --yes exited 0"; exit 1; }
-printf '%s' "$OUT_AR" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
+printf '%s' "$OUT_AR" | grep -qi "CYPHER_BRAIN_YES\|--yes" \
   || { echo "[FAIL] push arweave error lacks --yes guidance"; echo "$OUT_AR"; exit 1; }
-printf '%s' "$OUT_TU" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
+printf '%s' "$OUT_TU" | grep -qi "CYPHER_BRAIN_YES\|--yes" \
   || { echo "[FAIL] push turbo error lacks --yes guidance"; echo "$OUT_TU"; exit 1; }
 echo "[PASS] push arweave/turbo without --yes fails with clear guidance"
 echo "== issue #212: the --yes consent-gate refusal carries the CB-E007 error code =="
@@ -605,15 +605,15 @@ YES_LINE_TU=$(printf '%s\n' "$OUT_TU" | grep -n -i "re-run push with --yes" | he
 [ "$EST_LINE_TU" -lt "$YES_LINE_TU" ] \
   || { echo "[FAIL] push turbo printed the --yes consent gate before the cost estimate (#160 regression)"; echo "$OUT_TU"; exit 1; }
 echo "[PASS] push arweave/turbo prints the cost estimate BEFORE asking for --yes consent (#160)"
-# With CIPHER_BRAIN_YES=1 the --yes guard passes; the error moves further in
+# With CYPHER_BRAIN_YES=1 the --yes guard passes; the error moves further in
 # (wallet / SDK missing), which proves the guard no longer blocks.
 set +e
-OUT2=$(env "${AR_OFFLINE[@]}" CIPHER_BRAIN_YES=1 node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC2=$?
+OUT2=$(env "${AR_OFFLINE[@]}" CYPHER_BRAIN_YES=1 node "${BIN_DEV_ARGS[@]}" "$BIN" push --in "$TMP/snap.age" --backend arweave 2>&1); RC2=$?
 set -e
 [ "$RC2" != "0" ] || { echo "[FAIL] arweave push should fail (no wallet in test env)"; exit 1; }
-printf '%s' "$OUT2" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
-  && { echo "[FAIL] CIPHER_BRAIN_YES=1 still hitting the --yes gate"; echo "$OUT2"; exit 1; } || true
-echo "[PASS] push arweave with CIPHER_BRAIN_YES=1 passes the --yes guard (fails further in: wallet/SDK)"
+printf '%s' "$OUT2" | grep -qi "CYPHER_BRAIN_YES\|--yes" \
+  && { echo "[FAIL] CYPHER_BRAIN_YES=1 still hitting the --yes gate"; echo "$OUT2"; exit 1; } || true
+echo "[PASS] push arweave with CYPHER_BRAIN_YES=1 passes the --yes guard (fails further in: wallet/SDK)"
 
 echo "== issue #211: estimate --json prints the SAME CostEstimate object as one JSON line, human output unchanged =="
 # Capture the full output first (command substitution reads to EOF) rather than
@@ -647,7 +647,7 @@ printf 'process.on("SIGTERM",()=>{});\nsetTimeout(()=>process.exit(0),30000);\np
 TOUT="$TMP/timeout-snap.age"
 START=$(date +%s)
 set +e
-TERR=$(PATH="$STUBBIN:$PATH" TAR_STUB_MODE=wedge CIPHER_BRAIN_PIPE_TIMEOUT=600 node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TOUT" 2>&1); TRC=$?
+TERR=$(PATH="$STUBBIN:$PATH" TAR_STUB_MODE=wedge CYPHER_BRAIN_PIPE_TIMEOUT=600 node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TOUT" 2>&1); TRC=$?
 set -e
 ELAPSED=$(( $(date +%s) - START ))
 [ "$TRC" != "0" ] || { echo "[FAIL] wedged-tar snapshot exited 0"; exit 1; }
@@ -658,14 +658,14 @@ printf '%s' "$TERR" | grep -qi "timed out" || { echo "[FAIL] no timeout error su
 test ! -f "$TOUT"                                       # no finished output
 [ -z "$(find "$TMP" -name '*.part' 2>/dev/null)" ] || { echo "[FAIL] a .part lingered after timeout"; exit 1; }
 # the staged plaintext dir must be erased by snapshot's finally on the timeout path
-[ -z "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cipher-brain-*' -newermt "@$START" 2>/dev/null)" ] \
-  || { echo "[FAIL] a staged-plaintext cipher-brain-* dir lingered after timeout"; exit 1; }
+[ -z "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cypher-brain-*' -newermt "@$START" 2>/dev/null)" ] \
+  || { echo "[FAIL] a staged-plaintext cypher-brain-* dir lingered after timeout"; exit 1; }
 echo "[PASS] SIGTERM-ignoring tar killed via SIGKILL escalation in ${ELAPSED}s; no output / .part / staged plaintext"
 
 echo "== single-key warning counts DISTINCT keys, not --recipient args (#43) =="
 # one --recipient file holding TWO keys must NOT warn (recovery exists); a duplicate
 # (two args, same key) MUST warn.
-keygen2() { CIPHER_BRAIN_HOME="$1" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null 2>&1; }
+keygen2() { CYPHER_BRAIN_HOME="$1" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null 2>&1; }
 keygen2 "$TMP/k-a"; keygen2 "$TMP/k-b"
 MULTIREC="$TMP/multi-recipient.txt"
 cat "$TMP/k-a/recipient.txt" "$TMP/k-b/recipient.txt" > "$MULTIREC"
@@ -692,7 +692,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
     echo "[SKIP] #119 chmod-fail-closed repro: chflags uchg is unsupported on this filesystem (e.g. a virtualized TMPDIR)"
   else
     set +e
-    OUT=$(CIPHER_BRAIN_HOME="$CHMOD_FAIL_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen 2>&1); RC=$?
+    OUT=$(CYPHER_BRAIN_HOME="$CHMOD_FAIL_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen 2>&1); RC=$?
     set -e
     chflags nouchg "$CHMOD_FAIL_HOME" # clear FIRST — every check below may exit 1, and the
                                        # trap's rm -rf "$TMP" cannot remove an immutable dir
@@ -708,22 +708,22 @@ fi
 
 echo "== #120 regression: --recipient FILE whose path contains 'age1' is read as a file, not mistaken for an inline literal =="
 REC_AGE1_HOME="$TMP/rec-age1-home"
-CIPHER_BRAIN_HOME="$REC_AGE1_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+CYPHER_BRAIN_HOME="$REC_AGE1_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
 REC_AGE1_FILE="$TMP/age1-manual-recipients.txt"   # the filename itself starts with "age1"
 printf '%s\n' "$(cat "$REC_AGE1_HOME/recipient.txt")" > "$REC_AGE1_FILE"
 cb snapshot --dir "$SRC" --recipient "$REC_AGE1_FILE" --out "$TMP/age1-file-recipient.age" >/dev/null
 test -f "$TMP/age1-file-recipient.age" || { echo "FAIL: snapshot did not honor a recipients FILE whose path starts with 'age1'"; exit 1; }
-CIPHER_BRAIN_HOME="$REC_AGE1_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/age1-file-recipient.age" 2>&1 | grep -q 'VERDICT: PASS' \
+CYPHER_BRAIN_HOME="$REC_AGE1_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/age1-file-recipient.age" 2>&1 | grep -q 'VERDICT: PASS' \
   || { echo "FAIL: the age1-named-file recipient did not actually decrypt (recipientEntries misread the filename as the literal key)"; exit 1; }
 echo "[PASS] --recipient honored a file-based recipient whose path contains 'age1' (recipientEntries checks existence before the age1 prefix, #120)"
 
 echo "== #121 regression: keygen refuses to silently re-key a stray recipient.txt that has no matching identity.age =="
 STRAY_HOME="$TMP/stray-recipient-home"
-CIPHER_BRAIN_HOME="$STRAY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+CYPHER_BRAIN_HOME="$STRAY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
 STRAY_RECIPIENT_ORIG="$(cat "$STRAY_HOME/recipient.txt")"
 rm -f "$STRAY_HOME/identity.age"   # simulate: identity moved offline (cold storage), recipient.txt left behind
 set +e
-OUT=$(CIPHER_BRAIN_HOME="$STRAY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen 2>&1); RC=$?
+OUT=$(CYPHER_BRAIN_HOME="$STRAY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen 2>&1); RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: keygen silently re-keyed a stray recipient.txt with no matching identity — the #121 regression"; echo "$OUT"; exit 1; fi
 printf '%s' "$OUT" | grep -qi "recipient already exists" || { echo "FAIL: wrong error for a stray pre-existing recipient.txt"; echo "$OUT"; exit 1; }
@@ -733,17 +733,17 @@ echo "[PASS] keygen refuses to re-key a stray pre-existing recipient.txt without
 
 echo "== #122 regression: a failed 'keygen --force' (new payload never finishes) must not lose the OLD identity =="
 FORCE_HOME="$TMP/force-atomic-home"
-CIPHER_BRAIN_HOME="$FORCE_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+CYPHER_BRAIN_HOME="$FORCE_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
 ORIG_IDENTITY_SHA="$(shasum -a 256 "$FORCE_HOME/identity.age" | cut -d' ' -f1)"
 ORIG_RECIPIENT="$(cat "$FORCE_HOME/recipient.txt")"
-# --passphrase with no CIPHER_BRAIN_PASSPHRASE and no TTY (< /dev/null): askNewPassphrase()
+# --passphrase with no CYPHER_BRAIN_PASSPHRASE and no TTY (< /dev/null): askNewPassphrase()
 # throws deterministically ("stdin is not a TTY") AFTER the new keypair is generated but
 # BEFORE keygenAt() ever touches identityPath/recipientPath on disk (see keys.ts) — the
 # same "prepare fully, THEN replace" ordering the #122 fix requires.
 set +e
-OUT=$(CIPHER_BRAIN_HOME="$FORCE_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --force --passphrase < /dev/null 2>&1); RC=$?
+OUT=$(CYPHER_BRAIN_HOME="$FORCE_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --force --passphrase < /dev/null 2>&1); RC=$?
 set -e
-if [ "$RC" = "0" ]; then echo "FAIL: keygen --force --passphrase succeeded despite no TTY / no CIPHER_BRAIN_PASSPHRASE"; echo "$OUT"; exit 1; fi
+if [ "$RC" = "0" ]; then echo "FAIL: keygen --force --passphrase succeeded despite no TTY / no CYPHER_BRAIN_PASSPHRASE"; echo "$OUT"; exit 1; fi
 printf '%s' "$OUT" | grep -qi "not a TTY" || { echo "FAIL: expected the passphrase-requires-a-TTY error"; echo "$OUT"; exit 1; }
 [ "$(shasum -a 256 "$FORCE_HOME/identity.age" | cut -d' ' -f1)" = "$ORIG_IDENTITY_SHA" ] || { echo "FAIL: the ORIGINAL identity was lost/modified by a failed --force keygen — the #122 regression (delete-before-ready)"; exit 1; }
 [ "$(cat "$FORCE_HOME/recipient.txt")" = "$ORIG_RECIPIENT" ] || { echo "FAIL: the ORIGINAL recipient was lost/modified by a failed --force keygen"; exit 1; }
@@ -752,7 +752,7 @@ TMP_LEFTOVER="$(find "$FORCE_HOME" -maxdepth 1 -name '*.tmp' 2>/dev/null | head 
 echo "[PASS] a failed --force keygen (passphrase step throwing) leaves the ORIGINAL identity/recipient completely intact — nothing is deleted before the replacement is ready"
 
 echo "== #122: a SUCCESSFUL 'keygen --force' actually replaces identity+recipient, atomically, with no leftover temp file =="
-CIPHER_BRAIN_HOME="$FORCE_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --force >/dev/null
+CYPHER_BRAIN_HOME="$FORCE_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --force >/dev/null
 [ "$(shasum -a 256 "$FORCE_HOME/identity.age" | cut -d' ' -f1)" != "$ORIG_IDENTITY_SHA" ] || { echo "FAIL: --force did not actually replace the identity"; exit 1; }
 [ "$(cat "$FORCE_HOME/recipient.txt")" != "$ORIG_RECIPIENT" ] || { echo "FAIL: --force did not actually replace the recipient"; exit 1; }
 [ "$(stat -c '%a' "$FORCE_HOME/identity.age" 2>/dev/null || stat -f '%Lp' "$FORCE_HOME/identity.age")" = "600" ] || { echo "FAIL: the replaced identity is not mode 600"; exit 1; }
@@ -762,36 +762,36 @@ echo "[PASS] keygen --force replaces both identity and recipient with a fresh ke
 
 echo "== #110: 'keygen --wrap-in-place' passphrase-protects an EXISTING identity WITHOUT replacing it =="
 WRAP_HOME="$TMP/wrap-home"
-CIPHER_BRAIN_HOME="$WRAP_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+CYPHER_BRAIN_HOME="$WRAP_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
 WRAP_RECIPIENT_ORIG="$(cat "$WRAP_HOME/recipient.txt")"
 # Prove non-destructiveness end-to-end, not just "the recipient string didn't change":
 # encrypt a snapshot to this identity BEFORE wrapping it, then decrypt that SAME
 # snapshot AFTER wrapping — if --wrap-in-place secretly generated a brand-new keypair
 # (the exact #110 bug `keygen --passphrase --force` has), this pre-wrap snapshot would
 # no longer decrypt with the now-wrapped identity.
-CIPHER_BRAIN_HOME="$WRAP_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/wrap-presnap.age" >/dev/null
+CYPHER_BRAIN_HOME="$WRAP_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --out "$TMP/wrap-presnap.age" >/dev/null
 
-CIPHER_BRAIN_HOME="$WRAP_HOME" CIPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" \
+CYPHER_BRAIN_HOME="$WRAP_HOME" CYPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place >/dev/null
 
 grep -qa '^-> scrypt ' "$WRAP_HOME/identity.age" || { echo "FAIL: keygen --wrap-in-place did not actually scrypt-wrap the identity"; exit 1; }
 [ "$(cat "$WRAP_HOME/recipient.txt")" = "$WRAP_RECIPIENT_ORIG" ] || { echo "FAIL: keygen --wrap-in-place changed the recipient — it generated a NEW keypair instead of wrapping the existing one (the #110 bug)"; exit 1; }
 
-CIPHER_BRAIN_HOME="$WRAP_HOME" CIPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" \
+CYPHER_BRAIN_HOME="$WRAP_HOME" CYPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/wrap-presnap.age" 2>&1 | grep -q 'VERDICT: PASS' \
   || { echo "FAIL: a snapshot encrypted BEFORE the wrap no longer decrypts with the wrapped identity — wrap-in-place did not preserve the original keypair"; exit 1; }
 echo "[PASS] keygen --wrap-in-place scrypt-wraps the identity in place, keeps the SAME recipient, and a snapshot made BEFORE the wrap still decrypts with it afterward"
 
 echo "== keygen --wrap-in-place refuses a no-op re-wrap and a missing identity =="
 set +e
-OUT=$(CIPHER_BRAIN_HOME="$WRAP_HOME" CIPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place 2>&1); RC=$?
+OUT=$(CYPHER_BRAIN_HOME="$WRAP_HOME" CYPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place 2>&1); RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: re-wrapping an already-wrapped identity should refuse, not succeed"; echo "$OUT"; exit 1; fi
 printf '%s' "$OUT" | grep -qi "already passphrase-wrapped" || { echo "FAIL: wrong error for re-wrapping an already-wrapped identity"; echo "$OUT"; exit 1; }
 
 NOKEY_HOME="$TMP/wrap-no-identity-home"; mkdir -p "$NOKEY_HOME"
 set +e
-OUT=$(CIPHER_BRAIN_HOME="$NOKEY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place 2>&1); RC=$?
+OUT=$(CYPHER_BRAIN_HOME="$NOKEY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place 2>&1); RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: --wrap-in-place should refuse when no identity exists yet"; echo "$OUT"; exit 1; fi
 printf '%s' "$OUT" | grep -qi "no identity found" || { echo "FAIL: wrong error for a missing identity"; echo "$OUT"; exit 1; }
@@ -804,8 +804,8 @@ echo "== keygen --wrap-in-place also refuses an ASCII-ARMORED already-wrapped id
 # must recognize both shapes too, or it would silently double-wrap/corrupt an armored
 # one instead of refusing.
 ARMOR_HOME="$TMP/wrap-armor-home"
-CIPHER_BRAIN_HOME="$ARMOR_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
-CIPHER_BRAIN_HOME="$ARMOR_HOME" CIPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" \
+CYPHER_BRAIN_HOME="$ARMOR_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen >/dev/null
+CYPHER_BRAIN_HOME="$ARMOR_HOME" CYPHER_BRAIN_PASSPHRASE="wrap-in-place-test-pass" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place >/dev/null
 node -e "
 const fs = require('fs');
@@ -816,14 +816,14 @@ fs.writeFileSync(process.argv[1], armor.encode(new Uint8Array(raw)));
 grep -q -- '-----BEGIN AGE ENCRYPTED FILE-----' "$ARMOR_HOME/identity.age" || { echo "FAIL: test setup: identity.age was not actually armored"; exit 1; }
 ARMORED_SHA="$(shasum -a 256 "$ARMOR_HOME/identity.age" | cut -d' ' -f1)"
 set +e
-OUT=$(CIPHER_BRAIN_HOME="$ARMOR_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place 2>&1); RC=$?
+OUT=$(CYPHER_BRAIN_HOME="$ARMOR_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --wrap-in-place 2>&1); RC=$?
 set -e
 if [ "$RC" = "0" ]; then echo "FAIL: re-wrapping an ASCII-armored already-wrapped identity should refuse, not succeed"; echo "$OUT"; exit 1; fi
 printf '%s' "$OUT" | grep -qi "already passphrase-wrapped" || { echo "FAIL: wrong error for re-wrapping an armored already-wrapped identity"; echo "$OUT"; exit 1; }
 [ "$(shasum -a 256 "$ARMOR_HOME/identity.age" | cut -d' ' -f1)" = "$ARMORED_SHA" ] || { echo "FAIL: the armored identity was modified despite the refusal — double-wrap corruption"; exit 1; }
 echo "[PASS] keygen --wrap-in-place recognizes an ASCII-armored identity as already-wrapped too, refuses, and leaves it byte-identical (no double-wrap corruption)"
 
-echo "== #111 regression: restore --pg requires --yes/CIPHER_BRAIN_YES before pg_restore --clean --if-exists =="
+echo "== #111 regression: restore --pg requires --yes/CYPHER_BRAIN_YES before pg_restore --clean --if-exists =="
 # pg_restore --clean --if-exists DROPs/replaces objects in the target DB — an
 # irreversible operation, so it needs the same explicit-opt-in gate as push's
 # paid-backend guard above. The gate fires before any decrypt/extract work, so
@@ -832,33 +832,33 @@ set +e
 OUT=$(node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$TMP/pg-noyes-out" --pg "postgres://x/y" 2>&1); RC=$?
 set -e
 [ "$RC" != "0" ] || { echo "[FAIL] restore --pg without --yes exited 0"; exit 1; }
-printf '%s' "$OUT" | grep -qi "CIPHER_BRAIN_YES\|--yes" \
+printf '%s' "$OUT" | grep -qi "CYPHER_BRAIN_YES\|--yes" \
   || { echo "[FAIL] restore --pg without --yes error lacks --yes guidance"; echo "$OUT"; exit 1; }
 test ! -e "$TMP/pg-noyes-out" || { echo "[FAIL] the consent gate ran AFTER out-dir was created"; exit 1; }
 echo "[PASS] restore --pg without --yes fails with clear guidance, before touching --out-dir"
-# --yes (or CIPHER_BRAIN_YES=1) passes the gate — the error moves further in (this
+# --yes (or CYPHER_BRAIN_YES=1) passes the gate — the error moves further in (this
 # snapshot has no db.dump, so it now fails on THAT check instead), proving the gate
 # no longer blocks. Needs the correct identity ($TMP/keys, snap.age's recipient).
 set +e
-OUT2=$(CIPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$TMP/pg-yes-out" --pg "postgres://x/y" --yes 2>&1); RC2=$?
+OUT2=$(CYPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$TMP/pg-yes-out" --pg "postgres://x/y" --yes 2>&1); RC2=$?
 set -e
 [ "$RC2" != "0" ] || { echo "[FAIL] restore --pg --yes against a snapshot with no db.dump exited 0"; exit 1; }
 printf '%s' "$OUT2" | grep -qi "no db.dump in snapshot" \
   || { echo "[FAIL] --yes did not pass the consent gate (expected to fail further in, on the missing db.dump)"; echo "$OUT2"; exit 1; }
 set +e
-OUT3=$(CIPHER_BRAIN_HOME="$TMP/keys" CIPHER_BRAIN_YES=1 node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$TMP/pg-envyes-out" --pg "postgres://x/y" 2>&1); RC3=$?
+OUT3=$(CYPHER_BRAIN_HOME="$TMP/keys" CYPHER_BRAIN_YES=1 node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$TMP/pg-envyes-out" --pg "postgres://x/y" 2>&1); RC3=$?
 set -e
-[ "$RC3" != "0" ] || { echo "[FAIL] restore --pg with CIPHER_BRAIN_YES=1 against a snapshot with no db.dump exited 0"; exit 1; }
+[ "$RC3" != "0" ] || { echo "[FAIL] restore --pg with CYPHER_BRAIN_YES=1 against a snapshot with no db.dump exited 0"; exit 1; }
 printf '%s' "$OUT3" | grep -qi "no db.dump in snapshot" \
-  || { echo "[FAIL] CIPHER_BRAIN_YES=1 did not pass the consent gate"; echo "$OUT3"; exit 1; }
-echo "[PASS] --yes and CIPHER_BRAIN_YES=1 both pass the consent gate (fail further in: missing db.dump)"
+  || { echo "[FAIL] CYPHER_BRAIN_YES=1 did not pass the consent gate"; echo "$OUT3"; exit 1; }
+echo "[PASS] --yes and CYPHER_BRAIN_YES=1 both pass the consent gate (fail further in: missing db.dump)"
 
 echo "== #112 regression: restore --keep-old-files does not clobber a pre-existing file in --out-dir =="
 KOF_OUT="$TMP/keep-old-out"
 mkdir -p "$KOF_OUT"
 SENTINEL="PRE-EXISTING-DO-NOT-OVERWRITE-$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')"
 printf '%s\n' "$SENTINEL" > "$KOF_OUT/manifest.json"   # same top-level name a real restore would extract
-CIPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$KOF_OUT" >/dev/null
+CYPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/snap.age" --out-dir "$KOF_OUT" >/dev/null
 [ "$(cat "$KOF_OUT/manifest.json")" = "$SENTINEL" ] || { echo "[FAIL] restore overwrote a pre-existing file in --out-dir (missing --keep-old-files)"; exit 1; }
 test -f "$KOF_OUT/brain-src.tar.gz" || { echo "[FAIL] restore did not extract the non-colliding component alongside the kept file"; exit 1; }
 echo "[PASS] restore --keep-old-files preserves a pre-existing file in --out-dir while extracting the rest of the archive around it"
@@ -886,12 +886,12 @@ exec sleep 30
 SHIM
 chmod +x "$FAKE_PGBIN_R/pg_restore"
 PGTO_SNAP="$TMP/pg-timeout-snap.age"
-CIPHER_BRAIN_HOME="$TMP/keys" CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN_R" \
+CYPHER_BRAIN_HOME="$TMP/keys" CYPHER_BRAIN_PG_BIN="$FAKE_PGBIN_R" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --pg "postgres://fake/conn" --out "$PGTO_SNAP" >/dev/null
 PGTO_OUT="$TMP/pg-timeout-out"
 START=$(date +%s)
 set +e
-TERR=$(CIPHER_BRAIN_HOME="$TMP/keys" CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN_R" CIPHER_BRAIN_PIPE_TIMEOUT=600 \
+TERR=$(CYPHER_BRAIN_HOME="$TMP/keys" CYPHER_BRAIN_PG_BIN="$FAKE_PGBIN_R" CYPHER_BRAIN_PIPE_TIMEOUT=600 \
   node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$PGTO_SNAP" --out-dir "$PGTO_OUT" --pg "postgres://fake/scratch" --yes 2>&1); TRC=$?
 set -e
 ELAPSED=$(( $(date +%s) - START ))
@@ -903,9 +903,9 @@ echo "[PASS] a wedged pg_restore is killed by the timeout in ${ELAPSED}s instead
 echo "== #235: --pg-filter / --pg-exclude-table-data are a literal pass-through to pg_dump's OWN flags =="
 # A fake pg_dump that ALSO records its exact argv (via an env-provided log path, NOT a
 # stage-relative one — the real stage dir is rm'd in snapshot()'s finally block before we'd
-# get a chance to read anything left inside it) so we can assert precisely what cipher-brain
+# get a chance to read anything left inside it) so we can assert precisely what cypher-brain
 # invoked pg_dump with, without needing a real Postgres instance (same shim pattern as the
-# #106 test above — cipher-brain does no SQL parsing/filtering of its own, so proving the
+# #106 test above — cypher-brain does no SQL parsing/filtering of its own, so proving the
 # flags reach pg_dump's argv unchanged is the whole test).
 FAKE_PGBIN_F="$TMP/fake-pgbin-filter"; mkdir -p "$FAKE_PGBIN_F"
 cat > "$FAKE_PGBIN_F/pg_dump" <<'SHIM'
@@ -931,7 +931,7 @@ EOF
 # (a) flags given -> --filter/--exclude-table-data reach pg_dump's argv verbatim.
 FILTER_ARGV="$TMP/pg-dump-argv-filter.txt"
 FILTER_SNAP="$TMP/pg-filter-snap.age"
-CIPHER_BRAIN_HOME="$TMP/keys" CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN_F" PG_DUMP_ARGV_LOG="$FILTER_ARGV" \
+CYPHER_BRAIN_HOME="$TMP/keys" CYPHER_BRAIN_PG_BIN="$FAKE_PGBIN_F" PG_DUMP_ARGV_LOG="$FILTER_ARGV" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --pg "postgres://fake/conn" \
     --pg-filter "$FILTER_FILE" \
     --pg-exclude-table-data tool_logs --pg-exclude-table-data embedding_cache \
@@ -948,7 +948,7 @@ echo "[PASS] --pg-filter <file> and --pg-exclude-table-data <t> (repeated) reach
 
 # (b) the manifest records what was passed (transparency, same spirit as --pg-table's `tables`).
 FILTER_OUT="$TMP/pg-filter-restore-out"
-CIPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$FILTER_SNAP" --out-dir "$FILTER_OUT" \
+CYPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$FILTER_SNAP" --out-dir "$FILTER_OUT" \
   --no-expand-components >/dev/null
 grep -qF "\"filter\": \"$FILTER_FILE\"" "$FILTER_OUT/manifest.json" \
   || { echo "[FAIL] manifest.json does not record the --pg-filter file path"; cat "$FILTER_OUT/manifest.json"; exit 1; }
@@ -960,7 +960,7 @@ echo "[PASS] manifest.json records the --pg-filter path and --pg-exclude-table-d
 # (c) unspecified (the default) -> pg_dump's argv carries NEITHER flag (identical to pre-#235
 # behavior: a full, unfiltered dump).
 PLAIN_ARGV="$TMP/pg-dump-argv-plain.txt"
-CIPHER_BRAIN_HOME="$TMP/keys" CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN_F" PG_DUMP_ARGV_LOG="$PLAIN_ARGV" \
+CYPHER_BRAIN_HOME="$TMP/keys" CYPHER_BRAIN_PG_BIN="$FAKE_PGBIN_F" PG_DUMP_ARGV_LOG="$PLAIN_ARGV" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --pg "postgres://fake/conn" --out "$TMP/pg-plain-snap.age" >/dev/null
 if grep -q -- '--filter\|--exclude-table-data' "$PLAIN_ARGV"; then
   echo "[FAIL] pg_dump argv carries --filter/--exclude-table-data even though neither flag was passed"
@@ -969,7 +969,7 @@ fi
 echo "[PASS] omitting --pg-filter/--pg-exclude-table-data leaves pg_dump's argv exactly as before (no filtering)"
 
 echo "== #215: --scan-secrets warn|deny (gitleaks) =="
-# This whole section is deliberately explicit about CIPHER_BRAIN_HOME="$TMP/keys" on
+# This whole section is deliberately explicit about CYPHER_BRAIN_HOME="$TMP/keys" on
 # EVERY invocation (snapshot AND restore) rather than relying on the ambient exported
 # default — the export was repointed to "$TMP/keys2" earlier in this script (line ~216),
 # so a bare `cb` call and an explicit "$TMP/keys" override would silently use TWO
@@ -977,7 +977,7 @@ echo "== #215: --scan-secrets warn|deny (gitleaks) =="
 # the identity a paired restore call explicitly names).
 echo "== #215: --scan-secrets is validated up front (bad value refused before any work) =="
 set +e
-BADMODE_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/badmode.age" --scan-secrets bogus 2>&1); BADMODE_RC=$?
+BADMODE_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/badmode.age" --scan-secrets bogus 2>&1); BADMODE_RC=$?
 set -e
 [ "$BADMODE_RC" != "0" ] || { echo "[FAIL] --scan-secrets bogus was accepted"; exit 1; }
 printf '%s' "$BADMODE_ERR" | grep -q 'must be "warn", "deny", "off"' || { echo "[FAIL] wrong error for --scan-secrets bogus"; echo "$BADMODE_ERR"; exit 1; }
@@ -988,7 +988,7 @@ echo "== #307: --scan-secrets with NO --dir/--profile source is refused (it woul
 # Needs no gitleaks: the refusal is checked BEFORE assertGitleaksAvailable() precisely so
 # the answer does not depend on whether the host happens to have the binary.
 set +e
-NOSRC_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/nosrc.age" --scan-secrets deny 2>&1); NOSRC_RC=$?
+NOSRC_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/nosrc.age" --scan-secrets deny 2>&1); NOSRC_RC=$?
 set -e
 [ "$NOSRC_RC" != "0" ] || { echo "[FAIL] --scan-secrets deny with only --pg was accepted — it would scan nothing while reporting deny"; exit 1; }
 printf '%s' "$NOSRC_ERR" | grep -q 'nothing to scan' || { echo "[FAIL] the refusal does not say the scan would have no component to look at"; echo "$NOSRC_ERR"; exit 1; }
@@ -997,36 +997,36 @@ test ! -e "$TMP/nosrc.age" || { echo "[FAIL] --scan-secrets with no scannable so
 # as far as pg_dump and fails there for its own unrelated reason — an unreachable test
 # DSN — which is exactly the point: the new check fires only when the flag is present).
 set +e
-PGONLY_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/nosrc-noflag.age" 2>&1)
+PGONLY_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/nosrc-noflag.age" 2>&1)
 set -e
 if printf '%s' "$PGONLY_ERR" | grep -q 'nothing to scan'; then echo "[FAIL] a --pg-only snapshot WITHOUT --scan-secrets was refused by the new check"; echo "$PGONLY_ERR"; exit 1; fi
 echo "[PASS] --scan-secrets is refused when no --dir/--profile source would be scanned, without needing gitleaks, and only when the flag is present"
 
 echo "== #307: --scan-secrets + --dry-run is refused (a dry run stages nothing, so the preview would exit 0 having scanned nothing) =="
 set +e
-DRYSCAN_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run --scan-secrets deny 2>&1); DRYSCAN_RC=$?
+DRYSCAN_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run --scan-secrets deny 2>&1); DRYSCAN_RC=$?
 # The pre-#307 shape of the same hole: --dry-run returned before the mode was even
 # validated, so a value the real run rejects also exited 0.
-DRYBAD_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run --scan-secrets bogus 2>&1); DRYBAD_RC=$?
+DRYBAD_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run --scan-secrets bogus 2>&1); DRYBAD_RC=$?
 set -e
 [ "$DRYSCAN_RC" != "0" ] || { echo "[FAIL] --dry-run --scan-secrets deny exited 0 — readable as a clean scan preflight when nothing was scanned"; echo "$DRYSCAN_ERR"; exit 1; }
 printf '%s' "$DRYSCAN_ERR" | grep -q -- 'cannot be combined with --dry-run' || { echo "[FAIL] the --dry-run refusal does not explain the combination"; echo "$DRYSCAN_ERR"; exit 1; }
 [ "$DRYBAD_RC" != "0" ] || { echo "[FAIL] --dry-run --scan-secrets bogus exited 0"; echo "$DRYBAD_ERR"; exit 1; }
 # --dry-run on its own is untouched by this refusal.
-CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run > /dev/null 2>&1 || { echo "[FAIL] a plain --dry-run was broken by the new refusal"; exit 1; }
+CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --dry-run > /dev/null 2>&1 || { echo "[FAIL] a plain --dry-run was broken by the new refusal"; exit 1; }
 echo "[PASS] --scan-secrets with --dry-run is refused (both a valid and an invalid mode), while a plain --dry-run still previews"
 
 echo "== #307: a value-taking flag given with NO value is refused, naming the flag (it used to read as \"flag omitted\" and silently disable the gate) =="
 set +e
-NOVAL_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/noval.age" --scan-secrets 2>&1); NOVAL_RC=$?
+NOVAL_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/noval.age" --scan-secrets 2>&1); NOVAL_RC=$?
 set -e
 [ "$NOVAL_RC" != "0" ] || { echo "[FAIL] a trailing --scan-secrets (no mode) was accepted — the gate is silently off"; exit 1; }
 printf '%s' "$NOVAL_ERR" | grep -q -- '--scan-secrets requires a value' || { echo "[FAIL] the refusal does not name the flag that is missing its value"; echo "$NOVAL_ERR"; exit 1; }
 test ! -e "$TMP/noval.age" || { echo "[FAIL] a trailing --scan-secrets still produced an output file"; exit 1; }
 # Not special-cased to one flag: the parser refuses ANY value-taking flag left dangling.
 set +e
-NOVAL_OUT_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out 2>&1); NOVAL_OUT_RC=$?
-NOVAL_REC_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/noval2.age" --recipient 2>&1); NOVAL_REC_RC=$?
+NOVAL_OUT_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out 2>&1); NOVAL_OUT_RC=$?
+NOVAL_REC_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/noval2.age" --recipient 2>&1); NOVAL_REC_RC=$?
 set -e
 [ "$NOVAL_OUT_RC" != "0" ] || { echo "[FAIL] a trailing --out was accepted"; exit 1; }
 printf '%s' "$NOVAL_OUT_ERR" | grep -q -- '--out requires a value' || { echo "[FAIL] a trailing --out does not name itself"; echo "$NOVAL_OUT_ERR"; exit 1; }
@@ -1037,7 +1037,7 @@ printf '%s' "$NOVAL_REC_ERR" | grep -q -- '--recipient requires a value' || { ec
 # out="--scan-secrets", scan_secrets=undefined, _="deny" — an UNSCANNED snapshot written to
 # a file literally named "--scan-secrets", from a command line that asked for deny.
 set +e
-EATEN_ERR=$(cd "$TMP" && CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out --scan-secrets deny 2>&1); EATEN_RC=$?
+EATEN_ERR=$(cd "$TMP" && CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out --scan-secrets deny 2>&1); EATEN_RC=$?
 set -e
 [ "$EATEN_RC" != "0" ] || { echo "[FAIL] '--out --scan-secrets deny' was accepted — the snapshot ran with the gate silently off"; echo "$EATEN_ERR"; exit 1; }
 printf '%s' "$EATEN_ERR" | grep -q -- '--out requires a value, but the next argument looks like another flag' || { echo "[FAIL] the swallowed-value refusal does not explain which flag ate which"; echo "$EATEN_ERR"; exit 1; }
@@ -1047,12 +1047,12 @@ test ! -e "$TMP/--scan-secrets" || { echo "[FAIL] a swallowed --scan-secrets sti
 # never reach the unknown-flag refusal (#253) that exists to catch the typo. Any
 # "--"-leading token is refused as a value for exactly this reason.
 set +e
-TYPO_ERR=$(cd "$TMP" && CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out --scan-secret deny 2>&1); TYPO_RC=$?
+TYPO_ERR=$(cd "$TMP" && CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out --scan-secret deny 2>&1); TYPO_RC=$?
 set -e
 [ "$TYPO_RC" != "0" ] || { echo "[FAIL] '--out --scan-secret deny' (typo) was accepted — an unscanned snapshot named after the typo"; echo "$TYPO_ERR"; exit 1; }
 test ! -e "$TMP/--scan-secret" || { echo "[FAIL] a mistyped flag swallowed as a value still produced a snapshot file"; exit 1; }
 # The escape for a value that genuinely starts with dashes, which the error suggests.
-CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/./--really-a-path.age" > /dev/null 2>&1 \
+CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SRC" --out "$TMP/./--really-a-path.age" > /dev/null 2>&1 \
   || { echo "[FAIL] a legitimate dash-leading value written as a ./ path was refused"; exit 1; }
 test -f "$TMP/--really-a-path.age" || { echo "[FAIL] the ./-escaped --out value did not produce its file"; exit 1; }
 echo "[PASS] a value flag is refused when its value is missing OR looks like a flag (recognized or mistyped), while a ./-escaped dash-leading path still works"
@@ -1072,20 +1072,20 @@ else
   # This assertion is the whole point of #301 and replaces the pre-#301 one, which asserted
   # the opposite ("succeeds silently"). Reached only inside the gitleaks-present branch,
   # which is exactly the condition the default keys off.
-  DEF_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/nosca.age" 2>&1)
+  DEF_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/nosca.age" 2>&1)
   test -f "$TMP/nosca.age" || { echo "[FAIL] the default-scanning snapshot did not produce an output file — warn must not refuse"; echo "$DEF_ERR"; exit 1; }
   printf '%s' "$DEF_ERR" | grep -qi "gitleaks found" || { echo "[FAIL] no --scan-secrets flag and a planted secret: nothing was reported, so the default did not scan"; echo "$DEF_ERR"; exit 1; }
   printf '%s' "$DEF_ERR" | grep -q "AKIAABCDEFGHIJKLMNOP" && { echo "[FAIL] the dummy secret value leaked into the default scan's output"; echo "$DEF_ERR"; exit 1; }
   echo "[PASS] omitting --scan-secrets scans and warns (default = warn when a source and gitleaks are both present)"
 
   echo "== #301: --scan-secrets off is the way to turn that default off, and it is silent =="
-  OFF_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/off.age" --scan-secrets off 2>&1)
+  OFF_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/off.age" --scan-secrets off 2>&1)
   test -f "$TMP/off.age" || { echo "[FAIL] --scan-secrets off did not produce an output file"; echo "$OFF_ERR"; exit 1; }
   printf '%s' "$OFF_ERR" | grep -qi "gitleaks found" && { echo "[FAIL] --scan-secrets off still scanned — it is supposed to be the opt-out"; echo "$OFF_ERR"; exit 1; }
   # `off` asks for NO scan, so the "nothing to scan" refusal that guards warn/deny must not
   # fire for it: refusing to not-scan a --pg-only snapshot would be nonsense.
   set +e
-  OFFPG_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/offpg.age" --scan-secrets off 2>&1)
+  OFFPG_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --pg "postgres://x/y" --out "$TMP/offpg.age" --scan-secrets off 2>&1)
   set -e
   printf '%s' "$OFFPG_ERR" | grep -q 'nothing to scan' && { echo "[FAIL] --scan-secrets off with no scannable source hit the warn/deny 'nothing to scan' refusal"; echo "$OFFPG_ERR"; exit 1; }
   echo "[PASS] --scan-secrets off skips the scan, and is not subject to the refusals that only make sense for warn/deny"
@@ -1093,11 +1093,11 @@ else
   echo "== #301: the IMPLICIT default may skip quietly when no scanner resolves, but an EXPLICIT request still refuses =="
   # The asymmetry is load-bearing (#307/#314): nobody asked for a gate on the first call, so
   # nothing claims one ran; the second call asked, so it must not come back successful.
-  QUIET_ERR=$(CIPHER_BRAIN_GITLEAKS_BIN=/nonexistent/gitleaks CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/quiet.age" 2>&1)
+  QUIET_ERR=$(CYPHER_BRAIN_GITLEAKS_BIN=/nonexistent/gitleaks CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/quiet.age" 2>&1)
   test -f "$TMP/quiet.age" || { echo "[FAIL] the default turned an absent gitleaks into a failure — it must be a no-op"; echo "$QUIET_ERR"; exit 1; }
   printf '%s' "$QUIET_ERR" | grep -qi "gitleaks found" && { echo "[FAIL] a scan reported findings with no resolvable scanner"; echo "$QUIET_ERR"; exit 1; }
   set +e
-  ASKED_ERR=$(CIPHER_BRAIN_GITLEAKS_BIN=/nonexistent/gitleaks CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/asked.age" --scan-secrets warn 2>&1); ASKED_RC=$?
+  ASKED_ERR=$(CYPHER_BRAIN_GITLEAKS_BIN=/nonexistent/gitleaks CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$TMP/asked.age" --scan-secrets warn 2>&1); ASKED_RC=$?
   set -e
   [ "$ASKED_RC" != "0" ] || { echo "[FAIL] an EXPLICIT --scan-secrets warn with no resolvable gitleaks exited 0 — the caller asked for a gate and got none"; echo "$ASKED_ERR"; exit 1; }
   test ! -e "$TMP/asked.age" || { echo "[FAIL] the refused explicit request still wrote a snapshot"; exit 1; }
@@ -1105,12 +1105,12 @@ else
 
   echo "== #215: --scan-secrets warn proceeds despite a finding, and records rule ID + count (never the secret) in the manifest =="
   WARN_SNAP="$TMP/warn.age"
-  WARN_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$WARN_SNAP" --scan-secrets warn 2>&1)
+  WARN_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$WARN_SNAP" --scan-secrets warn 2>&1)
   test -f "$WARN_SNAP" || { echo "[FAIL] --scan-secrets warn refused to produce a snapshot despite being warn-mode"; echo "$WARN_ERR"; exit 1; }
   printf '%s' "$WARN_ERR" | grep -qi "gitleaks found" || { echo "[FAIL] --scan-secrets warn did not report the finding"; echo "$WARN_ERR"; exit 1; }
   printf '%s' "$WARN_ERR" | grep -q "AKIAABCDEFGHIJKLMNOP" && { echo "[FAIL] the actual dummy secret value leaked into --scan-secrets warn output"; echo "$WARN_ERR"; exit 1; }
   WARN_OUT="$TMP/warn-restored"
-  CIPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$WARN_SNAP" --out-dir "$WARN_OUT" >/dev/null
+  CYPHER_BRAIN_HOME="$TMP/keys" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$WARN_SNAP" --out-dir "$WARN_OUT" >/dev/null
   WARN_MANIFEST="$WARN_OUT/manifest.json"
   test -f "$WARN_MANIFEST" || { echo "[FAIL] restore did not extract manifest.json"; exit 1; }
   node -e "
@@ -1129,7 +1129,7 @@ else
   echo "== #215: --scan-secrets deny refuses the whole snapshot when a finding exists (no --out produced) =="
   DENY_SNAP="$TMP/deny.age"
   set +e
-  DENY_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$DENY_SNAP" --scan-secrets deny 2>&1); DENY_RC=$?
+  DENY_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$SECRETS_SRC" --out "$DENY_SNAP" --scan-secrets deny 2>&1); DENY_RC=$?
   set -e
   [ "$DENY_RC" != "0" ] || { echo "[FAIL] --scan-secrets deny exited 0 despite a finding"; exit 1; }
   printf '%s' "$DENY_ERR" | grep -qi "refusing to snapshot" || { echo "[FAIL] --scan-secrets deny did not explain the refusal"; echo "$DENY_ERR"; exit 1; }
@@ -1139,7 +1139,7 @@ else
   echo "[PASS] --scan-secrets deny aborts the snapshot before any ciphertext is written, without leaking the secret value"
 
   echo "== #215: --scan-secrets deny still succeeds on a source with no findings =="
-  CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$CLEAN_SRC" --out "$TMP/deny-clean.age" --scan-secrets deny >/dev/null
+  CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --dir "$CLEAN_SRC" --out "$TMP/deny-clean.age" --scan-secrets deny >/dev/null
   test -f "$TMP/deny-clean.age" || { echo "[FAIL] --scan-secrets deny refused a clean source"; exit 1; }
   echo "[PASS] --scan-secrets deny only refuses when gitleaks actually finds something"
 
@@ -1164,7 +1164,7 @@ else
     fs.writeFileSync('$O2B_SECRETS_BUNDLE', JSON.stringify(bundle));
   "
   set +e
-  O2BDENY_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" cb snapshot --profile o2b --export "$O2B_SECRETS_BUNDLE" --out "$TMP/o2b-deny.age" --scan-secrets deny 2>&1); O2BDENY_RC=$?
+  O2BDENY_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" cb snapshot --profile o2b --export "$O2B_SECRETS_BUNDLE" --out "$TMP/o2b-deny.age" --scan-secrets deny 2>&1); O2BDENY_RC=$?
   set -e
   [ "$O2BDENY_RC" != "0" ] || { echo "[FAIL] --scan-secrets deny accepted an o2b bundle carrying a planted secret"; exit 1; }
   printf '%s' "$O2BDENY_ERR" | grep -qi "refusing to snapshot" || { echo "[FAIL] o2b --scan-secrets deny did not explain the refusal"; echo "$O2BDENY_ERR"; exit 1; }
@@ -1182,7 +1182,7 @@ else
   ISOLATED_PATH_215="$TMP/isolated-path-215"; mkdir -p "$ISOLATED_PATH_215"
   ln -s "$(command -v sh)" "$ISOLATED_PATH_215/sh"
   set +e
-  MISS_ERR=$(CIPHER_BRAIN_HOME="$TMP/keys" PATH="$ISOLATED_PATH_215" "$NODE_BIN_215" "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$CLEAN_SRC" --out "$TMP/miss.age" --scan-secrets warn 2>&1); MISS_RC=$?
+  MISS_ERR=$(CYPHER_BRAIN_HOME="$TMP/keys" PATH="$ISOLATED_PATH_215" "$NODE_BIN_215" "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$CLEAN_SRC" --out "$TMP/miss.age" --scan-secrets warn 2>&1); MISS_RC=$?
   set -e
   [ "$MISS_RC" != "0" ] || { echo "[FAIL] --scan-secrets warn (isolated PATH, no gitleaks) was accepted"; exit 1; }
   printf '%s' "$MISS_ERR" | grep -qi "gitleaks" || { echo "[FAIL] the missing-gitleaks error does not name gitleaks"; echo "$MISS_ERR"; exit 1; }

@@ -141,7 +141,7 @@ async function estimateCostFor(backend: string, sizeBytes: number): Promise<Part
       cost: '0',
       note:
         'rclone backend delegates the transfer to the rclone binary and the configured remote (#204) — ' +
-        'cipher-brain has no visibility into that remote pricing, so unlike arweave/turbo this is not a ' +
+        'cypher-brain has no visibility into that remote pricing, so unlike arweave/turbo this is not a ' +
         'real cost query. Any transfer/storage cost is whatever the cloud contract for that remote charges.',
     };
   }
@@ -258,7 +258,7 @@ async function estimateCostFor(backend: string, sizeBytes: number): Promise<Part
 // below (its whole stdout output) and push()'s pre-consent estimate display
 // (src/lib/pushpull.ts, on stderr — push's stdout is reserved for the final locator
 // only — #160): one formatting so the number a `push --backend arweave` operator sees
-// before confirming --yes is presented identically to `cipher-brain estimate`'s report,
+// before confirming --yes is presented identically to `cypher-brain estimate`'s report,
 // not a second, divergent rendering.
 export function formatEstimate(e: CostEstimate): string[] {
   const lines = [`backend: ${e.backend}`, `size: ${e.size_bytes} bytes (${fmtBytes(e.size_bytes)})`];

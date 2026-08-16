@@ -7,9 +7,9 @@
 //      LICENSE-equivalents) and does NOT ship src/, scripts/, bin/, any *.age
 //      ciphertext or identity/wallet key material.
 //   2. `npm install <tarball>` into a throwaway sandbox package.
-//   3. node_modules/.bin/cipher-brain --help (exit 0, non-empty) + a real
-//      keygen inside a temp CIPHER_BRAIN_HOME (identity + recipient created).
-//   4. node_modules/.bin/cipher-brain-mcp driven over stdio: initialize +
+//   3. node_modules/.bin/cypher-brain --help (exit 0, non-empty) + a real
+//      keygen inside a temp CYPHER_BRAIN_HOME (identity + recipient created).
+//   4. node_modules/.bin/cypher-brain-mcp driven over stdio: initialize +
 //      tools/list, asserting the tool names in scripts/mcp-expected-tools.mjs.
 //
 // This catches the class of bugs the dev-tree smokes can't see: missing
@@ -143,24 +143,24 @@ if (sdkProbe.status !== 0) {
 }
 log('turbo-sdk resolves from the installed tree (TurboFactory.unauthenticated/authenticated + ArweaveSigner)');
 
-// ─── 3. CLI bin: --help + a real keygen in a temp CIPHER_BRAIN_HOME ──────
+// ─── 3. CLI bin: --help + a real keygen in a temp CYPHER_BRAIN_HOME ──────
 log('running installed CLI bin (--help + keygen)…');
-const cliBin = path.join(sandbox, 'node_modules', '.bin', 'cipher-brain');
+const cliBin = path.join(sandbox, 'node_modules', '.bin', 'cypher-brain');
 if (!fs.existsSync(cliBin)) fail(`cli bin not at ${cliBin}`);
 const help = spawnSync(process.execPath, [cliBin, '--help'], { encoding: 'utf8' });
-if (help.status !== 0) fail(`cipher-brain --help failed (status=${help.status}): ${help.stderr}`);
-if (help.stdout.trim().length === 0) fail('cipher-brain --help printed nothing');
+if (help.status !== 0) fail(`cypher-brain --help failed (status=${help.status}): ${help.stderr}`);
+if (help.stdout.trim().length === 0) fail('cypher-brain --help printed nothing');
 for (const word of ['keygen', 'snapshot', 'restore', 'verify', 'push', 'pull']) {
-  if (!help.stdout.includes(word)) fail(`cipher-brain --help missing command: ${word}`);
+  if (!help.stdout.includes(word)) fail(`cypher-brain --help missing command: ${word}`);
 }
 
 const cbHome = path.join(sandbox, 'cb-home');
 const keygen = spawnSync(process.execPath, [cliBin, 'keygen'], {
   encoding: 'utf8',
-  env: { ...process.env, CIPHER_BRAIN_HOME: cbHome },
+  env: { ...process.env, CYPHER_BRAIN_HOME: cbHome },
 });
 if (keygen.status !== 0) {
-  fail(`cipher-brain keygen failed (status=${keygen.status}): ${keygen.stderr}`);
+  fail(`cypher-brain keygen failed (status=${keygen.status}): ${keygen.stderr}`);
 }
 const recipientPath = path.join(cbHome, 'recipient.txt');
 if (!fs.existsSync(recipientPath)) fail(`keygen did not create ${recipientPath}`);
@@ -170,7 +170,7 @@ log(`keygen OK (recipient ${recipient.slice(0, 12)}…)`);
 
 // ─── 4. MCP bin over stdio: initialize + tools/list ──────────────────────
 log('driving installed MCP bin over stdio (initialize + tools/list)…');
-const mcpBin = path.join(sandbox, 'node_modules', '.bin', 'cipher-brain-mcp');
+const mcpBin = path.join(sandbox, 'node_modules', '.bin', 'cypher-brain-mcp');
 if (!fs.existsSync(mcpBin)) fail(`mcp bin not at ${mcpBin}`);
 
 const EXPECTED_TOOLS = EXPECTED_MCP_TOOLS; // shared with mcp-smoke.mjs — see that module (#290)
@@ -192,7 +192,7 @@ const parseFrames = (buf) => {
 
 const mcp = spawn(process.execPath, [mcpBin], {
   stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, CIPHER_BRAIN_HOME: cbHome },
+  env: { ...process.env, CYPHER_BRAIN_HOME: cbHome },
 });
 let stdoutBuf = '';
 let stderrBuf = '';
@@ -227,7 +227,7 @@ try {
     },
   });
   const init = await waitFor(1);
-  if (init.result?.serverInfo?.name !== 'cipher-brain-mcp') {
+  if (init.result?.serverInfo?.name !== 'cypher-brain-mcp') {
     fail(`initialize.serverInfo unexpected: ${JSON.stringify(init.result?.serverInfo)}`);
   }
   send({ jsonrpc: '2.0', method: 'notifications/initialized' });

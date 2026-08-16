@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 `schedule install` no longer strips an explicitly empty `CIPHER_BRAIN_PIN_RECIPIENTS`

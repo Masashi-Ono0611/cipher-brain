@@ -1,7 +1,7 @@
 // rclone backend (#204): a thin subprocess wrapper around the `rclone` binary.
 // restic and kopia both integrate rclone as a "meta-backend" instead of reimplementing
 // each cloud provider's auth/protocol themselves — this backend takes the same
-// approach: cipher-brain never talks to S3/GCS/B2/Dropbox/etc directly, it only ever
+// approach: cypher-brain never talks to S3/GCS/B2/Dropbox/etc directly, it only ever
 // shells out to `rclone copyto`, delegating auth, protocol and retries entirely to
 // whatever remote the operator has already configured in their own rclone.conf (or a
 // config-less on-the-fly remote, e.g. `:local:/path`). Only ciphertext ever crosses
@@ -130,7 +130,7 @@ async function runRclone(subcommand: string, positionals: string[], progress?: P
     if (err?.code === 'ENOENT') {
       throw new Error(
         `rclone backend: '${RCLONE_BIN}' not found on PATH — install rclone (https://rclone.org/downloads/) ` +
-          `and configure a remote (rclone config), or set CIPHER_BRAIN_RCLONE_BIN to its path`,
+          `and configure a remote (rclone config), or set CYPHER_BRAIN_RCLONE_BIN to its path`,
       );
     }
     // run() builds this exact prefix for a non-zero exit (`${cmd} exited ${code}: ...`),

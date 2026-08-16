@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 Mascot redesign: a deliberate deforme of the repo's own `mascot.svg` (the

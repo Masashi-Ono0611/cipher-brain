@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 Test-only: the push-balance-report selftest pinned its credit-share approval to the

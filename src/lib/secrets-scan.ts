@@ -63,7 +63,7 @@ export const SCAN_SECRETS_INSTALL_HINT =
   '--scan-secrets requires the gitleaks binary on PATH (https://github.com/gitleaks/gitleaks) ' +
   '— install it with `brew install gitleaks` (macOS/Linuxbrew) or see ' +
   'https://github.com/gitleaks/gitleaks#installing for other platforms, or point ' +
-  'CIPHER_BRAIN_GITLEAKS_BIN at it directly.';
+  'CYPHER_BRAIN_GITLEAKS_BIN at it directly.';
 
 // `command -v` (POSIX shell builtin, portable macOS/Linux) — same reasoning schedule.ts's
 // resolvePgDumpDir already documents for pg_dump: resolves against THIS process's PATH,
@@ -109,8 +109,8 @@ export async function scanForSecrets(dir: string): Promise<SecretFinding[]> {
   // window leaked the directory on every one of 5 runs with the async call and none with this
   // one, and unheld it still surfaced about once in 30 unmodified runs locally — which is
   // what took down a CI cell of the SIGINT regression test in scripts/selftest.sh, whose
-  // "cipher-brain-*" leftover glob counts this directory too.
-  const reportDir = mkdtempSync(join(tmpdir(), 'cipher-brain-gitleaks-'));
+  // "cypher-brain-*" leftover glob counts this directory too.
+  const reportDir = mkdtempSync(join(tmpdir(), 'cypher-brain-gitleaks-'));
   setActiveScanReportDir(reportDir);
   const reportPath = join(reportDir, 'report.json');
   try {

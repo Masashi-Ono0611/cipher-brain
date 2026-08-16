@@ -6,7 +6,7 @@
 // source's own .ts extension). Node's built-in type-stripping (--experimental-strip-types,
 // see scripts/dev-cli-loader.mjs) happily loads a .ts file, but its module resolution does
 // NOT remap a `.js` specifier to a sibling `.ts` file the way tsc's NodeNext resolution
-// (and Bun's runtime resolver) do — so without this hook, `node bin/cipher-brain.mjs`
+// (and Bun's runtime resolver) do — so without this hook, `node bin/cypher-brain.mjs`
 // fails immediately on the first internal import.
 //
 // Deliberately plain `node`, not `bun`: bun's own resolver already handles the `.js`->`.ts`

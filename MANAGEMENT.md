@@ -1,12 +1,12 @@
-# Managing cipher-brain snapshots
+# Managing cypher-brain snapshots
 
 How to run encrypted gbrain backups over time: **cadence**, **versioning**,
 **restore**, and **key recovery**. The recovery and versioning claims here are
 exercised by `npm run selftest:recovery` (gated in CI).
 
-> **New setup?** `cipher-brain init` is the recommended entry point — an interactive
+> **New setup?** `cypher-brain init` is the recommended entry point — an interactive
 > wizard that walks keygen, the backup key and passphrase-wrap choices below,
-> `CIPHER_BRAIN_PIN_RECIPIENTS`, a `--profile`, and the first snapshot + push, ending
+> `CYPHER_BRAIN_PIN_RECIPIENTS`, a `--profile`, and the first snapshot + push, ending
 > in a printable recovery kit (issue #68; exercised end-to-end by
 > `npm run selftest:init`, including a kit-only restore drill). Everything below still
 > applies — the wizard is a thin, interactive front end over these same commands, not
@@ -22,7 +22,7 @@ record of locators is a local `index.tsv` on the always-on box. If that box dies
 operator who backed up only the identity still cannot find the bytes. So back up both:
 the identity (below) **and** the latest locator (`#3`).
 
-cipher-brain gives you two independent defenses for the identity; **use both**.
+cypher-brain gives you two independent defenses for the identity; **use both**.
 
 ### 1. Encrypt to a backup key (recommended, built in)
 
@@ -31,12 +31,12 @@ backup** public key, and *either* identity can restore:
 
 ```sh
 # one-time: make a backup keypair on a machine you control, keep its identity OFFLINE
-CIPHER_BRAIN_HOME=~/.cipher-brain-backup cipher-brain keygen     # -> backup recipient + identity
+CYPHER_BRAIN_HOME=~/.cypher-brain-backup cypher-brain keygen     # -> backup recipient + identity
 
 # every snapshot: encrypt to BOTH the primary and the backup public key
-cipher-brain snapshot --dir ~/.gbrain --pg "$PG" \
-  --recipient ~/.cipher-brain/recipient.txt \
-  --recipient ~/.cipher-brain-backup/recipient.txt \
+cypher-brain snapshot --dir ~/.gbrain --pg "$PG" \
+  --recipient ~/.cypher-brain/recipient.txt \
+  --recipient ~/.cypher-brain-backup/recipient.txt \
   --out brain-$(date +%F).age
 ```
 
@@ -59,8 +59,8 @@ store. Treat it like a seed phrase.
 **Protect it at rest.** A bare `keygen` identity (the standard age secret-key file) is an unwrapped secret guarded
 only by file perms (0600) — theft of the file = every snapshot decryptable. Two
 defenses, ideally both:
-- **Passphrase-wrap it:** `cipher-brain keygen --passphrase` (for a *fresh* keypair) or
-  `cipher-brain keygen --wrap-in-place` (for an identity you already have — e.g. one
+- **Passphrase-wrap it:** `cypher-brain keygen --passphrase` (for a *fresh* keypair) or
+  `cypher-brain keygen --wrap-in-place` (for an identity you already have — e.g. one
   created by a bare `keygen`, or by `init` with this step skipped) encrypts the identity
   with a scrypt passphrase (you enter it on `restore`/`verify`). An exfiltrated identity
   file is then useless without the passphrase. **Do not** use `keygen --passphrase
@@ -93,8 +93,8 @@ never returns a stale locator. Older 3-, 4-, 5- and 6-field files keep working
 everywhere:
 
 ```sh
-cipher-brain push --in brain-$(date +%F).age --backend turbo --yes \
-  --save-locator ~/.cipher-brain/latest-locator.tsv
+cypher-brain push --in brain-$(date +%F).age --backend turbo --yes \
+  --save-locator ~/.cypher-brain/latest-locator.tsv
 ```
 
 > **Use a network backend here.** For `--backend file` the locator is a *local* store
@@ -103,13 +103,13 @@ cipher-brain push --in brain-$(date +%F).age --backend turbo --yes \
 Back this file up **off-box, next to the backup identity** (same encrypted USB / secure
 note). Recovery on a fresh machine then needs only those two things — no `index.tsv`. The
 saved sha256 is applied automatically, so a substituted ciphertext is rejected.
-After each push, `cipher-brain recovery-kit --from-locator-file <this file>` regenerates
+After each push, `cypher-brain recovery-kit --from-locator-file <this file>` regenerates
 the printable kit `init` produced, pointed at the NEW locator — the printed copy goes
 stale each cycle otherwise (#364):
 
 ```sh
-cipher-brain pull --from-locator-file ~/restore/latest-locator.tsv --out latest.age
-cipher-brain restore --in latest.age --out-dir ./restored --pg "$PG_RESTORE" --yes
+cypher-brain pull --from-locator-file ~/restore/latest-locator.tsv --out latest.age
+cypher-brain restore --in latest.age --out-dir ./restored --pg "$PG_RESTORE" --yes
 ```
 
 For full version history (not just the latest), keep backing up the whole `index.tsv`
@@ -119,62 +119,62 @@ mutable pointer — is a future option; until then this file is the durable poin
 
 ## Settings in a file, and what that does *not* change
 
-Any `CIPHER_BRAIN_*` setting can live in `$CIPHER_BRAIN_HOME/config.env` — one
+Any `CYPHER_BRAIN_*` setting can live in `$CYPHER_BRAIN_HOME/config.env` — one
 `KEY=value` per line, `#` comments — instead of being re-established in every
 shell. The CLI and the MCP server both read it.
 
 ```sh
-# $CIPHER_BRAIN_HOME/config.env   (chmod 600 — it may hold secrets)
-CIPHER_BRAIN_AR_WALLET=/Users/me/.cipher-brain/wallet.json
-CIPHER_BRAIN_MAX_SPEND=500000
-CIPHER_BRAIN_FILE_DIR=/Volumes/backup/cipher-brain-store
+# $CYPHER_BRAIN_HOME/config.env   (chmod 600 — it may hold secrets)
+CYPHER_BRAIN_AR_WALLET=/Users/me/.cypher-brain/wallet.json
+CYPHER_BRAIN_MAX_SPEND=500000
+CYPHER_BRAIN_FILE_DIR=/Volumes/backup/cypher-brain-store
 ```
 
-- **An explicit environment variable wins over the file.** `CIPHER_BRAIN_MAX_SPEND=1
-  cipher-brain push …` overrides whatever the file says, every time.
-- **`CIPHER_BRAIN_HOME` cannot come from the file** — the file lives inside it. Set
+- **An explicit environment variable wins over the file.** `CYPHER_BRAIN_MAX_SPEND=1
+  cypher-brain push …` overrides whatever the file says, every time.
+- **`CYPHER_BRAIN_HOME` cannot come from the file** — the file lives inside it. Set
   that one in the environment; a file that tries is warned about, not obeyed.
-- **An unknown `CIPHER_BRAIN_*` key is an error**, not a no-op. A
-  `CIPHER_BRAIN_MAXSPEND` typo would otherwise silently remove a spend cap.
-- **Only `CIPHER_BRAIN_*` settings are applied.** Any other key in the file is read
+- **An unknown `CYPHER_BRAIN_*` key is an error**, not a no-op. A
+  `CYPHER_BRAIN_MAXSPEND` typo would otherwise silently remove a spend cap.
+- **Only `CYPHER_BRAIN_*` settings are applied.** Any other key in the file is read
   (so it can be reported) but never enters the environment — a stray `TMPDIR` or
   proxy variable in there cannot reach the `tar`, `pg_dump` or `rclone` processes
-  cipher-brain spawns.
+  cypher-brain spawns.
 
 **What it does not change is the nightly run.** `schedule install` still bakes the
 values that were in effect *at install time* into the runner, because launchd and
 cron start with a bare environment and the guarantee worth keeping is that the
 unattended run uses the configuration the operator actually tested. Editing
 `config.env` afterwards does **not** retune an installed schedule: the generated
-runner sets `CIPHER_BRAIN_NO_CONFIG_FILE=1`, so it uses only what was baked in and
+runner sets `CYPHER_BRAIN_NO_CONFIG_FILE=1`, so it uses only what was baked in and
 is unaffected by later edits — including an edit that would refuse a normal
-invocation. Re-run `schedule install` to pick changes up. `cipher-brain schedule status` prints
+invocation. Re-run `schedule install` to pick changes up. `cypher-brain schedule status` prints
 which config file it loaded, so "why is this behaving differently" has an answer.
 
 ## Cadence
 
 gbrain re-synthesizes nightly, so a **nightly** snapshot is the natural cadence.
-`cipher-brain schedule install` is the primary path: it composes the snapshot+push
+`cypher-brain schedule install` is the primary path: it composes the snapshot+push
 pipeline from the same flags those commands take, writes it as a runner script
-(`$CIPHER_BRAIN_HOME/schedule/nightly.sh`), and registers the platform trigger —
+(`$CYPHER_BRAIN_HOME/schedule/nightly.sh`), and registers the platform trigger —
 a `launchd` agent on macOS, a `crontab` entry on Linux:
 
 ```sh
 # runs on the machine that holds gbrain (it has the public key only)
-cipher-brain schedule install --backend turbo \
+cypher-brain schedule install --backend turbo \
   --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.gbrain" \
-  --recipient ~/.cipher-brain/recipient.txt \
-  --recipient ~/.cipher-brain-backup/recipient.txt \
+  --recipient ~/.cypher-brain/recipient.txt \
+  --recipient ~/.cypher-brain-backup/recipient.txt \
   --max-spend 500000000            # REQUIRED for arweave/turbo (native units) — see below
 
-cipher-brain schedule status       # configured time · trigger state · last run + rc · next run
-cipher-brain schedule uninstall    # unregister the trigger, remove the generated artifacts
+cypher-brain schedule status       # configured time · trigger state · last run + rc · next run
+cypher-brain schedule uninstall    # unregister the trigger, remove the generated artifacts
 ```
 
 The default run time is **03:30** (change with `--at HH:MM`): well after gbrain's
 overnight re-synthesis settles, so the DB and files are captured from the same settled
 state ("Avoid the write window", below). Each run appends to
-`$CIPHER_BRAIN_HOME/schedule/logs/nightly-YYYY-MM-DD.log` and always ends with a
+`$CYPHER_BRAIN_HOME/schedule/logs/nightly-YYYY-MM-DD.log` and always ends with a
 machine-readable `OK rc=0` / `FAILED rc=N` line, so `schedule status` (or any monitor)
 can tail the newest log for the outcome.
 
@@ -197,10 +197,10 @@ would start or stop scanning based on what happened to get installed months late
 schedule does not scan. It matters most here, because this is the
 run nobody is watching when it pushes to a write-once store. Install resolves `gitleaks`
 at that moment and *pins* the absolute path into the runner as
-`CIPHER_BRAIN_GITLEAKS_BIN` (`launchd`/`cron` do not inherit your `PATH`, the same reason
-`--pg` bakes `CIPHER_BRAIN_PG_BIN` — pinned rather than added to `PATH` so a different
+`CYPHER_BRAIN_GITLEAKS_BIN` (`launchd`/`cron` do not inherit your `PATH`, the same reason
+`--pg` bakes `CYPHER_BRAIN_PG_BIN` — pinned rather than added to `PATH` so a different
 `gitleaks` on the scheduler's `PATH` cannot quietly take its place), and *refuses to
-install* if it cannot be resolved. An explicit `CIPHER_BRAIN_GITLEAKS_BIN` is resolved and
+install* if it cannot be resolved. An explicit `CYPHER_BRAIN_GITLEAKS_BIN` is resolved and
 validated the same way rather than trusted: a bare name or a stale path in it is just as
 unusable to the scheduler. It stays fail-closed afterwards: if `gitleaks` later
 disappears, the nightly ends `FAILED rc=N` rather than quietly snapshotting unscanned.
@@ -214,11 +214,11 @@ other file). (The MCP
 `schedule_install` tool takes the same `scan_secrets` field.)
 
 **Paid backends must be capped.** For `turbo`/`arweave` the generated runner sets
-`CIPHER_BRAIN_YES=1` — the unattended equivalent of `--yes` — which is exactly why
+`CYPHER_BRAIN_YES=1` — the unattended equivalent of `--yes` — which is exactly why
 `schedule install` *refuses* those backends without `--max-spend <n>`: an unattended
-nightly upload must never run uncapped. Review the `CIPHER_BRAIN_MAX_SPEND` line it
+nightly upload must never run uncapped. Review the `CYPHER_BRAIN_MAX_SPEND` line it
 writes (native units: winc for turbo, winston for arweave L1); if
-`CIPHER_BRAIN_AR_WALLET` is set when you run install it is baked into the runner,
+`CYPHER_BRAIN_AR_WALLET` is set when you run install it is baked into the runner,
 otherwise edit the commented wallet line the runner carries. Wallet funding and
 credit-share setup: [`docs/arweave-upload-runbook.md`](docs/arweave-upload-runbook.md).
 
@@ -232,20 +232,20 @@ set -euo pipefail
 # test/retry on install day — or any same-day re-run — never refuses to overwrite
 # the prior run's snapshot.
 STAMP="$(date +%Y%m%dT%H%M%S)"
-OUT="$HOME/.cipher-brain/schedule/snapshots/brain-$STAMP.age"
+OUT="$HOME/.cypher-brain/schedule/snapshots/brain-$STAMP.age"
 n=1
-while [ -e "$OUT" ]; do n=$((n + 1)); OUT="$HOME/.cipher-brain/schedule/snapshots/brain-$STAMP-$n.age"; done
-cipher-brain snapshot --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.gbrain" \
-  --recipient ~/.cipher-brain/recipient.txt --recipient ~/.cipher-brain-backup/recipient.txt \
+while [ -e "$OUT" ]; do n=$((n + 1)); OUT="$HOME/.cypher-brain/schedule/snapshots/brain-$STAMP-$n.age"; done
+cypher-brain snapshot --pg "postgres://you@localhost:5432/gbrain" --dir "$HOME/.gbrain" \
+  --recipient ~/.cypher-brain/recipient.txt --recipient ~/.cypher-brain-backup/recipient.txt \
   --out "$OUT"
-# turbo (the recommended backend) is a paid, permanent store — CIPHER_BRAIN_YES=1
+# turbo (the recommended backend) is a paid, permanent store — CYPHER_BRAIN_YES=1
 # suppresses the interactive --yes guard when running unattended, and
-# CIPHER_BRAIN_MAX_SPEND=<n> (native units: winc for turbo, winston for arweave L1)
+# CYPHER_BRAIN_MAX_SPEND=<n> (native units: winc for turbo, winston for arweave L1)
 # aborts when the cost estimate exceeds your budget. Omit both (and the wallet) for
 # the free file backend.
-export CIPHER_BRAIN_YES=1
-export CIPHER_BRAIN_MAX_SPEND=500000000
-export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer for turbo
+export CYPHER_BRAIN_YES=1
+export CYPHER_BRAIN_MAX_SPEND=500000000
+export CYPHER_BRAIN_AR_WALLET="$HOME/.cypher-brain/wallet.json"   # JWK signer for turbo
 # --save-locator keeps a one-line file with the LATEST locator; back it up off-box
 # next to the backup identity so disk-death is recoverable (see Key recovery #3).
 # --skip-unchanged reads the plaintext content digest snapshot wrote to "$OUT.digest"
@@ -253,26 +253,26 @@ export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer f
 # BOTH match what's recorded in the save-locator file does it exit 0 with the previous
 # locator instead of paying to re-upload (a changed --recipient set always re-uploads;
 # --force overrides either way).
-LOC=$(cipher-brain push --in "$OUT" --backend turbo --skip-unchanged \
-  --save-locator "$HOME/.cipher-brain/latest-locator.tsv")   # or: file | arweave
+LOC=$(cypher-brain push --in "$OUT" --backend turbo --skip-unchanged \
+  --save-locator "$HOME/.cypher-brain/latest-locator.tsv")   # or: file | arweave
 # Read the SHA256 back from the save-locator file's 3rd field rather than re-hashing
 # "$OUT": on a --skip-unchanged SKIP, $LOC is the PREVIOUS run's locator while $OUT is
 # THIS run's freshly re-encrypted (age's ephemeral file key differs every run) and
 # never-uploaded ciphertext — shasum-ing $OUT would pair $LOC with a hash it will never
 # actually produce, breaking any later `pull --locator ... --sha256 ...` check against
 # this index row. The save-locator file's 3rd field already holds the correct hash for
-# whatever $LOC points to (cipher-brain push writes it there on every real push, and
+# whatever $LOC points to (cypher-brain push writes it there on every real push, and
 # leaves it untouched — still correct — on a skip).
-SHA=$(cut -f3 "$HOME/.cipher-brain/latest-locator.tsv")
+SHA=$(cut -f3 "$HOME/.cypher-brain/latest-locator.tsv")
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$LOC" "$SHA" \
-  >> "$HOME/.cipher-brain/schedule/index.tsv"
+  >> "$HOME/.cypher-brain/schedule/index.tsv"
 ```
 
 Snapshotting needs only the **public** key, so the snapshots the always-on box
 writes (and anything storage sees) are ciphertext only. Two caveats: that box also
 runs gbrain, so the live plaintext is on it regardless (keep it full-disk-encrypted);
 and a box that can rewrite `recipient.txt` could re-key *future* snapshots — set
-`CIPHER_BRAIN_PIN_RECIPIENTS` (an allowlist of `age1…` keys) so snapshot refuses any
+`CYPHER_BRAIN_PIN_RECIPIENTS` (an allowlist of `age1…` keys) so snapshot refuses any
 recipient you did not pin. A full snapshot is ~850 MB today (pg_dump ~630 MB +
 `~/.gbrain` ~220 MB); incremental snapshots are a future optimization.
 
@@ -306,7 +306,7 @@ for what to do if a restored store will not open.
 when a source **is** such a directory, or has one **directly inside it** — the markers
 are `PG_VERSION` plus `pg_wal/`. Two limits worth knowing, both deliberate:
 
-- **How deep it looks.** Without a `.cipherbrainignore`, detection reads the source root
+- **How deep it looks.** Without a `.cypherbrainignore`, detection reads the source root
   and one level below it — enough for `--dir <store>` and for `--dir ~/.gbrain` with the
   store at the configured `database_path`, and bounded so pointing `--dir` at a large
   tree does not pay for a full recursive walk to produce an advisory. *With* an ignore
@@ -340,7 +340,7 @@ A full `--pg` snapshot dumps the whole database — every table, including large
 low-value-for-disaster-recovery ones like raw conversation logs, tool-run logs, or an
 embedding cache. `snapshot` can also produce a smaller, lower-risk **minimal** artifact
 alongside the normal full one, using nothing but `pg_dump`'s own standard filtering
-flags — cipher-brain does **no SQL parsing or filtering of its own**; these two flags
+flags — cypher-brain does **no SQL parsing or filtering of its own**; these two flags
 are a literal pass-through to `pg_dump`, which runs exactly as it would if you invoked
 it by hand with the same arguments.
 
@@ -364,8 +364,8 @@ separate `snapshot --pg-filter ...` for the minimal one (long-term/off-site/lowe
 storage):
 
 ```sh
-cipher-brain snapshot --pg "$PG" --pg-filter ./minimal-profile.txt \
-  --recipient ~/.cipher-brain/recipient.txt --out "minimal-$(date +%F).age"
+cypher-brain snapshot --pg "$PG" --pg-filter ./minimal-profile.txt \
+  --recipient ~/.cypher-brain/recipient.txt --out "minimal-$(date +%F).age"
 ```
 
 The manifest records what was passed (`filter`/`exclude_table_data` alongside the
@@ -392,17 +392,17 @@ On a machine that holds a recipient **identity** (primary or backup):
 ```sh
 # 1. pick a version from index.tsv (or the latest line); take its <locator>
 # 2. fetch the ciphertext back from storage
-cipher-brain pull --locator "<locator>" --backend "$BACKEND" --out restored.age
+cypher-brain pull --locator "<locator>" --backend "$BACKEND" --out restored.age
 
 # 3. confirm it is intact and yours BEFORE trusting it
-cipher-brain verify --in restored.age          # header + your key decrypts it
+cypher-brain verify --in restored.age          # header + your key decrypts it
 # (this is --level quick, the default — see "Verification levels" below for
 # remote/drill, which check the STORAGE side of this same question instead)
 
 # 4. decrypt + rebuild into a SCRATCH database (never straight over a live gbrain)
 # --pg runs pg_restore --clean --if-exists, which DROPS/replaces objects in the
 # target database — an irreversible operation, so it requires --yes to confirm.
-cipher-brain restore --in restored.age --out-dir ./restored \
+cypher-brain restore --in restored.age --out-dir ./restored \
   --pg "postgres://you@localhost:5432/gbrain_restore" --yes
 
 # 5. sanity-check row counts / content, then cut over deliberately
@@ -434,7 +434,7 @@ v0.42.75.0) is worth trying; run it against the *extracted copy*, never the live
 Treat it as a thing to try, not a guarantee: it targets the write-ahead log, and not
 every inconsistency a file-level copy can produce is WAL-shaped. If it does not help,
 fall back to an earlier version from `index.tsv` — which is the real argument for keeping
-more than one. cipher-brain has no repair of its own and deliberately adds none; this is
+more than one. cypher-brain has no repair of its own and deliberately adds none; this is
 gbrain's data format, not ours.
 
 ## Verification levels (`quick` / `remote` / `drill`)
@@ -451,19 +451,19 @@ one before:
 # quick (default): the LOCAL ciphertext only — no network access. Same checks
 # `verify` has always run: age header, wrong-key rejection, and (with the private
 # identity on this box) a positive-control decrypt.
-cipher-brain verify --in snap.age
+cypher-brain verify --in snap.age
 
 # remote: re-fetches by locator from the ACTUAL backend and re-runs the same
 # checks against what came back — proving the object is still retrievable and
 # unchanged, not merely that a local copy still parses (restic `check
 # --read-data-subset`'s idea). A fetch failure reports VERDICT: FAIL, not a crash.
-cipher-brain verify --level remote --from-locator-file "$CIPHER_BRAIN_HOME/last-locator.tsv"
+cypher-brain verify --level remote --from-locator-file "$CYPHER_BRAIN_HOME/last-locator.tsv"
 
 # drill: everything remote does, plus an actual decrypt + extract into a scratch
 # directory (the same code path `restore` runs) — the full pull -> decrypt ->
 # extract rehearsal, cleaned up afterward either way. Never runs pg_restore, even
 # with --pg given: a verification drill must not touch a live database.
-cipher-brain verify --level drill --from-locator-file "$CIPHER_BRAIN_HOME/last-locator.tsv"
+cypher-brain verify --level drill --from-locator-file "$CYPHER_BRAIN_HOME/last-locator.tsv"
 ```
 
 Suggested cadence, layered on top of the nightly snapshot+push from "Cadence" above —
@@ -480,8 +480,8 @@ so a verification cron wires its own dead man's switch the same way that runner 
 # is its own dead man's switch (#202's healthchecks.io-style idea, applied by hand
 # here since verify itself has no --ping-url): ping on success, ping .../fail
 # otherwise, so a verification cron that silently stops running gets noticed too.
-0 4 * * 0  cipher-brain verify --level remote --from-locator-file ~/.cipher-brain/last-locator.tsv >>~/.cipher-brain/verify-remote.log 2>&1 && curl -fsS -m 10 https://hc-ping.com/<uuid-remote> || curl -fsS -m 10 https://hc-ping.com/<uuid-remote>/fail
-0 5 1 * *  cipher-brain verify --level drill  --from-locator-file ~/.cipher-brain/last-locator.tsv >>~/.cipher-brain/verify-drill.log  2>&1 && curl -fsS -m 10 https://hc-ping.com/<uuid-drill>  || curl -fsS -m 10 https://hc-ping.com/<uuid-drill>/fail
+0 4 * * 0  cypher-brain verify --level remote --from-locator-file ~/.cypher-brain/last-locator.tsv >>~/.cypher-brain/verify-remote.log 2>&1 && curl -fsS -m 10 https://hc-ping.com/<uuid-remote> || curl -fsS -m 10 https://hc-ping.com/<uuid-remote>/fail
+0 5 1 * *  cypher-brain verify --level drill  --from-locator-file ~/.cypher-brain/last-locator.tsv >>~/.cypher-brain/verify-drill.log  2>&1 && curl -fsS -m 10 https://hc-ping.com/<uuid-drill>  || curl -fsS -m 10 https://hc-ping.com/<uuid-drill>/fail
 ```
 
 (`--ping-url` here is the same plain best-effort `curl` idea `schedule install --ping-url`
@@ -506,19 +506,19 @@ failure); the plain message is still the full story either way. Over MCP,
 |---|---|---|
 | CB-E001 | `pull --sha256` (or a locator-file's saved pin) didn't match the fetched bytes — the storage/gateway served something else. | Retry against a different gateway/backend, or re-check the trusted source (e.g. `index.tsv`) the expected hash came from. Never trust a substituted artifact that still merely opens. |
 | CB-E002 | age decryption itself failed — most often the identity you gave isn't a recipient this ciphertext was encrypted to (wrong `--identity`/wrong keypair), or the artifact is corrupt/truncated. | Confirm you're pointing at the identity that matches one of the snapshot's `--recipient`s. If it should be the right key, re-fetch the artifact and check its size/sha256 for truncation. |
-| CB-E003 | The identity file is passphrase-wrapped (`keygen --passphrase`) and the passphrase given was wrong (or the file is damaged). | Re-enter the correct passphrase (prompted on the TTY, or set `CIPHER_BRAIN_PASSPHRASE` for automation). |
+| CB-E003 | The identity file is passphrase-wrapped (`keygen --passphrase`) and the passphrase given was wrong (or the file is damaged). | Re-enter the correct passphrase (prompted on the TTY, or set `CYPHER_BRAIN_PASSPHRASE` for automation). |
 | CB-E004 | `pull` reached the backend, but the object isn't retrievable yet — a fresh Arweave/Turbo upload typically takes ~5-8 min to propagate to a gateway. | Re-run with `--wait <seconds>` (retries until ready), or simply wait a few minutes and pull again. |
-| CB-E005 | `CIPHER_BRAIN_PIN_RECIPIENTS` is set, and a recipient this snapshot would encrypt to is not on that allowlist (a tampered `recipient.txt`, or an unexpected extra `--recipient`). | Confirm the recipient is one you actually intend to grant access; if so, add it to `CIPHER_BRAIN_PIN_RECIPIENTS`. If not, this is exactly the attack the pin exists to catch — investigate before proceeding. |
-| CB-E006 | The upload's cost estimate exceeds `CIPHER_BRAIN_MAX_SPEND`, or the signing wallet's balance/credits are insufficient. | Raise (or intentionally lower) `CIPHER_BRAIN_MAX_SPEND`, or fund the wallet (Turbo Credits top up at app.ardrive.io; Arweave L1 needs AR in the JWK's own address). |
-| CB-E007 | `push`/`schedule install` targets a paid, permanent backend (arweave/turbo) without consent. | Pass `--yes`, or set `CIPHER_BRAIN_YES=1` (the unattended-cadence escape hatch) to confirm the spend. |
-| CB-E008 | `push --in` points at a file that isn't age ciphertext (its header doesn't match) — storage must only ever see ciphertext. | Pass the `.age` file `cipher-brain snapshot` produced, not a plaintext/other file. |
+| CB-E005 | `CYPHER_BRAIN_PIN_RECIPIENTS` is set, and a recipient this snapshot would encrypt to is not on that allowlist (a tampered `recipient.txt`, or an unexpected extra `--recipient`). | Confirm the recipient is one you actually intend to grant access; if so, add it to `CYPHER_BRAIN_PIN_RECIPIENTS`. If not, this is exactly the attack the pin exists to catch — investigate before proceeding. |
+| CB-E006 | The upload's cost estimate exceeds `CYPHER_BRAIN_MAX_SPEND`, or the signing wallet's balance/credits are insufficient. | Raise (or intentionally lower) `CYPHER_BRAIN_MAX_SPEND`, or fund the wallet (Turbo Credits top up at app.ardrive.io; Arweave L1 needs AR in the JWK's own address). |
+| CB-E007 | `push`/`schedule install` targets a paid, permanent backend (arweave/turbo) without consent. | Pass `--yes`, or set `CYPHER_BRAIN_YES=1` (the unattended-cadence escape hatch) to confirm the spend. |
+| CB-E008 | `push --in` points at a file that isn't age ciphertext (its header doesn't match) — storage must only ever see ciphertext. | Pass the `.age` file `cypher-brain snapshot` produced, not a plaintext/other file. |
 | CB-E009 | The command's output path already exists and no-clobber refused to overwrite it (protects a prior snapshot/pull result from silent loss). | Pick a different `--out`/`--save-locator` path, move the existing file aside, or pass `--force` to overwrite it deliberately. |
-| CB-E010 | A `file`-backend locator resolves outside `CIPHER_BRAIN_FILE_DIR`, or doesn't match the `<sha256>.age` shape `push` itself produces — refused as a possible path-traversal/arbitrary-file-read attempt via a tampered locator. | Only pass locators exactly as `push` printed them (or as saved in a `--save-locator`/index file from a trusted, off-box copy); don't hand-construct one. |
-| CB-E011 | The `arweave`/`turbo` backend needs `CIPHER_BRAIN_AR_WALLET` (a JWK signer) and it's unset, or the path isn't readable. | Run `cipher-brain wallet create` to generate one, then set `CIPHER_BRAIN_AR_WALLET` to its path (`wallet address` shows what to fund). |
+| CB-E010 | A `file`-backend locator resolves outside `CYPHER_BRAIN_FILE_DIR`, or doesn't match the `<sha256>.age` shape `push` itself produces — refused as a possible path-traversal/arbitrary-file-read attempt via a tampered locator. | Only pass locators exactly as `push` printed them (or as saved in a `--save-locator`/index file from a trusted, off-box copy); don't hand-construct one. |
+| CB-E011 | The `arweave`/`turbo` backend needs `CYPHER_BRAIN_AR_WALLET` (a JWK signer) and it's unset, or the path isn't readable. | Run `cypher-brain wallet create` to generate one, then set `CYPHER_BRAIN_AR_WALLET` to its path (`wallet address` shows what to fund). |
 | CB-E012 | The optional package the backend needs isn't installed — `arweave` (an optional peer) or `@ardrive/turbo-sdk` (an `optionalDependency` a normal install carries, but which can be absent after `--omit=optional` or a tolerated optional-install failure). | Run the `npm install …` command the error itself prints. |
 | CB-E013 | `--backend` was given a value other than `file`, `arweave`, `turbo`, or `rclone`. | Correct the typo — only those four are valid. |
-| CB-E014 | `schedule status`/`uninstall` ran before `schedule install`, or writing the crontab entry failed. | Run `cipher-brain schedule install` first; a crontab-write failure usually means missing cron permissions/availability in this environment. |
-| CB-E015 | `restore`/`verify` can't find the private identity file it needs to decrypt (default or `--identity` path). | Run `cipher-brain keygen` if you haven't yet, or point `--identity` at the correct file. |
+| CB-E014 | `schedule status`/`uninstall` ran before `schedule install`, or writing the crontab entry failed. | Run `cypher-brain schedule install` first; a crontab-write failure usually means missing cron permissions/availability in this environment. |
+| CB-E015 | `restore`/`verify` can't find the private identity file it needs to decrypt (default or `--identity` path). | Run `cypher-brain keygen` if you haven't yet, or point `--identity` at the correct file. |
 | CB-E016 | `restore`/`verify` found a `*.minisig` signature next to the ciphertext, and a configured signing public key, but the signature did NOT verify — the artifact may be tampered or forged. | Do not trust the artifact. Confirm you're checking against the correct `sign-recipient.pub` (or `--sign-recipient`); if it matches and the failure persists, treat the ciphertext as compromised and re-fetch from a trusted copy. |
 
 ## What's proven vs recommended
@@ -532,7 +532,7 @@ failure); the plain message is still the full story either way. Over MCP,
 | `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |
 | `rclone` backend (delegates to the `rclone` binary and its own configured remote) | **proven** — `selftest:rclone` (CI) |
 | Identity at rest (passphrase-wrap via `keygen --passphrase`; FDE on the identity host) | **available / recommended** — `--passphrase` ships; FDE is operator config, not enforced by code |
-| Post-quantum hybrid keypair (`keygen --pq`, ML-KEM-768 + X25519 — mitigates harvest-now-decrypt-later, see README Threat model) | **available** — `selftest:pq` (CI); combines with a plain-X25519 backup key and `CIPHER_BRAIN_PIN_RECIPIENTS`, but the recipient/ciphertext are much bigger than plain X25519 |
+| Post-quantum hybrid keypair (`keygen --pq`, ML-KEM-768 + X25519 — mitigates harvest-now-decrypt-later, see README Threat model) | **available** — `selftest:pq` (CI); combines with a plain-X25519 backup key and `CYPHER_BRAIN_PIN_RECIPIENTS`, but the recipient/ciphertext are much bigger than plain X25519 |
 | Authenticity signing (`keygen --sign`, a minisign-compatible Ed25519 detached signature over each `*.age` — mitigates age's lack of authenticity, see README Threat model #214) | **available** — `selftest:minisign` (CI, in-process round trip always; real `minisign` binary interop when it's on PATH); optional and additive — an unsigned artifact restores exactly as before |
 | Nightly cadence (`schedule install / status / uninstall`: generated runner + launchd/cron trigger, paid backends refused without a spend cap, end-to-end run of the generated runner) | **proven** — `selftest:schedule` (CI) |
 | Identity off-box backup, Shamir M-of-N | **recommended practice / future** — not enforced by code |

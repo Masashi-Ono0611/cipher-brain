@@ -13,7 +13,7 @@
 //      pg_restore --clean --if-exists, schedule_install writes a real system
 //      file and replaces any prior configuration).
 //   2. a REAL snapshot_now round-trip against the free `file` backend inside a
-//      temp CIPHER_BRAIN_HOME/CIPHER_BRAIN_FILE_DIR (keygen via the existing
+//      temp CYPHER_BRAIN_HOME/CYPHER_BRAIN_FILE_DIR (keygen via the existing
 //      lib first), then last_snapshot_status + verify_restore (by bare locator;
 //      by locator_file, asserting its sha256 integrity pin was applied; and a
 //      wrong-sha256 negative control that must fail closed with no verdict)
@@ -22,9 +22,9 @@
 //      restored file's content asserted on disk against what was snapshotted)
 //      + estimate_cost on the result + schedule_install (refuses without
 //      confirm_install; a REAL --no-load install against an isolated
-//      CIPHER_BRAIN_LAUNCHD_DIR/CIPHER_BRAIN_SCHEDULE_DIR, never touching the
+//      CYPHER_BRAIN_LAUNCHD_DIR/CYPHER_BRAIN_SCHEDULE_DIR, never touching the
 //      real launchctl/crontab) + schedule_status reading that same state back
-//      (same schedule.ts state `cipher-brain schedule status` reads); the
+//      (same schedule.ts state `cypher-brain schedule status` reads); the
 //      unknown-argument refusal (#300): the reproduction that was filed —
 //      a misspelled OPTIONAL field on snapshot_now, which used to return
 //      isError:false having taken a real snapshot — plus the near-miss
@@ -45,11 +45,11 @@
 //      non-primitive literal) rather than letting it ship unenforced;
 //      the spend gate: snapshot_now with
 //      backend=turbo and no confirm_paid must be refused with
-//      ERR_CONFIRM_REQUIRED — even with CIPHER_BRAIN_YES set in the
+//      ERR_CONFIRM_REQUIRED — even with CYPHER_BRAIN_YES set in the
 //      environment (never silently spend); and a keygen call against this
 //      server's ALREADY-KEYED home, which must refuse rather than re-key.
 //   3. runKeygenWalletTests(): a SEPARATE server + a fresh, isolated
-//      CIPHER_BRAIN_HOME proves the issue #174 first-run path end to end —
+//      CYPHER_BRAIN_HOME proves the issue #174 first-run path end to end —
 //      keygen then wallet_create then wallet_address, each's no-clobber
 //      refusal without --force, and keygen --force actually rotating the
 //      keypair — with real files asserted on disk, not just tool output.
@@ -67,9 +67,9 @@
 //      under the key even though the overall call errors — a repeat with the
 //      SAME key then replays that recorded partial success instead of
 //      re-executing (multi-model review, #335). runIdempotencyTtlTest(): a
-//      SEPARATE server with a short CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS
+//      SEPARATE server with a short CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS
 //      proves a cached result stops being replayed once it goes stale.
-//      runIdempotencyTtlValidationTest(): CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS
+//      runIdempotencyTtlValidationTest(): CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS
 //      set to a NaN/zero/negative/Infinity value refuses to start the server
 //      (naming the variable) rather than silently defeating replay; unset
 //      still starts normally. runIdempotencyCorruptedLogTest(): the
@@ -127,7 +127,7 @@ async function main() {
   }
 }
 
-// #220 P2 (multi-model review): CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS must be validated at
+// #220 P2 (multi-model review): CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS must be validated at
 // server startup, not merely Number()'d — a NaN/zero/negative override would silently
 // disable idempotency-key replay entirely (isFresh()'s `< ttlSeconds * 1000` comparison
 // is always false against NaN or a non-positive value), and an Infinity override would
@@ -139,19 +139,19 @@ async function runIdempotencyTtlValidationTest(tmp) {
   const badValues = ['not-a-number', '0', '-5', 'Infinity', '1.5'];
   for (const bad of badValues) {
     const res = spawnSync(process.execPath, [SERVER_PATH], {
-      env: { ...process.env, CIPHER_BRAIN_HOME: home, CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS: bad },
+      env: { ...process.env, CYPHER_BRAIN_HOME: home, CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS: bad },
       input: '',
       encoding: 'utf8',
       timeout: 5000,
     });
     if (res.status === 0) {
       throw new Error(
-        `idempotency TTL validation: CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS=${bad} started successfully (should refuse)`,
+        `idempotency TTL validation: CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS=${bad} started successfully (should refuse)`,
       );
     }
-    if (!/CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS/.test(res.stderr ?? '')) {
+    if (!/CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS/.test(res.stderr ?? '')) {
       throw new Error(
-        `idempotency TTL validation: CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS=${bad} did not name the variable in ` +
+        `idempotency TTL validation: CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS=${bad} did not name the variable in ` +
           `its refusal: ${JSON.stringify(res.stderr).slice(0, 400)}`,
       );
     }
@@ -161,7 +161,7 @@ async function runIdempotencyTtlValidationTest(tmp) {
   // depends on.
   const okChild = spawn(process.execPath, [SERVER_PATH], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, CIPHER_BRAIN_HOME: join(tmp, 'home-ttl-validation-ok') },
+    env: { ...process.env, CYPHER_BRAIN_HOME: join(tmp, 'home-ttl-validation-ok') },
   });
   const { send, waitFor } = makeRpcClient(okChild);
   try {
@@ -205,10 +205,10 @@ async function runIdempotencyCorruptedLogTest(tmp) {
   const store = join(tmp, 'store-corrupted-log');
   const data = join(tmp, 'data-corrupted-log');
   await mkdir(data, { recursive: true });
-  await writeFile(join(data, 'hello.txt'), 'cipher-brain mcp corrupted-idempotency-log payload\n');
+  await writeFile(join(data, 'hello.txt'), 'cypher-brain mcp corrupted-idempotency-log payload\n');
 
   const keygenRes = spawnSync(process.execPath, [SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs'), 'keygen'], {
-    env: { ...process.env, CIPHER_BRAIN_HOME: home },
+    env: { ...process.env, CYPHER_BRAIN_HOME: home },
     encoding: 'utf8',
   });
   if (keygenRes.status !== 0) {
@@ -218,7 +218,7 @@ async function runIdempotencyCorruptedLogTest(tmp) {
 
   const child = spawn(process.execPath, [SERVER_PATH], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, CIPHER_BRAIN_HOME: home, CIPHER_BRAIN_FILE_DIR: store },
+    env: { ...process.env, CYPHER_BRAIN_HOME: home, CYPHER_BRAIN_FILE_DIR: store },
   });
   const { send, waitFor } = makeRpcClient(child);
   try {
@@ -355,7 +355,7 @@ async function runIdempotencyCorruptedLogTest(tmp) {
 }
 
 // #220 continued: idempotency-key TTL expiry. A SEPARATE server + a short
-// CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS proves a cached result stops being replayed once it
+// CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS proves a cached result stops being replayed once it
 // goes stale — without this, run()'s replay assertions above could not tell "replays
 // because the key still matches" apart from "replays forever no matter what". Its own
 // server (rather than reusing run()'s) because the TTL is read once from the environment
@@ -366,10 +366,10 @@ async function runIdempotencyTtlTest(tmp) {
   const store3 = join(tmp, 'store3');
   const data3 = join(tmp, 'data3');
   await mkdir(data3, { recursive: true });
-  await writeFile(join(data3, 'hello.txt'), 'cipher-brain mcp idempotency TTL payload\n');
+  await writeFile(join(data3, 'hello.txt'), 'cypher-brain mcp idempotency TTL payload\n');
 
   const keygenRes = spawnSync(process.execPath, [SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs'), 'keygen'], {
-    env: { ...process.env, CIPHER_BRAIN_HOME: home3 },
+    env: { ...process.env, CYPHER_BRAIN_HOME: home3 },
     encoding: 'utf8',
   });
   if (keygenRes.status !== 0) {
@@ -383,9 +383,9 @@ async function runIdempotencyTtlTest(tmp) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
-      CIPHER_BRAIN_HOME: home3,
-      CIPHER_BRAIN_FILE_DIR: store3,
-      CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS: '1', // 1s — short enough to expire within this test
+      CYPHER_BRAIN_HOME: home3,
+      CYPHER_BRAIN_FILE_DIR: store3,
+      CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS: '1', // 1s — short enough to expire within this test
     },
   });
   const { send, waitFor } = makeRpcClient(child3);
@@ -459,7 +459,7 @@ async function runIdempotencyTtlTest(tmp) {
 // Wires one spawned MCP server's stdout/stderr into the same send()/waitFor(id)
 // JSON-RPC-over-stdio pattern the main flow below uses — pulled out so the isolated
 // keygen/wallet_create/wallet_address round-trip (its own server, its own temp
-// CIPHER_BRAIN_HOME) doesn't hand-roll a second copy of this plumbing.
+// CYPHER_BRAIN_HOME) doesn't hand-roll a second copy of this plumbing.
 function makeRpcClient(child) {
   let stdoutBuf = '';
   let stderrBuf = '';
@@ -488,7 +488,7 @@ function makeRpcClient(child) {
 }
 
 // 3. keygen / wallet_create / wallet_address round-trip (issue #174): a SEPARATE
-// server + a FRESH, isolated CIPHER_BRAIN_HOME (rather than reusing `home` above,
+// server + a FRESH, isolated CYPHER_BRAIN_HOME (rather than reusing `home` above,
 // which already has an identity from the CLI-driven keygen at the top of run())
 // so the very first keygen/wallet_create call here exercises the real "nothing
 // exists yet" first-run path, not the already-exists refusal.
@@ -496,7 +496,7 @@ async function runKeygenWalletTests(tmp) {
   const home2 = join(tmp, 'home2');
   const child2 = spawn(process.execPath, [SERVER_PATH], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, CIPHER_BRAIN_HOME: home2 },
+    env: { ...process.env, CYPHER_BRAIN_HOME: home2 },
   });
   const { send, waitFor } = makeRpcClient(child2);
   try {
@@ -607,8 +607,8 @@ async function run(tmp) {
   // it without the same dev-only TS resolve hook the bash selftests use (see
   // scripts/dev-ts-resolve-hook.mjs) — spawning the already-built CLI is simpler and
   // exercises the exact artifact this smoke test is otherwise testing against.
-  process.env.CIPHER_BRAIN_HOME = home;
-  process.env.CIPHER_BRAIN_FILE_DIR = store;
+  process.env.CYPHER_BRAIN_HOME = home;
+  process.env.CYPHER_BRAIN_FILE_DIR = store;
   const keygenRes = spawnSync(process.execPath, [SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs'), 'keygen'], {
     env: { ...process.env },
     encoding: 'utf8',
@@ -619,17 +619,17 @@ async function run(tmp) {
   const recipientPath = join(home, 'recipient.txt');
 
   await mkdir(data, { recursive: true });
-  await writeFile(join(data, 'hello.txt'), 'cipher-brain mcp smoke payload\n');
+  await writeFile(join(data, 'hello.txt'), 'cypher-brain mcp smoke payload\n');
 
   const child = spawn(process.execPath, [SERVER_PATH], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
-      CIPHER_BRAIN_HOME: home,
-      CIPHER_BRAIN_FILE_DIR: store,
-      CIPHER_BRAIN_LAUNCHD_DIR: launchdDir, // install() writes a plist here even with --no-load
+      CYPHER_BRAIN_HOME: home,
+      CYPHER_BRAIN_FILE_DIR: store,
+      CYPHER_BRAIN_LAUNCHD_DIR: launchdDir, // install() writes a plist here even with --no-load
       // The MCP spend gate must hold EVEN when the CLI env escape hatch is set.
-      CIPHER_BRAIN_YES: '1',
+      CYPHER_BRAIN_YES: '1',
     },
   });
 
@@ -644,7 +644,7 @@ async function run(tmp) {
       params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'ci-smoke', version: '0.0.0' } },
     });
     const init = await waitFor(1);
-    if (init.result?.serverInfo?.name !== 'cipher-brain-mcp') {
+    if (init.result?.serverInfo?.name !== 'cypher-brain-mcp') {
       throw new Error(`initialize.serverInfo unexpected: ${JSON.stringify(init.result?.serverInfo)}`);
     }
     send({ jsonrpc: '2.0', method: 'notifications/initialized' });
@@ -697,7 +697,7 @@ async function run(tmp) {
     // Whether THIS machine can scan at all decides what the #301 default resolves to, so
     // it is probed once rather than assumed. `command -v` is the same check the CLI makes.
     const gitleaksOnPath =
-      spawnSync('sh', ['-c', 'command -v "$1"', 'sh', process.env.CIPHER_BRAIN_GITLEAKS_BIN || 'gitleaks'], {
+      spawnSync('sh', ['-c', 'command -v "$1"', 'sh', process.env.CYPHER_BRAIN_GITLEAKS_BIN || 'gitleaks'], {
         encoding: 'utf8',
       }).stdout?.trim().length > 0;
     // Ask the built CLI what --scan-secrets accepts, by handing it something it must
@@ -747,7 +747,7 @@ async function run(tmp) {
 
     // 2a. spend gate: paid backend without confirm_paid must be refused —
     // BEFORE any snapshot work (outAge must not exist afterwards) — even
-    // though CIPHER_BRAIN_YES=1 is set in the server's environment.
+    // though CYPHER_BRAIN_YES=1 is set in the server's environment.
     send({
       jsonrpc: '2.0',
       id: 3,
@@ -1149,7 +1149,7 @@ async function run(tmp) {
     }
 
     // 2d. verify_restore pulls by locator and must reach a full PASS (the
-    // private identity lives in this temp CIPHER_BRAIN_HOME).
+    // private identity lives in this temp CYPHER_BRAIN_HOME).
     send({
       jsonrpc: '2.0',
       id: 6,
@@ -1300,7 +1300,7 @@ async function run(tmp) {
     }
 
     // 2h. restore_now REAL round-trip (issue #183): pull by locator, decrypt with
-    // the identity in this temp CIPHER_BRAIN_HOME, and extract into out_dir — then
+    // the identity in this temp CYPHER_BRAIN_HOME, and extract into out_dir — then
     // untar the restored `data.tar.gz` component (restore only extracts the OUTER
     // archive; per-dir components stay tarred, same as the CLI — see MANAGEMENT.md's
     // restore runbook) and assert hello.txt's content on disk matches what was
@@ -1331,7 +1331,7 @@ async function run(tmp) {
     const untarRes = spawnSync('tar', ['-xzf', restoredArchive, '-C', restoreExtractDir], { encoding: 'utf8' });
     if (untarRes.status !== 0) throw new Error(`untarring restore_now's data.tar.gz failed: ${untarRes.stderr}`);
     const restoredContent = await readFile(join(restoreExtractDir, 'data', 'hello.txt'), 'utf8');
-    if (restoredContent !== 'cipher-brain mcp smoke payload\n') {
+    if (restoredContent !== 'cypher-brain mcp smoke payload\n') {
       throw new Error(`restore_now restored content mismatch: ${JSON.stringify(restoredContent)}`);
     }
 
@@ -1508,7 +1508,7 @@ async function run(tmp) {
 
     // 2k. schedule_install REAL --no-load install (issue #174 follow-up): registers
     // NOTHING with the real launchctl/crontab (no_load: true — this env's
-    // CIPHER_BRAIN_LAUNCHD_DIR is already scoped to a temp dir, so even a real load
+    // CYPHER_BRAIN_LAUNCHD_DIR is already scoped to a temp dir, so even a real load
     // would be harmless, but no_load also proves the tool's own opt-out path works),
     // then schedule_status (below) reads back the SAME state this call wrote.
     send({
@@ -1554,21 +1554,21 @@ async function run(tmp) {
       throw new Error(`schedule_status.trigger missing: ${JSON.stringify(schedSc)}`);
     }
 
-    // 2l-b. #285: the cipher-brain://schedule/status RESOURCE must serve byte-identical
+    // 2l-b. #285: the cypher-brain://schedule/status RESOURCE must serve byte-identical
     // state to the tool. That equality is the whole safety argument for adding a second
     // surface at all — if these can differ, this is a third description of one contract,
     // which is the bug class #276/#280/#290/#293 were.
     send({ jsonrpc: '2.0', id: 30, method: 'resources/list', params: {} });
     const resList = await waitFor(30);
     const uris = (resList.result?.resources ?? []).map((r) => r.uri);
-    if (JSON.stringify(uris) !== JSON.stringify(['cipher-brain://schedule/status'])) {
+    if (JSON.stringify(uris) !== JSON.stringify(['cypher-brain://schedule/status'])) {
       throw new Error(`resources/list unexpected: ${JSON.stringify(resList)}`);
     }
     send({
       jsonrpc: '2.0',
       id: 31,
       method: 'resources/read',
-      params: { uri: 'cipher-brain://schedule/status' },
+      params: { uri: 'cypher-brain://schedule/status' },
     });
     const resRead = await waitFor(31);
     const body = resRead.result?.contents?.[0];
@@ -1613,7 +1613,7 @@ async function run(tmp) {
     if (typeof promptText !== 'string' || promptText.length < 200) {
       throw new Error(`restore-runbook prompt is empty or too short: ${JSON.stringify(promptGet).slice(0, 300)}`);
     }
-    if (!promptText.startsWith('## Restore runbook') || !/cipher-brain pull --locator/.test(promptText)) {
+    if (!promptText.startsWith('## Restore runbook') || !/cypher-brain pull --locator/.test(promptText)) {
       throw new Error(
         `restore-runbook prompt does not look like the MANAGEMENT.md section: ${promptText.slice(0, 200)}`,
       );
@@ -1624,11 +1624,11 @@ async function run(tmp) {
     // them: drive the SRC-DIRECT server too and require the same text. (An earlier
     // version of this comment claimed the comparison happened when it did not —
     // multi-model review finding.)
-    const devChild = spawn(process.execPath, [join(ROOT, 'bin', 'cipher-brain-mcp.mjs')], {
+    const devChild = spawn(process.execPath, [join(ROOT, 'bin', 'cypher-brain-mcp.mjs')], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
-        CIPHER_BRAIN_HOME: home,
+        CYPHER_BRAIN_HOME: home,
         NODE_OPTIONS: `--experimental-strip-types --import ${join(ROOT, 'scripts', 'dev-cli-loader.mjs')}`,
       },
     });
@@ -2196,7 +2196,7 @@ async function run(tmp) {
 }
 
 // A SIGTERM to this long-lived server must not leave its fetch dirs behind. verify_restore
-// and restore_now pull/copy into `cipher-brain-mcp-*` temp dirs and erase them in a
+// and restore_now pull/copy into `cypher-brain-mcp-*` temp dirs and erase them in a
 // finally-block — which a signal skips entirely, exactly like the snapshot stage dir
 // (scripts/selftest.sh "P1 regression") and the drill scratch dir
 // (scripts/selftest-verify-levels.sh). Those two are CLI one-shots where a signal is
@@ -2219,7 +2219,7 @@ async function runSignalCleanupTest(tmp) {
   await mkdir(data, { recursive: true });
   await mkdir(isolatedTmp, { recursive: true });
   await mkdir(stubBin, { recursive: true });
-  await writeFile(join(data, 'hello.txt'), 'cipher-brain mcp signal-cleanup payload\n');
+  await writeFile(join(data, 'hello.txt'), 'cypher-brain mcp signal-cleanup payload\n');
 
   const realTar = spawnSync('sh', ['-c', 'command -v tar'], { encoding: 'utf8' }).stdout.trim();
   if (!realTar) throw new Error('signal-cleanup test: no tar on PATH (test setup)');
@@ -2230,7 +2230,7 @@ async function runSignalCleanupTest(tmp) {
   );
 
   const keygenRes = spawnSync(process.execPath, [SERVER_PATH.replace(/mcp\.mjs$/, 'cli.mjs'), 'keygen'], {
-    env: { ...process.env, CIPHER_BRAIN_HOME: home },
+    env: { ...process.env, CYPHER_BRAIN_HOME: home },
     encoding: 'utf8',
   });
   if (keygenRes.status !== 0) {
@@ -2243,14 +2243,14 @@ async function runSignalCleanupTest(tmp) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
-      CIPHER_BRAIN_HOME: home,
-      CIPHER_BRAIN_FILE_DIR: store,
-      TMPDIR: isolatedTmp, // os.tmpdir() — so the only cipher-brain-mcp-* dirs here are this server's
+      CYPHER_BRAIN_HOME: home,
+      CYPHER_BRAIN_FILE_DIR: store,
+      TMPDIR: isolatedTmp, // os.tmpdir() — so the only cypher-brain-mcp-* dirs here are this server's
       PATH: `${stubBin}:${process.env.PATH}`,
     },
   });
   const { send, waitFor } = makeRpcClient(child);
-  const leftovers = async () => (await readdir(isolatedTmp)).filter((n) => n.startsWith('cipher-brain-mcp-'));
+  const leftovers = async () => (await readdir(isolatedTmp)).filter((n) => n.startsWith('cypher-brain-mcp-'));
 
   let signalled = false;
   try {
@@ -2330,7 +2330,7 @@ async function runSignalCleanupTest(tmp) {
     const left = await leftovers();
     if (left.length > 0) {
       throw new Error(
-        `signal-cleanup test: SIGTERM left ${left.length} cipher-brain-mcp-* dir(s) behind: ${left.join(', ')}`,
+        `signal-cleanup test: SIGTERM left ${left.length} cypher-brain-mcp-* dir(s) behind: ${left.join(', ')}`,
       );
     }
     // The guard removes its own listener and re-raises, so the process must die OF the
@@ -2359,7 +2359,7 @@ async function runSignalCleanupTest(tmp) {
   }
   process.stdout.write(
     'MCP SMOKE (signal cleanup): PASS — SIGTERM with two verify_restore calls in flight left no ' +
-      'cipher-brain-mcp-* fetch dir behind, and the server died of the signal it was sent\n',
+      'cypher-brain-mcp-* fetch dir behind, and the server died of the signal it was sent\n',
   );
 }
 

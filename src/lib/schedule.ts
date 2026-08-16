@@ -5,9 +5,9 @@
 //   1. a runner (nightly.sh) under the schedule dir — the snapshot+push pipeline
 //      composed from the SAME flags snapshot/push take, with dated output names,
 //      --save-locator, an index.tsv append, and (paid backends only) the
-//      CIPHER_BRAIN_YES=1 + CIPHER_BRAIN_MAX_SPEND spend-guard lines;
+//      CYPHER_BRAIN_YES=1 + CYPHER_BRAIN_MAX_SPEND spend-guard lines;
 //   2. the platform trigger — macOS: a launchd plist in ~/Library/LaunchAgents;
-//      Linux: a crontab entry tagged `# cipher-brain-nightly` so uninstall can
+//      Linux: a crontab entry tagged `# cypher-brain-nightly` so uninstall can
 //      remove exactly its own line.
 //
 // Every generated file is DETERMINISTIC for a given set of inputs (no embedded
@@ -22,17 +22,18 @@
 // runnerBody()), so an unattended schedule that stops running gets noticed
 // even if nobody ever runs `schedule status`.
 //
-// Testability: CIPHER_BRAIN_SCHEDULE_DIR overrides the schedule dir and
-// CIPHER_BRAIN_LAUNCHD_DIR the plist dir, and --no-load writes the artifacts
+// Testability: CYPHER_BRAIN_SCHEDULE_DIR overrides the schedule dir and
+// CYPHER_BRAIN_LAUNCHD_DIR the plist dir, and --no-load writes the artifacts
 // without touching launchctl/crontab — so the selftest never registers anything
 // on the machine that runs it.
 
 import { mkdir, writeFile, readFile, rm, readdir, chmod } from 'node:fs/promises';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
-import { join, resolve, dirname } from 'node:path';
-import { HOME, SCHEDULE_DIR, LAUNCHD_DIR, CONFIG_FILE, readEnv } from './config.js';
+import { join, resolve, dirname, basename } from 'node:path';
+import { HOME, SCHEDULE_DIR, LAUNCHD_DIR, CONFIG_FILE, readEnv, type EnvName } from './config.js';
 import {
   SCAN_SECRETS_INSTALL_HINT,
   SCAN_SECRETS_MODES,
@@ -44,62 +45,62 @@ import { printJson } from './ui.js';
 import { assertExportRequiresO2bProfile } from './profiles.js';
 import type { CliOptions } from './types.js';
 
-// LABEL/CRON_MARKER are scoped to CIPHER_BRAIN_HOME (#114) so a second `install` under a
-// DIFFERENT CIPHER_BRAIN_HOME never overwrites or unregisters the first's launchd job /
+// LABEL/CRON_MARKER are scoped to CYPHER_BRAIN_HOME (#114) so a second `install` under a
+// DIFFERENT CYPHER_BRAIN_HOME never overwrites or unregisters the first's launchd job /
 // crontab line — both LABEL (and therefore PLIST's filename) and CRON_MARKER used to be
 // fixed, machine-wide constants, so two brains on the same machine collided. The hash is
 // derived from HOME alone (not the rest of the config), so it stays the SAME across
 // reinstalls of the same home with different flags.
 const HOME_LABEL_HASH = createHash('sha256').update(HOME).digest('hex').slice(0, 8);
-const LABEL = `dev.cipher-brain.nightly.${HOME_LABEL_HASH}`;
-const CRON_MARKER = `# cipher-brain-nightly:${HOME_LABEL_HASH}`; // idempotent uninstall: remove exactly the lines that carry this tag
-// Pre-#114 installs registered under these FIXED, unscoped values (shared machine-wide,
-// by every CIPHER_BRAIN_HOME). Kept so uninstall/status/install can recognize and migrate
-// a schedule registered before this fix. Legacy handling is always gated on evidence from
-// THIS home's own recorded artifacts (schedule.json / cron.entry — see
-// isLegacyLaunchdCfg/isLegacyCronLine below), never a blind machine-wide sweep, so it can
-// never touch a DIFFERENT CIPHER_BRAIN_HOME's still-legacy job.
-const LEGACY_LABEL = 'dev.cipher-brain.nightly';
-const LEGACY_CRON_MARKER = '# cipher-brain-nightly';
+const LABEL = `dev.cypher-brain.nightly.${HOME_LABEL_HASH}`;
+const CRON_MARKER = `# cypher-brain-nightly:${HOME_LABEL_HASH}`; // idempotent uninstall: remove exactly the lines that carry this tag
+// Earlier installs registered under other values: pre-#114 the FIXED, unscoped
+// `dev.cipher-brain.nightly` / `# cipher-brain-nightly` (shared machine-wide, by every
+// home), and before the cipher-brain -> cypher-brain rename the scoped
+// `dev.cipher-brain.nightly.<hash>` / `# cipher-brain-nightly:<hash>` (whose hash also
+// changes when the default home dir moved). Rather than enumerate each scheme, install/
+// status/uninstall read the registration THIS home's own artifacts recorded (schedule.json's
+// trigger.path / cron.entry — see legacyLaunchd/legacyCronEntry below) and treat any that
+// is not the current one as legacy to migrate. Never a blind machine-wide sweep, so it can
+// never touch a DIFFERENT home's still-legacy job.
 
 const RUNNER = join(SCHEDULE_DIR, 'nightly.sh');
 const CONFIG = join(SCHEDULE_DIR, 'schedule.json');
 const LOGS_DIR = join(SCHEDULE_DIR, 'logs');
 const SNAPS_DIR = join(SCHEDULE_DIR, 'snapshots');
 const PLIST = join(LAUNCHD_DIR, `${LABEL}.plist`);
-const LEGACY_PLIST = join(LAUNCHD_DIR, `${LEGACY_LABEL}.plist`);
 const CRON_ENTRY_FILE = join(SCHEDULE_DIR, 'cron.entry'); // Linux: the exact registered line, kept as an artifact for status/uninstall
 
 const BACKENDS = new Set(['file', 'arweave', 'turbo']);
 const PAID = new Set(['arweave', 'turbo']);
 
-// Every CIPHER_BRAIN_* var a snapshot+push run could need that this runner does NOT
+// Every CYPHER_BRAIN_* var a snapshot+push run could need that this runner does NOT
 // already bake unconditionally or separately (see the comment above envLines' loop
 // in runnerBody for the full exclusion list).
-const ENV_CAPTURE_VARS = [
-  'CIPHER_BRAIN_FILE_DIR',
-  'CIPHER_BRAIN_PG_BIN',
+const ENV_CAPTURE_VARS: readonly EnvName[] = [
+  'CYPHER_BRAIN_FILE_DIR',
+  'CYPHER_BRAIN_PG_BIN',
   // #307: resolved to an ABSOLUTE path by install when --scan-secrets is used, so the
   // nightly executes the very scanner install reported — not whatever a bare launchd/cron
   // PATH resolves the name "gitleaks" to, which need not be the same binary.
-  'CIPHER_BRAIN_GITLEAKS_BIN',
-  'CIPHER_BRAIN_PIN_RECIPIENTS',
-  'CIPHER_BRAIN_AR_HOST',
-  'CIPHER_BRAIN_AR_PORT',
-  'CIPHER_BRAIN_AR_PROTOCOL',
-  'CIPHER_BRAIN_AR_WALLET',
-  'CIPHER_BRAIN_AR_PAID_BY',
-  'CIPHER_BRAIN_AR_HTTP_TIMEOUT',
-  'CIPHER_BRAIN_AR_L1_MAX',
+  'CYPHER_BRAIN_GITLEAKS_BIN',
+  'CYPHER_BRAIN_PIN_RECIPIENTS',
+  'CYPHER_BRAIN_AR_HOST',
+  'CYPHER_BRAIN_AR_PORT',
+  'CYPHER_BRAIN_AR_PROTOCOL',
+  'CYPHER_BRAIN_AR_WALLET',
+  'CYPHER_BRAIN_AR_PAID_BY',
+  'CYPHER_BRAIN_AR_HTTP_TIMEOUT',
+  'CYPHER_BRAIN_AR_L1_MAX',
   // The USD rate endpoint is read on the PUSH path, not just by `estimate`: arweave's
   // put() and turbo both call arUsdRate() for the approximate-USD line next to the
   // native-unit cost. Dropping it would not break the push (arUsdRate returns null on
   // any failure, and the spend cap is in native units) but WOULD make the unattended
   // run egress to the default payment.ardrive.io that the operator configured away
-  // from (#276). CIPHER_BRAIN_AR_GATEWAY/AR_GATEWAYS stay out on purpose: arGateways()
+  // from (#276). CYPHER_BRAIN_AR_GATEWAY/AR_GATEWAYS stay out on purpose: arGateways()
   // is reached only from arweave's get(), and this runner only snapshots and pushes.
-  'CIPHER_BRAIN_AR_USD_RATE_URL',
-  'CIPHER_BRAIN_PIPE_TIMEOUT',
+  'CYPHER_BRAIN_AR_USD_RATE_URL',
+  'CYPHER_BRAIN_PIPE_TIMEOUT',
 ];
 
 // Of ENV_CAPTURE_VARS, the ones config.ts documents as naming a filesystem path (a
@@ -109,17 +110,17 @@ const ENV_CAPTURE_VARS = [
 // the runner from a DIFFERENT, unrelated cwd — so bake the ABSOLUTE path in, same
 // treatment already given to --vault/--zip/--recipient(file) below.
 const PATH_ENV_VARS = new Set([
-  'CIPHER_BRAIN_FILE_DIR', // config.ts: "file backend object store"
-  'CIPHER_BRAIN_PG_BIN', // config.ts: "dir holding pg_dump/pg_restore"
-  'CIPHER_BRAIN_AR_WALLET', // config.ts: "path to a JWK key file"
+  'CYPHER_BRAIN_FILE_DIR', // config.ts: "file backend object store"
+  'CYPHER_BRAIN_PG_BIN', // config.ts: "dir holding pg_dump/pg_restore"
+  'CYPHER_BRAIN_AR_WALLET', // config.ts: "path to a JWK key file"
 ]);
 
 // Vars that may hold EITHER a path or a bare value, so resolve() must be conditional on
 // the value naming something that exists — an unconditional resolve() would turn a bare
 // binary name ("gitleaks") or an inline recipient list into a bogus cwd-relative path.
 const MAYBE_PATH_ENV_VARS = new Set([
-  'CIPHER_BRAIN_PIN_RECIPIENTS', // a recipients FILE or an inline age1... list
-  'CIPHER_BRAIN_GITLEAKS_BIN', // a binary PATH or a bare name resolved via PATH (#307)
+  'CYPHER_BRAIN_PIN_RECIPIENTS', // a recipients FILE or an inline age1... list
+  'CYPHER_BRAIN_GITLEAKS_BIN', // a binary PATH or a bare name resolved via PATH (#307)
 ]);
 
 // Snapshot + resolve, at install time, every ENV_CAPTURE_VARS value that is actually set —
@@ -128,15 +129,17 @@ const MAYBE_PATH_ENV_VARS = new Set([
 async function captureEnv(): Promise<Record<string, string>> {
   const captured: Record<string, string> = {};
   for (const v of ENV_CAPTURE_VARS) {
-    const raw = process.env[v];
+    // readEnv, not process.env: a value the operator still sets under the legacy
+    // CIPHER_BRAIN_* spelling is captured too, and baked under the canonical name.
+    const raw = readEnv(v);
     // `undefined` (genuinely unset) is the ONLY case worth dropping. An explicitly EMPTY
     // value is baked in verbatim, because the two are not interchangeable: config.ts
-    // deliberately keeps CIPHER_BRAIN_PIN_RECIPIENTS='' distinct from unset so snapshot()
+    // deliberately keeps CYPHER_BRAIN_PIN_RECIPIENTS='' distinct from unset so snapshot()
     // can fail CLOSED on it (#101 — a broken cron/systemd template that renders an empty
     // pin must not silently disable the recipient allowlist). A falsy `!raw` guard here
     // collapsed those two cases, so `schedule install` run with an empty pin generated a
     // runner carrying no pin at all — and since that runner exports
-    // CIPHER_BRAIN_NO_CONFIG_FILE=1 (#286), $CIPHER_BRAIN_HOME/config.env could not put it
+    // CYPHER_BRAIN_NO_CONFIG_FILE=1 (#286), $CYPHER_BRAIN_HOME/config.env could not put it
     // back either: the interactive path failed closed while the unattended one ran with no
     // allowlist. Baking '' verbatim keeps snapshot() the single place that decides what an
     // empty pin means, and makes the scheduled run hit that very same check.
@@ -205,7 +208,7 @@ interface ScheduleConfig {
   recipients: string[];
   // --scan-secrets warn|deny|off (#215/#307/#301): threaded into the generated snapshot command
   // line, NOT into the env block — it is a flag snapshot takes, not one of the
-  // CIPHER_BRAIN_* settings ENV_CAPTURE_VARS bakes. Absent = no scan (unchanged
+  // CYPHER_BRAIN_* settings ENV_CAPTURE_VARS bakes. Absent = no scan (unchanged
   // pre-#307 runner, byte for byte).
   scan_secrets?: ScanSecretsMode;
   save_locator: string;
@@ -234,25 +237,25 @@ function runnerBody(cfg: ScheduleConfig): string {
   // bake the values that were in effect at install time so the unattended run
   // resolves the same keys/stores the operator tested with.
   const envLines = [
-    `export CIPHER_BRAIN_HOME=${shq(cfg.home)}`,
+    `export CYPHER_BRAIN_HOME=${shq(cfg.home)}`,
     // #286: everything this runner needs was baked in at install time, below. Tell
-    // the CLI not to read $CIPHER_BRAIN_HOME/config.env as well — without this, each
+    // the CLI not to read $CYPHER_BRAIN_HOME/config.env as well — without this, each
     // scheduled invocation would re-read it, so editing that file could retune an
     // already-installed schedule, or (with an unknown key in it) stop the schedule
     // outright. `schedule install` exists to pin what the operator tested.
-    'export CIPHER_BRAIN_NO_CONFIG_FILE=1',
+    'export CYPHER_BRAIN_NO_CONFIG_FILE=1',
   ];
   // Users with large brains are expected to set TMPDIR so snapshot() (mkdtempSync) stages
   // plaintext on a disk with enough room — bake it in too, or a scheduled run silently
   // falls back to the system temp dir even though install was run with TMPDIR set.
   if (cfg.tmpdir) envLines.push(`export TMPDIR=${shq(cfg.tmpdir)}`);
-  // (--scan-secrets' scanner is pinned through CIPHER_BRAIN_GITLEAKS_BIN, which install
+  // (--scan-secrets' scanner is pinned through CYPHER_BRAIN_GITLEAKS_BIN, which install
   // resolves to an absolute path and the ENV_CAPTURE_VARS loop below bakes in like any
   // other setting — see install(). Nothing extra to emit here.)
-  // Every CIPHER_BRAIN_* var src/lib/config.ts reads that a snapshot+push run could need,
-  // EXCEPT: CIPHER_BRAIN_HOME (baked above unconditionally), CIPHER_BRAIN_YES/MAX_SPEND
-  // (baked separately below, only for paid backends), CIPHER_BRAIN_AGE/AGE_KEYGEN
-  // (deprecated — age is bundled in-process now), and CIPHER_BRAIN_PASSPHRASE (only read
+  // Every CYPHER_BRAIN_* var src/lib/config.ts reads that a snapshot+push run could need,
+  // EXCEPT: CYPHER_BRAIN_HOME (baked above unconditionally), CYPHER_BRAIN_YES/MAX_SPEND
+  // (baked separately below, only for paid backends), CYPHER_BRAIN_AGE/AGE_KEYGEN
+  // (deprecated — age is bundled in-process now), and CYPHER_BRAIN_PASSPHRASE (only read
   // by the decrypt path — restore/verify/pull's decrypt-proof — which the nightly runner
   // never exercises; it only encrypts). launchd/cron start with a BARE env, so anything
   // here that was set at install time and is silently dropped makes a scheduled run of a
@@ -267,16 +270,16 @@ function runnerBody(cfg: ScheduleConfig): string {
   const spendLines: string[] = [];
   if (PAID.has(cfg.backend)) {
     spendLines.push(
-      `# ${cfg.backend} is a paid, PERMANENT store. CIPHER_BRAIN_YES=1 grants the unattended`,
-      `# upload consent that an interactive run gives with --yes; CIPHER_BRAIN_MAX_SPEND caps`,
+      `# ${cfg.backend} is a paid, PERMANENT store. CYPHER_BRAIN_YES=1 grants the unattended`,
+      `# upload consent that an interactive run gives with --yes; CYPHER_BRAIN_MAX_SPEND caps`,
       `# each upload in the native unit of the backend (winc for turbo, winston for arweave L1)`,
       `# and aborts the push when the cost estimate exceeds it. REVIEW this cap.`,
-      `export CIPHER_BRAIN_YES=1`,
-      `export CIPHER_BRAIN_MAX_SPEND=${cfg.max_spend}`,
+      `export CYPHER_BRAIN_YES=1`,
+      `export CYPHER_BRAIN_MAX_SPEND=${cfg.max_spend}`,
     );
-    if (!readEnv('CIPHER_BRAIN_AR_WALLET')) {
+    if (!readEnv('CYPHER_BRAIN_AR_WALLET')) {
       spendLines.push(
-        `# export CIPHER_BRAIN_AR_WALLET="$HOME/.cipher-brain/wallet.json"   # JWK signer — required to push via ${cfg.backend}`,
+        `# export CYPHER_BRAIN_AR_WALLET="$HOME/.cypher-brain/wallet.json"   # JWK signer — required to push via ${cfg.backend}`,
       );
     }
   }
@@ -306,8 +309,8 @@ function runnerBody(cfg: ScheduleConfig): string {
   // --scan-secrets deny` exited 0 and generated a runner that never scanned.
   if (cfg.scan_secrets) snapshotArgs.push('--scan-secrets', shq(cfg.scan_secrets));
   return `#!/usr/bin/env bash
-# nightly.sh — generated by \`cipher-brain schedule install\`. Do NOT edit in place:
-# re-run install to change anything (this file is overwritten). If cipher-brain or
+# nightly.sh — generated by \`cypher-brain schedule install\`. Do NOT edit in place:
+# re-run install to change anything (this file is overwritten). If cypher-brain or
 # node moves, re-run install so the absolute paths below stay valid.
 # One unattended run of the snapshot+push pipeline (MANAGEMENT.md "Cadence").
 set -euo pipefail
@@ -334,7 +337,7 @@ ${
 
 ${envLines.join('\n')}
 ${spendLines.length ? `${spendLines.join('\n')}\n` : ''}
-echo "== cipher-brain nightly run start: $(date -u +%FT%TZ) =="
+echo "== cypher-brain nightly run start: $(date -u +%FT%TZ) =="
 # Retry-safe naming: snapshot.ts refuses to overwrite an existing --out (by design —
 # see src/lib/snapshot.ts), so a name keyed on the date ALONE collides the moment this
 # runner is invoked twice on the same day (a manual test on install day, or a legitimate
@@ -458,7 +461,7 @@ function resolvePgDumpDir(): string | null {
 // a `deny` runner into one that pushes (a stub reporting no findings shadowed the real
 // binary). Resolved against the interactive PATH, which is what the operator just tested.
 //
-// `nameOrPath` is whatever CIPHER_BRAIN_GITLEAKS_BIN says, or plain "gitleaks" when it
+// `nameOrPath` is whatever CYPHER_BRAIN_GITLEAKS_BIN says, or plain "gitleaks" when it
 // says nothing. An EXPLICIT value is resolved and validated too, not trusted as-is
 //: a bare name there is exactly as unusable to launchd/cron as the
 // default is, and a path that does not exist is worse — install would exit 0 having
@@ -470,21 +473,55 @@ function resolveGitleaksBin(nameOrPath: string): string | null {
   return found ? resolve(found) : null;
 }
 
-// ---------- legacy (pre-#114 unscoped LABEL/CRON_MARKER) detection ----------
+// ---------- legacy (earlier LABEL/CRON_MARKER scheme) detection ----------
 
-// A cron line always ends with its marker (see cronLine()): a genuinely legacy line ends
-// with exactly LEGACY_CRON_MARKER, whereas a home-scoped one (this home's own, or another
-// CIPHER_BRAIN_HOME's) ends with the ":<hash>" suffix — so this can never mis-fire on a
-// DIFFERENT home's current-format entry, only on a truly unscoped pre-#114 one.
-const isLegacyCronLine = (l: string): boolean => l.trimEnd().endsWith(LEGACY_CRON_MARKER);
-
-// True only when THIS home's own schedule.json (as last written by `install`) recorded the
-// legacy, unscoped plist path — i.e. this home's job was registered before #114, not just
-// "some legacy plist happens to exist" (which could belong to a different home entirely,
-// since LEGACY_PLIST's filename isn't home-scoped).
-function isLegacyLaunchdCfg(cfg: ScheduleConfig | null): boolean {
-  return !!cfg && cfg.trigger.type === 'launchd' && cfg.trigger.path === LEGACY_PLIST;
+// Ownership gate for everything below. schedule.json / cron.entry live under SCHEDULE_DIR,
+// which is overridable, so a directory reused across two homes would otherwise let one home
+// unregister the OTHER's trigger (multi-model review). A recorded registration is only this
+// home's when the home it recorded is the same directory as HOME — compared as real paths,
+// so a ~/.cipher-brain left behind as a symlink to ~/.cypher-brain (the rename's own
+// migration) still counts as the same home. `home` has been recorded since #81, i.e. by
+// every registration any of the legacy paths here could meet.
+function sameHome(recorded: string | undefined): boolean {
+  if (!recorded) return false;
+  const real = (p: string): string => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  return real(recorded) === real(HOME);
 }
+
+// The launchd registration THIS home's own schedule.json (as last written by `install`)
+// recorded, when it is not the current PLIST — i.e. this home's job was registered under an
+// earlier scheme (pre-#114 unscoped, or the cipher-brain-era label), not just "some old
+// plist happens to exist" (which could belong to a different home entirely). The label is
+// what launchd knows the job as: the plist's basename. `sameLabel` is the one case where
+// only the plist MOVED (LAUNCHD_DIR changed, home unchanged): launchd already knows that
+// label, install re-registers it from the new PLIST, so the stale file is removed but the
+// label must NOT be booted out — that would unload the job just loaded.
+function legacyLaunchd(cfg: ScheduleConfig | null): { label: string; plist: string; sameLabel: boolean } | null {
+  if (cfg?.trigger.type !== 'launchd' || cfg.trigger.path === PLIST || !sameHome(cfg.home)) return null;
+  const label = basename(cfg.trigger.path, '.plist');
+  return { label, plist: cfg.trigger.path, sameLabel: label === LABEL };
+}
+
+// THIS home's own recorded cron line (cron.entry — the exact line install last registered),
+// when its marker is not the current CRON_MARKER — i.e. registered under an earlier scheme.
+// Only that EXACT line is ever matched (not "every line ending in the marker"): the pre-#114
+// marker was shared machine-wide, so a suffix match could take a different home's entry with
+// it. Null when there is no prior entry, it is not this home's, or it is already current.
+function legacyCronEntry(priorEntry: string | null, cfg: ScheduleConfig | null): string | null {
+  if (!priorEntry || !sameHome(cfg?.home)) return null;
+  const i = priorEntry.lastIndexOf(' # ');
+  if (i < 0) return null;
+  const marker = priorEntry.slice(i + 1).trimEnd();
+  return marker === CRON_MARKER ? null : priorEntry.trimEnd();
+}
+const isLegacyCronLine = (l: string, entry: string): boolean => l.trimEnd() === entry;
+const cronMarkerOf = (entry: string): string => entry.slice(entry.lastIndexOf(' # ') + 1);
 
 // This home's own schedule.json — read WITHOUT throwing (returns null if absent/corrupt),
 // for the legacy-migration checks below, which must never treat "no prior config" as an
@@ -555,22 +592,22 @@ async function install(o: CliOptions): Promise<void> {
   // so a --pg snapshot that resolves pg_dump via PATH interactively (the common Homebrew /
   // Postgres.app setup) would find pg_dump right now but fail every scheduled run. Resolve
   // a default HERE, in the same env this install command is running in, and bake it in
-  // (same mechanism as every other CIPHER_BRAIN_* var above) instead of requiring the user
-  // to already know to set CIPHER_BRAIN_PG_BIN. An explicit CIPHER_BRAIN_PG_BIN is left
+  // (same mechanism as every other CYPHER_BRAIN_* var above) instead of requiring the user
+  // to already know to set CYPHER_BRAIN_PG_BIN. An explicit CYPHER_BRAIN_PG_BIN is left
   // untouched (respected as-is by the envLines loop in runnerBody).
-  if (o.pg && !readEnv('CIPHER_BRAIN_PG_BIN')) {
+  if (o.pg && !readEnv('CYPHER_BRAIN_PG_BIN')) {
     const dir = resolvePgDumpDir();
     if (!dir) {
       throw new Error(
-        `--pg requires pg_dump for the unattended run — could not resolve it (command -v pg_dump found nothing on PATH); install the postgresql client tools or pass CIPHER_BRAIN_PG_BIN=<dir containing pg_dump/pg_restore>`,
+        `--pg requires pg_dump for the unattended run — could not resolve it (command -v pg_dump found nothing on PATH); install the postgresql client tools or pass CYPHER_BRAIN_PG_BIN=<dir containing pg_dump/pg_restore>`,
       );
     }
     // A WRITE, not a read: the resolved dir is put back into the environment so
     // captureEnv() below bakes it into the runner like any other setting. readEnv()
     // (#286) is read-only by design, so this stays a direct assignment.
-    process.env.CIPHER_BRAIN_PG_BIN = dir;
+    process.env.CYPHER_BRAIN_PG_BIN = dir;
     console.error(
-      `resolved pg_dump -> ${join(dir, 'pg_dump')} (baked into the runner as CIPHER_BRAIN_PG_BIN — launchd/cron do not inherit PATH)`,
+      `resolved pg_dump -> ${join(dir, 'pg_dump')} (baked into the runner as CYPHER_BRAIN_PG_BIN — launchd/cron do not inherit PATH)`,
     );
   }
   // The environment half of --scan-secrets, kept with the other probes (pg_dump above)
@@ -581,8 +618,8 @@ async function install(o: CliOptions): Promise<void> {
   // same fail-closed posture assertGitleaksAvailable() takes at run time: never a
   // warning, never a silently unscanned schedule.
   //
-  // Unlike the --pg branch, an EXPLICIT CIPHER_BRAIN_GITLEAKS_BIN is validated rather
-  // than passed through: `CIPHER_BRAIN_GITLEAKS_BIN=gitleaks` is a
+  // Unlike the --pg branch, an EXPLICIT CYPHER_BRAIN_GITLEAKS_BIN is validated rather
+  // than passed through: `CYPHER_BRAIN_GITLEAKS_BIN=gitleaks` is a
   // perfectly reasonable interactive setting and a useless baked one, and a stale
   // absolute path in it is worse still — install would exit 0 promising a gate that can
   // never run. Whatever it says is resolved through the same check the default gets.
@@ -598,22 +635,22 @@ async function install(o: CliOptions): Promise<void> {
   if (effectiveScan === undefined) {
     const hasScannableSource = o.dirs.length > 0 || !!o.profile;
     effectiveScan =
-      hasScannableSource && resolveGitleaksBin(readEnv('CIPHER_BRAIN_GITLEAKS_BIN') || 'gitleaks') ? 'warn' : 'off';
+      hasScannableSource && resolveGitleaksBin(readEnv('CYPHER_BRAIN_GITLEAKS_BIN') || 'gitleaks') ? 'warn' : 'off';
   }
   let gitleaksBin: string | null = null;
   if (effectiveScan !== 'off') {
-    const configured = readEnv('CIPHER_BRAIN_GITLEAKS_BIN') || 'gitleaks';
+    const configured = readEnv('CYPHER_BRAIN_GITLEAKS_BIN') || 'gitleaks';
     gitleaksBin = resolveGitleaksBin(configured);
     if (!gitleaksBin) {
       throw new Error(
         configured === 'gitleaks'
           ? SCAN_SECRETS_INSTALL_HINT
-          : `CIPHER_BRAIN_GITLEAKS_BIN=${configured} could not be resolved to an executable — refusing to install a ` +
+          : `CYPHER_BRAIN_GITLEAKS_BIN=${configured} could not be resolved to an executable — refusing to install a ` +
               `schedule whose nightly scan can never run. ${SCAN_SECRETS_INSTALL_HINT}`,
       );
     }
     console.error(
-      `resolved gitleaks -> ${gitleaksBin} (baked into the runner as CIPHER_BRAIN_GITLEAKS_BIN — launchd/cron do not inherit PATH, and a different gitleaks on theirs must not silently take its place)`,
+      `resolved gitleaks -> ${gitleaksBin} (baked into the runner as CYPHER_BRAIN_GITLEAKS_BIN — launchd/cron do not inherit PATH, and a different gitleaks on theirs must not silently take its place)`,
     );
     if (o.scan_secrets === undefined)
       console.error(
@@ -631,12 +668,12 @@ async function install(o: CliOptions): Promise<void> {
   const at = o.at || '03:30';
   const { hour, minute } = parseAt(at);
   // The one thing this feature must never create: unattended spending without a cap.
-  // A paid backend gets CIPHER_BRAIN_YES=1 baked into the runner, so a spend cap is
+  // A paid backend gets CYPHER_BRAIN_YES=1 baked into the runner, so a spend cap is
   // MANDATORY here — refuse to install rather than schedule an uncapped nightly upload.
   if (PAID.has(o.backend)) {
     if (!o.max_spend) {
       throw new Error(
-        `--backend ${o.backend} is a paid store: --max-spend <n> is required for an unattended schedule (native units: winc for turbo, winston for arweave L1) — the runner gets CIPHER_BRAIN_YES=1, so it must also get a spend cap`,
+        `--backend ${o.backend} is a paid store: --max-spend <n> is required for an unattended schedule (native units: winc for turbo, winston for arweave L1) — the runner gets CYPHER_BRAIN_YES=1, so it must also get a spend cap`,
       );
     }
     if (!/^\d+$/.test(String(o.max_spend)) || BigInt(o.max_spend) <= 0n) {
@@ -654,7 +691,7 @@ async function install(o: CliOptions): Promise<void> {
 
   // Read any PRE-EXISTING artifacts now, before anything below overwrites them — used only
   // to detect (and, unless --no-load, migrate off) a legacy pre-#114 registration for THIS
-  // SAME home, so re-running install after upgrading cipher-brain doesn't leave BOTH the
+  // SAME home, so re-running install after upgrading cypher-brain doesn't leave BOTH the
   // old unscoped job and the new scoped one running nightly (#114). Read AFTER the input
   // validation above so a plain usage error (bad --backend, missing --max-spend, ...) never
   // pays for this extra I/O.
@@ -662,13 +699,13 @@ async function install(o: CliOptions): Promise<void> {
   const priorCronEntry = await readOwnCronEntry();
 
   // The resolved scanner is layered ON TOP of the captured environment rather than being
-  // written back into process.env the way the --pg branch does with CIPHER_BRAIN_PG_BIN.
+  // written back into process.env the way the --pg branch does with CYPHER_BRAIN_PG_BIN.
   // In the CLI the two are equivalent (one process, one install), but the MCP server is
   // long-lived: a process.env left mutated by one schedule_install call would still be
   // there for the next one, which would then read a stale absolute path as if the
   // operator had configured it. Nothing outside this call sees it.
   const capturedEnv = await captureEnv();
-  if (gitleaksBin) capturedEnv.CIPHER_BRAIN_GITLEAKS_BIN = gitleaksBin;
+  if (gitleaksBin) capturedEnv.CYPHER_BRAIN_GITLEAKS_BIN = gitleaksBin;
 
   const cfg: ScheduleConfig = {
     schema: 1,
@@ -717,7 +754,7 @@ async function install(o: CliOptions): Promise<void> {
     trigger:
       process.platform === 'darwin' ? { type: 'launchd', path: PLIST } : { type: 'cron', entry_file: CRON_ENTRY_FILE },
     // Same reasoning as --vault/--zip/--dir/--recipient above, applied to the ambient
-    // CIPHER_BRAIN_* env vars and TMPDIR: snapshot this process's env NOW (resolving any
+    // CYPHER_BRAIN_* env vars and TMPDIR: snapshot this process's env NOW (resolving any
     // relative path-valued vars to absolute) so the runner still resolves the same
     // files/dirs when launchd/cron invoke it later from a different cwd and bare env.
     env: capturedEnv,
@@ -754,41 +791,49 @@ async function install(o: CliOptions): Promise<void> {
   if (o.no_load) {
     if (cfg.trigger.type === 'launchd') {
       console.error(
-        `--no-load: trigger NOT registered (launchctl untouched) — but ${PLIST} is a REAL, PERSISTENT file that was just written. Its default location (~/Library/LaunchAgents) is a real system dir, NOT scoped to CIPHER_BRAIN_HOME (override with CIPHER_BRAIN_LAUNCHD_DIR to sandbox a --no-load preview). Remove it by hand, or with \`cipher-brain schedule uninstall\`, if you do not intend to \`launchctl load\` it or re-run install without --no-load.`,
+        `--no-load: trigger NOT registered (launchctl untouched) — but ${PLIST} is a REAL, PERSISTENT file that was just written. Its default location (~/Library/LaunchAgents) is a real system dir, NOT scoped to CYPHER_BRAIN_HOME (override with CYPHER_BRAIN_LAUNCHD_DIR to sandbox a --no-load preview). Remove it by hand, or with \`cypher-brain schedule uninstall\`, if you do not intend to \`launchctl load\` it or re-run install without --no-load.`,
       );
     } else {
       console.error('--no-load: cron entry written, trigger NOT registered (crontab untouched)');
     }
-    if (isLegacyLaunchdCfg(priorCfg) || (priorCronEntry && isLegacyCronLine(priorCronEntry))) {
+    if (legacyLaunchd(priorCfg) || legacyCronEntry(priorCronEntry, priorCfg)) {
       console.error(
-        `note: a legacy (pre-CIPHER_BRAIN_HOME-scoped) registration for this home is still live — re-run install WITHOUT --no-load to migrate off it (otherwise both would end up running nightly)`,
+        `note: a legacy (earlier label/marker scheme) registration for this home is still live — re-run install WITHOUT --no-load to migrate off it (otherwise both would end up running nightly)`,
       );
     }
   } else if (cfg.trigger.type === 'launchd') {
     loadLaunchd();
     console.error(`launchd job loaded: ${LABEL}`);
-    if (isLegacyLaunchdCfg(priorCfg)) {
-      sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${LEGACY_LABEL}`]); // failure = was not loaded, fine
-      if (await exists(LEGACY_PLIST)) {
-        await rm(LEGACY_PLIST);
-        console.error(`migrated off the legacy unscoped launchd label (${LEGACY_LABEL}) — removed ${LEGACY_PLIST}`);
+    const legacy = legacyLaunchd(priorCfg);
+    if (legacy) {
+      // sameLabel: loadLaunchd() just re-registered this very label from the new PLIST —
+      // booting it out here would unload it again. Only the stale file goes.
+      if (!legacy.sameLabel) sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${legacy.label}`]); // failure = was not loaded, fine
+      if (await exists(legacy.plist)) {
+        await rm(legacy.plist);
+        console.error(
+          legacy.sameLabel
+            ? `removed the previous plist for this label at ${legacy.plist} (LAUNCHD_DIR changed)`
+            : `migrated off the legacy launchd label (${legacy.label}) — removed ${legacy.plist}`,
+        );
       }
     }
   } else {
     loadCron(cronLine(cfg));
     console.error(`crontab entry registered (${CRON_MARKER})`);
-    if (priorCronEntry && isLegacyCronLine(priorCronEntry)) {
+    const legacyEntry = legacyCronEntry(priorCronEntry, priorCfg);
+    if (legacyEntry) {
       const lines = crontabText()
         .split('\n')
         .filter((l) => l.trim());
-      const kept = lines.filter((l) => !isLegacyCronLine(l));
+      const kept = lines.filter((l) => !isLegacyCronLine(l, legacyEntry));
       if (kept.length !== lines.length) {
         const r = sh('crontab', ['-'], { input: kept.length ? `${kept.join('\n')}\n` : '' });
         if (r.error || r.status !== 0)
           throw new Error(
             `crontab write failed while migrating off the legacy entry: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`,
           );
-        console.error(`migrated off the legacy unscoped crontab entry (${LEGACY_CRON_MARKER})`);
+        console.error(`migrated off the legacy crontab entry (${cronMarkerOf(legacyEntry)})`);
       }
     }
   }
@@ -801,11 +846,11 @@ async function install(o: CliOptions): Promise<void> {
   );
   if (PAID.has(cfg.backend)) {
     console.error(
-      `review CIPHER_BRAIN_MAX_SPEND=${cfg.max_spend} in ${RUNNER} — every unattended ${cfg.backend} push is capped at that estimate (native units)`,
+      `review CYPHER_BRAIN_MAX_SPEND=${cfg.max_spend} in ${RUNNER} — every unattended ${cfg.backend} push is capped at that estimate (native units)`,
     );
   }
   console.error(
-    `runs log to ${LOGS_DIR}/nightly-YYYY-MM-DD.log (final line: "OK rc=0" or "FAILED rc=N"); check with: cipher-brain schedule status`,
+    `runs log to ${LOGS_DIR}/nightly-YYYY-MM-DD.log (final line: "OK rc=0" or "FAILED rc=N"); check with: cypher-brain schedule status`,
   );
   if (cfg.ping_url) {
     console.error(
@@ -825,7 +870,7 @@ export class ScheduleNotInstalledError extends Error {}
 
 async function readConfig(): Promise<ScheduleConfig> {
   if (!(await exists(CONFIG))) {
-    throw new ScheduleNotInstalledError(`schedule not installed (no ${CONFIG}) — run: cipher-brain schedule install`);
+    throw new ScheduleNotInstalledError(`schedule not installed (no ${CONFIG}) — run: cypher-brain schedule install`);
   }
   return JSON.parse(await readFile(CONFIG, 'utf8'));
 }
@@ -856,10 +901,10 @@ function nextRunAt(hour: number, minute: number): string {
 
 // The legacy-migration note text, shared by the human-readable report and --json's
 // trigger.legacy_note field below — one string, never re-worded twice.
-const legacyLaunchdNote = () =>
-  `this schedule is still registered under the legacy unscoped launchd label (${LEGACY_LABEL}) from before CIPHER_BRAIN_HOME-scoped labels — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`;
-const legacyCronNote = () =>
-  `this schedule is still registered under the legacy unscoped crontab marker (${LEGACY_CRON_MARKER}) from before CIPHER_BRAIN_HOME-scoped markers — run \`cipher-brain schedule install\` again to migrate it (avoids colliding with a different CIPHER_BRAIN_HOME's schedule on this machine)`;
+const legacyLaunchdNote = (label: string) =>
+  `this schedule is still registered under the legacy launchd label (${label}) from an earlier scheme (pre-CYPHER_BRAIN_HOME-scoped, or the cipher-brain name) — run \`cypher-brain schedule install\` again to migrate it to ${LABEL}`;
+const legacyCronNote = (marker: string) =>
+  `this schedule is still registered under the legacy crontab marker (${marker}) from an earlier scheme (pre-CYPHER_BRAIN_HOME-scoped, or the cipher-brain name) — run \`cypher-brain schedule install\` again to migrate it to ${CRON_MARKER}`;
 
 /**
  * The schedule's state, as one object (#285).
@@ -927,25 +972,27 @@ export async function scheduleStatusReport(): Promise<ScheduleStatusReport> {
     // A legacy (pre-#114) schedule.json literally stored the unscoped plist path — trust
     // THAT ground truth over re-deriving from the current (scoped) LABEL constant, so a
     // legacy job that IS actually loaded is reported as loaded, not wrongly "no".
-    legacy = isLegacyLaunchdCfg(cfg);
-    const label = legacy ? LEGACY_LABEL : LABEL;
+    const prior = legacyLaunchd(cfg);
+    legacy = !!prior;
+    const label = prior ? prior.label : LABEL;
     const r = sh('launchctl', ['print', `gui/${process.getuid?.()}/${label}`]);
     loadedYesNo = !r.error && r.status === 0 ? 'yes' : 'no';
     triggerPath = cfg.trigger.path;
-    if (legacy) legacyNote = legacyLaunchdNote();
+    if (prior) legacyNote = legacyLaunchdNote(prior.label);
   } else {
     // Same reasoning as the launchd branch: read back the EXACT line install last wrote
     // (whatever marker scheme was in effect then) instead of re-deriving one from the
     // current cfg + the current (scoped) CRON_MARKER constant, which would misreport a
     // still-legacy registration as unregistered.
     const entryLine = (await readOwnCronEntry()) ?? cronLine(cfg);
-    legacy = isLegacyCronLine(entryLine);
-    const marker = legacy ? LEGACY_CRON_MARKER : CRON_MARKER;
+    const legacyEntry = legacyCronEntry(entryLine, cfg);
+    legacy = !!legacyEntry;
+    const needle = legacyEntry ?? CRON_MARKER;
     loadedYesNo = 'unknown';
     const r = sh('crontab', ['-l']);
-    if (!r.error) loadedYesNo = r.status === 0 && r.stdout.includes(marker) ? 'yes' : 'no';
+    if (!r.error) loadedYesNo = r.status === 0 && r.stdout.includes(needle) ? 'yes' : 'no';
     triggerEntry = entryLine;
-    if (legacy) legacyNote = legacyCronNote();
+    if (legacyEntry) legacyNote = legacyCronNote(cronMarkerOf(legacyEntry));
   }
   const last = await lastLog();
 
@@ -976,7 +1023,7 @@ async function status(o: CliOptions): Promise<void> {
   const r = await scheduleStatusReport();
 
   if (o.json) {
-    // --json (#211): the SAME object the MCP tool and the cipher-brain://schedule/status
+    // --json (#211): the SAME object the MCP tool and the cypher-brain://schedule/status
     // resource serve — never a re-implementation, so the three can never disagree.
     printJson(r);
     return;
@@ -1021,7 +1068,7 @@ async function status(o: CliOptions): Promise<void> {
 async function uninstall(o: CliOptions): Promise<void> {
   // Legacy detection is scoped to THIS home's own recorded artifacts — never a blind
   // machine-wide launchctl/crontab sweep — so it can never touch a DIFFERENT
-  // CIPHER_BRAIN_HOME's still-legacy job (see isLegacyLaunchdCfg/isLegacyCronLine).
+  // CYPHER_BRAIN_HOME's still-legacy job (see legacyLaunchd/legacyCronEntry).
   const priorCfg = await tryReadConfig();
   const priorCronEntry = await readOwnCronEntry();
 
@@ -1035,8 +1082,8 @@ async function uninstall(o: CliOptions): Promise<void> {
     const present: string[] = [];
     if (process.platform === 'darwin') {
       if (await exists(PLIST)) present.push(`launchd plist ${PLIST}`);
-      if (isLegacyLaunchdCfg(priorCfg) && (await exists(LEGACY_PLIST)))
-        present.push(`legacy launchd plist ${LEGACY_PLIST}`);
+      const legacy = legacyLaunchd(priorCfg);
+      if (legacy && (await exists(legacy.plist))) present.push(`legacy launchd plist ${legacy.plist}`);
     } else {
       if (await exists(CRON_ENTRY_FILE)) present.push(`cron entry file ${CRON_ENTRY_FILE}`);
     }
@@ -1046,7 +1093,7 @@ async function uninstall(o: CliOptions): Promise<void> {
       console.error('nothing to remove — schedule is not installed');
     } else {
       console.error(
-        `--no-load: nothing removed — the trigger registration in launchd/crontab is still live. Re-run \`cipher-brain schedule uninstall\` WITHOUT --no-load to unregister it and remove: ${present.join(', ')}`,
+        `--no-load: nothing removed — the trigger registration in launchd/crontab is still live. Re-run \`cypher-brain schedule uninstall\` WITHOUT --no-load to unregister it and remove: ${present.join(', ')}`,
       );
     }
     return;
@@ -1059,26 +1106,28 @@ async function uninstall(o: CliOptions): Promise<void> {
       await rm(PLIST);
       removed.push(`launchd plist ${PLIST}`);
     }
-    if (isLegacyLaunchdCfg(priorCfg)) {
-      sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${LEGACY_LABEL}`]); // failure = was not loaded, fine
-      if (await exists(LEGACY_PLIST)) {
-        await rm(LEGACY_PLIST);
-        removed.push(`legacy launchd plist ${LEGACY_PLIST}`);
+    const legacy = legacyLaunchd(priorCfg);
+    if (legacy) {
+      // sameLabel: LABEL was booted out just above; only the stale file is left.
+      if (!legacy.sameLabel) sh('launchctl', ['bootout', `gui/${process.getuid?.()}/${legacy.label}`]); // failure = was not loaded, fine
+      if (await exists(legacy.plist)) {
+        await rm(legacy.plist);
+        removed.push(`legacy launchd plist ${legacy.plist}`);
       }
     }
   } else {
-    const migrateLegacy = !!priorCronEntry && isLegacyCronLine(priorCronEntry);
+    const legacyEntry = legacyCronEntry(priorCronEntry, priorCfg);
     const lines = crontabText()
       .split('\n')
       .filter((l) => l.trim());
-    const kept = lines.filter((l) => !l.includes(CRON_MARKER) && !(migrateLegacy && isLegacyCronLine(l)));
+    const kept = lines.filter((l) => !l.includes(CRON_MARKER) && !(legacyEntry && isLegacyCronLine(l, legacyEntry)));
     if (kept.length !== lines.length) {
       const r = sh('crontab', ['-'], { input: kept.length ? `${kept.join('\n')}\n` : '' });
       if (r.error || r.status !== 0)
         throw new Error(`crontab write failed: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`);
       removed.push(
-        migrateLegacy
-          ? `crontab entry (${CRON_MARKER} + legacy ${LEGACY_CRON_MARKER})`
+        legacyEntry
+          ? `crontab entry (${CRON_MARKER} + legacy ${cronMarkerOf(legacyEntry)})`
           : `crontab entry (${CRON_MARKER})`,
       );
     }

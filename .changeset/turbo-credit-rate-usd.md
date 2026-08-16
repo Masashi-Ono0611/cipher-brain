@@ -1,5 +1,5 @@
 ---
-'cipher-brain': patch
+'cypher-brain': patch
 ---
 
 USD approximations now price each backend in its own truthful unit. A `turbo` upload

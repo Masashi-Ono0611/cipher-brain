@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Round-trip proof for .cipherbrainignore (issue #216): a gitignore-compatible file at
+# Round-trip proof for .cypherbrainignore (issue #216): a gitignore-compatible file at
 # the root of a --dir (or a --profile-resolved directory) filters what tar actually
 # archives from that directory — node_modules/, caches, .git/ etc no longer need to be
 # staged, encrypted, or (on a paid backend) permanently stored. Matching is delegated to
-# the `ignore` npm package. No .cipherbrainignore present must behave EXACTLY as before
+# the `ignore` npm package. No .cypherbrainignore present must behave EXACTLY as before
 # (every path archived) — the whole point of an additive, backward-compatible filter.
 # Also exercises `snapshot --dry-run`, which previews the same filtering without
 # staging/encrypting/writing anything. Synthetic fixtures only — no real user data, no
@@ -11,20 +11,20 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_HOME="$TMP/keys"
+export CYPHER_BRAIN_HOME="$TMP/keys"
 cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 
 echo "== keygen =="
 cb keygen >/dev/null
 
-echo "== control: a --dir with NO .cipherbrainignore archives everything, exactly as before =="
+echo "== control: a --dir with NO .cypherbrainignore archives everything, exactly as before =="
 PLAIN="$TMP/plain"
 mkdir -p "$PLAIN/x"
 printf 'hi\n' > "$PLAIN/x/f.txt"
@@ -33,17 +33,17 @@ cb restore --in "$TMP/plain.age" --out-dir "$TMP/plain-out" --no-expand-componen
 tar -tzf "$TMP/plain-out/plain.tar.gz" | sort > "$TMP/plain-list.txt"
 grep -qx 'plain/' "$TMP/plain-list.txt" || { echo "[FAIL] control archive missing top dir entry"; cat "$TMP/plain-list.txt"; exit 1; }
 grep -qx 'plain/x/f.txt' "$TMP/plain-list.txt" || { echo "[FAIL] control archive missing nested file"; cat "$TMP/plain-list.txt"; exit 1; }
-grep -q '"cipherbrainignore"' "$TMP/plain-out/manifest.json" && { echo "[FAIL] manifest records cipherbrainignore when no ignore file was present"; exit 1; }
-echo "[PASS] no .cipherbrainignore -> unchanged archive contents, no manifest field"
+grep -q '"cypherbrainignore"' "$TMP/plain-out/manifest.json" && { echo "[FAIL] manifest records cypherbrainignore when no ignore file was present"; exit 1; }
+echo "[PASS] no .cypherbrainignore -> unchanged archive contents, no manifest field"
 
-echo "== .cipherbrainignore excludes node_modules/ and .git/, keeps everything else =="
+echo "== .cypherbrainignore excludes node_modules/ and .git/, keeps everything else =="
 SRC="$TMP/brain"
 mkdir -p "$SRC/a/b" "$SRC/node_modules/pkg" "$SRC/.git"
 printf 'keep1\n' > "$SRC/a/keep.txt"
 printf 'keep2\n' > "$SRC/a/b/keep2.txt"
 head -c 4096 /dev/urandom > "$SRC/node_modules/pkg/file.bin"
 printf 'gitstuff\n' > "$SRC/.git/HEAD"
-cat > "$SRC/.cipherbrainignore" <<'EOF'
+cat > "$SRC/.cypherbrainignore" <<'EOF'
 node_modules/
 .git/
 EOF
@@ -54,13 +54,13 @@ grep -q 'node_modules' "$TMP/list.txt" && { echo "[FAIL] node_modules leaked int
 grep -q '\.git' "$TMP/list.txt" && { echo "[FAIL] .git leaked into the archive"; cat "$TMP/list.txt"; exit 1; }
 grep -qx 'brain/a/keep.txt' "$TMP/list.txt" || { echo "[FAIL] included file a/keep.txt missing"; cat "$TMP/list.txt"; exit 1; }
 grep -qx 'brain/a/b/keep2.txt' "$TMP/list.txt" || { echo "[FAIL] included file a/b/keep2.txt missing"; cat "$TMP/list.txt"; exit 1; }
-grep -qx 'brain/.cipherbrainignore' "$TMP/list.txt" || { echo "[FAIL] .cipherbrainignore itself missing from archive"; cat "$TMP/list.txt"; exit 1; }
+grep -qx 'brain/.cypherbrainignore' "$TMP/list.txt" || { echo "[FAIL] .cypherbrainignore itself missing from archive"; cat "$TMP/list.txt"; exit 1; }
 echo "[PASS] node_modules/ and .git/ excluded; every other file still archived"
 
-echo "== manifest records cipherbrainignore: true and the right excluded_count =="
-grep -q '"cipherbrainignore": true' "$TMP/out/manifest.json" || { echo "[FAIL] manifest missing cipherbrainignore: true"; cat "$TMP/out/manifest.json"; exit 1; }
+echo "== manifest records cypherbrainignore: true and the right excluded_count =="
+grep -q '"cypherbrainignore": true' "$TMP/out/manifest.json" || { echo "[FAIL] manifest missing cypherbrainignore: true"; cat "$TMP/out/manifest.json"; exit 1; }
 grep -q '"excluded_count": 2' "$TMP/out/manifest.json" || { echo "[FAIL] manifest excluded_count is not 2 (node_modules/ + .git/)"; cat "$TMP/out/manifest.json"; exit 1; }
-echo "[PASS] manifest carries cipherbrainignore provenance (applied + excluded_count)"
+echo "[PASS] manifest carries cypherbrainignore provenance (applied + excluded_count)"
 
 echo "== plaintext leak check: excluded content never appears in the ciphertext =="
 if LC_ALL=C grep -a -q "gitstuff" "$TMP/snap.age"; then
@@ -73,7 +73,7 @@ NEG="$TMP/negation"
 mkdir -p "$NEG/logs"
 printf 'noisy\n' > "$NEG/logs/app.log"
 printf 'keep-this\n' > "$NEG/logs/important.log"
-cat > "$NEG/.cipherbrainignore" <<'EOF'
+cat > "$NEG/.cypherbrainignore" <<'EOF'
 logs/*
 !logs/important.log
 EOF
@@ -103,27 +103,27 @@ echo "[PASS] --dry-run reports accurate include/exclude counts, no --out require
 # what SURVIVED filtering is now there too, and its byte totals reconcile with the
 # per-source total (#368 acceptance: "Byte totals in the breakdown reconcile with the
 # existing per-source total"). $SRC's 3 included files are exact byte counts on purpose
-# (a/keep.txt=6B, a/b/keep2.txt=6B, .cipherbrainignore=20B) so the shares below are
+# (a/keep.txt=6B, a/b/keep2.txt=6B, .cypherbrainignore=20B) so the shares below are
 # clean percentages, not rounding artifacts.
-echo "== --dry-run (#368): with .cipherbrainignore present, still reports the largest contributors =="
+echo "== --dry-run (#368): with .cypherbrainignore present, still reports the largest contributors =="
 # Only 2 buckets exist here (well under CONTRIBUTORS_LIMIT), so the heading must say "2 by
 # bytes" — NOT "top 10" (P3, multi-model review: the heading must never claim a truncation
 # that did not happen) — and there must be no "other (N more)" remainder line.
 printf '%s' "$OUT" | grep -q "largest contributors (2 by bytes, aggregated one directory level deep):" || { echo "[FAIL] with-ignore-file --dry-run heading wrong (expected '2 by bytes', not a 'top N' claim)"; echo "$OUT"; exit 1; }
-printf '%s' "$OUT" | grep -qE '\.cipherbrainignore +20 B \(62\.5% of this source\)' || { echo "[FAIL] .cipherbrainignore contributor line missing or wrong share"; echo "$OUT"; exit 1; }
+printf '%s' "$OUT" | grep -qE '\.cypherbrainignore +20 B \(62\.5% of this source\)' || { echo "[FAIL] .cypherbrainignore contributor line missing or wrong share"; echo "$OUT"; exit 1; }
 printf '%s' "$OUT" | grep -qE '^    a/ +12 B \(37\.5% of this source\)' || { echo "[FAIL] aggregated a/ contributor line missing or wrong share"; echo "$OUT"; exit 1; }
 printf '%s' "$OUT" | grep -q "other (" && { echo "[FAIL] unexpected remainder line with only 2 buckets"; echo "$OUT"; exit 1; }
 echo "[PASS] --dry-run with an ignore file present still reports the largest contributors of what survived filtering"
 
-# #368 acceptance: "snapshot --dry-run against a source with no .cipherbrainignore lists
+# #368 acceptance: "snapshot --dry-run against a source with no .cypherbrainignore lists
 # the largest contributors with their byte shares" — the branch this issue exists for. A
-# --dir with no .cipherbrainignore used to print exactly ONE aggregate line and nothing
+# --dir with no .cypherbrainignore used to print exactly ONE aggregate line and nothing
 # else; this is the state nobody has audited yet, so it is the one that most needs the
 # breakdown. Sizes below are exact byte counts (bigdir/a.bin=700B, bigdir/b.bin=200B,
 # root.txt=100B) so the shares are clean percentages the assertions can pin exactly, and
 # the reconciliation check below can sum contributor bytes back to the reported total
 # without any KB/MB rounding ambiguity.
-echo "== --dry-run (#368): NO .cipherbrainignore lists the largest contributors, dominant subtree first =="
+echo "== --dry-run (#368): NO .cypherbrainignore lists the largest contributors, dominant subtree first =="
 CONTRIB="$TMP/contrib"
 mkdir -p "$CONTRIB/bigdir"
 head -c 700 /dev/urandom > "$CONTRIB/bigdir/a.bin"
@@ -133,7 +133,7 @@ set +e
 CONTRIB_OUT=$(cb snapshot --dir "$CONTRIB" --dry-run 2>&1); CONTRIB_RC=$?
 set -e
 [ "$CONTRIB_RC" = "0" ] || { echo "[FAIL] --dry-run (no ignore file, #368) exited non-zero"; echo "$CONTRIB_OUT"; exit 1; }
-printf '%s' "$CONTRIB_OUT" | grep -q "no .cipherbrainignore — all 3 file(s) included (1000 B)" || { echo "[FAIL] unexpected no-ignore-file summary line"; echo "$CONTRIB_OUT"; exit 1; }
+printf '%s' "$CONTRIB_OUT" | grep -q "no .cypherbrainignore — all 3 file(s) included (1000 B)" || { echo "[FAIL] unexpected no-ignore-file summary line"; echo "$CONTRIB_OUT"; exit 1; }
 # Only 2 buckets (bigdir/, root.bin), well under CONTRIBUTORS_LIMIT — heading must say "2
 # by bytes", not claim a "top 10" truncation that never happened (P3), and there must be
 # no remainder line.
@@ -146,7 +146,7 @@ printf '%s' "$CONTRIB_OUT" | grep -q "other (" && { echo "[FAIL] unexpected rema
 BIGDIR_BYTES=$(printf '%s' "$CONTRIB_OUT" | grep -oE '^    bigdir/ +[0-9]+ B' | grep -oE '[0-9]+')
 ROOT_BYTES=$(printf '%s' "$CONTRIB_OUT" | grep -oE '^    root\.bin +[0-9]+ B' | grep -oE '[0-9]+')
 [ "$((BIGDIR_BYTES + ROOT_BYTES))" = "1000" ] || { echo "[FAIL] contributor bytes ($BIGDIR_BYTES + $ROOT_BYTES) do not reconcile with the reported 1000 B per-source total"; echo "$CONTRIB_OUT"; exit 1; }
-echo "[PASS] no .cipherbrainignore --dry-run breaks down the largest contributors, dominant subtree first, bytes reconcile"
+echo "[PASS] no .cypherbrainignore --dry-run breaks down the largest contributors, dominant subtree first, bytes reconcile"
 
 # #368 acceptance: "A source whose contents are one flat set of small files produces a
 # sane, short report (no pathological output when there is no dominant path)" — every
@@ -164,7 +164,7 @@ set +e
 FLAT_OUT=$(cb snapshot --dir "$FLAT" --dry-run 2>&1); FLAT_RC=$?
 set -e
 [ "$FLAT_RC" = "0" ] || { echo "[FAIL] --dry-run (flat small files, #368) exited non-zero"; echo "$FLAT_OUT"; exit 1; }
-printf '%s' "$FLAT_OUT" | grep -q "no .cipherbrainignore — all 3 file(s) included (60 B)" || { echo "[FAIL] unexpected flat-file summary line"; echo "$FLAT_OUT"; exit 1; }
+printf '%s' "$FLAT_OUT" | grep -q "no .cypherbrainignore — all 3 file(s) included (60 B)" || { echo "[FAIL] unexpected flat-file summary line"; echo "$FLAT_OUT"; exit 1; }
 printf '%s' "$FLAT_OUT" | grep -q "largest contributors (3 by bytes, aggregated one directory level deep):" || { echo "[FAIL] flat-file heading wrong (expected '3 by bytes', not a 'top N' claim)"; echo "$FLAT_OUT"; exit 1; }
 # Exact values AND descending order: the three contributor lines must appear in this
 # EXACT sequence (largest byte count first), each with its exact byte count and share —
@@ -194,7 +194,7 @@ set +e
 MANY_OUT=$(cb snapshot --dir "$MANY" --dry-run 2>&1); MANY_RC=$?
 set -e
 [ "$MANY_RC" = "0" ] || { echo "[FAIL] --dry-run (12 buckets, #368) exited non-zero"; echo "$MANY_OUT"; exit 1; }
-printf '%s' "$MANY_OUT" | grep -q "no .cipherbrainignore — all 12 file(s) included (780 B)" || { echo "[FAIL] unexpected 12-file summary line"; echo "$MANY_OUT"; exit 1; }
+printf '%s' "$MANY_OUT" | grep -q "no .cypherbrainignore — all 12 file(s) included (780 B)" || { echo "[FAIL] unexpected 12-file summary line"; echo "$MANY_OUT"; exit 1; }
 printf '%s' "$MANY_OUT" | grep -q "largest contributors (top 10 of 12 by bytes, aggregated one directory level deep):" || { echo "[FAIL] heading does not name the truncation (expected 'top 10 of 12')"; echo "$MANY_OUT"; exit 1; }
 printf '%s' "$MANY_OUT" | grep -qE '^    other \(2 more\) +30 B \(3\.8% of this source\)' || { echo "[FAIL] remainder line missing or wrong (expected 'other (2 more)  30 B (3.8% of this source)')"; echo "$MANY_OUT"; exit 1; }
 # reconciliation: sum the 10 SHOWN contributor byte counts, verify each against its known
@@ -226,7 +226,7 @@ echo "[PASS] --dry-run never touches pg_dump and redacts the connection string i
 echo "== --dry-run on a single-file --dir source: not filterable, no crash =="
 SINGLE="$TMP/single.txt"; printf 'hello\n' > "$SINGLE"
 OUT=$(cb snapshot --dir "$SINGLE" --dry-run 2>&1)
-printf '%s' "$OUT" | grep -q "not filterable by .cipherbrainignore" || { echo "[FAIL] single-file --dry-run missing not-filterable note"; echo "$OUT"; exit 1; }
+printf '%s' "$OUT" | grep -q "not filterable by .cypherbrainignore" || { echo "[FAIL] single-file --dry-run missing not-filterable note"; echo "$OUT"; exit 1; }
 echo "[PASS] --dry-run handles a single-file --dir source without error"
 
 echo "== --dry-run on a symlink --dir source: archived as-is, no crash =="
@@ -246,12 +246,12 @@ echo "== security: a --dir whose OWN basename looks like a tar option (e.g. '-C'
 # then a path relative to THAT dir, producing "Cannot stat ...: No such file or
 # directory" (rc=1) instead of a correct archive — a concrete, reproducible
 # corruption/DoS from this exact injection class, not just a theoretical one.
-# This exercises the real code path (a --dir WITH a .cipherbrainignore, so
+# This exercises the real code path (a --dir WITH a .cypherbrainignore, so
 # scanDir's -T/--null branch runs) with a --dir directory literally named "-C".
 INJ="$TMP/-C"
 mkdir -p "$INJ/sub"
 printf 'keep\n' > "$INJ/sub/f.txt"
-printf 'irrelevant\n' > "$INJ/.cipherbrainignore"     # any ignore file triggers the -T/--null branch
+printf 'irrelevant\n' > "$INJ/.cypherbrainignore"     # any ignore file triggers the -T/--null branch
 set +e
 INJOUT=$(cb snapshot --dir "$INJ" --out "$TMP/inj.age" 2>&1); INJRC=$?
 set -e
@@ -263,5 +263,31 @@ tar -xzf "$TMP/inj-out/-C.tar.gz" -C "$TMP/inj-out"
 [ "$(cat "$TMP/inj-out/-C/sub/f.txt")" = "keep" ] || { echo "[FAIL] content corrupted for a --dir named '-C'"; exit 1; }
 echo "[PASS] a --dir literally named '-C' archives correctly — no tar -T option-injection via the bare basename line"
 
+echo "== legacy name: a .cipherbrainignore (pre-rename) is still honoured when no .cypherbrainignore exists =="
+LEG="$TMP/legacy"
+mkdir -p "$LEG/node_modules/pkg" "$LEG/a"
+printf 'keep\n' > "$LEG/a/keep.txt"
+printf 'junk\n' > "$LEG/node_modules/pkg/f.txt"
+printf 'node_modules/\n' > "$LEG/.cipherbrainignore"
+cb snapshot --dir "$LEG" --out "$TMP/leg.age" >/dev/null 2>&1
+cb restore --in "$TMP/leg.age" --out-dir "$TMP/leg-out" --no-expand-components >/dev/null
+tar -tzf "$TMP/leg-out/legacy.tar.gz" | sort > "$TMP/leg-list.txt"
+grep -q 'node_modules' "$TMP/leg-list.txt" && { echo "[FAIL] .cipherbrainignore (legacy name) was ignored — node_modules leaked"; cat "$TMP/leg-list.txt"; exit 1; }
+grep -qx 'legacy/a/keep.txt' "$TMP/leg-list.txt" || { echo "[FAIL] included file missing under legacy ignore file"; cat "$TMP/leg-list.txt"; exit 1; }
+echo "[PASS] .cipherbrainignore still filters when it is the only ignore file"
+OUT=$(cb snapshot --dir "$LEG" --dry-run 2>&1) || { echo "[FAIL] --dry-run exited non-zero under a legacy ignore file"; printf '%s\n' "$OUT"; exit 1; }
+printf '%s' "$OUT" | grep -q '\.cipherbrainignore found' || { echo "[FAIL] --dry-run did not name the legacy .cipherbrainignore it actually applied"; printf '%s\n' "$OUT"; exit 1; }
+echo "[PASS] --dry-run names the legacy file when that is what filtered the source"
+
+echo "== legacy name: when BOTH exist, .cypherbrainignore wins and .cipherbrainignore is not merged in =="
+# The current-name file ignores nothing relevant; the legacy file would exclude node_modules.
+# If the legacy file were read (or merged), node_modules would be missing.
+printf 'nothing-matches-this/\n' > "$LEG/.cypherbrainignore"
+cb snapshot --dir "$LEG" --out "$TMP/leg2.age" >/dev/null 2>&1
+cb restore --in "$TMP/leg2.age" --out-dir "$TMP/leg2-out" --no-expand-components >/dev/null
+tar -tzf "$TMP/leg2-out/legacy.tar.gz" | sort > "$TMP/leg2-list.txt"
+grep -qx 'legacy/node_modules/pkg/f.txt' "$TMP/leg2-list.txt" || { echo "[FAIL] with both files present the legacy .cipherbrainignore was applied — it must yield to .cypherbrainignore"; cat "$TMP/leg2-list.txt"; exit 1; }
+echo "[PASS] .cypherbrainignore takes precedence over a co-existing .cipherbrainignore"
+
 echo ""
-echo "CIPHERBRAINIGNORE SELFTEST PASS"
+echo "CYPHERBRAINIGNORE SELFTEST PASS"

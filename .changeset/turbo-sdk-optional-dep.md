@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 `@ardrive/turbo-sdk` moves from an optional *peer* dependency (which package

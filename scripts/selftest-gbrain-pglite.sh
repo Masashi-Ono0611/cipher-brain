@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Selftest for gbrain's PGLite engine (issue #367). cipher-brain used to assume a
+# Selftest for gbrain's PGLite engine (issue #367). cypher-brain used to assume a
 # Postgres-backed gbrain everywhere it touched one — but PGLite (Postgres 17 compiled
 # to WASM, whose whole database is a directory on disk) is gbrain's zero-config
 # DEFAULT. Two consequences, one test file:
@@ -21,8 +21,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-MCP_BIN="$ROOT/bin/cipher-brain-mcp.mjs"
+BIN="$ROOT/bin/cypher-brain.mjs"
+MCP_BIN="$ROOT/bin/cypher-brain-mcp.mjs"
 # BIN_DEV_ARGS: literal argv flags to run the CLI against src/*.ts (no build step)
 # under plain node — see scripts/dev-node-flags.sh.
 source "$ROOT/scripts/dev-node-flags.sh"
@@ -87,7 +87,7 @@ printf 'gbrain-pglite-selftest\n' > "$CB_SRC/note.txt"
 # (a) the wizard's engine-resolution matrix
 # ---------------------------------------------------------------------------
 # Each case gets its own HOME (so ~/.gbrain/config.json is a fixture) and its own
-# CIPHER_BRAIN_HOME. The run is deliberately CUT SHORT at the backend prompt with an
+# CYPHER_BRAIN_HOME. The run is deliberately CUT SHORT at the backend prompt with an
 # unknown backend name: everything this test asserts is printed before that point,
 # and stopping there skips the snapshot/push/kit work four times over. The same
 # rollback path scripts/selftest-init.sh's test (h) already covers then cleans up.
@@ -129,7 +129,7 @@ wizard_case() {
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$answer_dir"],
 $pg_line
@@ -138,7 +138,7 @@ $pg_line
 JSON
   local extra_env=("${WIZARD_EXTRA_ENV[@]+"${WIZARD_EXTRA_ENV[@]}"}")
   WIZARD_EXTRA_ENV=()
-  if CIPHER_BRAIN_HOME="$cbhome" HOME="$home" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+  if CYPHER_BRAIN_HOME="$cbhome" HOME="$home" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
     with_timeout 60 env ${extra_env[@]+"${extra_env[@]}"} \
     node "$ROOT/scripts/drive-init.mjs" --qa "$qa" --out "$logfile" \
     -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
@@ -171,7 +171,7 @@ echo "[PASS] an explicit engine=pglite -> PGLite even with no database_path reco
 echo "[PASS] no case leaked any other value out of config.json into the transcript (it holds API keys)"
 
 # gbrain's OWN runtime resolution lets a DATABASE_URL-style env var win outright and
-# force Postgres. Copying that here would be a bug, not fidelity: cipher-brain is asking
+# force Postgres. Copying that here would be a bug, not fidelity: cypher-brain is asking
 # what is on disk, and an exported connection string does not make a PGLite directory
 # stop existing (upstream hit this as a P1 in a gbrain doctor check — garrytan/gbrain#3879
 # — where it led to advice to delete a brain that was in use). Pin BOTH variable names,
@@ -277,7 +277,7 @@ cat > "$TMP/qa-e2e.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$E2E_HOME/.gbrain"],
   ["Backend [file/", ""],
@@ -285,11 +285,11 @@ cat > "$TMP/qa-e2e.json" <<JSON
 ]
 JSON
 
-CIPHER_BRAIN_HOME="$E2E_CB_HOME" CIPHER_BRAIN_FILE_DIR="$E2E_STORE_DIR" HOME="$E2E_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+CYPHER_BRAIN_HOME="$E2E_CB_HOME" CYPHER_BRAIN_FILE_DIR="$E2E_STORE_DIR" HOME="$E2E_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-e2e.json" --out "$TMP/e2e.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the PGLite end-to-end wizard run did not complete"; cat "$TMP/e2e.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/e2e.log" || { echo "[FAIL] PGLite e2e run lacks the wizard's completion marker"; cat "$TMP/e2e.log"; exit 1; }
+grep -q 'cypher-brain init: complete' "$TMP/e2e.log" || { echo "[FAIL] PGLite e2e run lacks the wizard's completion marker"; cat "$TMP/e2e.log"; exit 1; }
 if grep -qF "$PG_PROMPT_MARK" "$TMP/e2e.log"; then echo "[FAIL] the PGLite e2e run was offered --pg"; cat "$TMP/e2e.log"; exit 1; fi
 if grep -qF "$NOT_COVERED_MARK" "$TMP/e2e.log"; then echo "[FAIL] the store WAS covered by the answered directory, but the wizard still said it was not"; cat "$TMP/e2e.log"; exit 1; fi
 grep -qF "$COVERED_MARK" "$TMP/e2e.log" || { echo "[FAIL] the wizard did not confirm coverage for a store the answered directory really does contain"; cat "$TMP/e2e.log"; exit 1; }
@@ -299,7 +299,7 @@ echo "[PASS] init on a PGLite brain completes without ever proposing --pg, confi
 E2E_SNAP="$(find "$E2E_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
 [ -n "$E2E_SNAP" ] || { echo "[FAIL] no brain-*.age snapshot from the PGLite e2e run"; exit 1; }
 E2E_RESTORE="$TMP/e2e-restored"
-CIPHER_BRAIN_HOME="$E2E_CB_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$E2E_SNAP" --out-dir "$E2E_RESTORE" > "$TMP/e2e-restore.log" 2>&1 \
+CYPHER_BRAIN_HOME="$E2E_CB_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$E2E_SNAP" --out-dir "$E2E_RESTORE" > "$TMP/e2e-restore.log" 2>&1 \
   || { echo "[FAIL] restoring the PGLite e2e snapshot failed"; cat "$TMP/e2e-restore.log"; exit 1; }
 if [ -f "$E2E_RESTORE/db.dump" ]; then echo "[FAIL] a PGLite run produced a pg_dump component"; exit 1; fi
 tar -xzf "$E2E_RESTORE/.gbrain.tar.gz" -C "$E2E_RESTORE"
@@ -313,7 +313,7 @@ echo "[PASS] the resulting snapshot carries the PGLite store's real bytes and no
 # ---------------------------------------------------------------------------
 echo "== (c) snapshot warns on a PGLite store and stays silent on look-alikes (both markers required) =="
 SNAP_CB_HOME="$TMP/snap-cb-home"
-cb() { CIPHER_BRAIN_HOME="$SNAP_CB_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+cb() { CYPHER_BRAIN_HOME="$SNAP_CB_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 cb keygen > /dev/null
 
 # Fixture 1 — a synthetic PGLite data directory.
@@ -375,7 +375,7 @@ grep -qF "$WARN_MARK" "$TMP/snap-nested.log" || { echo "[FAIL] a PGLite store on
 echo "[PASS] a store nested under the --dir (the real ~/.gbrain layout) is detected too"
 
 # THE DOCUMENTED BOUNDARY, pinned in the negative direction (multi-model review). With no
-# .cipherbrainignore there is no walk to borrow, so the search reads the source root and
+# .cypherbrainignore there is no walk to borrow, so the search reads the source root and
 # ONE level below it and stops — a store deeper than that is not warned about. README and
 # MANAGEMENT.md say exactly this rather than promising "anywhere under the source"; this
 # case is what keeps the promise and the code from drifting apart. If a future change
@@ -387,22 +387,22 @@ cb snapshot --dir "$FIX_DEEP" --out "$TMP/fix-deep.age" > "$TMP/snap-deep.log" 2
 if grep -qF "$WARN_MARK" "$TMP/snap-deep.log"; then
   echo "[FAIL] a store 4 levels down was detected with no ignore file — good news, but README/MANAGEMENT.md still document the one-level bound; widen the prose in the same change"; cat "$TMP/snap-deep.log"; exit 1
 fi
-echo "[PASS] documented bound holds: with no .cipherbrainignore, a store deeper than one level below the source is NOT warned about (and the docs say so)"
+echo "[PASS] documented bound holds: with no .cypherbrainignore, a store deeper than one level below the source is NOT warned about (and the docs say so)"
 
-# The .cipherbrainignore path takes a DIFFERENT route into the detector: an ignore
+# The .cypherbrainignore path takes a DIFFERENT route into the detector: an ignore
 # file makes snapshot walk the tree itself (#216), and the detection reuses that
 # walk's own path list instead of touching disk again. Nest the store deeper than
 # the no-ignore-file fallback looks, so this asserts the reuse and not a repeat of
 # the case above.
 FIX_IGN="$TMP/fix-ignore-gbrain"; mkdir -p "$FIX_IGN/data/brains/main"
-printf 'node_modules/\n' > "$FIX_IGN/.cipherbrainignore"
+printf 'node_modules/\n' > "$FIX_IGN/.cypherbrainignore"
 mkdir -p "$FIX_IGN/node_modules"; printf 'junk\n' > "$FIX_IGN/node_modules/junk.txt"
 make_pglite_store "$FIX_IGN/data/brains/main/.pglite"
 cb snapshot --dir "$FIX_IGN" --out "$TMP/fix-ignore.age" > "$TMP/snap-ignore.log" 2>&1 \
   || { echo "[FAIL] snapshotting an ignore-filtered tree containing a PGLite store failed"; cat "$TMP/snap-ignore.log"; exit 1; }
-grep -qF "$WARN_MARK" "$TMP/snap-ignore.log" || { echo "[FAIL] a deeply-nested store was not detected from the .cipherbrainignore walk this snapshot already did"; cat "$TMP/snap-ignore.log"; exit 1; }
+grep -qF "$WARN_MARK" "$TMP/snap-ignore.log" || { echo "[FAIL] a deeply-nested store was not detected from the .cypherbrainignore walk this snapshot already did"; cat "$TMP/snap-ignore.log"; exit 1; }
 if grep -qF "$TRUNCATED_MARK" "$TMP/snap-ignore.log"; then echo "[FAIL] a store the ignore file does not touch was reported as partially excluded"; cat "$TMP/snap-ignore.log"; exit 1; fi
-echo "[PASS] with a .cipherbrainignore present, the store is found from the walk snapshot already performed — at any depth, with no second traversal"
+echo "[PASS] with a .cypherbrainignore present, the store is found from the walk snapshot already performed — at any depth, with no second traversal"
 
 # THE CASE THE PRE-FIX CODE SWALLOWED (multi-model review, measured). Handing the detector
 # only the ARCHIVED half of the walk meant an ignore rule matching pg_wal/ deleted one of
@@ -412,7 +412,7 @@ echo "[PASS] with a .cipherbrainignore present, the store is found from the walk
 # the two warnings.
 FIX_CUT="$TMP/fix-ignore-cuts-store"; mkdir -p "$FIX_CUT"
 make_pglite_store "$FIX_CUT/brain.pglite"
-printf 'brain.pglite/pg_wal/\n' > "$FIX_CUT/.cipherbrainignore"
+printf 'brain.pglite/pg_wal/\n' > "$FIX_CUT/.cypherbrainignore"
 cb snapshot --dir "$FIX_CUT" --out "$TMP/fix-cut.age" > "$TMP/snap-cut.log" 2>&1 \
   || { echo "[FAIL] snapshotting a partially-ignored store failed — still a warning, never a refusal"; cat "$TMP/snap-cut.log"; exit 1; }
 grep -qF "$WARN_MARK" "$TMP/snap-cut.log" \
@@ -438,7 +438,7 @@ FIX_CUT_MINOR="$TMP/fix-ignore-cuts-nonessential"; mkdir -p "$FIX_CUT_MINOR"
 make_pglite_store "$FIX_CUT_MINOR/brain.pglite"
 printf 'running\n' > "$FIX_CUT_MINOR/brain.pglite/postmaster.pid"
 mkdir -p "$FIX_CUT_MINOR/brain.pglite/log"; printf 'chatter\n' > "$FIX_CUT_MINOR/brain.pglite/log/postgresql.log"
-printf 'brain.pglite/postmaster.pid\nbrain.pglite/log/\n' > "$FIX_CUT_MINOR/.cipherbrainignore"
+printf 'brain.pglite/postmaster.pid\nbrain.pglite/log/\n' > "$FIX_CUT_MINOR/.cypherbrainignore"
 cb snapshot --dir "$FIX_CUT_MINOR" --out "$TMP/fix-cut-minor.age" > "$TMP/snap-cut-minor.log" 2>&1 \
   || { echo "[FAIL] snapshotting a store with non-essential exclusions failed"; cat "$TMP/snap-cut-minor.log"; exit 1; }
 grep -qF "$TRUNCATED_MARK" "$TMP/snap-cut-minor.log" \
@@ -460,7 +460,7 @@ echo "[PASS] excluding only non-essential files (postmaster.pid, log/) is report
 # long, version-dependent, and errs in the dangerous direction when one entry is wrong.
 FIX_CUT_PARTIAL="$TMP/fix-ignore-cuts-inside-required"; mkdir -p "$FIX_CUT_PARTIAL"
 make_pglite_store "$FIX_CUT_PARTIAL/brain.pglite"
-printf 'brain.pglite/pg_wal/archive_status/\n' > "$FIX_CUT_PARTIAL/.cipherbrainignore"
+printf 'brain.pglite/pg_wal/archive_status/\n' > "$FIX_CUT_PARTIAL/.cypherbrainignore"
 cb snapshot --dir "$FIX_CUT_PARTIAL" --out "$TMP/fix-cut-partial.age" > "$TMP/snap-cut-partial.log" 2>&1 \
   || { echo "[FAIL] snapshotting a store with a partial exclusion inside pg_wal/ failed"; cat "$TMP/snap-cut-partial.log"; exit 1; }
 grep -qF "$TRUNCATED_MARK" "$TMP/snap-cut-partial.log" \
@@ -481,7 +481,7 @@ echo "[PASS] a partial exclusion inside pg_wal/ names the component and says MAY
 # stops a cluster, so that IS a certainty even though the rest of global/ is archived.
 FIX_CUT_CONTROL="$TMP/fix-ignore-cuts-pg-control"; mkdir -p "$FIX_CUT_CONTROL"
 make_pglite_store "$FIX_CUT_CONTROL/brain.pglite"
-printf 'brain.pglite/global/pg_control\n' > "$FIX_CUT_CONTROL/.cipherbrainignore"
+printf 'brain.pglite/global/pg_control\n' > "$FIX_CUT_CONTROL/.cypherbrainignore"
 cb snapshot --dir "$FIX_CUT_CONTROL" --out "$TMP/fix-cut-control.age" > "$TMP/snap-cut-control.log" 2>&1 \
   || { echo "[FAIL] snapshotting a store missing global/pg_control failed"; cat "$TMP/snap-cut-control.log"; exit 1; }
 grep -qF "$TRUNCATED_CERTAIN_MARK" "$TMP/snap-cut-control.log" \
@@ -512,7 +512,7 @@ MCP_OUT="$TMP/mcp-out.jsonl"
     grep -q '"id":2' "$MCP_OUT" 2>/dev/null && break
     sleep 0.5
   done
-} | CIPHER_BRAIN_HOME="$SNAP_CB_HOME" node "${BIN_DEV_ARGS[@]}" "$MCP_BIN" > "$MCP_OUT" 2> "$TMP/mcp-err.log" || true
+} | CYPHER_BRAIN_HOME="$SNAP_CB_HOME" node "${BIN_DEV_ARGS[@]}" "$MCP_BIN" > "$MCP_OUT" 2> "$TMP/mcp-err.log" || true
 grep -q '"id":2' "$MCP_OUT" || { echo "[FAIL] the MCP server never answered the snapshot_now call"; cat "$MCP_OUT"; tail -20 "$TMP/mcp-err.log"; exit 1; }
 if grep -q '"isError":true' "$MCP_OUT"; then echo "[FAIL] snapshot_now on a PGLite store returned an error — this must be a warning, not a refusal"; cat "$MCP_OUT"; exit 1; fi
 # Read the structured field, not the whole line: `log` echoes stderr verbatim, so a

@@ -6,28 +6,28 @@
 <meta name="theme-color" content="#0098EA">
 <meta name="color-scheme" content="light">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
-<title>Cipher Brain — an encrypted, permanent second brain</title>
-<meta name="description" content="Cipher Brain encrypts your AI second brain on the client — only you hold the key — then parks it permanently on Arweave: pay once, stored forever.">
-<link rel="canonical" href="https://masashi-ono0611.github.io/cipher-brain/">
+<title>Cypher Brain — an encrypted, permanent second brain</title>
+<meta name="description" content="Cypher Brain encrypts your AI second brain on the client — only you hold the key — then parks it permanently on Arweave: pay once, stored forever.">
+<link rel="canonical" href="https://masashi-ono0611.github.io/cypher-brain/">
 
 <!-- Open Graph -->
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="Cipher Brain">
-<meta property="og:title" content="Cipher Brain — an encrypted, permanent second brain">
+<meta property="og:site_name" content="Cypher Brain">
+<meta property="og:title" content="Cypher Brain — an encrypted, permanent second brain">
 <meta property="og:description" content="An AI second brain, encrypted on your machine — only you hold the key — parked permanently on Arweave, where no platform can read or delete it.">
-<meta property="og:url" content="https://masashi-ono0611.github.io/cipher-brain/">
-<meta property="og:image" content="https://masashi-ono0611.github.io/cipher-brain/og-image.png">
+<meta property="og:url" content="https://masashi-ono0611.github.io/cypher-brain/">
+<meta property="og:image" content="https://masashi-ono0611.github.io/cypher-brain/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Cipher Brain, with a cypherpunk hooded dog mascot in sunglasses">
+<meta property="og:image:alt" content="Cypher Brain, with a cypherpunk hooded dog mascot in sunglasses">
 <meta property="og:locale" content="en_US">
 
 <!-- Twitter / X -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Cipher Brain — an encrypted, permanent second brain">
+<meta name="twitter:title" content="Cypher Brain — an encrypted, permanent second brain">
 <meta name="twitter:description" content="An AI second brain, encrypted on your machine — only you hold the key — parked permanently on Arweave, where no platform can read or delete it.">
-<meta name="twitter:image" content="https://masashi-ono0611.github.io/cipher-brain/og-image.png">
-<meta name="twitter:image:alt" content="Cipher Brain, with a cypherpunk hooded dog mascot in sunglasses">
+<meta name="twitter:image" content="https://masashi-ono0611.github.io/cypher-brain/og-image.png">
+<meta name="twitter:image:alt" content="Cypher Brain, with a cypherpunk hooded dog mascot in sunglasses">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -133,7 +133,7 @@
         <p class="tagline">The brain you offload to AI<br>should stay unreadable to everyone but you.</p>
         <p class="sub">An AI second brain, encrypted on your machine &mdash; only you hold the key &mdash; parked permanently on Arweave, where no platform can read or delete it.</p>
       </div>
-      <div class="hero-mascot"><img src="mascot.svg" width="172" height="172" alt="Cipher Brain mascot — a cypherpunk hooded dog in sunglasses"></div>
+      <div class="hero-mascot"><img src="mascot.svg" width="172" height="172" alt="Cypher Brain mascot — a cypherpunk hooded dog in sunglasses"></div>
     </div>
   </header>
 
@@ -219,8 +219,8 @@
         <text x="30" y="160" class="svg-r">&#10007; readable by the operator</text>
         <text x="30" y="182" class="svg-r">&#10007; censorable / subpoenable</text>
 
-        <!-- RIGHT: cipher brain (works) -->
-        <text x="412" y="30" class="svg-a">CIPHER BRAIN</text>
+        <!-- RIGHT: cypher brain (works) -->
+        <text x="412" y="30" class="svg-a">CYPHER BRAIN</text>
         <rect x="412" y="54" width="146" height="50" rx="9" fill="#E6F6FE" stroke="#0098EA" stroke-width="1.5"/>
         <text x="485" y="76" text-anchor="middle" class="svg-t" style="fill:#0077C0">encrypted snapshot</text>
         <text x="485" y="93" text-anchor="middle" class="svg-s">ciphertext only</text>
@@ -304,9 +304,9 @@
     <div class="steps">
       <div class="step">
         <div class="st"><span class="k">STEP 1</span>Cipher layer &mdash; a key only you hold</div>
-        <div class="sd"><code>cipher-brain</code> encrypts each snapshot with <b>age (X25519)</b> to your public key; the private identity stays off the always-on machine. The round-trip has been validated end-to-end against real gbrain data, and a different identity cannot restore it.</div>
+        <div class="sd"><code>cypher-brain</code> encrypts each snapshot with <b>age (X25519)</b> to your public key; the private identity stays off the always-on machine. The round-trip has been validated end-to-end against real gbrain data, and a different identity cannot restore it.</div>
         <div class="cmd"><span class="c"># encrypt on your machine — storage never sees plaintext</span>
-<span class="p">$ </span>cipher-brain snapshot <span class="f">--pg</span> "$PG" <span class="f">--dir</span> ~/.gbrain <span class="f">--out</span> brain.age</div>
+<span class="p">$ </span>cypher-brain snapshot <span class="f">--pg</span> "$PG" <span class="f">--dir</span> ~/.gbrain <span class="f">--out</span> brain.age</div>
       </div>
 
       <div class="step">
@@ -320,7 +320,7 @@
         <div class="st"><span class="k">STEP 3</span>Store &mdash; park it permanently on Arweave</div>
         <div class="sd"><code>push</code> uploads the ciphertext via a bundler (payable with ETH/USDC, under 100&nbsp;KB free); <code>pull</code> is a plain gateway fetch that needs no wallet and no SDK. Proven against the real network: a snapshot slice was uploaded, retrieved from a public gateway, and decrypted.</div>
         <div class="cmd"><span class="c"># pay once — the network keeps it forever</span>
-<span class="p">$ </span>cipher-brain push <span class="f">--in</span> brain.age <span class="f">--backend</span> turbo</div>
+<span class="p">$ </span>cypher-brain push <span class="f">--in</span> brain.age <span class="f">--backend</span> turbo</div>
       </div>
     </div>
   </section>
@@ -329,7 +329,7 @@
   <footer>
     <div class="foot-links">
       <a href="hosting-explained.html">Hosting &amp; censorship resistance, explained</a>
-      <a href="https://github.com/Masashi-Ono0611/cipher-brain">cipher-brain on GitHub</a>
+      <a href="https://github.com/Masashi-Ono0611/cypher-brain">cypher-brain on GitHub</a>
       <a href="https://age-encryption.org">age encryption</a>
       <a href="https://arweave.org">Arweave</a>
     </div>

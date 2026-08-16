@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Selftest for `cipher-brain init` (issue #68): the interactive setup wizard + its
+# Selftest for `cypher-brain init` (issue #68): the interactive setup wizard + its
 # printable recovery kit. Covers both of the issue's acceptance criteria:
 #
 #   (1) "a fresh machine can go from init to first push through interaction alone" —
@@ -14,15 +14,15 @@
 #
 #   (2) THE DRILL: "using ONLY the recovery kit's contents, restore succeeds on a
 #       different machine" — see the "THE DRILL" section below. It parses ONLY the
-#       kit file's own text (never touches the wizard's live CIPHER_BRAIN_HOME) and
+#       kit file's own text (never touches the wizard's live CYPHER_BRAIN_HOME) and
 #       restores in a separate, fully isolated temp dir, the same "simulate a fresh
 #       machine" discipline scripts/selftest-arweave-nodeps.mjs and
 #       scripts/selftest-recovery.sh already use for their own recovery claims.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
@@ -57,8 +57,8 @@ file_mode() {
 
 echo "== (a) init refuses when an identity already exists (init is for a FRESH setup only) =="
 EXISTS_HOME="$TMP/exists-home"
-CIPHER_BRAIN_HOME="$EXISTS_HOME" cb keygen > /dev/null
-if CIPHER_BRAIN_HOME="$EXISTS_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+CYPHER_BRAIN_HOME="$EXISTS_HOME" cb keygen > /dev/null
+if CYPHER_BRAIN_HOME="$EXISTS_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 10 node "${BIN_DEV_ARGS[@]}" "$BIN" init < /dev/null > "$TMP/exists.log" 2>&1; then
   echo "[FAIL] init did not refuse with a pre-existing identity"; cat "$TMP/exists.log"; exit 1
 fi
@@ -68,7 +68,7 @@ echo "[PASS] init refuses a pre-existing identity and points at keygen --force"
 
 echo "== (b) init refuses promptly (no hang) when stdin is not a TTY and no escape hatch is set =="
 TTY_HOME="$TMP/tty-check-home"
-if CIPHER_BRAIN_HOME="$TTY_HOME" with_timeout 10 node "${BIN_DEV_ARGS[@]}" "$BIN" init < /dev/null > "$TMP/tty.log" 2>&1; then
+if CYPHER_BRAIN_HOME="$TTY_HOME" with_timeout 10 node "${BIN_DEV_ARGS[@]}" "$BIN" init < /dev/null > "$TMP/tty.log" 2>&1; then
   echo "[FAIL] init did not refuse a non-TTY stdin"; cat "$TMP/tty.log"; exit 1
 fi
 grep -qi "requires stdin to be a TTY" "$TMP/tty.log" || { echo "[FAIL] refusal does not mention the TTY requirement"; cat "$TMP/tty.log"; exit 1; }
@@ -82,12 +82,12 @@ cat > "$TMP/qa-nodir.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", ""]
 ]
 JSON
-if CIPHER_BRAIN_HOME="$NODIR_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$NODIR_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-nodir.json" --out "$TMP/nodir.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
   echo "[FAIL] init accepted an empty directory list for profile=none"; cat "$TMP/nodir.log"; exit 1
@@ -101,7 +101,7 @@ MARKER="drill-thought-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
 printf '%s\n' "$MARKER" > "$SRC/note.txt"
 
 WIZ_HOME="$TMP/wiz-home"; mkdir -p "$WIZ_HOME"    # HOME override: os.homedir()-based defaults (kit path) stay inside TMP
-WIZ_CB_HOME="$TMP/wiz-cb-home"                    # CIPHER_BRAIN_HOME: primary identity/recipient/store paths
+WIZ_CB_HOME="$TMP/wiz-cb-home"                    # CYPHER_BRAIN_HOME: primary identity/recipient/store paths
 WIZ_STORE="$TMP/wiz-store"                        # file backend store dir
 KIT_PATH="$WIZ_HOME/recovery-kit.txt"
 BACKUP_HOME="${WIZ_CB_HOME}-backup"               # the default sibling path the wizard suggests for the backup key
@@ -115,7 +115,7 @@ cat > "$TMP/qa.json" <<JSON
   ["Path for the backup keypair", ""],
   ["Generate a signing keypair now?", "y"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$SRC"],
   ["Backend [file/", ""],
@@ -123,24 +123,24 @@ cat > "$TMP/qa.json" <<JSON
 ]
 JSON
 
-CIPHER_BRAIN_HOME="$WIZ_CB_HOME" CIPHER_BRAIN_FILE_DIR="$WIZ_STORE" HOME="$WIZ_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+CYPHER_BRAIN_HOME="$WIZ_CB_HOME" CYPHER_BRAIN_FILE_DIR="$WIZ_STORE" HOME="$WIZ_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa.json" --out "$TMP/wizard.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the scripted end-to-end wizard run did not complete"; cat "$TMP/wizard.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/wizard.log" || { echo "[FAIL] wizard log lacks its own completion marker"; cat "$TMP/wizard.log"; exit 1; }
+grep -q 'cypher-brain init: complete' "$TMP/wizard.log" || { echo "[FAIL] wizard log lacks its own completion marker"; cat "$TMP/wizard.log"; exit 1; }
 echo "[PASS] scripted stdin sequence drove init end-to-end: keygen -> backup key(yes) -> signing key(yes) -> passphrase(skip) -> pin(skip) -> profile(none) -> snapshot -> push"
 
 echo "== (d2) step 5/7 points the recipient pin at the config file, not a shell rc (issue #299) =="
-# #286 introduced $CIPHER_BRAIN_HOME/config.env, which made one sentence of this step
+# #286 introduced $CYPHER_BRAIN_HOME/config.env, which made one sentence of this step
 # FALSE: it told the reader the pin "is read from the environment at snapshot time, not
 # a file init controls". Grep the literal, so a reintroduction fails here instead of
 # shipping a wrong instruction onto a new user's first run. The step's explanation is
 # printed before its y/n prompt, so test (d)'s pin-skip transcript already contains it.
-grep -qF "$WIZ_CB_HOME/config.env" "$TMP/wizard.log" || { echo "[FAIL] step 5 does not name \$CIPHER_BRAIN_HOME/config.env as the place to persist the pin"; cat "$TMP/wizard.log"; exit 1; }
+grep -qF "$WIZ_CB_HOME/config.env" "$TMP/wizard.log" || { echo "[FAIL] step 5 does not name \$CYPHER_BRAIN_HOME/config.env as the place to persist the pin"; cat "$TMP/wizard.log"; exit 1; }
 if grep -qF 'not a file init controls' "$TMP/wizard.log"; then echo "[FAIL] step 5 still claims no file controls this setting — config.env (#286) does"; cat "$TMP/wizard.log"; exit 1; fi
 if grep -qF 'add to your shell rc file yourself' "$TMP/wizard.log"; then echo "[FAIL] step 5 still offers a shell rc as the only place to persist the pin"; cat "$TMP/wizard.log"; exit 1; fi
 grep -qF 'unattended nightly run with a bare environment' "$TMP/wizard.log" || { echo "[FAIL] step 5 does not explain why a shell rc misses the unattended run the pin exists to protect"; cat "$TMP/wizard.log"; exit 1; }
-echo "[PASS] step 5 names \$CIPHER_BRAIN_HOME/config.env, explains why the unattended run needs it, and no longer claims init controls no such file"
+echo "[PASS] step 5 names \$CYPHER_BRAIN_HOME/config.env, explains why the unattended run needs it, and no longer claims init controls no such file"
 
 [ -f "$WIZ_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity was not written"; exit 1; }
 [ -f "$WIZ_CB_HOME/recipient.txt" ] || { echo "[FAIL] primary recipient was not written"; exit 1; }
@@ -160,8 +160,8 @@ LOCFILE="$WIZ_CB_HOME/latest-locator.tsv"
 echo "[PASS] push wrote a 7-field --save-locator file (ciphertext + signature locator + signing key id) for the file backend"
 
 SNAP="$(find "$WIZ_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
-[ -n "$SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found under CIPHER_BRAIN_HOME"; exit 1; }
-CIPHER_BRAIN_HOME="$WIZ_CB_HOME" cb verify --in "$SNAP" > "$TMP/verify.log" 2>&1 || { echo "[FAIL] verify on the wizard's own snapshot failed"; cat "$TMP/verify.log"; exit 1; }
+[ -n "$SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found under CYPHER_BRAIN_HOME"; exit 1; }
+CYPHER_BRAIN_HOME="$WIZ_CB_HOME" cb verify --in "$SNAP" > "$TMP/verify.log" 2>&1 || { echo "[FAIL] verify on the wizard's own snapshot failed"; cat "$TMP/verify.log"; exit 1; }
 grep -q 'VERDICT: PASS' "$TMP/verify.log" || { echo "[FAIL] verify verdict on the wizard's snapshot is not PASS"; cat "$TMP/verify.log"; exit 1; }
 echo "[PASS] the wizard's own snapshot verifies (real ciphertext, wrong key rejected, primary identity decrypts it)"
 
@@ -176,8 +176,8 @@ grep -q -- '--- BACKUP IDENTITY (SECRET' "$KIT_PATH" || { echo "[FAIL] kit missi
 grep -q '^AGE-SECRET-KEY-1' "$KIT_PATH" || { echo "[FAIL] kit does not inline the backup identity's secret key line"; exit 1; }
 grep -qF "$(head -n1 "$LOCFILE")" "$KIT_PATH" || { echo "[FAIL] kit does not inline the exact save-locator line"; exit 1; }
 grep -q 'skipped during init' "$KIT_PATH" || { echo "[FAIL] kit does not note the recipient-pin suggestion was skipped"; exit 1; }
-grep -q 'cipher-brain pull --from-locator-file' "$KIT_PATH" || { echo "[FAIL] kit missing the recovery pull command"; exit 1; }
-grep -q 'cipher-brain restore --in' "$KIT_PATH" || { echo "[FAIL] kit missing the recovery restore command"; exit 1; }
+grep -q 'cypher-brain pull --from-locator-file' "$KIT_PATH" || { echo "[FAIL] kit missing the recovery pull command"; exit 1; }
+grep -q 'cypher-brain restore --in' "$KIT_PATH" || { echo "[FAIL] kit missing the recovery restore command"; exit 1; }
 grep -q 'WHAT TO DO WITH THIS FILE' "$KIT_PATH" || { echo "[FAIL] kit missing the disposal-instructions section"; exit 1; }
 grep -q 'LOCATOR IS LOCAL-ONLY' "$KIT_PATH" || { echo "[FAIL] kit used the file backend but does not warn that its save-locator is local-only"; exit 1; }
 echo "[PASS] kit: mode 600, warning banner, primary location, backup identity inlined, exact locator line, pin-skip note, recovery commands, disposal note, file-backend local-only warning"
@@ -215,7 +215,7 @@ cat > "$TMP/qa-o2b.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", "o2b"],
   ["Path to the o2b bank-export bundle", "$O2B_BUNDLE"],
   ["Backend [file/", ""],
@@ -223,19 +223,19 @@ cat > "$TMP/qa-o2b.json" <<JSON
 ]
 JSON
 
-CIPHER_BRAIN_HOME="$O2B_WIZ_CB_HOME" CIPHER_BRAIN_FILE_DIR="$O2B_WIZ_STORE" HOME="$O2B_WIZ_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+CYPHER_BRAIN_HOME="$O2B_WIZ_CB_HOME" CYPHER_BRAIN_FILE_DIR="$O2B_WIZ_STORE" HOME="$O2B_WIZ_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-o2b.json" --out "$TMP/wizard-o2b.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the scripted profile-o2b wizard run did not complete"; cat "$TMP/wizard-o2b.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/wizard-o2b.log" || { echo "[FAIL] o2b wizard log lacks its own completion marker"; cat "$TMP/wizard-o2b.log"; exit 1; }
+grep -q 'cypher-brain init: complete' "$TMP/wizard-o2b.log" || { echo "[FAIL] o2b wizard log lacks its own completion marker"; cat "$TMP/wizard-o2b.log"; exit 1; }
 grep -q 'Path to the o2b bank-export bundle' "$TMP/wizard-o2b.log" || { echo "[FAIL] wizard did not prompt for the o2b bundle path when profile o2b was chosen"; cat "$TMP/wizard-o2b.log"; exit 1; }
 
 # Not just a clean exit — verify the artifact: the wizard's own snapshot must record
 # profile o2b and archive the bundle byte-identical (same discipline as test (d)'s
 # "brain-*.age" check above).
 O2B_SNAP="$(find "$O2B_WIZ_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
-[ -n "$O2B_SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found under the o2b wizard's CIPHER_BRAIN_HOME"; exit 1; }
-CIPHER_BRAIN_HOME="$O2B_WIZ_CB_HOME" cb restore --in "$O2B_SNAP" --out-dir "$TMP/o2b-wiz-restore" >/dev/null 2>&1 \
+[ -n "$O2B_SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found under the o2b wizard's CYPHER_BRAIN_HOME"; exit 1; }
+CYPHER_BRAIN_HOME="$O2B_WIZ_CB_HOME" cb restore --in "$O2B_SNAP" --out-dir "$TMP/o2b-wiz-restore" >/dev/null 2>&1 \
   || { echo "[FAIL] restore of the wizard's o2b snapshot failed"; exit 1; }
 grep -q '"profile": "o2b"' "$TMP/o2b-wiz-restore/manifest.json" \
   || { echo "[FAIL] wizard's o2b snapshot manifest lacks profile o2b"; cat "$TMP/o2b-wiz-restore/manifest.json"; exit 1; }
@@ -245,7 +245,7 @@ O2B_RESTORED_SHA=$(shasum -a 256 "$TMP/o2b-wiz-restore/o2b-bank-export.json" | c
 echo "[PASS] init wizard's profile o2b path prompts for the bundle and actually snapshots it byte-identical (manifest records profile o2b)"
 
 echo "== (f) passphrase=yes path completes end-to-end (readline/promptHidden interaction fix) =="
-# CIPHER_BRAIN_PASSPHRASE (crypt.ts's own automation escape hatch) makes
+# CYPHER_BRAIN_PASSPHRASE (crypt.ts's own automation escape hatch) makes
 # askNewPassphrase() return immediately without touching stdin's raw mode, so this
 # run does NOT reproduce the raw-TTY nuance itself (that was proven separately with
 # a real pty harness, not part of this repo's test suite) — what it DOES prove is
@@ -274,7 +274,7 @@ cat > "$TMP/qa-pass.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "y"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "y"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "y"],
   ["Suggested line (edit or press Enter to accept)", ""],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$F_SRC"],
@@ -283,12 +283,12 @@ cat > "$TMP/qa-pass.json" <<JSON
 ]
 JSON
 
-CIPHER_BRAIN_HOME="$F_CB_HOME" CIPHER_BRAIN_FILE_DIR="$F_STORE" HOME="$F_HOME" \
-  CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CIPHER_BRAIN_PASSPHRASE="test-selftest-passphrase" \
+CYPHER_BRAIN_HOME="$F_CB_HOME" CYPHER_BRAIN_FILE_DIR="$F_STORE" HOME="$F_HOME" \
+  CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CYPHER_BRAIN_PASSPHRASE="test-selftest-passphrase" \
   with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-pass.json" --out "$TMP/wizard-pass.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the passphrase=yes scripted run did not complete"; cat "$TMP/wizard-pass.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/wizard-pass.log" || { echo "[FAIL] passphrase=yes run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pass.log"; exit 1; }
+grep -q 'cypher-brain init: complete' "$TMP/wizard-pass.log" || { echo "[FAIL] passphrase=yes run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pass.log"; exit 1; }
 grep -qa '^-> scrypt ' "$F_CB_HOME/identity.age" || { echo "[FAIL] passphrase=yes run: identity is not scrypt-wrapped (passphrase step did not actually run)"; exit 1; }
 echo "[PASS] passphrase=yes path reaches every later prompt and completes (snapshot -> push -> kit) after the readline interface is closed/re-created"
 
@@ -328,7 +328,7 @@ if grep -q 'BEGIN BACKUP IDENTITY FILE' "$F_KIT_PATH"; then echo "[FAIL] no-back
 if grep -q 'Copy the BACKUP IDENTITY block above' "$F_KIT_PATH"; then echo "[FAIL] no-backup kit still tells the reader to copy a BACKUP IDENTITY block that was never generated"; exit 1; fi
 grep -q 'NO BACKUP IDENTITY IS IN THIS KIT' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not warn that kit-only recovery on a fresh machine is not possible"; exit 1; }
 grep -qF "$F_CB_HOME/identity.age" "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not point at the primary identity as the only thing that can restore"; exit 1; }
-grep -q 'cipher-brain keygen' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not explain generating a backup key for real kit-only recovery later"; exit 1; }
+grep -q 'cypher-brain keygen' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not explain generating a backup key for real kit-only recovery later"; exit 1; }
 grep -q 'still valid, useful' "$F_KIT_PATH" || { echo "[FAIL] no-backup kit does not note the save-locator/pin-recipients sections remain valid regardless"; exit 1; }
 echo "[PASS] no-backup kit is honest: no BACKUP IDENTITY block or dependent instructions, explains primary-identity-only recovery + the keygen path to real kit-only recovery later"
 
@@ -339,12 +339,12 @@ echo "== (g2) the accepted pin suggestion, and the kit heading it lands under, b
 # the kit's own heading (which told the reader to put it in ~/.zshrc). config.env takes
 # `KEY=value` lines, so an `export` prefix is not what should be suggested first.
 F_PIN_PUB="$(head -n1 "$F_CB_HOME/recipient.txt")"
-grep -qF "CIPHER_BRAIN_PIN_RECIPIENTS=\"$F_PIN_PUB\"" "$TMP/wizard-pass.log" || { echo "[FAIL] the pin=yes run never printed a suggested line containing this run's own recipient"; cat "$TMP/wizard-pass.log"; exit 1; }
-if grep -qE '^export CIPHER_BRAIN_PIN_RECIPIENTS=' "$TMP/wizard-pass.log"; then echo "[FAIL] the suggested line is still shell-rc syntax (export ...) rather than a config.env KEY=value line"; cat "$TMP/wizard-pass.log"; exit 1; fi
+grep -qF "CYPHER_BRAIN_PIN_RECIPIENTS=\"$F_PIN_PUB\"" "$TMP/wizard-pass.log" || { echo "[FAIL] the pin=yes run never printed a suggested line containing this run's own recipient"; cat "$TMP/wizard-pass.log"; exit 1; }
+if grep -qE '^export CYPHER_BRAIN_PIN_RECIPIENTS=' "$TMP/wizard-pass.log"; then echo "[FAIL] the suggested line is still shell-rc syntax (export ...) rather than a config.env KEY=value line"; cat "$TMP/wizard-pass.log"; exit 1; fi
 grep -qF "Add this line to $F_CB_HOME/config.env" "$TMP/wizard-pass.log" || { echo "[FAIL] the pin=yes run does not tell the user which file to add the line to"; cat "$TMP/wizard-pass.log"; exit 1; }
-grep -qF -- '--- CIPHER_BRAIN_PIN_RECIPIENTS (add to $CIPHER_BRAIN_HOME/config.env' "$F_KIT_PATH" || { echo "[FAIL] the printed recovery kit's pin heading does not name config.env"; exit 1; }
+grep -qF -- '--- CYPHER_BRAIN_PIN_RECIPIENTS (add to $CYPHER_BRAIN_HOME/config.env' "$F_KIT_PATH" || { echo "[FAIL] the printed recovery kit's pin heading does not name config.env"; exit 1; }
 if grep -qF 'add to your shell rc, e.g. ~/.zshrc' "$F_KIT_PATH"; then echo "[FAIL] the printed recovery kit still carries the pre-#286 shell-rc instruction"; exit 1; fi
-grep -qF "CIPHER_BRAIN_PIN_RECIPIENTS=\"$F_PIN_PUB\"" "$F_KIT_PATH" || { echo "[FAIL] the kit does not inline the exact pin line the wizard suggested"; exit 1; }
+grep -qF "CYPHER_BRAIN_PIN_RECIPIENTS=\"$F_PIN_PUB\"" "$F_KIT_PATH" || { echo "[FAIL] the kit does not inline the exact pin line the wizard suggested"; exit 1; }
 echo "[PASS] pin=yes suggests a config.env KEY=value line (no export prefix), names the file to add it to, and the kit heading carries that same instruction onto the printed sheet"
 
 echo "== (h) rollback + clean retry: a failure AFTER identity creation must not brick a retry (P2 fix) =="
@@ -356,7 +356,7 @@ echo "== (h) rollback + clean retry: a failure AFTER identity creation must not 
 # through backup-key generation (so BOTH primary and backup identities exist) and
 # THEN fails at the very last prompt (an unrecognized backend name), then prove (1)
 # the rollback actually deleted every file this run wrote, and (2) a second, genuine
-# `cipher-brain init` run against the SAME CIPHER_BRAIN_HOME starts clean and
+# `cypher-brain init` run against the SAME CYPHER_BRAIN_HOME starts clean and
 # completes — the retry story working end-to-end, not just files disappearing.
 RB_HOME="$TMP/rollback-home"; mkdir -p "$RB_HOME"
 RB_CB_HOME="$TMP/rollback-cb-home"
@@ -371,14 +371,14 @@ cat > "$TMP/qa-rollback-fail.json" <<JSON
   ["Path for the backup keypair", ""],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$RB_SRC"],
   ["Backend [file/", "not-a-real-backend"]
 ]
 JSON
 
-if CIPHER_BRAIN_HOME="$RB_CB_HOME" CIPHER_BRAIN_FILE_DIR="$RB_STORE" HOME="$RB_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$RB_CB_HOME" CYPHER_BRAIN_FILE_DIR="$RB_STORE" HOME="$RB_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-rollback-fail.json" --out "$TMP/rollback-fail.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
   echo "[FAIL] init did not fail on an unknown backend name"; cat "$TMP/rollback-fail.log"; exit 1
@@ -396,7 +396,7 @@ cat > "$TMP/qa-rollback-retry.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$RB_SRC"],
   ["Backend [file/", ""],
@@ -404,13 +404,13 @@ cat > "$TMP/qa-rollback-retry.json" <<JSON
 ]
 JSON
 
-CIPHER_BRAIN_HOME="$RB_CB_HOME" CIPHER_BRAIN_FILE_DIR="$RB_STORE" HOME="$RB_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+CYPHER_BRAIN_HOME="$RB_CB_HOME" CYPHER_BRAIN_FILE_DIR="$RB_STORE" HOME="$RB_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-rollback-retry.json" --out "$TMP/rollback-retry.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] retry after rollback did not complete (pre-existing-identity refusal or another regression)"; cat "$TMP/rollback-retry.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/rollback-retry.log" || { echo "[FAIL] retry after rollback lacks its own completion marker"; cat "$TMP/rollback-retry.log"; exit 1; }
+grep -q 'cypher-brain init: complete' "$TMP/rollback-retry.log" || { echo "[FAIL] retry after rollback lacks its own completion marker"; cat "$TMP/rollback-retry.log"; exit 1; }
 [ -f "$RB_CB_HOME/identity.age" ] || { echo "[FAIL] retry did not write a fresh primary identity"; exit 1; }
-echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME starts clean and completes after rollback (the retry story actually works, not just file deletion)"
+echo "[PASS] a second 'cypher-brain init' run against the same CYPHER_BRAIN_HOME starts clean and completes after rollback (the retry story actually works, not just file deletion)"
 
 echo "== (i) '~' in interactive path answers expands to HOME, the same way a shell would (P3 fix) =="
 # Path-like answers are read as plain strings (no shell involved), so a leading '~'
@@ -432,7 +432,7 @@ cat > "$TMP/qa-tilde.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "~/$TILDE_SRC_REL"],
   ["Backend [file/", ""],
@@ -440,11 +440,11 @@ cat > "$TMP/qa-tilde.json" <<JSON
 ]
 JSON
 
-CIPHER_BRAIN_HOME="$TILDE_CB_HOME" CIPHER_BRAIN_FILE_DIR="$TILDE_STORE" HOME="$TILDE_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+CYPHER_BRAIN_HOME="$TILDE_CB_HOME" CYPHER_BRAIN_FILE_DIR="$TILDE_STORE" HOME="$TILDE_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-tilde.json" --out "$TMP/tilde.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the '~'-path scripted run did not complete (path expansion likely did not happen)"; cat "$TMP/tilde.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/tilde.log" || { echo "[FAIL] '~'-path run lacks its own completion marker"; cat "$TMP/tilde.log"; exit 1; }
+grep -q 'cypher-brain init: complete' "$TMP/tilde.log" || { echo "[FAIL] '~'-path run lacks its own completion marker"; cat "$TMP/tilde.log"; exit 1; }
 [ -f "$TILDE_HOME/tilde-recovery-kit.txt" ] || { echo "[FAIL] recovery kit was not written under the expanded HOME (~/tilde-recovery-kit.txt did not expand)"; exit 1; }
 [ ! -e "$ROOT/~" ] || { echo "[FAIL] a literal '~' file/dir was created relative to cwd — '~' was not expanded"; exit 1; }
 echo "[PASS] '~/...' directory-to-back-up and recovery-kit path answers both expanded to the real HOME, matching shell behavior"
@@ -453,7 +453,7 @@ echo "== (j0) a failure BEFORE push() succeeds still rolls back the identity AND
 # Establishes the OTHER side of the 6th-round P2 rollback-boundary fix: everything
 # BEFORE push() succeeds must still roll back exactly as before (only failures AFTER
 # a successful push change behavior — see (j)/(j2) below). Fail deterministically
-# inside push()'s file-backend put() by pointing CIPHER_BRAIN_FILE_DIR at a path
+# inside push()'s file-backend put() by pointing CYPHER_BRAIN_FILE_DIR at a path
 # whose PARENT is a plain FILE, so fileBackend().put()'s own
 # `mkdir(FILE_DIR, { recursive: true })` throws ENOTDIR before push() ever returns —
 # i.e. before pushSucceeded flips true in wizard.ts. The QA script intentionally
@@ -473,14 +473,14 @@ cat > "$TMP/qa-prepush-rollback-fail.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$J0_SRC"],
   ["Backend [file/", ""]
 ]
 JSON
 
-if CIPHER_BRAIN_HOME="$J0_CB_HOME" CIPHER_BRAIN_FILE_DIR="$J0_STORE" HOME="$J0_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$J0_CB_HOME" CYPHER_BRAIN_FILE_DIR="$J0_STORE" HOME="$J0_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-prepush-rollback-fail.json" --out "$TMP/prepush-rollback-fail.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
   echo "[FAIL] init did not fail when the file backend's store dir has a blocked parent"; cat "$TMP/prepush-rollback-fail.log"; exit 1
@@ -519,7 +519,7 @@ cat > "$TMP/qa-snap-preserve-fail.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$SNAP_SRC"],
   ["Backend [file/", ""],
@@ -527,7 +527,7 @@ cat > "$TMP/qa-snap-preserve-fail.json" <<JSON
 ]
 JSON
 
-if CIPHER_BRAIN_HOME="$SNAP_CB_HOME" CIPHER_BRAIN_FILE_DIR="$SNAP_STORE" HOME="$SNAP_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$SNAP_CB_HOME" CYPHER_BRAIN_FILE_DIR="$SNAP_STORE" HOME="$SNAP_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-snap-preserve-fail.json" --out "$TMP/snap-preserve-fail.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
   echo "[FAIL] init did not fail when the recovery-kit path's parent is a plain file"; cat "$TMP/snap-preserve-fail.log"; exit 1
@@ -544,18 +544,18 @@ echo "[PASS] a failure AFTER push() succeeds (kit write) preserves the identity,
 
 echo "== (j2) retry after a post-push failure correctly REFUSES — identity + snapshot are still there, not silently regenerated =="
 # Because (j) above no longer deletes anything, a same-day retry against the SAME
-# CIPHER_BRAIN_HOME must hit the ordinary pre-existing-identity refusal (test (a)) —
+# CYPHER_BRAIN_HOME must hit the ordinary pre-existing-identity refusal (test (a)) —
 # starting "clean" here would be wrong: it would silently abandon the real,
 # already-pushed snapshot (and, on a paid backend, already-spent money) in favor of
 # a brand new identity that cannot decrypt it.
-if CIPHER_BRAIN_HOME="$SNAP_CB_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$SNAP_CB_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 10 node "${BIN_DEV_ARGS[@]}" "$BIN" init < /dev/null > "$TMP/snap-preserve-retry.log" 2>&1; then
   echo "[FAIL] a retry after a post-push failure did not refuse — it should, since the identity/snapshot are preserved"; cat "$TMP/snap-preserve-retry.log"; exit 1
 fi
 grep -qi "already exists" "$TMP/snap-preserve-retry.log" || { echo "[FAIL] retry's refusal was not the expected pre-existing-identity error"; cat "$TMP/snap-preserve-retry.log"; exit 1; }
 [ -f "$SNAP_CB_HOME/identity.age" ] || { echo "[FAIL] the preserved primary identity vanished between the two runs"; exit 1; }
 [ -n "$(find "$SNAP_CB_HOME" -maxdepth 1 -name 'brain-*.age' 2>/dev/null | head -n1)" ] || { echo "[FAIL] the preserved snapshot artifact vanished between the two runs"; exit 1; }
-echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME correctly refuses (identity + snapshot from the successful push are still there, exactly as promised) instead of silently starting over"
+echo "[PASS] a second 'cypher-brain init' run against the same CYPHER_BRAIN_HOME correctly refuses (identity + snapshot from the successful push are still there, exactly as promised) instead of silently starting over"
 
 echo "== (k) push() succeeding but --save-locator's own write failing preserves everything + surfaces the locator (7th-round P1 fix, finding 1) =="
 # backend.put() (the actual, possibly PAID/PERMANENT upload) is the point of no
@@ -580,7 +580,7 @@ cat > "$TMP/qa-locator-preserve-fail.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$K_SRC"],
   ["Backend [file/", ""]
@@ -590,7 +590,7 @@ JSON
 # before the recovery-kit path is ever asked — scripting that prompt would leave it
 # unconsumed and fail drive-init.mjs itself rather than testing what we want here.)
 
-if CIPHER_BRAIN_HOME="$K_CB_HOME" CIPHER_BRAIN_FILE_DIR="$K_STORE" HOME="$K_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$K_CB_HOME" CYPHER_BRAIN_FILE_DIR="$K_STORE" HOME="$K_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-locator-preserve-fail.json" --out "$TMP/locator-preserve-fail.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
   echo "[FAIL] init did not fail when --save-locator's target path is a directory"; cat "$TMP/locator-preserve-fail.log"; exit 1
@@ -610,12 +610,12 @@ K_TMP_LEFTOVER="$(find "$K_CB_HOME" -maxdepth 1 -name 'latest-locator.tsv.*.tmp'
 echo "[PASS] a locator-write failure AFTER a successful push preserves the identity, recipient, AND the dated snapshot artifact — the error surfaces the ACTION-REQUIRED locator value instead of losing it"
 
 echo "== (k2) retry after the finding-1 locator-write failure correctly REFUSES (identity + snapshot preserved, exactly as (j2)) =="
-if CIPHER_BRAIN_HOME="$K_CB_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$K_CB_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 10 node "${BIN_DEV_ARGS[@]}" "$BIN" init < /dev/null > "$TMP/locator-preserve-retry.log" 2>&1; then
   echo "[FAIL] a retry after a finding-1 locator-write failure did not refuse — it should, since the identity/snapshot are preserved"; cat "$TMP/locator-preserve-retry.log"; exit 1
 fi
 grep -qi "already exists" "$TMP/locator-preserve-retry.log" || { echo "[FAIL] retry's refusal was not the expected pre-existing-identity error"; cat "$TMP/locator-preserve-retry.log"; exit 1; }
-echo "[PASS] a second 'cipher-brain init' run against the same CIPHER_BRAIN_HOME correctly refuses instead of silently starting over on top of the preserved, already-uploaded snapshot"
+echo "[PASS] a second 'cypher-brain init' run against the same CYPHER_BRAIN_HOME correctly refuses instead of silently starting over on top of the preserved, already-uploaded snapshot"
 
 echo "== (l) backup keygen refuses when a stray recipient.txt pre-exists at the backup path — no identity.age is ever written, so no orphan is possible (#121 fix; supersedes the old 7th-round P2 finding-2b EACCES repro) =="
 # Before #121, keygenAt() (keys.ts) wrote identity.age (wx, exclusive-create) THEN
@@ -649,7 +649,7 @@ JSON
 # (Push never happens on this run — it fails in step 2/6, long before step 6 — so the
 # QA script stops right after the one prompt this failure is reached through.)
 
-if CIPHER_BRAIN_HOME="$L_CB_HOME" CIPHER_BRAIN_FILE_DIR="$L_STORE" HOME="$L_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$L_CB_HOME" CYPHER_BRAIN_FILE_DIR="$L_STORE" HOME="$L_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-backup-partial-fail.json" --out "$TMP/backup-partial-fail.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
   echo "[FAIL] init did not fail when the backup keypair's recipient.txt path already exists"; cat "$TMP/backup-partial-fail.log"; exit 1
@@ -679,20 +679,20 @@ cat > "$TMP/qa-backup-partial-retry.json" <<JSON
   ["Path for the backup keypair", ""],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$L_SRC"],
   ["Backend [file/", ""],
   ["Path to write the recovery kit", "$L_HOME/recovery-kit.txt"]
 ]
 JSON
-CIPHER_BRAIN_HOME="$L_CB_HOME" CIPHER_BRAIN_FILE_DIR="$L_STORE" HOME="$L_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+CYPHER_BRAIN_HOME="$L_CB_HOME" CYPHER_BRAIN_FILE_DIR="$L_STORE" HOME="$L_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-backup-partial-retry.json" --out "$TMP/backup-partial-retry.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] retry after clearing the stray recipient.txt did not complete (still blocked, or another regression)"; cat "$TMP/backup-partial-retry.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/backup-partial-retry.log" || { echo "[FAIL] retry after clearing the stray recipient.txt lacks its own completion marker"; cat "$TMP/backup-partial-retry.log"; exit 1; }
+grep -q 'cypher-brain init: complete' "$TMP/backup-partial-retry.log" || { echo "[FAIL] retry after clearing the stray recipient.txt lacks its own completion marker"; cat "$TMP/backup-partial-retry.log"; exit 1; }
 [ -f "$L_BACKUP_HOME/identity.age" ] || { echo "[FAIL] retry did not write a fresh backup identity at the same default path"; exit 1; }
-echo "[PASS] a retry against the same CIPHER_BRAIN_HOME (same default backup path, backup=yes again) succeeds once the stray recipient.txt is cleared — the #121 refusal is not a permanent brick"
+echo "[PASS] a retry against the same CYPHER_BRAIN_HOME (same default backup path, backup=yes again) succeeds once the stray recipient.txt is cleared — the #121 refusal is not a permanent brick"
 
 echo "== (l3) pointing the backup-path prompt at an EXISTING real backup identity refuses without destroying it (round-8 regression fix) =="
 # Round 7's own fix (6177702) wrapped the backup keygenAt() call in a try/catch that
@@ -714,7 +714,7 @@ M_SRC="$TMP/backup-preexist-src"; mkdir -p "$M_SRC"
 printf 'backup-preexist-marker\n' > "$M_SRC/note.txt"
 M_BACKUP_HOME="$TMP/backup-preexist-existing-backup" # a REAL, already-set-up backup identity lives here BEFORE the wizard ever runs
 
-CIPHER_BRAIN_HOME="$M_BACKUP_HOME" cb keygen > "$TMP/backup-preexist-setup.log" 2>&1 \
+CYPHER_BRAIN_HOME="$M_BACKUP_HOME" cb keygen > "$TMP/backup-preexist-setup.log" 2>&1 \
   || { echo "[FAIL] test setup: could not create a real pre-existing backup identity"; cat "$TMP/backup-preexist-setup.log"; exit 1; }
 [ -f "$M_BACKUP_HOME/identity.age" ] || { echo "[FAIL] test setup: pre-existing backup identity.age was not created"; exit 1; }
 [ -f "$M_BACKUP_HOME/recipient.txt" ] || { echo "[FAIL] test setup: pre-existing backup recipient.txt was not created"; exit 1; }
@@ -730,7 +730,7 @@ JSON
 # (Same as test (l): the failure happens in step 2/6, well before push — the QA
 # script stops right after the one prompt this failure is reached through.)
 
-if CIPHER_BRAIN_HOME="$M_CB_HOME" CIPHER_BRAIN_FILE_DIR="$M_STORE" HOME="$M_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$M_CB_HOME" CYPHER_BRAIN_FILE_DIR="$M_STORE" HOME="$M_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-backup-preexist-fail.json" --out "$TMP/backup-preexist-fail.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
   echo "[FAIL] init did not refuse when the backup-path prompt points at an existing real backup identity"; cat "$TMP/backup-preexist-fail.log"; exit 1
@@ -744,11 +744,11 @@ cmp -s "$M_BACKUP_HOME/recipient.txt" "$TMP/backup-preexist-recipient.txt.orig" 
 echo "[PASS] pointing the backup-path prompt at a pre-existing real backup identity refuses (keygenAt's own guard, unchanged) and leaves it completely untouched, byte-identical — the round-8 regression is fixed"
 
 echo "== THE DRILL (issue #68 acceptance criterion 2): kit-ONLY restore on a simulated fresh, fully isolated machine =="
-# Isolation: a BRAND NEW temp dir with NO shared CIPHER_BRAIN_HOME, no leftover
+# Isolation: a BRAND NEW temp dir with NO shared CYPHER_BRAIN_HOME, no leftover
 # identity/config from the run above — the same "simulate a fresh machine"
 # discipline scripts/selftest-arweave-nodeps.mjs and scripts/selftest-recovery.sh
 # already use for their own recovery claims. Only what the KIT FILE ITSELF contains
-# is extracted and used; the wizard's live CIPHER_BRAIN_HOME/BACKUP_HOME above are
+# is extracted and used; the wizard's live CYPHER_BRAIN_HOME/BACKUP_HOME above are
 # never read from here on. The file backend's store dir stands in for "the network"
 # (same precedent selftest-recovery.sh uses for its own disk-death simulation) — a
 # fresh machine in real life would reach arweave/turbo over the network instead.
@@ -763,10 +763,10 @@ awk '/^BEGIN SAVE-LOCATOR LINE$/{f=1;next}/^END SAVE-LOCATOR LINE$/{f=0}f' "$KIT
 [ -s "$DRILL/restore-locator.tsv" ] || { echo "DRILL RESULT: [FAIL] extracted save-locator line from the kit is empty"; exit 1; }
 grep -q '^AGE-SECRET-KEY-1' "$DRILL/restore-identity.age" || { echo "DRILL RESULT: [FAIL] extracted identity does not look like an age secret key"; exit 1; }
 
-CIPHER_BRAIN_FILE_DIR="$WIZ_STORE" HOME="$DRILL" CIPHER_BRAIN_HOME="$DRILL/no-such-home" \
+CYPHER_BRAIN_FILE_DIR="$WIZ_STORE" HOME="$DRILL" CYPHER_BRAIN_HOME="$DRILL/no-such-home" \
   cb pull --from-locator-file "$DRILL/restore-locator.tsv" --out "$DRILL/restored.age" > "$TMP/drill-pull.log" 2>&1 \
   || { echo "DRILL RESULT: [FAIL] pull --from-locator-file (kit's locator alone) failed"; cat "$TMP/drill-pull.log"; exit 1; }
-CIPHER_BRAIN_HOME="$DRILL/no-such-home" \
+CYPHER_BRAIN_HOME="$DRILL/no-such-home" \
   cb restore --in "$DRILL/restored.age" --out-dir "$DRILL/restored" --identity "$DRILL/restore-identity.age" > "$TMP/drill-restore.log" 2>&1 \
   || { echo "DRILL RESULT: [FAIL] restore --identity (kit's backup identity alone) failed"; cat "$TMP/drill-restore.log"; exit 1; }
 
@@ -787,7 +787,7 @@ echo "== (m) a detected gbrain config prompts for --pg and actually threads it i
 # both halves: (1) the new prompt actually appears when a local gbrain config exists,
 # defaulting to YES, and (2) the resulting snapshot/kit genuinely carry a pg_dump
 # component end-to-end — not just a flag the wizard silently drops. pg_dump is SHIMMED
-# (via CIPHER_BRAIN_PG_BIN) so this needs no real Postgres server, the same technique
+# (via CYPHER_BRAIN_PG_BIN) so this needs no real Postgres server, the same technique
 # scripts/selftest-schedule.sh's own --pg test already uses.
 PG_HOME="$TMP/pg-home"; mkdir -p "$PG_HOME/.gbrain"
 printf '{"schema_pack":"gbrain-base-v2"}\n' > "$PG_HOME/.gbrain/config.json"
@@ -824,7 +824,7 @@ cat > "$TMP/qa-pg.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$PG_SRC"],
   ["Include a Postgres database dump", ""],
@@ -834,11 +834,11 @@ cat > "$TMP/qa-pg.json" <<JSON
 ]
 JSON
 
-CIPHER_BRAIN_HOME="$PG_CB_HOME" CIPHER_BRAIN_FILE_DIR="$PG_STORE" HOME="$PG_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN" \
+CYPHER_BRAIN_HOME="$PG_CB_HOME" CYPHER_BRAIN_FILE_DIR="$PG_STORE" HOME="$PG_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CYPHER_BRAIN_PG_BIN="$FAKE_PGBIN" \
   with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-pg.json" --out "$TMP/wizard-pg.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the gbrain-detected pg scripted run did not complete"; cat "$TMP/wizard-pg.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/wizard-pg.log" || { echo "[FAIL] pg run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pg.log"; exit 1; }
+grep -q 'cypher-brain init: complete' "$TMP/wizard-pg.log" || { echo "[FAIL] pg run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pg.log"; exit 1; }
 grep -qF "Detected a gbrain config at $PG_HOME/.gbrain/config.json" "$TMP/wizard-pg.log" || { echo "[FAIL] wizard did not detect the gbrain config fixture"; cat "$TMP/wizard-pg.log"; exit 1; }
 grep -q 'postgres:          included (pg_dump)' "$TMP/wizard-pg.log" || { echo "[FAIL] completion summary does not report the Postgres dump as included"; cat "$TMP/wizard-pg.log"; exit 1; }
 echo "[PASS] a detected gbrain config prompts for --pg (defaulting to yes) and the wizard reports it as included"
@@ -846,7 +846,7 @@ echo "[PASS] a detected gbrain config prompts for --pg (defaulting to yes) and t
 PG_SNAP="$(find "$PG_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
 [ -n "$PG_SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found for the pg run"; exit 1; }
 PG_RESTORE_DIR="$TMP/pg-restored"
-CIPHER_BRAIN_HOME="$PG_CB_HOME" cb restore --in "$PG_SNAP" --out-dir "$PG_RESTORE_DIR" > "$TMP/pg-restore.log" 2>&1 \
+CYPHER_BRAIN_HOME="$PG_CB_HOME" cb restore --in "$PG_SNAP" --out-dir "$PG_RESTORE_DIR" > "$TMP/pg-restore.log" 2>&1 \
   || { echo "[FAIL] restoring the pg run's snapshot failed"; cat "$TMP/pg-restore.log"; exit 1; }
 [ -f "$PG_RESTORE_DIR/db.dump" ] || { echo "[FAIL] restored tree has no db.dump — --pg was not actually threaded into snapshot()"; exit 1; }
 grep -qF 'fake-pg-dump-content' "$PG_RESTORE_DIR/db.dump" || { echo "[FAIL] db.dump does not contain the shimmed pg_dump output — the wizard is not really invoking pg_dump"; exit 1; }
@@ -872,7 +872,7 @@ echo "== (m2) declining the gbrain-detected Postgres prompt proceeds without --p
 # The auto-detect default is YES ((m) above), but a real user can say no — prove the
 # decline is actually honored end-to-end (no --pg threaded, no db.dump produced), not
 # just that the wizard doesn't crash. Reuses PG_HOME/PG_SRC/FAKE_PGBIN from (m) above —
-# a fresh CIPHER_BRAIN_HOME/store/kit path so this run does not collide with it.
+# a fresh CYPHER_BRAIN_HOME/store/kit path so this run does not collide with it.
 PG2_CB_HOME="$TMP/pg2-cb-home"
 PG2_STORE="$TMP/pg2-store"
 PG2_KIT_PATH="$PG_HOME/recovery-kit-2.txt"
@@ -882,7 +882,7 @@ cat > "$TMP/qa-pg-decline.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$PG_SRC"],
   ["Include a Postgres database dump", "n"],
@@ -891,18 +891,18 @@ cat > "$TMP/qa-pg-decline.json" <<JSON
 ]
 JSON
 
-CIPHER_BRAIN_HOME="$PG2_CB_HOME" CIPHER_BRAIN_FILE_DIR="$PG2_STORE" HOME="$PG_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN" \
+CYPHER_BRAIN_HOME="$PG2_CB_HOME" CYPHER_BRAIN_FILE_DIR="$PG2_STORE" HOME="$PG_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CYPHER_BRAIN_PG_BIN="$FAKE_PGBIN" \
   with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-pg-decline.json" --out "$TMP/wizard-pg-decline.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the gbrain-detected pg-DECLINE scripted run did not complete"; cat "$TMP/wizard-pg-decline.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/wizard-pg-decline.log" || { echo "[FAIL] pg-decline run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pg-decline.log"; exit 1; }
+grep -q 'cypher-brain init: complete' "$TMP/wizard-pg-decline.log" || { echo "[FAIL] pg-decline run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pg-decline.log"; exit 1; }
 grep -qF "Detected a gbrain config at $PG_HOME/.gbrain/config.json" "$TMP/wizard-pg-decline.log" || { echo "[FAIL] pg-decline run: wizard did not detect the gbrain config fixture"; cat "$TMP/wizard-pg-decline.log"; exit 1; }
 if grep -q 'postgres:          included' "$TMP/wizard-pg-decline.log"; then echo "[FAIL] declining the Postgres prompt still reported it as included"; cat "$TMP/wizard-pg-decline.log"; exit 1; fi
 grep -qF 'Postgres dump: not included' "$PG2_KIT_PATH" || { echo "[FAIL] kit does not record the declined Postgres dump as not included"; cat "$PG2_KIT_PATH"; exit 1; }
 PG2_SNAP="$(find "$PG2_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
 [ -n "$PG2_SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found for the pg-decline run"; exit 1; }
 PG2_RESTORE_DIR="$TMP/pg2-restored"
-CIPHER_BRAIN_HOME="$PG2_CB_HOME" cb restore --in "$PG2_SNAP" --out-dir "$PG2_RESTORE_DIR" > "$TMP/pg2-restore.log" 2>&1 \
+CYPHER_BRAIN_HOME="$PG2_CB_HOME" cb restore --in "$PG2_SNAP" --out-dir "$PG2_RESTORE_DIR" > "$TMP/pg2-restore.log" 2>&1 \
   || { echo "[FAIL] restoring the pg-decline run's snapshot failed"; cat "$TMP/pg2-restore.log"; exit 1; }
 if [ -f "$PG2_RESTORE_DIR/db.dump" ]; then echo "[FAIL] declining the Postgres prompt still produced a db.dump component"; exit 1; fi
 echo "[PASS] declining the gbrain-detected Postgres prompt (auto-detect defaults to yes, but a real 'n' is honored) proceeds without --pg — no db.dump, kit says not included"
@@ -925,7 +925,7 @@ cat > "$TMP/qa-pg-whitespace.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$PG_SRC"],
   ["Include a Postgres database dump", ""],
@@ -935,16 +935,16 @@ cat > "$TMP/qa-pg-whitespace.json" <<JSON
 ]
 JSON
 
-CIPHER_BRAIN_HOME="$PG3_CB_HOME" CIPHER_BRAIN_FILE_DIR="$PG3_STORE" HOME="$PG_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CIPHER_BRAIN_PG_BIN="$FAKE_PGBIN" \
+CYPHER_BRAIN_HOME="$PG3_CB_HOME" CYPHER_BRAIN_FILE_DIR="$PG3_STORE" HOME="$PG_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 CYPHER_BRAIN_PG_BIN="$FAKE_PGBIN" \
   with_timeout 90 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-pg-whitespace.json" --out "$TMP/wizard-pg-whitespace.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the whitespace-only pg connection-string run did not complete"; cat "$TMP/wizard-pg-whitespace.log"; exit 1; }
-grep -q 'cipher-brain init: complete' "$TMP/wizard-pg-whitespace.log" || { echo "[FAIL] whitespace-pg run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pg-whitespace.log"; exit 1; }
+grep -q 'cypher-brain init: complete' "$TMP/wizard-pg-whitespace.log" || { echo "[FAIL] whitespace-pg run: wizard log lacks its own completion marker"; cat "$TMP/wizard-pg-whitespace.log"; exit 1; }
 grep -q 'postgres:          included (pg_dump)' "$TMP/wizard-pg-whitespace.log" || { echo "[FAIL] a whitespace-only connection-string answer did not fall back to the default — pg_dump was silently skipped (the P2 regression)"; cat "$TMP/wizard-pg-whitespace.log"; exit 1; }
 PG3_SNAP="$(find "$PG3_CB_HOME" -maxdepth 1 -name 'brain-*.age' | head -n1)"
 [ -n "$PG3_SNAP" ] || { echo "[FAIL] no brain-*.age snapshot found for the whitespace-pg run"; exit 1; }
 PG3_RESTORE_DIR="$TMP/pg3-restored"
-CIPHER_BRAIN_HOME="$PG3_CB_HOME" cb restore --in "$PG3_SNAP" --out-dir "$PG3_RESTORE_DIR" > "$TMP/pg3-restore.log" 2>&1 \
+CYPHER_BRAIN_HOME="$PG3_CB_HOME" cb restore --in "$PG3_SNAP" --out-dir "$PG3_RESTORE_DIR" > "$TMP/pg3-restore.log" 2>&1 \
   || { echo "[FAIL] restoring the whitespace-pg run's snapshot failed"; cat "$TMP/pg3-restore.log"; exit 1; }
 [ -f "$PG3_RESTORE_DIR/db.dump" ] || { echo "[FAIL] restored tree has no db.dump — a whitespace-only connection-string answer silently dropped the Postgres backup entirely (the P2 regression)"; exit 1; }
 grep -qF 'fake-pg-dump-content' "$PG3_RESTORE_DIR/db.dump" || { echo "[FAIL] db.dump does not contain the shimmed pg_dump output"; exit 1; }
@@ -978,12 +978,12 @@ cat > "$TMP/qa-confirm-default.json" <<JSON
   ["Path for the backup keypair", ""],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", ""]
 ]
 JSON
-if CIPHER_BRAIN_HOME="$NODEFAULT_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$NODEFAULT_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 30 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-confirm-default.json" --out "$TMP/confirm-default.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
   echo "[FAIL] init accepted an empty directory list for profile=none (unexpected pass)"; cat "$TMP/confirm-default.log"; exit 1
@@ -992,10 +992,10 @@ grep -qi 'backup identity written to' "$TMP/confirm-default.log" || { echo "[FAI
 if grep -qi 'Skipping the backup key' "$TMP/confirm-default.log"; then echo "[FAIL] a bare Enter on the backup-keypair prompt was silently read as 'no' — the exact #96 failure mode"; cat "$TMP/confirm-default.log"; exit 1; fi
 echo "[PASS] a bare-Enter answer on the security-relevant backup-keypair prompt honors its stated Yes default (never silently reads as 'no') — confirm()'s toggle UI also makes the OLD free-text misread (#96) structurally unreachable"
 
-echo "== (o) paid backend chosen with no CIPHER_BRAIN_AR_WALLET configured exits CLEANLY before the spend-consent prompt — no rollback (issue #161) =="
+echo "== (o) paid backend chosen with no CYPHER_BRAIN_AR_WALLET configured exits CLEANLY before the spend-consent prompt — no rollback (issue #161) =="
 # Before the fix, picking arweave/turbo with no wallet set sailed past the "spends
 # real funds" consent prompt, then failed deep inside push() (`arweave put needs
-# CIPHER_BRAIN_AR_WALLET ...`) — pushSucceeded stayed false, so the outer catch
+# CYPHER_BRAIN_AR_WALLET ...`) — pushSucceeded stayed false, so the outer catch
 # rolled back the identity/backup key/recipient-pin choices this same run just spent
 # several steps creating. Drive a run through backup=yes (so both primary AND backup
 # identities exist), then answer the backend prompt with "arweave": the wizard must
@@ -1013,7 +1013,7 @@ cat > "$TMP/qa-wallet-precheck.json" <<JSON
   ["Path for the backup keypair", ""],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$O_SRC"],
   ["Backend [file/", "arweave"]
@@ -1023,16 +1023,16 @@ JSON
 # backend prompt on this path — never reaching the recovery-kit path prompt — so
 # the QA script intentionally stops there too.)
 
-unset CIPHER_BRAIN_AR_WALLET # this suite's own environment must not already have one set
-CIPHER_BRAIN_HOME="$O_CB_HOME" HOME="$O_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+unset CYPHER_BRAIN_AR_WALLET # this suite's own environment must not already have one set
+CYPHER_BRAIN_HOME="$O_CB_HOME" HOME="$O_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-wallet-precheck.json" --out "$TMP/wallet-precheck.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the no-wallet paid-backend run did not exit cleanly (should return 0, not fail/roll back)"; cat "$TMP/wallet-precheck.log"; exit 1; }
 grep -qF 'needs a funded wallet to push' "$TMP/wallet-precheck.log" || { echo "[FAIL] wizard did not print the wallet-precheck guidance"; cat "$TMP/wallet-precheck.log"; exit 1; }
-grep -q 'cipher-brain wallet create' "$TMP/wallet-precheck.log" || { echo "[FAIL] guidance does not mention wallet create"; cat "$TMP/wallet-precheck.log"; exit 1; }
-grep -q 'cipher-brain wallet address' "$TMP/wallet-precheck.log" || { echo "[FAIL] guidance does not mention wallet address"; cat "$TMP/wallet-precheck.log"; exit 1; }
+grep -q 'cypher-brain wallet create' "$TMP/wallet-precheck.log" || { echo "[FAIL] guidance does not mention wallet create"; cat "$TMP/wallet-precheck.log"; exit 1; }
+grep -q 'cypher-brain wallet address' "$TMP/wallet-precheck.log" || { echo "[FAIL] guidance does not mention wallet address"; cat "$TMP/wallet-precheck.log"; exit 1; }
 if grep -qF 'PAID, PERMANENT store' "$TMP/wallet-precheck.log"; then echo "[FAIL] the spend-consent prompt was reached despite no wallet being configured"; cat "$TMP/wallet-precheck.log"; exit 1; fi
-if grep -q 'cipher-brain init: complete' "$TMP/wallet-precheck.log"; then echo "[FAIL] wizard reported completion despite exiting early on the wallet precheck"; cat "$TMP/wallet-precheck.log"; exit 1; fi
+if grep -q 'cypher-brain init: complete' "$TMP/wallet-precheck.log"; then echo "[FAIL] wizard reported completion despite exiting early on the wallet precheck"; cat "$TMP/wallet-precheck.log"; exit 1; fi
 echo "[PASS] choosing arweave with no wallet configured prints setup guidance and exits cleanly (exit 0), never reaching the spend-consent prompt"
 
 [ -f "$O_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity was deleted on the wallet-precheck early exit — this must be a graceful exit, not a rollback"; exit 1; }
@@ -1043,7 +1043,7 @@ O_SNAP_LEFTOVER="$(find "$O_CB_HOME" -maxdepth 1 -name 'brain-*.age' 2>/dev/null
 [ -z "$O_SNAP_LEFTOVER" ] || { echo "[FAIL] a snapshot was produced despite exiting before step 6's snapshot+push"; exit 1; }
 echo "[PASS] the wallet-precheck early exit preserves the identity/recipient/backup-key this run already created, and never produces a snapshot"
 
-echo "== (o2) CIPHER_BRAIN_AR_WALLET set to a NONEXISTENT file behaves exactly like unset (issue #161: check 'set AND exists', not just 'set') =="
+echo "== (o2) CYPHER_BRAIN_AR_WALLET set to a NONEXISTENT file behaves exactly like unset (issue #161: check 'set AND exists', not just 'set') =="
 O2_HOME="$TMP/wallet-precheck-missing-home"; mkdir -p "$O2_HOME"
 O2_CB_HOME="$TMP/wallet-precheck-missing-cb-home"
 O2_SRC="$TMP/wallet-precheck-missing-src"; mkdir -p "$O2_SRC"
@@ -1055,20 +1055,20 @@ cat > "$TMP/qa-wallet-precheck-missing.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$O2_SRC"],
   ["Backend [file/", "turbo"]
 ]
 JSON
 
-CIPHER_BRAIN_HOME="$O2_CB_HOME" HOME="$O2_HOME" CIPHER_BRAIN_AR_WALLET="$O2_WALLET" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+CYPHER_BRAIN_HOME="$O2_CB_HOME" HOME="$O2_HOME" CYPHER_BRAIN_AR_WALLET="$O2_WALLET" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-wallet-precheck-missing.json" --out "$TMP/wallet-precheck-missing.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init \
   || { echo "[FAIL] the missing-wallet-file turbo run did not exit cleanly"; cat "$TMP/wallet-precheck-missing.log"; exit 1; }
 grep -qF 'needs a funded wallet to push' "$TMP/wallet-precheck-missing.log" || { echo "[FAIL] wizard did not print the wallet-precheck guidance for a nonexistent wallet file"; cat "$TMP/wallet-precheck-missing.log"; exit 1; }
 [ -f "$O2_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity was deleted on the missing-wallet-file early exit"; exit 1; }
-echo "[PASS] CIPHER_BRAIN_AR_WALLET pointing at a nonexistent file is treated the same as unset — guidance shown, primary identity preserved"
+echo "[PASS] CYPHER_BRAIN_AR_WALLET pointing at a nonexistent file is treated the same as unset — guidance shown, primary identity preserved"
 
 echo "== (o3) a wallet file actually present on disk still reaches the existing spend-consent prompt unchanged (issue #161: precheck only gates when the wallet is MISSING) =="
 O3_HOME="$TMP/wallet-precheck-present-home"; mkdir -p "$O3_HOME"
@@ -1084,7 +1084,7 @@ cat > "$TMP/qa-wallet-precheck-present.json" <<JSON
   ["Generate an offline backup keypair now?", "n"],
   ["Generate a signing keypair now?", "n"],
   ["Protect the primary identity with a passphrase now?", "n"],
-  ["Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line", "n"],
+  ["Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line", "n"],
   ["Profile [none/", ""],
   ["Directory path(s) to back up", "$O3_SRC"],
   ["Backend [file/", "arweave"],
@@ -1092,7 +1092,7 @@ cat > "$TMP/qa-wallet-precheck-present.json" <<JSON
 ]
 JSON
 
-if CIPHER_BRAIN_HOME="$O3_CB_HOME" HOME="$O3_HOME" CIPHER_BRAIN_AR_WALLET="$O3_WALLET" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$O3_CB_HOME" HOME="$O3_HOME" CYPHER_BRAIN_AR_WALLET="$O3_WALLET" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_timeout 60 node "$ROOT/scripts/drive-init.mjs" --qa "$TMP/qa-wallet-precheck-present.json" --out "$TMP/wallet-precheck-present.log" \
   -- node "${BIN_DEV_ARGS[@]}" "$BIN" init; then
   echo "[FAIL] declining the spend-consent prompt should still abort (unchanged existing behavior)"; cat "$TMP/wallet-precheck-present.log"; exit 1
@@ -1103,7 +1103,7 @@ grep -qi "aborted before spending" "$TMP/wallet-precheck-present.log" || { echo 
 [ ! -f "$O3_CB_HOME/identity.age" ] || { echo "[FAIL] declining consent should still roll back the identity (unchanged existing behavior, issue #161 non-goal)"; exit 1; }
 echo "[PASS] a configured, present-on-disk wallet still reaches the existing spend-consent prompt unchanged, and declining it still aborts + rolls back exactly as before"
 
-echo "== (p) CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 with FILE-redirected (non-pipe) stdin surfaces the real cancellation, not a masking TypeError (P2 fix) =="
+echo "== (p) CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 with FILE-redirected (non-pipe) stdin surfaces the real cancellation, not a masking TypeError (P2 fix) =="
 # Node's process.stdin is a plain fs.ReadStream (no unref()/ref()) when stdin comes
 # from a HEREDOC or a `< file` redirection — unlike a pipe (net.Socket), which is
 # ALL every other scripted run in this file uses (drive-init.mjs spawns the child
@@ -1137,14 +1137,14 @@ P_HOME="$TMP/nonpipe-stdin-home"; mkdir -p "$P_HOME"
 P_CB_HOME="$TMP/nonpipe-stdin-cb-home"
 printf '\x03' > "$TMP/ctrlc-byte.bin" # a raw Ctrl+C byte — clack decodes this as a cancel keypress
 
-if CIPHER_BRAIN_HOME="$P_CB_HOME" HOME="$P_HOME" CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
+if CYPHER_BRAIN_HOME="$P_CB_HOME" HOME="$P_HOME" CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 \
   with_stdin_timeout 30 node "${BIN_DEV_ARGS[@]}" "$BIN" init < "$TMP/ctrlc-byte.bin" > "$TMP/nonpipe-stdin.log" 2>&1; then
   echo "[FAIL] init did not fail on a Ctrl+C byte delivered via file-redirected stdin"; cat "$TMP/nonpipe-stdin.log"; exit 1
 fi
-grep -qi "cipher-brain init: cancelled" "$TMP/nonpipe-stdin.log" || { echo "[FAIL] the real InitCancelledError was not surfaced (masked by something else?)"; cat "$TMP/nonpipe-stdin.log"; exit 1; }
+grep -qi "cypher-brain init: cancelled" "$TMP/nonpipe-stdin.log" || { echo "[FAIL] the real InitCancelledError was not surfaced (masked by something else?)"; cat "$TMP/nonpipe-stdin.log"; exit 1; }
 if grep -qi "is not a function" "$TMP/nonpipe-stdin.log"; then echo "[FAIL] process.stdin.unref() crashed and masked the real error — the P2 regression"; cat "$TMP/nonpipe-stdin.log"; exit 1; fi
 [ ! -f "$P_CB_HOME/identity.age" ] || { echo "[FAIL] primary identity survived the cancellation — rollback should still fire on this path"; exit 1; }
-echo "[PASS] file-redirected (non-pipe) stdin under CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 surfaces the real InitCancelledError instead of a masking 'unref is not a function' crash"
+echo "[PASS] file-redirected (non-pipe) stdin under CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 surfaces the real InitCancelledError instead of a masking 'unref is not a function' crash"
 
 echo
 echo "INIT SELFTEST PASS"

@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 Internal: `npm run verify` now runs the suite under an isolated `TMPDIR` and fails if

@@ -1,4 +1,4 @@
-# cipher-brain
+# cypher-brain
 
 > Encrypt a growing second-brain snapshot (gbrain, Claude Code memory, an Obsidian
 > vault, a ChatGPT export) client-side with age (X25519 + ChaCha20-Poly1305), then
@@ -9,7 +9,7 @@
 ## Quickstart
 
 ```sh
-npx cipher-brain init   # interactive wizard: keygen -> backup key -> first snapshot+push -> recovery kit
+npx cypher-brain init   # interactive wizard: keygen -> backup key -> first snapshot+push -> recovery kit
 ```
 
 `init` requires stdin to be a TTY and refuses to run non-interactively (e.g. an AI
@@ -19,7 +19,7 @@ it wraps (keygen, snapshot, push) by hand instead — see README.md's "Manual fl
 
 ## Driving this CLI as an agent (#347)
 
-stderr is load-bearing, not decoration. If you run cipher-brain on a human's behalf:
+stderr is load-bearing, not decoration. If you run cypher-brain on a human's behalf:
 
 - Warnings are ⚠-prefixed on stderr, and every run that produced any ends with a block
   headed `⚠  run summary — N warning(s) a human should see` — **relay that block to
@@ -43,7 +43,7 @@ stderr is load-bearing, not decoration. If you run cipher-brain on a human's beh
 - **backend** — pluggable `push`/`pull` storage behind one interface: `file`
   (local, dev/CI), `turbo` (recommended — Arweave via a bundler, ETH/USDC),
   `arweave` (raw L1, small artifacts only), `rclone` (delegates to the `rclone`
-  binary and its own configured remote — 70+ providers; cipher-brain's own
+  binary and its own configured remote — 70+ providers; cypher-brain's own
   part is free like `file`, the remote's real transfer/storage cost is
   whatever your own cloud contract charges).
 - **recovery kit** — the printable artifact `init` produces: the backup identity
@@ -51,7 +51,7 @@ stderr is load-bearing, not decoration. If you run cipher-brain on a human's beh
   latest locator, and restore steps. Kit-only recovery on a fresh machine needs
   both the backup key (`init` defaults to generating one, but it can be
   declined) and a portable backend (`turbo`/`arweave` — `file` locators are
-  machine-local). After later pushes, the CLI-only `cipher-brain recovery-kit`
+  machine-local). After later pushes, the CLI-only `cypher-brain recovery-kit`
   regenerates it against the current locator (no MCP tool on purpose: the kit
   can embed private key blocks, which must never enter agent context).
 - **signing keypair** (optional, `keygen --sign`) — age gives confidentiality +
@@ -70,15 +70,15 @@ stderr is load-bearing, not decoration. If you run cipher-brain on a human's beh
 ## Everyday commands
 
 ```sh
-cipher-brain --version                                          # the installed version, bare, on stdout
-cipher-brain <command> --help                                   # just that command's flags (--help alone = everything)
-cipher-brain keygen                                             # one-time identity + recipient
-cipher-brain snapshot --dir <path> --recipient <file> --out <f.age>
-cipher-brain verify --in <f.age>                                # real ciphertext? wrong key rejected?
-cipher-brain push --in <f.age> --backend turbo --yes             # pays a one-time bundler fee
-cipher-brain pull --locator <id> --backend turbo --out <f.age>   # plain gateway fetch, no wallet
-cipher-brain restore --in <f.age> --out-dir <dir>
-cipher-brain schedule install --backend turbo --dir <path> --max-spend <n>   # unattended nightly
+cypher-brain --version                                          # the installed version, bare, on stdout
+cypher-brain <command> --help                                   # just that command's flags (--help alone = everything)
+cypher-brain keygen                                             # one-time identity + recipient
+cypher-brain snapshot --dir <path> --recipient <file> --out <f.age>
+cypher-brain verify --in <f.age>                                # real ciphertext? wrong key rejected?
+cypher-brain push --in <f.age> --backend turbo --yes             # pays a one-time bundler fee
+cypher-brain pull --locator <id> --backend turbo --out <f.age>   # plain gateway fetch, no wallet
+cypher-brain restore --in <f.age> --out-dir <dir>
+cypher-brain schedule install --backend turbo --dir <path> --max-spend <n>   # unattended nightly
 ```
 
 ## Docs

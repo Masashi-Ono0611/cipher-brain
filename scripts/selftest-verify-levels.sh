@@ -9,14 +9,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_HOME="$TMP/keys"
-export CIPHER_BRAIN_FILE_DIR="$TMP/store"
+export CYPHER_BRAIN_HOME="$TMP/keys"
+export CYPHER_BRAIN_FILE_DIR="$TMP/store"
 cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
@@ -106,11 +106,11 @@ grep -q 'full restore' "$TMP/drill.out" \
   || { echo "[FAIL] --level drill missing full-restore line"; cat "$TMP/drill.out"; exit 1; }
 
 echo "== --level drill: the scratch pull/restore directory is not left behind =="
-BEFORE=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cipher-brain-verify-*' 2>/dev/null | wc -l | tr -d ' ')
+BEFORE=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cypher-brain-verify-*' 2>/dev/null | wc -l | tr -d ' ')
 cb verify --level drill --locator "$LOC" --backend file --sha256 "$ORIG" >/dev/null 2>&1
-AFTER=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cipher-brain-verify-*' 2>/dev/null | wc -l | tr -d ' ')
+AFTER=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'cypher-brain-verify-*' 2>/dev/null | wc -l | tr -d ' ')
 [ "$BEFORE" = "$AFTER" ] \
-  && echo "[PASS] --level drill leaves no cipher-brain-verify-* scratch dir behind" \
+  && echo "[PASS] --level drill leaves no cypher-brain-verify-* scratch dir behind" \
   || { echo "[FAIL] --level drill leaked a scratch dir (before=$BEFORE after=$AFTER)"; exit 1; }
 
 echo "== --level drill --json: exactly one JSON line, includes full_restore:true =="
@@ -153,7 +153,7 @@ echo "== --level drill on a public-key-only box is PARTIAL (skips the restore st
 PUBONLY="$TMP/pubonly"; mkdir -p "$PUBONLY"
 cp "$TMP/keys/recipient.txt" "$PUBONLY/recipient.txt"
 set +e
-PART_OUT=$(CIPHER_BRAIN_HOME="$PUBONLY" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --level drill --locator "$LOC" --backend file --sha256 "$ORIG" 2>&1); PART_RC=$?
+PART_OUT=$(CYPHER_BRAIN_HOME="$PUBONLY" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --level drill --locator "$LOC" --backend file --sha256 "$ORIG" 2>&1); PART_RC=$?
 set -e
 [ "$PART_RC" = "2" ] || { echo "[FAIL] public-key-only --level drill exited $PART_RC, expected 2"; echo "$PART_OUT"; exit 1; }
 printf '%s' "$PART_OUT" | grep -q 'no private identity on this box' \
@@ -216,16 +216,16 @@ echo "== --level remote --json: a recorded-but-unfetchable signature sidecar is 
 # CLI's --json had no equivalent field at all before this fix — only the human-readable
 # stderr warning pull() itself already prints.
 SIGHOME="$TMP/sig-keys"; mkdir -p "$SIGHOME"
-CIPHER_BRAIN_HOME="$SIGHOME" cb keygen >/dev/null
-CIPHER_BRAIN_HOME="$SIGHOME" cb keygen --sign >/dev/null
+CYPHER_BRAIN_HOME="$SIGHOME" cb keygen >/dev/null
+CYPHER_BRAIN_HOME="$SIGHOME" cb keygen --sign >/dev/null
 SIGSRC="$TMP/sig-src"; mkdir -p "$SIGSRC"
 printf 'sig-test-%s\n' "$MARKER" > "$SIGSRC/note.txt"
-CIPHER_BRAIN_HOME="$SIGHOME" cb snapshot --dir "$SIGSRC" --out "$TMP/sig.age" >/dev/null
-CIPHER_BRAIN_HOME="$SIGHOME" cb push --in "$TMP/sig.age" --backend file --save-locator "$TMP/sig-loc.tsv" >/dev/null
+CYPHER_BRAIN_HOME="$SIGHOME" cb snapshot --dir "$SIGSRC" --out "$TMP/sig.age" >/dev/null
+CYPHER_BRAIN_HOME="$SIGHOME" cb push --in "$TMP/sig.age" --backend file --save-locator "$TMP/sig-loc.tsv" >/dev/null
 SIG_LOCATOR_PATH=$(cut -f6 "$TMP/sig-loc.tsv")
 [ -n "$SIG_LOCATOR_PATH" ] || { echo "[FAIL] save-locator file has no 6th (sig_locator) field"; cat "$TMP/sig-loc.tsv"; exit 1; }
 rm -f "$SIG_LOCATOR_PATH"   # the signature object itself vanishes from storage — recorded, but no longer fetchable
-SIGJ=$(CIPHER_BRAIN_HOME="$SIGHOME" cb verify --level remote --from-locator-file "$TMP/sig-loc.tsv" --json)
+SIGJ=$(CYPHER_BRAIN_HOME="$SIGHOME" cb verify --level remote --from-locator-file "$TMP/sig-loc.tsv" --json)
 printf '%s' "$SIGJ" | grep -q '"signature":{"fetched":false' \
   && echo "[PASS] --level remote --json reports the downgrade structurally (signature.fetched:false)" \
   || { echo "[FAIL] --level remote --json did not report the signature gap"; echo "$SIGJ"; exit 1; }
@@ -265,7 +265,7 @@ PATH="$STUBBIN:$PATH" TAR_STUB_MODE=slow_expand TAR_STUB_SLEEP=5 \
 DRILL_PID=$!
 APPEARED=0
 for _ in $(seq 1 50); do
-  if find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-verify-*' -type d 2>/dev/null | grep -q .; then
+  if find "$TMPDIR" -maxdepth 1 -name 'cypher-brain-verify-*' -type d 2>/dev/null | grep -q .; then
     MANIFEST=$(find "$TMPDIR" -maxdepth 3 -path '*/restored/manifest.json' 2>/dev/null | head -1)
     if [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ]; then APPEARED=1; break; fi
   fi
@@ -276,9 +276,9 @@ if [ "$APPEARED" != "1" ]; then
 fi
 kill -TERM "$DRILL_PID"
 wait "$DRILL_PID" 2>/dev/null || true   # signal exit is non-zero — expected
-LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cipher-brain-verify-*' 2>/dev/null | wc -l | tr -d ' ')
+LEFTOVERS=$(find "$TMPDIR" -maxdepth 1 -name 'cypher-brain-verify-*' 2>/dev/null | wc -l | tr -d ' ')
 [ "$LEFTOVERS" = "0" ] \
-  && echo "[PASS] SIGTERM mid-component-expand leaves no cipher-brain-verify-* scratch dir (no plaintext left behind)" \
+  && echo "[PASS] SIGTERM mid-component-expand leaves no cypher-brain-verify-* scratch dir (no plaintext left behind)" \
   || { echo "[FAIL] SIGTERM mid-component-expand leaked $LEFTOVERS scratch dir(s)"; exit 1; }
 unset TMPDIR
 

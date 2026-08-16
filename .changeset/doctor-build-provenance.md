@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 `doctor` now reports the provenance of the code that is actually running: which commit

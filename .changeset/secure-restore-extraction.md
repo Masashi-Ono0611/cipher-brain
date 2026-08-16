@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 `restore` now inspects every tar entry in an artifact before extracting anything, and

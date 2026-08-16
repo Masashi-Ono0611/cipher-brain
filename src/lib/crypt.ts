@@ -101,7 +101,7 @@ export function wrapIdentity(text: string, passphrase: string): Promise<Uint8Arr
 
 // Read an identity file and return its identity lines. A passphrase-wrapped file
 // (it IS age ciphertext, so it starts with the age magic) is unwrapped first —
-// prompting on the TTY, or taking CIPHER_BRAIN_PASSPHRASE for automation. A
+// prompting on the TTY, or taking CYPHER_BRAIN_PASSPHRASE for automation. A
 // passphrase-wrapped identity can ALSO be ASCII-armored (the reference `age -p -a`,
 // or an identity copied as printable text into a recovery note) — dearmor it back
 // to the raw ciphertext bytes before the magic check below, so both forms unwrap
@@ -122,7 +122,7 @@ export async function loadIdentities(path: string): Promise<string[]> {
 // Read `path`, transparently reversing whatever at-rest wrapping it carries: ASCII-
 // armor (`age -p -a`, or a recovery note it was pasted from) is de-armored first, then
 // age-ciphertext bytes (the scrypt passphrase wrap — `keygen --passphrase` / `age -p`)
-// are unwrapped by prompting on the TTY (or CIPHER_BRAIN_PASSPHRASE for automation);
+// are unwrapped by prompting on the TTY (or CYPHER_BRAIN_PASSPHRASE for automation);
 // anything else is returned as plain UTF-8 text unchanged. Extracted out of
 // loadIdentities() (#214) so a second caller with its own file shape — the minisign
 // signing identity (src/lib/minisign.ts), which reuses this SAME age-based wrap rather
@@ -216,16 +216,16 @@ async function unwrap(raw: Buffer, pass: string): Promise<string> {
 
 // ---------- passphrase prompting ----------
 
-// CIPHER_BRAIN_PASSPHRASE (env) skips the prompt — for unattended restore/verify
+// CYPHER_BRAIN_PASSPHRASE (env) skips the prompt — for unattended restore/verify
 // and the CI interop test. Otherwise read hidden from the TTY (like `age -p`).
 export async function askPassphrase(question: string): Promise<string> {
-  const env = readEnv('CIPHER_BRAIN_PASSPHRASE');
+  const env = readEnv('CYPHER_BRAIN_PASSPHRASE');
   if (env) return env;
   return promptHidden(question);
 }
 
 export async function askNewPassphrase(): Promise<string> {
-  const env = readEnv('CIPHER_BRAIN_PASSPHRASE');
+  const env = readEnv('CYPHER_BRAIN_PASSPHRASE');
   if (env) return env;
   const a = await promptHidden('Enter passphrase: ');
   if (!a) throw new Error('empty passphrase — refusing to wrap the identity with nothing');
@@ -240,7 +240,7 @@ function promptHidden(question: string): Promise<string> {
     if (!stdin.isTTY) {
       return reject(
         new Error(
-          'a passphrase is required but stdin is not a TTY — set CIPHER_BRAIN_PASSPHRASE for non-interactive use',
+          'a passphrase is required but stdin is not a TTY — set CYPHER_BRAIN_PASSPHRASE for non-interactive use',
         ),
       );
     }

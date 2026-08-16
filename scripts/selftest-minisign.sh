@@ -23,23 +23,23 @@
 #
 # PLUS, only when the reference `minisign` binary is on PATH (SKIPs otherwise, same
 # posture as scripts/selftest-interop.sh's `age` binary check):
-#   - a *.minisig cipher-brain writes verifies with the REAL `minisign -V` binary
+#   - a *.minisig cypher-brain writes verifies with the REAL `minisign -V` binary
 #   - a *.minisig the REAL `minisign` binary writes (with its OWN keypair) verifies
-#     with cipher-brain's OWN verification code (src/lib/minisign.ts)
+#     with cypher-brain's OWN verification code (src/lib/minisign.ts)
 # Proving BOTH directions is what makes "wire-compatible with minisign" a checked claim
 # instead of an assertion.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_FILE_DIR="$TMP/store"
-cb() { CIPHER_BRAIN_HOME="$HOME_DIR" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+export CYPHER_BRAIN_FILE_DIR="$TMP/store"
+cb() { CYPHER_BRAIN_HOME="$HOME_DIR" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 
 HOME_DIR="$TMP/keys"
 cb keygen >/dev/null
@@ -204,7 +204,7 @@ NOKEY_HOME="$TMP/keys-nokey"
 mkdir -p "$NOKEY_HOME"
 cp "$HOME_DIR/identity.age" "$NOKEY_HOME/identity.age"
 cp "$HOME_DIR/recipient.txt" "$NOKEY_HOME/recipient.txt"
-CIPHER_BRAIN_HOME="$NOKEY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/snap.age" >"$TMP/verify-nokey.out" 2>&1
+CYPHER_BRAIN_HOME="$NOKEY_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" verify --in "$TMP/snap.age" >"$TMP/verify-nokey.out" 2>&1
 grep -q '\[SKIP\] minisign authenticity signature' "$TMP/verify-nokey.out" \
   && echo "[PASS] verify SKIPs when no signing public key is configured on this box" \
   || { echo "[FAIL] verify did not SKIP with no configured signing public key"; cat "$TMP/verify-nokey.out"; exit 1; }
@@ -270,7 +270,7 @@ SK_HOME="$TMP/keys-skip"
 SK_SRC="$TMP/src-skip"
 mkdir -p "$SK_HOME" "$SK_SRC"
 printf 'skip-unchanged fixture\n' >"$SK_SRC/note.txt"
-sk() { CIPHER_BRAIN_HOME="$SK_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+sk() { CYPHER_BRAIN_HOME="$SK_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 sk keygen >/dev/null 2>&1
 
 # (1) unsigned baseline: push, then re-push identical content — must still SKIP. The
@@ -346,13 +346,13 @@ echo "[PASS] a present-but-unparseable .minisig counts as unknown signing state,
 if ! command -v minisign >/dev/null 2>&1; then
   echo "[SKIP] real \`minisign\` binary interop: no \`minisign\` on PATH — install it (brew/apt) to exercise CLI<->binary wire-format interop"
 else
-  echo "== interop: a cipher-brain-made .minisig verifies with the REAL minisign binary =="
+  echo "== interop: a cypher-brain-made .minisig verifies with the REAL minisign binary =="
   minisign -V -p "$HOME_DIR/sign-recipient.pub" -m "$TMP/snap.age" >"$TMP/real-verify.out" 2>&1
   grep -q 'Signature and comment signature verified' "$TMP/real-verify.out" \
-    && echo "[PASS] the real minisign binary verified a cipher-brain-generated .minisig" \
-    || { echo "[FAIL] the real minisign binary rejected a cipher-brain-generated .minisig"; cat "$TMP/real-verify.out"; exit 1; }
+    && echo "[PASS] the real minisign binary verified a cypher-brain-generated .minisig" \
+    || { echo "[FAIL] the real minisign binary rejected a cypher-brain-generated .minisig"; cat "$TMP/real-verify.out"; exit 1; }
 
-  echo "== interop: a REAL-minisign-made .minisig verifies with cipher-brain's OWN code =="
+  echo "== interop: a REAL-minisign-made .minisig verifies with cypher-brain's OWN code =="
   # -W: generate the secret key WITHOUT a password, so it loads non-interactively below
   # (no TTY / pty needed — unlike `age -p`, which needs one via readpassphrase(3); see
   # selftest-interop.sh's with_pty helper for that contrast). Fine for this throwaway,
@@ -362,9 +362,9 @@ else
   printf '%s\n' "second" >"$TMP/real-msg.txt"
   minisign -S -s "$TMP/real.key" -m "$TMP/real-msg.txt" </dev/null >/dev/null 2>&1
   test -f "$TMP/real-msg.txt.minisig" || { echo "[FAIL] the real minisign binary did not write a .minisig"; exit 1; }
-  # Feed the real binary's OWN public key + .minisig into cipher-brain's verify by
-  # standing up a throwaway CIPHER_BRAIN_HOME whose sign-recipient.pub IS the real
-  # binary's public key — proves cipher-brain's verifyDetached()/parsePubkeyFile()
+  # Feed the real binary's OWN public key + .minisig into cypher-brain's verify by
+  # standing up a throwaway CYPHER_BRAIN_HOME whose sign-recipient.pub IS the real
+  # binary's public key — proves cypher-brain's verifyDetached()/parsePubkeyFile()
   # (src/lib/minisign.ts) parse and verify a genuine minisign-generated artifact, not
   # just its own round trip.
   REAL_HOME="$TMP/keys-real-pubkey"
@@ -372,7 +372,7 @@ else
   cp "$HOME_DIR/identity.age" "$REAL_HOME/identity.age"
   cp "$HOME_DIR/recipient.txt" "$REAL_HOME/recipient.txt"
   cp "$TMP/real.pub" "$REAL_HOME/sign-recipient.pub"
-  cb2() { CIPHER_BRAIN_HOME="$REAL_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+  cb2() { CYPHER_BRAIN_HOME="$REAL_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
   cb2 snapshot --dir "$SRC" --out "$TMP/real-snap.age" --no-sign >/dev/null
   # Reuse the real binary's OWN signature bytes against a *different* file is invalid
   # (would rightly fail authenticity) — instead, sign the SAME ciphertext bytes cipher-
@@ -381,8 +381,8 @@ else
   minisign -S -s "$TMP/real.key" -m "$TMP/real-snap.age" </dev/null >/dev/null 2>&1
   cb2 verify --in "$TMP/real-snap.age" >"$TMP/verify-real.out" 2>&1 || true
   grep -q '\[PASS\] minisign authenticity signature verified' "$TMP/verify-real.out" \
-    && echo "[PASS] cipher-brain's own verify accepted a REAL minisign-generated signature" \
-    || { echo "[FAIL] cipher-brain's verify rejected a genuine minisign-generated signature"; cat "$TMP/verify-real.out"; exit 1; }
+    && echo "[PASS] cypher-brain's own verify accepted a REAL minisign-generated signature" \
+    || { echo "[FAIL] cypher-brain's verify rejected a genuine minisign-generated signature"; cat "$TMP/verify-real.out"; exit 1; }
 fi
 
 echo

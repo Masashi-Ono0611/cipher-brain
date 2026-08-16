@@ -7,14 +7,14 @@ set -euo pipefail
 
 SIZE_MB="${CB_SIZE_MB:-256}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_HOME="$TMP/keys"
-export CIPHER_BRAIN_FILE_DIR="$TMP/store"
+export CYPHER_BRAIN_HOME="$TMP/keys"
+export CYPHER_BRAIN_FILE_DIR="$TMP/store"
 cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 now() { date +%s; }

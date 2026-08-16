@@ -1,5 +1,5 @@
 ---
-"cipher-brain": minor
+"cypher-brain": minor
 ---
 
 New `cipher-brain doctor` command: a read-only health check of the current

@@ -1,5 +1,5 @@
 ---
-"cipher-brain": minor
+"cypher-brain": minor
 ---
 
 Add `--profile o2b --export <path>`, a one-flag source preset for [Open Second

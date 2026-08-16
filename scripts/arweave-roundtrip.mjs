@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Arweave backend parity proof (issue #9). Spins up a LOCAL arlocal gateway (no real
-// AR, no network) and runs the cipher-brain pipeline against it:
+// AR, no network) and runs the cypher-brain pipeline against it:
 //   snapshot -> push --backend arweave -> (mine) -> pull -> verify -> restore.
 // It proves the StorageBackend abstraction holds for a backend whose locator (an
 // Arweave tx id) is assigned AFTER upload and is NOT the ciphertext's content hash —
@@ -38,7 +38,7 @@ const freePort = () =>
   });
 const PORT = Number(process.env.CB_ARLOCAL_PORT || (await freePort()));
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BIN = join(HERE, '..', 'bin', 'cipher-brain.mjs');
+const BIN = join(HERE, '..', 'bin', 'cypher-brain.mjs');
 const sha = (buf) => createHash('sha256').update(buf).digest('hex');
 const TX_RE = /^[A-Za-z0-9_-]{43}$/; // base64url Arweave tx id
 
@@ -151,13 +151,13 @@ try {
 
   const env = {
     ...process.env,
-    CIPHER_BRAIN_HOME: join(tmp, 'keys'),
-    CIPHER_BRAIN_AR_HOST: 'localhost',
-    CIPHER_BRAIN_AR_PORT: String(PORT),
-    CIPHER_BRAIN_AR_PROTOCOL: 'http',
-    CIPHER_BRAIN_AR_WALLET: walletPath,
-    CIPHER_BRAIN_YES: '1', // arlocal (test) — no real funds; bypass the interactive --yes guard
-    // $BIN (bin/cipher-brain.mjs) imports src/cli.ts directly (no build step); its
+    CYPHER_BRAIN_HOME: join(tmp, 'keys'),
+    CYPHER_BRAIN_AR_HOST: 'localhost',
+    CYPHER_BRAIN_AR_PORT: String(PORT),
+    CYPHER_BRAIN_AR_PROTOCOL: 'http',
+    CYPHER_BRAIN_AR_WALLET: walletPath,
+    CYPHER_BRAIN_YES: '1', // arlocal (test) — no real funds; bypass the interactive --yes guard
+    // $BIN (bin/cypher-brain.mjs) imports src/cli.ts directly (no build step); its
     // internal imports use the OUTPUT extension (`./lib/config.js`, #63), which plain
     // node needs help resolving back to the sibling .ts file — see
     // scripts/dev-ts-resolve-hook.mjs. DEV_ARGS (scripts/dev-node-flags.mjs) is passed
@@ -190,7 +190,7 @@ try {
   // not buffered and 400'd. Force a tiny limit so the ~10 KB snapshot trips it.
   log('size guard: oversized L1 push is refused with a turbo redirect');
   const sg = spawnSync('node', [...DEV_ARGS, BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'], {
-    env: { ...env, CIPHER_BRAIN_AR_L1_MAX: '1' },
+    env: { ...env, CYPHER_BRAIN_AR_L1_MAX: '1' },
     encoding: 'utf8',
   });
   sg.status !== 0 && /--backend turbo/.test(sg.stderr) && /exceeds/.test(sg.stderr)
@@ -198,30 +198,30 @@ try {
     : fail(`size guard did not fire as expected: status=${sg.status} stderr=${(sg.stderr || '').slice(0, 160)}`);
 
   // spend cap (Codex review, #69 P1): the arweave backend must actually ENFORCE
-  // CIPHER_BRAIN_MAX_SPEND before signing — not merely log that it "cannot pre-flight
+  // CYPHER_BRAIN_MAX_SPEND before signing — not merely log that it "cannot pre-flight
   // the cost" and upload anyway. A `schedule install --backend arweave --max-spend n`
-  // bakes CIPHER_BRAIN_YES=1 into the unattended runner, so this cap is the only thing
+  // bakes CYPHER_BRAIN_YES=1 into the unattended runner, so this cap is the only thing
   // standing between an operator's requested budget and an uncapped nightly L1 spend.
-  log('spend cap: a tiny CIPHER_BRAIN_MAX_SPEND aborts the L1 push before signing');
+  log('spend cap: a tiny CYPHER_BRAIN_MAX_SPEND aborts the L1 push before signing');
   const capFail = spawnSync('node', [...DEV_ARGS, BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'], {
-    env: { ...env, CIPHER_BRAIN_MAX_SPEND: '1' },
+    env: { ...env, CYPHER_BRAIN_MAX_SPEND: '1' },
     encoding: 'utf8',
   });
   capFail.status !== 0 &&
   /L1 cost estimate/.test(capFail.stderr) &&
-  /exceeds CIPHER_BRAIN_MAX_SPEND/.test(capFail.stderr)
+  /exceeds CYPHER_BRAIN_MAX_SPEND/.test(capFail.stderr)
     ? pass('spend cap: a 1-winston cap aborts the upload with a real (not skipped) cost estimate')
     : fail(
         `spend cap did not abort as expected: status=${capFail.status} stderr=${(capFail.stderr || '').slice(0, 200)}`,
       );
 
-  log('spend cap: a generous CIPHER_BRAIN_MAX_SPEND still lets the push through');
+  log('spend cap: a generous CYPHER_BRAIN_MAX_SPEND still lets the push through');
   const capOk = spawnSync('node', [...DEV_ARGS, BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'], {
-    env: { ...env, CIPHER_BRAIN_MAX_SPEND: '100000000000000' },
+    env: { ...env, CYPHER_BRAIN_MAX_SPEND: '100000000000000' },
     encoding: 'utf8',
   });
   capOk.status === 0 && TX_RE.test(capOk.stdout.trim())
-    ? pass('spend cap: an under-cap CIPHER_BRAIN_MAX_SPEND still lets the push through')
+    ? pass('spend cap: an under-cap CYPHER_BRAIN_MAX_SPEND still lets the push through')
     : fail(`under-cap push unexpectedly failed: status=${capOk.status} stderr=${(capOk.stderr || '').slice(0, 200)}`);
 
   // error body surfaces on a failed post (#165): a wallet that was never funded/minted
@@ -236,7 +236,7 @@ try {
   const brokePush = spawnSync(
     'node',
     [...DEV_ARGS, BIN, 'push', '--in', join(tmp, 'snap.age'), '--backend', 'arweave'],
-    { env: { ...env, CIPHER_BRAIN_AR_WALLET: brokeWalletPath }, encoding: 'utf8' },
+    { env: { ...env, CYPHER_BRAIN_AR_WALLET: brokeWalletPath }, encoding: 'utf8' },
   );
   brokePush.status !== 0 &&
   /arweave post failed: HTTP 410/.test(brokePush.stderr) &&
@@ -260,7 +260,7 @@ try {
 
   // a fresh machine that only has the tx id (NO upload wallet) fetches the bytes back
   const pullEnv = { ...env };
-  delete pullEnv.CIPHER_BRAIN_AR_WALLET;
+  delete pullEnv.CYPHER_BRAIN_AR_WALLET;
   log('pull (no wallet)');
   const rp = spawnSync(
     'node',
@@ -354,7 +354,7 @@ try {
   // Dead-end the gateway so only path 2 can serve.
   const l1SigOut = join(tmp, 'l1-signed.age');
   const l1Sig = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--from-locator-file', signedLocFile, '--out', l1SigOut], {
-    env: { ...pullEnv, CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1' },
+    env: { ...pullEnv, CYPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1' },
     encoding: 'utf8',
   });
   l1Sig.status === 0 && existsSync(`${l1SigOut}.minisig`)
@@ -390,7 +390,7 @@ try {
   // assert the L1 chunk-read fallback (path 2 = getData) still serves the bytes.
   // Without this the fallback is never exercised — arlocal serves GET /{id}, so the
   // happy path above always wins on path 1.
-  const fbEnv = { ...env, CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1' }; // connection refused → path 1 fails fast
+  const fbEnv = { ...env, CYPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1' }; // connection refused → path 1 fails fast
   const fb = spawnSync(
     'node',
     [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'fb.age')],
@@ -406,7 +406,7 @@ try {
   // and a bounded timeout — plus a redirect-refusing fetch closing the SSRF gap that was
   // open only on this path. Each case dead-ends the gateway (path 1) via a
   // connection-refused address so ONLY the L1 chunk read (path 2) can be exercised.
-  const l1Env = { ...env, CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1' };
+  const l1Env = { ...env, CYPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1' };
 
   log('L1 fallback: AGE_MAGIC gate rejects non-ciphertext chunk data, preserving a prior --out');
   // a real, minable tx whose body is NOT age ciphertext — arlocal will genuinely serve
@@ -464,10 +464,10 @@ try {
     {
       env: {
         ...env,
-        CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1',
-        CIPHER_BRAIN_AR_HOST: '127.0.0.1',
-        CIPHER_BRAIN_AR_PORT: l1SsrfPort,
-        CIPHER_BRAIN_AR_PROTOCOL: 'http',
+        CYPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1',
+        CYPHER_BRAIN_AR_HOST: '127.0.0.1',
+        CYPHER_BRAIN_AR_PORT: l1SsrfPort,
+        CYPHER_BRAIN_AR_PROTOCOL: 'http',
       },
       encoding: 'utf8',
       timeout: 15000,
@@ -512,11 +512,11 @@ try {
     {
       env: {
         ...env,
-        CIPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1',
-        CIPHER_BRAIN_AR_HOST: '127.0.0.1',
-        CIPHER_BRAIN_AR_PORT: stallPort,
-        CIPHER_BRAIN_AR_PROTOCOL: 'http',
-        CIPHER_BRAIN_AR_HTTP_TIMEOUT: '300', // short bound so the test stays fast
+        CYPHER_BRAIN_AR_GATEWAY: 'http://127.0.0.1:1',
+        CYPHER_BRAIN_AR_HOST: '127.0.0.1',
+        CYPHER_BRAIN_AR_PORT: stallPort,
+        CYPHER_BRAIN_AR_PROTOCOL: 'http',
+        CYPHER_BRAIN_AR_HTTP_TIMEOUT: '300', // short bound so the test stays fast
       },
       encoding: 'utf8',
       timeout: 15000, // hard safety net — must NOT be what actually stops this (that would mean the fix regressed)
@@ -530,7 +530,7 @@ try {
 
   // --wait retry (#19): a not-yet-available id with a wait budget retries (then still
   // fails for a truly-missing id). A short retry interval keeps the test fast.
-  const wEnv = { ...env, CIPHER_BRAIN_PULL_RETRY_MS: '150' };
+  const wEnv = { ...env, CYPHER_BRAIN_PULL_RETRY_MS: '150' };
   const w = spawnSync(
     'node',
     [
@@ -552,7 +552,7 @@ try {
     ? pass('--wait retries while not retrievable, then fails for a truly-missing id')
     : fail(`--wait did not retry as expected: status=${w.status} stderr=${(w.stderr || '').slice(0, 160)}`);
 
-  // CIPHER_BRAIN_PULL_RETRY_MS=0 (#108): a bare `Number(env) || 30000` treats the
+  // CYPHER_BRAIN_PULL_RETRY_MS=0 (#108): a bare `Number(env) || 30000` treats the
   // numeric string "0" as falsy and silently substitutes the 30000ms default — the
   // regression this asserts against. With retryMs genuinely honored as 0, each retry's
   // naptime is `Math.min(0, remaining)` = 0, so a --wait budget fills with many attempts
@@ -560,7 +560,7 @@ try {
   // whole budget), so only ONE retry ever fires. Count "pull attempt" lines in stderr —
   // far more than the ~2 the buggy 30000ms interval could produce in this budget proves
   // "0" was respected, not silently overridden.
-  const zEnv = { ...env, CIPHER_BRAIN_PULL_RETRY_MS: '0' };
+  const zEnv = { ...env, CYPHER_BRAIN_PULL_RETRY_MS: '0' };
   const z = spawnSync(
     'node',
     [
@@ -581,10 +581,10 @@ try {
   const zAttempts = (z.stderr.match(/pull attempt/g) || []).length;
   z.status !== 0 && zAttempts >= 5
     ? pass(
-        `CIPHER_BRAIN_PULL_RETRY_MS=0 is honored as an immediate retry (${zAttempts} attempts in a 3s --wait budget, not the ~2 a silently-defaulted 30000ms interval would allow)`,
+        `CYPHER_BRAIN_PULL_RETRY_MS=0 is honored as an immediate retry (${zAttempts} attempts in a 3s --wait budget, not the ~2 a silently-defaulted 30000ms interval would allow)`,
       )
     : fail(
-        `CIPHER_BRAIN_PULL_RETRY_MS=0 did not behave as an immediate retry: status=${z.status} attempts=${zAttempts} stderr=${(z.stderr || '').slice(0, 200)}`,
+        `CYPHER_BRAIN_PULL_RETRY_MS=0 did not behave as an immediate retry: status=${z.status} attempts=${zAttempts} stderr=${(z.stderr || '').slice(0, 200)}`,
       );
 
   // multi-gateway (#21): the first gateway is dead, the second (arlocal) serves — the
@@ -593,8 +593,8 @@ try {
   // chunk read would mask a loop that never advanced).
   const mgEnv = {
     ...env,
-    CIPHER_BRAIN_AR_PORT: '1',
-    CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:1,http://localhost:${PORT}`,
+    CYPHER_BRAIN_AR_PORT: '1',
+    CYPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:1,http://localhost:${PORT}`,
   };
   const mg = spawnSync(
     'node',
@@ -617,7 +617,7 @@ try {
   const badPort = badGw.address().port;
   const bgOut = join(tmp, 'badgate.age');
   const bg = spawnSync('node', [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', bgOut], {
-    env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${badPort}` },
+    env: { ...env, CYPHER_BRAIN_AR_PORT: '1', CYPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${badPort}` },
     encoding: 'utf8',
   });
   let bgWrote = false;
@@ -645,8 +645,8 @@ try {
     {
       env: {
         ...env,
-        CIPHER_BRAIN_AR_PORT: '1',
-        CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${badPort2},http://localhost:${PORT}`,
+        CYPHER_BRAIN_AR_PORT: '1',
+        CYPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${badPort2},http://localhost:${PORT}`,
       },
       encoding: 'utf8',
     },
@@ -660,7 +660,7 @@ try {
   // that 403s a header-less request (node:http.get sends no default UA, unlike the fetch
   // this replaced — the real-world full-brain pull regressed silently). A SEPARATE-process
   // stub (spawnSync blocks an in-process server) serves the ciphertext ONLY when a
-  // User-Agent is present, 403 otherwise; the pull must succeed → proves cipher-brain
+  // User-Agent is present, 403 otherwise; the pull must succeed → proves cypher-brain
   // sends a UA. (A header-less read would 403 → fail → no bytes.)
   const uaSrvFile = join(tmp, 'ua-stub.mjs');
   await writeFile(
@@ -685,7 +685,7 @@ try {
     'node',
     [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', join(tmp, 'ua.age')],
     {
-      env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${uaPort}` },
+      env: { ...env, CYPHER_BRAIN_AR_PORT: '1', CYPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${uaPort}` },
       encoding: 'utf8',
     },
   );
@@ -736,7 +736,7 @@ try {
       'node',
       [...DEV_ARGS, BIN, 'pull', '--locator', loc, '--backend', 'arweave', '--out', ssrfOut],
       {
-        env: { ...env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${ssrfPort}` },
+        env: { ...env, CYPHER_BRAIN_AR_PORT: '1', CYPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${ssrfPort}` },
         encoding: 'utf8',
       },
     );

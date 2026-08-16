@@ -10,8 +10,8 @@ decrypted — at $0).
 ## 1. Encrypt (storage only ever sees ciphertext)
 
 ```sh
-cipher-brain snapshot --pg "<conn>" --pg-table <small_table> --out slice.age   # a small slice (<100KB ⇒ free dry-run)
-# or the full brain:  cipher-brain snapshot --pg "<conn>" --dir ~/.gbrain --out brain.age
+cypher-brain snapshot --pg "<conn>" --pg-table <small_table> --out slice.age   # a small slice (<100KB ⇒ free dry-run)
+# or the full brain:  cypher-brain snapshot --pg "<conn>" --dir ~/.gbrain --out brain.age
 ```
 
 The recipient (public key) is all the snapshotting box needs; the private identity
@@ -23,9 +23,9 @@ Two ways to fund and sign the upload — pick ONE:
 
 - **Option A: browser (ArDrive + MetaMask)** — good for a one-off upload from a
   laptop with a MetaMask wallet already funded in ETH/USDC. No local JWK file.
-- **Option B: CLI (`cipher-brain wallet` + `push --backend turbo`)** — good for
+- **Option B: CLI (`cypher-brain wallet` + `push --backend turbo`)** — good for
   `schedule install`'s unattended pushes, or any push run from the machine that
-  ran `snapshot`. Signs with a local JWK file cipher-brain generates for you.
+  ran `snapshot`. Signs with a local JWK file cypher-brain generates for you.
 
 ### Option A: browser (ArDrive + MetaMask)
 
@@ -44,13 +44,13 @@ Two ways to fund and sign the upload — pick ONE:
 ### Option B: CLI (`--backend turbo` / `--backend arweave`)
 
 For large blobs (the full brain) the browser is heavy — upload straight from the
-host instead. `push` signs with a **JWK file** at `CIPHER_BRAIN_AR_WALLET` — a
+host instead. `push` signs with a **JWK file** at `CYPHER_BRAIN_AR_WALLET` — a
 DIFFERENT wallet from ArDrive's MetaMask-derived one above, so generate it with
-cipher-brain itself and you always know exactly which address you are funding:
+cypher-brain itself and you always know exactly which address you are funding:
 
 ```sh
-cipher-brain wallet create                 # writes $CIPHER_BRAIN_HOME/wallet.json (0600, no-clobber)
-cipher-brain wallet address                # prints the address to fund — the SAME one push will sign with
+cypher-brain wallet create                 # writes $CYPHER_BRAIN_HOME/wallet.json (0600, no-clobber)
+cypher-brain wallet address                # prints the address to fund — the SAME one push will sign with
 ```
 
 Fund that address — either send it AR/ETH/USDC directly, or top it up with a card at
@@ -63,11 +63,11 @@ Then push — it prints the data item id, no browser needed:
 # carries it. If it is absent anyway (an --omit=optional install, or npm
 # tolerating an optional-dep install failure), follow the CLI's own advice:
 #   npm install @ardrive/turbo-sdk
-CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
-  cipher-brain push --in brain.age --backend turbo  # <100KB free; larger spends Turbo Credits
+CYPHER_BRAIN_AR_WALLET=~/.cypher-brain/wallet.json \
+  cypher-brain push --in brain.age --backend turbo  # <100KB free; larger spends Turbo Credits
 ```
 
-The signer is the JWK at `CIPHER_BRAIN_AR_WALLET`. A paid (>100 KB) upload spends Turbo
+The signer is the JWK at `CYPHER_BRAIN_AR_WALLET`. A paid (>100 KB) upload spends Turbo
 Credits, and Turbo charges the **signer's** reachable credits — so they must be one of:
 
 - **The JWK's own balance** — fund the JWK's address at [turbo.ar.io](https://turbo.ar.io)
@@ -76,12 +76,12 @@ Credits, and Turbo charges the **signer's** reachable credits — so they must b
   a wallet you can't sign with from the CLI (e.g. a MetaMask-derived wallet) can't be moved
   to the JWK. Instead that wallet **shares** an approval to the JWK's address at
   [turbo.ar.io](https://turbo.ar.io), and you pass the sharing wallet's address as
-  `CIPHER_BRAIN_AR_PAID_BY` (the `x-paid-by` header) so the upload draws from the approval:
+  `CYPHER_BRAIN_AR_PAID_BY` (the `x-paid-by` header) so the upload draws from the approval:
 
   ```sh
-  CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
-  CIPHER_BRAIN_AR_PAID_BY=<address-that-shared-credits> \
-    cipher-brain push --in brain.age --backend turbo
+  CYPHER_BRAIN_AR_WALLET=~/.cypher-brain/wallet.json \
+  CYPHER_BRAIN_AR_PAID_BY=<address-that-shared-credits> \
+    cypher-brain push --in brain.age --backend turbo
   ```
 
 The printed id is the **Data Tx ID**.
@@ -105,7 +105,7 @@ npm init -y
 npm install @ardrive/turbo-sdk        # resolves cleanly — nothing to clash with
 # copy the bundled CLI beside it (version lookup reads the sibling package.json):
 mkdir -p cb/dist && cp <repo>/dist/cli.mjs cb/dist/ && cp <repo>/package.json cb/
-CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/wallet.json \
+CYPHER_BRAIN_AR_WALLET=~/.cypher-brain/wallet.json \
   node cb/dist/cli.mjs push --in brain.age --backend turbo
 ```
 
@@ -114,8 +114,8 @@ nothing else about the flow changes, and `pull`/`verify` never need the SDK at a
 
 > **Treat the JWK as a spend-capable bearer key.** While any Credit Share Approval names
 > its address, whoever holds the JWK can spend those credits — it is not "low value". So:
-> `chmod 600` it (cipher-brain warns on a group/other-readable wallet); keep it in the
-> 0700 `~/.cipher-brain` dir; never commit it (the repo `.gitignore` covers `*wallet*.json`
+> `chmod 600` it (cypher-brain warns on a group/other-readable wallet); keep it in the
+> 0700 `~/.cypher-brain` dir; never commit it (the repo `.gitignore` covers `*wallet*.json`
 > / `*.jwk`, but verify before pushing). When sharing an approval, **bound its amount and
 > expiry** at [turbo.ar.io](https://turbo.ar.io), and **revoke it after the upload** so a
 > later leak of the JWK can't drain the sharer's credits.
@@ -123,7 +123,7 @@ nothing else about the flow changes, and `pull`/`verify` never need the SDK at a
 ## 3. Pull it back from a public gateway (no wallet)
 
 ```sh
-cipher-brain pull --backend arweave --locator <DATA_TX_ID> --out got.age --wait 1200
+cypher-brain pull --backend arweave --locator <DATA_TX_ID> --out got.age --wait 1200
 ```
 
 A fresh bundled upload takes **~5–8 min** to propagate to the gateway (bundle → mine
@@ -133,8 +133,8 @@ straight to disk, so a multi-hundred-MB brain doesn't load into memory.
 ## 4. Verify / restore
 
 ```sh
-cipher-brain verify  --in got.age                          # asserts it decrypts with YOUR identity
-cipher-brain restore --in got.age --out-dir ./restored     # decrypt + extract (add --pg to pg_restore)
+cypher-brain verify  --in got.age                          # asserts it decrypts with YOUR identity
+cypher-brain restore --in got.age --out-dir ./restored     # decrypt + extract (add --pg to pg_restore)
 ```
 
 `verify` PASS ⇒ the bytes on Arweave are your exact ciphertext **and** your identity
@@ -145,8 +145,8 @@ decrypts them. That is the whole claim: public + permanent + unreadable without 
 - **Read robustness**: `get()` reads ANS-104 *bundled* items (the bundler form) via a
   gateway-HTTP read, falling back to the arweave-js chunk read for L1 txs. It tries
   **multiple public gateways in turn** (`arweave.net`, then `permagate.io`) so one lagging
-  gateway doesn't fail the pull; override the list with `CIPHER_BRAIN_AR_GATEWAYS`
-  (comma-separated) or pin one with `CIPHER_BRAIN_AR_GATEWAY`.
-- `cipher-brain push --backend turbo` (the CLI upload above) is operator-proven against
+  gateway doesn't fail the pull; override the list with `CYPHER_BRAIN_AR_GATEWAYS`
+  (comma-separated) or pin one with `CYPHER_BRAIN_AR_GATEWAY`.
+- `cypher-brain push --backend turbo` (the CLI upload above) is operator-proven against
   real Arweave by `node scripts/turbo-roundtrip.mjs` (a free <100 KB upload → pull →
-  decrypt; needs `@ardrive/turbo-sdk` + a JWK at `CIPHER_BRAIN_AR_WALLET`).
+  decrypt; needs `@ardrive/turbo-sdk` + a JWK at `CYPHER_BRAIN_AR_WALLET`).

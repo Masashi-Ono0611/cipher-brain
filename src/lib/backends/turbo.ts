@@ -32,7 +32,7 @@ export function turboBackend(): StorageBackend {
       }
       if (!AR_WALLET)
         throw new Error(
-          'turbo put needs CIPHER_BRAIN_AR_WALLET (a JWK signer; uploads <100KB are free, larger spend Turbo Credits funded to its address)',
+          'turbo put needs CYPHER_BRAIN_AR_WALLET (a JWK signer; uploads <100KB are free, larger spend Turbo Credits funded to its address)',
         );
       await warnIfLooseKeyPerms(AR_WALLET, 'turbo JWK wallet (spend-capable bearer key)');
       let jwk: unknown;
@@ -67,7 +67,7 @@ export function turboBackend(): StorageBackend {
         );
         // Human-readable USD approximation next to the native estimate (#70). arUsdRate
         // never throws (null on any failure), so a dead pricing endpoint can neither
-        // block the push nor skip the CIPHER_BRAIN_MAX_SPEND cap check below.
+        // block the push nor skip the CYPHER_BRAIN_MAX_SPEND cap check below.
         //
         // Priced at Turbo's OWN credit rate, not AR spot (#343). This backend spends
         // credits, and credits sell at Turbo's fiat price, fees included; the AR-spot
@@ -125,7 +125,7 @@ export function turboBackend(): StorageBackend {
         // fail-open (log + continue, pre-existing behavior) when no cap is in effect.
         if (AR_MAX_SPEND > 0n) {
           throw new Error(
-            `turbo: could not estimate upload cost (${errMsg(e)}) while CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} is set — aborting (fail-closed) because the spend cap cannot be verified; set CIPHER_BRAIN_MAX_SPEND=0 to disable the cap and upload uncapped`,
+            `turbo: could not estimate upload cost (${errMsg(e)}) while CYPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} is set — aborting (fail-closed) because the spend cap cannot be verified; set CYPHER_BRAIN_MAX_SPEND=0 to disable the cap and upload uncapped`,
           );
         }
         warn(`turbo: could not estimate upload cost (${errMsg(e)}); proceeding`);
@@ -139,12 +139,12 @@ export function turboBackend(): StorageBackend {
       if (AR_MAX_SPEND > 0n) {
         if (uploadWinc === null) {
           throw new Error(
-            'turbo: internal error — CIPHER_BRAIN_MAX_SPEND is set but no upload cost estimate is available; refusing to proceed uncapped',
+            'turbo: internal error — CYPHER_BRAIN_MAX_SPEND is set but no upload cost estimate is available; refusing to proceed uncapped',
           );
         }
         if (uploadWinc > AR_MAX_SPEND) {
           throw new Error(
-            `turbo: upload cost ${uploadWinc} winc exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`,
+            `turbo: upload cost ${uploadWinc} winc exceeds CYPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`,
           );
         }
       }
@@ -176,9 +176,9 @@ export function turboBackend(): StorageBackend {
       // are structurally non-TTY — the schedule runner redirects stderr to its log
       // (exec >>"$LOG" 2>&1) and MCP stdio is piped — and no stronger signal exists
       // short of a config knob nobody would discover before it mattered; such a
-      // harness can set CIPHER_BRAIN_SKIP_FUNDS_CHECK=1.
+      // harness can set CYPHER_BRAIN_SKIP_FUNDS_CHECK=1.
       // A re-read that ERRORS falls open (proceed): same availability rule as an
-      // unreadable first read. CIPHER_BRAIN_SKIP_FUNDS_CHECK=1 (strictly '1') remains
+      // unreadable first read. CYPHER_BRAIN_SKIP_FUNDS_CHECK=1 (strictly '1') remains
       // the attended-path override, documented in the refusal itself.
       if (uploadWinc !== null && balForCheck !== null && !SKIP_FUNDS_CHECK) {
         if (insufficientFundsError(uploadWinc, balForCheck, AR_PAID_BY) !== null) {
@@ -220,14 +220,14 @@ export function turboBackend(): StorageBackend {
       // shape (Arweave/Ethereum/Solana address) to reject header-breaking input.
       const dataItemOpts: { tags: { name: string; value: string }[]; paidBy?: string[] } = {
         tags: [
-          { name: 'App-Name', value: 'cipher-brain' },
+          { name: 'App-Name', value: 'cypher-brain' },
           { name: 'Content-Type', value: 'application/octet-stream' },
         ],
       };
       if (AR_PAID_BY) {
         if (!isWalletAddress(AR_PAID_BY))
           throw new Error(
-            `turbo: CIPHER_BRAIN_AR_PAID_BY must be a plain wallet address (Arweave/Ethereum/Solana): ${AR_PAID_BY}`,
+            `turbo: CYPHER_BRAIN_AR_PAID_BY must be a plain wallet address (Arweave/Ethereum/Solana): ${AR_PAID_BY}`,
           );
         dataItemOpts.paidBy = [AR_PAID_BY];
       }

@@ -1,6 +1,6 @@
 # Agent instructions
 
-cipher-brain is an open-source project with a global, English-speaking
+cypher-brain is an open-source project with a global, English-speaking
 contributor base. This file applies to any AI coding agent (Claude Code,
 Codex, or otherwise) working in this repository, alongside human
 contributors.
@@ -93,7 +93,7 @@ that README.md, MANAGEMENT.md, or llms.txt describes, update those docs in
 
 Issue #227's automated CI check (`scripts/check-help-docs.mjs`, run in CI —
 see `.github/workflows/ci.yml`) now enforces this for README.md's "CLI
-reference" section, which must be byte-identical to `cipher-brain --help`'s
+reference" section, which must be byte-identical to `cypher-brain --help`'s
 current output (`node scripts/check-help-docs.mjs --write` regenerates it).
 That only covers the literal `--help` text, though — MANAGEMENT.md, llms.txt,
 and everything else the bullets above mention (Threat model claims, prose

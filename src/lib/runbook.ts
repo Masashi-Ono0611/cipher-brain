@@ -10,7 +10,7 @@
 //   - SHIPPED build: MANAGEMENT.md is NOT in the package (`files: ["dist"]` — npm pack
 //     emits only LICENSE, README.md, dist/*.mjs, package.json), so the section is
 //     inlined at build time by scripts/build.ts through Bun.build's `define`.
-//   - DEV / selftests: these run src/*.ts directly (bin/cipher-brain-mcp.mjs under
+//   - DEV / selftests: these run src/*.ts directly (bin/cypher-brain-mcp.mjs under
 //     --experimental-strip-types), where the `define` never happened but the repository
 //     — and therefore MANAGEMENT.md — is right there. So fall back to reading it.
 //
@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 // Replaced with a string literal by scripts/build.ts. `declare` (not a real binding) so
 // the reference disappears in the bundle; `typeof` guards the dev case where it is
 // genuinely undefined.
-declare const __CIPHER_BRAIN_RESTORE_RUNBOOK__: string | undefined;
+declare const __CYPHER_BRAIN_RESTORE_RUNBOOK__: string | undefined;
 
 export const RUNBOOK_HEADING = '## Restore runbook';
 
@@ -50,8 +50,8 @@ let cached: string | null = null;
 export function restoreRunbook(): string {
   if (cached !== null) return cached;
 
-  if (typeof __CIPHER_BRAIN_RESTORE_RUNBOOK__ === 'string' && __CIPHER_BRAIN_RESTORE_RUNBOOK__.length > 0) {
-    cached = __CIPHER_BRAIN_RESTORE_RUNBOOK__;
+  if (typeof __CYPHER_BRAIN_RESTORE_RUNBOOK__ === 'string' && __CYPHER_BRAIN_RESTORE_RUNBOOK__.length > 0) {
+    cached = __CYPHER_BRAIN_RESTORE_RUNBOOK__;
     return cached;
   }
 

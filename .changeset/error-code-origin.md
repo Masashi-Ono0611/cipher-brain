@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 Internal: `CB-E###` error-code entries now record whether the text they match is

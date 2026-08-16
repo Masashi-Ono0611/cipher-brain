@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Operator check (NOT in CI — it does a REAL upload to Arweave via Turbo). Proves
-// `cipher-brain push --backend turbo` end to end: encrypt a tiny payload, upload it FREE
-// (<100KB) via Turbo signed by CIPHER_BRAIN_AR_WALLET, then pull it back from a public
+// `cypher-brain push --backend turbo` end to end: encrypt a tiny payload, upload it FREE
+// (<100KB) via Turbo signed by CYPHER_BRAIN_AR_WALLET, then pull it back from a public
 // gateway (`--backend turbo`, which reuses the arweave reader) and decrypt it.
 //
-// Needs `npm install @ardrive/turbo-sdk` and a JWK at CIPHER_BRAIN_AR_WALLET. Uploads
+// Needs `npm install @ardrive/turbo-sdk` and a JWK at CYPHER_BRAIN_AR_WALLET. Uploads
 // under 100KB are free, so the JWK needs no funds:
-//   CIPHER_BRAIN_AR_WALLET=~/.cipher-brain/ar-demo-wallet.json node scripts/turbo-roundtrip.mjs
+//   CYPHER_BRAIN_AR_WALLET=~/.cypher-brain/ar-demo-wallet.json node scripts/turbo-roundtrip.mjs
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BIN = join(HERE, '..', 'bin', 'cipher-brain.mjs');
+const BIN = join(HERE, '..', 'bin', 'cypher-brain.mjs');
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 let failed = false;
 const pass = (m) => console.log(`[PASS] ${m}`);
@@ -24,14 +24,14 @@ const fail = (m) => {
   failed = true;
 };
 
-const wallet = process.env.CIPHER_BRAIN_AR_WALLET;
+const wallet = process.env.CYPHER_BRAIN_AR_WALLET;
 if (!wallet) {
-  console.log('set CIPHER_BRAIN_AR_WALLET to a JWK (e.g. ~/.cipher-brain/ar-demo-wallet.json)');
+  console.log('set CYPHER_BRAIN_AR_WALLET to a JWK (e.g. ~/.cypher-brain/ar-demo-wallet.json)');
   process.exit(2);
 }
 
 const tmp = await mkdtemp(join(tmpdir(), 'cb-turbo-'));
-const env = { ...process.env, CIPHER_BRAIN_HOME: join(tmp, 'keys'), CIPHER_BRAIN_AR_WALLET: wallet };
+const env = { ...process.env, CYPHER_BRAIN_HOME: join(tmp, 'keys'), CYPHER_BRAIN_AR_WALLET: wallet };
 const cb = (...args) => {
   const r = spawnSync('node', [BIN, ...args], { env, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`cb ${args.join(' ')} failed: ${r.stderr || r.stdout}`);
@@ -55,7 +55,7 @@ try {
 
   console.log('· pulling back via --backend turbo from a public gateway, NO wallet (waiting for propagation)…');
   const pullEnv = { ...env };
-  delete pullEnv.CIPHER_BRAIN_AR_WALLET; // a turbo PULL must need no wallet (fresh-machine recovery, runbook §3)
+  delete pullEnv.CYPHER_BRAIN_AR_WALLET; // a turbo PULL must need no wallet (fresh-machine recovery, runbook §3)
   const rp = spawnSync(
     'node',
     [BIN, 'pull', '--locator', id, '--backend', 'turbo', '--out', join(tmp, 'got.age'), '--wait', '720'],

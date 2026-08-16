@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 `push` and `pull` now report transfer progress on the backends that can be slow.

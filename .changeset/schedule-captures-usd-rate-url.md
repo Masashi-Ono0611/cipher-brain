@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 `schedule install` now bakes `CIPHER_BRAIN_AR_USD_RATE_URL` into the generated

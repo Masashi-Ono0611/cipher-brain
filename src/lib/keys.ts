@@ -51,7 +51,7 @@ export interface KeygenAtResult {
 //    old content is only ever touched by the rename succeeding, i.e. once the new
 //    payload already sits fully-written on disk — so a failure BEFORE this point
 //    (e.g. a mistyped passphrase confirmation, Ctrl-C) can never delete anything.
-// Exported so wallet.ts (`cipher-brain wallet create`, #158) can give the Arweave JWK
+// Exported so wallet.ts (`cypher-brain wallet create`, #158) can give the Arweave JWK
 // the SAME fail-closed, no-clobber-unless-force write this module already gives the
 // age identity, instead of a hand-rolled second write path with its own TOCTOU/partial-
 // write behavior to keep in sync.
@@ -133,7 +133,7 @@ export async function keygenAt(opts: KeygenAtOpts): Promise<KeygenAtResult> {
 // wizard (which refuses once an identity exists) or losing it via --force.
 async function wrapInPlace(identityPath: string): Promise<void> {
   if (!(await exists(identityPath))) {
-    throw new Error(`no identity found at ${identityPath} — nothing to wrap. Run "cipher-brain keygen" first.`);
+    throw new Error(`no identity found at ${identityPath} — nothing to wrap. Run "cypher-brain keygen" first.`);
   }
   const raw = await readFile(identityPath);
   const rawText = raw.toString('utf8');
@@ -262,7 +262,7 @@ export async function recipientEntries(rec: string): Promise<string[]> {
     .filter((l) => l && !l.startsWith('#'));
 }
 
-// Resolve CIPHER_BRAIN_PIN_RECIPIENTS to a set of allowed pubkeys. File-first: if the
+// Resolve CYPHER_BRAIN_PIN_RECIPIENTS to a set of allowed pubkeys. File-first: if the
 // value names an existing file, read it (so a path that happens to contain "age1",
 // e.g. age1-pins.txt, is not mistaken for an inline list); otherwise treat the value
 // itself as an inline list of age1… keys. Parsed line-by-line, SKIPPING comment lines

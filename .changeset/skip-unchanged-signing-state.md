@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 `push --skip-unchanged` now takes the signing state into account. It compared

@@ -255,7 +255,7 @@ export async function push(o: CliOptions): Promise<boolean> {
     }
   }
   // arweave and turbo are paid, permanent stores. #160: the cost estimate must be
-  // VISIBLE in the SAME terminal output the --yes/CIPHER_BRAIN_YES consent decision is
+  // VISIBLE in the SAME terminal output the --yes/CYPHER_BRAIN_YES consent decision is
   // made against — previously push() asked "this spends real funds, confirm?" with no
   // number attached, and the actual estimate (ar.transactions.getPrice() in
   // arweave.ts / getUploadCosts() in turbo.ts) only ran INSIDE backend.put(), i.e. only
@@ -264,7 +264,7 @@ export async function push(o: CliOptions): Promise<boolean> {
   // already use (src/lib/estimate.ts, #159) — not a second, divergent computation —
   // so a blind "--yes" is no longer required to learn the amount.
   //
-  // This step is deliberately display-only: CIPHER_BRAIN_MAX_SPEND enforcement stays
+  // This step is deliberately display-only: CYPHER_BRAIN_MAX_SPEND enforcement stays
   // exactly where #105's fail-closed fix left it, INSIDE each backend's put()
   // (arweave.ts/turbo.ts — verified unchanged, git log --grep 105 / -- those files).
   // Duplicating the cap check here would create a second enforcement point to keep in
@@ -275,8 +275,8 @@ export async function push(o: CliOptions): Promise<boolean> {
   if (o.backend === 'arweave' || o.backend === 'turbo') {
     const { size: sizeBytes } = await stat(o.in);
     const est = await estimateCost(o.backend, sizeBytes);
-    // Wording deliberately avoids the literal substring "--yes"/"CIPHER_BRAIN_YES" here:
-    // selftest.sh's "CIPHER_BRAIN_YES=1 no longer hits the gate" check greps stderr for
+    // Wording deliberately avoids the literal substring "--yes"/"CYPHER_BRAIN_YES" here:
+    // selftest.sh's "CYPHER_BRAIN_YES=1 no longer hits the gate" check greps stderr for
     // those tokens to detect the ACTUAL consent-gate error below — this informational
     // header must never produce a false match of that check.
     console.error(`${o.backend}: cost estimate (shown before the upload-consent check below):`);
@@ -284,12 +284,12 @@ export async function push(o: CliOptions): Promise<boolean> {
   }
   const yes = !!o.yes || CIPHER_YES;
   // arweave and turbo are paid, permanent stores — require an explicit opt-in so
-  // an unattended cadence loop doesn't silently accumulate charges. Set CIPHER_BRAIN_YES=1
+  // an unattended cadence loop doesn't silently accumulate charges. Set CYPHER_BRAIN_YES=1
   // in the nightly script (or pass --yes) to skip this prompt in automation.
   if ((o.backend === 'arweave' || o.backend === 'turbo') && !yes) {
     throw new Error(
       `${o.backend}: uploading to a permanent Arweave store spends real funds — ` +
-        `re-run push with --yes or set CIPHER_BRAIN_YES=1 in the environment to confirm`,
+        `re-run push with --yes or set CYPHER_BRAIN_YES=1 in the environment to confirm`,
     );
   }
   const backend = await backendFor(o.backend);
@@ -352,7 +352,7 @@ export async function push(o: CliOptions): Promise<boolean> {
       // "signing just got enabled" or "the signing key was rotated".
       // This is a POSITIONAL format, so a later field can only occupy its slot if the
       // earlier ones exist too — when contentDigest/recipientsFingerprint are
-      // themselves missing (an --in not produced by this cipher-brain's own snapshot,
+      // themselves missing (an --in not produced by this cypher-brain's own snapshot,
       // e.g. a foreign or pre-digest-era artifact) they're written as empty fields
       // rather than omitted, so the later ones still land in their correct positions
       // instead of silently being dropped (readSavedLocatorLine's positional
@@ -386,7 +386,7 @@ export async function push(o: CliOptions): Promise<boolean> {
   return true;
 }
 
-// Used only by cipher-brain-mcp's idempotency-key replay path (#220, multi-model review
+// Used only by cypher-brain-mcp's idempotency-key replay path (#220, multi-model review
 // P2): a repeat snapshot_now call carrying a DIFFERENT locator_file than the original
 // call must still get the recovery pointer written to ITS requested path, even though a
 // replay re-uploads nothing. Deliberately minimal — locator/backend/sha256 only, NOT the
@@ -523,7 +523,7 @@ export async function pull(o: CliOptions): Promise<void> {
   // --wait <seconds>: keep retrying while the item is not yet retrievable. A fresh
   // Turbo/ArDrive upload takes ~5-8 min to propagate to the gateway (bundle -> mine
   // -> index); with --wait 0 (the default) pull fails immediately, preserving the old
-  // behavior. CIPHER_BRAIN_PULL_RETRY_MS overrides the 30s retry interval (tests use it).
+  // behavior. CYPHER_BRAIN_PULL_RETRY_MS overrides the 30s retry interval (tests use it).
   const waitMs = (Number(o.wait) || 0) * 1000; // `|| 0` OUTSIDE Number → a non-numeric --wait is 0, not NaN (no infinite loop)
   // Unlike waitMs above (where "unset" and "explicit 0" both correctly mean 0ms — a
   // bare `|| 0` is safe there), retryMs's default (30000) and its explicit-zero value
@@ -532,7 +532,7 @@ export async function pull(o: CliOptions): Promise<void> {
   // 0, and 0 is falsy, so `|| 30000` silently overrides the very value it was asked to
   // apply. Unset or empty falls back to the 30000ms default; anything else that parses
   // as a number is honored AS GIVEN, including 0.
-  const retryMsEnv = readEnv('CIPHER_BRAIN_PULL_RETRY_MS');
+  const retryMsEnv = readEnv('CYPHER_BRAIN_PULL_RETRY_MS');
   const retryMsNum = retryMsEnv !== undefined && retryMsEnv !== '' ? Number(retryMsEnv) : NaN;
   const retryMs = Number.isFinite(retryMsNum) ? retryMsNum : 30000; // unset/empty/non-numeric -> default; anything else (incl. 0) is respected
   const deadline = Date.now() + waitMs;
@@ -629,7 +629,7 @@ export async function pull(o: CliOptions): Promise<void> {
 // that was simply never signed.
 const SIG_FETCH_FAILED = 'could not fetch the authenticity signature';
 
-// A URL's userinfo is a credential, and CIPHER_BRAIN_AR_GATEWAYS can legitimately carry
+// A URL's userinfo is a credential, and CYPHER_BRAIN_AR_GATEWAYS can legitimately carry
 // one (`https://user:token@gateway`). pull() prints a failing gateway's URL to its own
 // stderr, which is fine for an operator's own terminal but not for a caller that turns
 // pull()'s captured log lines into a returned/printed report (the MCP server's

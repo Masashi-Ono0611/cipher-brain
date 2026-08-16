@@ -9,20 +9,20 @@
 #   CB_PG_URL      source gbrain connection (required), e.g. postgres://you@localhost:5432/gbrain
 #   CB_TABLE       table to round-trip (default: dream_verdicts) — pick a small, FK-free one
 #   CB_SCRATCH_DB  scratch db name (default: gbrain_cipher_test)
-#   CIPHER_BRAIN_PG_BIN   if the pg client tools are not on PATH (age is bundled in-process)
+#   CYPHER_BRAIN_PG_BIN   if the pg client tools are not on PATH (age is bundled in-process)
 set -euo pipefail
 
 : "${CB_PG_URL:?set CB_PG_URL to your gbrain connection string}"
 TBL="${CB_TABLE:-dream_verdicts}"
 SCRATCH_DB="${CB_SCRATCH_DB:-gbrain_cipher_test}"
-PG_BIN="${CIPHER_BRAIN_PG_BIN:-}"
+PG_BIN="${CYPHER_BRAIN_PG_BIN:-}"
 PSQL="${PG_BIN:+$PG_BIN/}psql"
 psql() { command "$PSQL" "$@"; }   # `command` bypasses this function -> runs the real binary
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CLI="$ROOT/bin/cipher-brain.mjs"
+CLI="$ROOT/bin/cypher-brain.mjs"
 WORK="$(mktemp -d)"
-export CIPHER_BRAIN_HOME="$WORK/keys"
+export CYPHER_BRAIN_HOME="$WORK/keys"
 SCRATCH_URL="${CB_PG_URL%/*}/$SCRATCH_DB"
 # always tidy up: remove the work dir AND drop the scratch db even if a step fails mid-run
 trap 'rm -rf "$WORK"; psql "$CB_PG_URL" -c "drop database if exists $SCRATCH_DB;" >/dev/null 2>&1 || true' EXIT

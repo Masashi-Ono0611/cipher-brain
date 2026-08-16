@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CLI smoke test for the bundled build: dist/cli.mjs must (a) print non-empty
 # --help and exit 0, byte-identical to the unbundled bin shim, (b) run a real
-# keygen into a temp CIPHER_BRAIN_HOME producing the identity + recipient files,
+# keygen into a temp CYPHER_BRAIN_HOME producing the identity + recipient files,
 # and (c)-(g) exercise the `estimate` command (#159) — the free/paid-backend
 # happy paths and its input validation (missing --in, bad --backend, a
 # directory --in).
@@ -10,8 +10,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist/cli.mjs"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# run bin/cipher-brain.mjs straight against src/*.ts (no build step) under plain node —
+BIN="$ROOT/bin/cypher-brain.mjs"
+# run bin/cypher-brain.mjs straight against src/*.ts (no build step) under plain node —
 # see scripts/dev-ts-resolve-hook.mjs for why both flags are required (#63). Passed as
 # literal argv elements on the $BIN invocations only (never as a NODE_OPTIONS string,
 # and never exported) — an exported NODE_OPTIONS would also leak onto the $DIST calls
@@ -29,23 +29,23 @@ if [ ! -f "$DIST" ]; then echo "[FAIL] $DIST missing — run npm run build first
 # (a) --help: exit 0, non-empty, identical to the unbundled CLI
 node "$DIST" --help > "$TMP/help-dist.txt" 2>&1 || { echo "[FAIL] node dist/cli.mjs --help exited non-zero"; exit 1; }
 if [ ! -s "$TMP/help-dist.txt" ]; then echo "[FAIL] --help output is empty"; exit 1; fi
-node "${BIN_DEV_ARGS[@]}" "$BIN" --help > "$TMP/help-bin.txt" 2>&1 || { echo "[FAIL] node bin/cipher-brain.mjs --help exited non-zero"; exit 1; }
+node "${BIN_DEV_ARGS[@]}" "$BIN" --help > "$TMP/help-bin.txt" 2>&1 || { echo "[FAIL] node bin/cypher-brain.mjs --help exited non-zero"; exit 1; }
 if ! diff -q "$TMP/help-bin.txt" "$TMP/help-dist.txt" >/dev/null; then
   echo "[FAIL] dist --help differs from bin --help"; diff "$TMP/help-bin.txt" "$TMP/help-dist.txt" | head -20; exit 1
 fi
 echo "[PASS] dist --help: exit 0, non-empty, byte-identical to bin"
 
 # (b) keygen in a temp home: the key files must appear
-export CIPHER_BRAIN_HOME="$TMP/home"
+export CYPHER_BRAIN_HOME="$TMP/home"
 node "$DIST" keygen > "$TMP/keygen.log" 2>&1 || { echo "[FAIL] dist keygen exited non-zero"; cat "$TMP/keygen.log"; exit 1; }
-if [ ! -f "$CIPHER_BRAIN_HOME/identity.age" ]; then echo "[FAIL] identity.age not created"; exit 1; fi
-if [ ! -f "$CIPHER_BRAIN_HOME/recipient.txt" ]; then echo "[FAIL] recipient.txt not created"; exit 1; fi
-echo "[PASS] dist keygen: identity.age + recipient.txt created in temp CIPHER_BRAIN_HOME"
+if [ ! -f "$CYPHER_BRAIN_HOME/identity.age" ]; then echo "[FAIL] identity.age not created"; exit 1; fi
+if [ ! -f "$CYPHER_BRAIN_HOME/recipient.txt" ]; then echo "[FAIL] recipient.txt not created"; exit 1; fi
+echo "[PASS] dist keygen: identity.age + recipient.txt created in temp CYPHER_BRAIN_HOME"
 
 # (c) wallet (#158): create at the default path (0600), address derives the SAME
 # address create printed, no-clobber refuses a second create, --force replaces it with
 # a genuinely fresh keypair (a different address).
-WALLET_DEFAULT="$CIPHER_BRAIN_HOME/wallet.json"
+WALLET_DEFAULT="$CYPHER_BRAIN_HOME/wallet.json"
 node "$DIST" wallet create > "$TMP/wallet-create.log" 2>&1 || { echo "[FAIL] dist wallet create exited non-zero"; cat "$TMP/wallet-create.log"; exit 1; }
 if [ ! -f "$WALLET_DEFAULT" ]; then echo "[FAIL] wallet.json not created at default path"; exit 1; fi
 WALLET_MODE="$(stat -c '%a' "$WALLET_DEFAULT" 2>/dev/null || stat -f '%Lp' "$WALLET_DEFAULT")"
@@ -69,19 +69,19 @@ ADDR2="$(node "$DIST" wallet address --wallet "$WALLET_DEFAULT")" || { echo "[FA
 if [ "$ADDR2" = "$ADDR1" ]; then echo "[FAIL] wallet create --force did not generate a fresh keypair (address unchanged)"; exit 1; fi
 echo "[PASS] dist wallet create --force: replaces the wallet with a fresh keypair (new address)"
 
-# (c2) #164: `wallet address` with NEITHER --wallet NOR CIPHER_BRAIN_AR_WALLET set must
+# (c2) #164: `wallet address` with NEITHER --wallet NOR CYPHER_BRAIN_AR_WALLET set must
 # fall back to the same default path `wallet create` just wrote to, not error out.
-unset CIPHER_BRAIN_AR_WALLET
-ADDR3="$(node "$DIST" wallet address)" || { echo "[FAIL] dist wallet address (no --wallet, no CIPHER_BRAIN_AR_WALLET) exited non-zero"; exit 1; }
+unset CYPHER_BRAIN_AR_WALLET
+ADDR3="$(node "$DIST" wallet address)" || { echo "[FAIL] dist wallet address (no --wallet, no CYPHER_BRAIN_AR_WALLET) exited non-zero"; exit 1; }
 if [ "$ADDR3" != "$ADDR2" ]; then
   echo "[FAIL] wallet address without --wallet did not fall back to the default wallet.json path (got '$ADDR3', expected '$ADDR2')"; exit 1
 fi
-echo "[PASS] dist wallet address: falls back to \$CIPHER_BRAIN_HOME/wallet.json when --wallet and CIPHER_BRAIN_AR_WALLET are both unset"
+echo "[PASS] dist wallet address: falls back to \$CYPHER_BRAIN_HOME/wallet.json when --wallet and CYPHER_BRAIN_AR_WALLET are both unset"
 
 # (d) estimate --backend file: offline, deterministic — sizes an existing file (the
 # keygen'd recipient.txt) and must report the free-tier cost without touching the
 # network. Read-only: no upload happens.
-node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file > "$TMP/estimate-file.log" 2>&1 \
+node "$DIST" estimate --in "$CYPHER_BRAIN_HOME/recipient.txt" --backend file > "$TMP/estimate-file.log" 2>&1 \
   || { echo "[FAIL] dist estimate --backend file exited non-zero"; cat "$TMP/estimate-file.log"; exit 1; }
 grep -q "^cost: 0$" "$TMP/estimate-file.log" \
   || { echo "[FAIL] estimate --backend file did not report cost: 0"; cat "$TMP/estimate-file.log"; exit 1; }
@@ -93,7 +93,7 @@ echo "[PASS] dist estimate --backend file: cost: 0 for a local file"
 # package.json — so `bun install --frozen-lockfile` normally leaves it absent, but a
 # future lockfile change could add it): branch on its actual presence instead of
 # assuming absence, so this test can't silently start failing on a healthy install.
-node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend turbo > "$TMP/estimate-turbo.log" 2>&1 \
+node "$DIST" estimate --in "$CYPHER_BRAIN_HOME/recipient.txt" --backend turbo > "$TMP/estimate-turbo.log" 2>&1 \
   || { echo "[FAIL] dist estimate --backend turbo exited non-zero"; cat "$TMP/estimate-turbo.log"; exit 1; }
 if [ -d "$ROOT/node_modules/@ardrive/turbo-sdk" ]; then
   grep -q "^backend: turbo$" "$TMP/estimate-turbo.log" \
@@ -113,7 +113,7 @@ grep -q -- "--in <file.age> required" "$TMP/estimate-noin.log" \
 echo "[PASS] dist estimate (no --in): rejected with '--in <file.age> required'"
 
 # (g) estimate rejects a bad --backend value, same as it rejects a missing --in above
-node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend bogus > "$TMP/estimate-bad.log" 2>&1
+node "$DIST" estimate --in "$CYPHER_BRAIN_HOME/recipient.txt" --backend bogus > "$TMP/estimate-bad.log" 2>&1
 if [ $? -eq 0 ]; then echo "[FAIL] estimate --backend bogus exited 0, expected non-zero"; cat "$TMP/estimate-bad.log"; exit 1; fi
 grep -q "unknown backend" "$TMP/estimate-bad.log" \
   || { echo "[FAIL] estimate --backend bogus did not report 'unknown backend'"; cat "$TMP/estimate-bad.log"; exit 1; }
@@ -131,13 +131,13 @@ echo "[PASS] dist estimate --in <dir>: rejected with 'not a regular file'"
 # stored and ignored. Covers both a typo of a value flag (--recipiant, for
 # --recipient) and a typo of a repeatable array flag (--dirs, plural, for
 # --dir) landing in the generic branch.
-node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file --recipiant foo > "$TMP/unknown-flag.log" 2>&1
+node "$DIST" estimate --in "$CYPHER_BRAIN_HOME/recipient.txt" --backend file --recipiant foo > "$TMP/unknown-flag.log" 2>&1
 if [ $? -eq 0 ]; then echo "[FAIL] estimate with unknown --recipiant exited 0, expected non-zero"; cat "$TMP/unknown-flag.log"; exit 1; fi
 grep -q "unknown flag: --recipiant" "$TMP/unknown-flag.log" \
   || { echo "[FAIL] unknown --recipiant did not report 'unknown flag: --recipiant'"; cat "$TMP/unknown-flag.log"; exit 1; }
 echo "[PASS] dist estimate --recipiant (typo): rejected with 'unknown flag: --recipiant'"
 
-node "$DIST" snapshot --out "$TMP/unknown-bool.age" --dirs "$CIPHER_BRAIN_HOME" > "$TMP/unknown-bool-flag.log" 2>&1
+node "$DIST" snapshot --out "$TMP/unknown-bool.age" --dirs "$CYPHER_BRAIN_HOME" > "$TMP/unknown-bool-flag.log" 2>&1
 if [ $? -eq 0 ]; then echo "[FAIL] snapshot with unknown --dirs exited 0, expected non-zero"; cat "$TMP/unknown-bool-flag.log"; exit 1; fi
 grep -q "unknown flag: --dirs" "$TMP/unknown-bool-flag.log" \
   || { echo "[FAIL] unknown --dirs did not report 'unknown flag: --dirs'"; cat "$TMP/unknown-bool-flag.log"; exit 1; }
@@ -145,7 +145,7 @@ if [ -f "$TMP/unknown-bool.age" ]; then echo "[FAIL] snapshot with an unknown fl
 echo "[PASS] dist snapshot --dirs (typo for --dir, plural): rejected with 'unknown flag: --dirs', no --out written"
 
 # a legitimate, fully-recognized flag set must still pass through untouched
-node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file > "$TMP/known-flags.log" 2>&1 \
+node "$DIST" estimate --in "$CYPHER_BRAIN_HOME/recipient.txt" --backend file > "$TMP/known-flags.log" 2>&1 \
   || { echo "[FAIL] estimate with only recognized flags exited non-zero"; cat "$TMP/known-flags.log"; exit 1; }
 echo "[PASS] dist estimate with only recognized flags: still exits 0 (no false-positive rejection)"
 
@@ -178,21 +178,21 @@ echo "[PASS] dist --version / -V: bare '$PKG_VERSION' on stdout, exit 0, identic
 # reference is still what plain --help prints.
 node "$DIST" verify --help > "$TMP/help-verify.txt" 2>/dev/null \
   || { echo "[FAIL] dist verify --help exited non-zero"; exit 1; }
-grep -q "cipher-brain verify --in" "$TMP/help-verify.txt" \
+grep -q "cypher-brain verify --in" "$TMP/help-verify.txt" \
   || { echo "[FAIL] 'verify --help' does not contain the verify section"; cat "$TMP/help-verify.txt"; exit 1; }
 # Structural, not name-based: count the section headers rather than grepping for
 # one other command's heading, so this keeps failing on a whole-help dump even if
 # some command's usage line is later reworded (multi-model review finding).
-HELP_SECTIONS="$(grep -c '^  cipher-brain ' "$TMP/help-verify.txt")"
+HELP_SECTIONS="$(grep -c '^  cypher-brain ' "$TMP/help-verify.txt")"
 if [ "$HELP_SECTIONS" -ne 1 ]; then
   echo "[FAIL] 'verify --help' has $HELP_SECTIONS command sections, expected exactly 1 (whole help dumped?)"; exit 1
 fi
-grep -q "^Env: CIPHER_BRAIN_HOME" "$TMP/help-verify.txt" \
+grep -q "^Env: CYPHER_BRAIN_HOME" "$TMP/help-verify.txt" \
   || { echo "[FAIL] 'verify --help' dropped the command-agnostic Env/Storage/Spend block"; exit 1; }
 # an unknown command with --help falls back to the full reference rather than
 # nothing. The baseline is re-captured HERE rather than reusing help-dist.txt
 # from (a): HELP interpolates ${IDENTITY}, which (b) changed by exporting
-# CIPHER_BRAIN_HOME, so the two would differ on that line alone.
+# CYPHER_BRAIN_HOME, so the two would differ on that line alone.
 node "$DIST" --help > "$TMP/help-full-now.txt" 2>&1 \
   || { echo "[FAIL] dist --help exited non-zero"; exit 1; }
 node "$DIST" nosuchcommand --help > "$TMP/help-unknown.txt" 2>&1 \
@@ -204,7 +204,7 @@ echo "[PASS] dist <command> --help: scoped to that command, keeps the Env block,
 
 # (j) an unknown command (#269): everything on stderr, stdout EMPTY, exit 2, and a
 # short answer — the command list + where to read more — instead of ~26 KB of help.
-# stdout emptiness is the load-bearing part: `LOC=$(cipher-brain psh …)` used to
+# stdout emptiness is the load-bearing part: `LOC=$(cypher-brain psh …)` used to
 # capture the entire reference into the variable.
 node "$DIST" definitelynotacommand > "$TMP/unknown-cmd.out" 2> "$TMP/unknown-cmd.err"
 UNKNOWN_RC=$?
@@ -213,7 +213,7 @@ UNKNOWN_RC=$?
   || { echo "[FAIL] unknown command wrote $(wc -c < "$TMP/unknown-cmd.out") bytes to stdout, expected none"; exit 1; }
 grep -Fq 'error: unknown command: definitelynotacommand' "$TMP/unknown-cmd.err" \
   || { echo "[FAIL] unknown command did not name the offending command on stderr"; cat "$TMP/unknown-cmd.err"; exit 1; }
-grep -Fq "cipher-brain <command> --help" "$TMP/unknown-cmd.err" \
+grep -Fq "cypher-brain <command> --help" "$TMP/unknown-cmd.err" \
   || { echo "[FAIL] unknown command did not point at --help"; cat "$TMP/unknown-cmd.err"; exit 1; }
 # The advertised list is DERIVED from HELP's section headers, so compare it as a SET
 # against the real command surface — catching both a command that stopped being listed
@@ -234,7 +234,7 @@ echo "[PASS] dist <unknown command>: exit 2, stdout empty, a ${UNKNOWN_LINES}-li
 # entirely, so `est.unit` was undefined and the caller could not tell "no unit" from
 # "you asked wrong".
 for JSON_BACKEND in file rclone turbo; do
-  node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend "$JSON_BACKEND" --json \
+  node "$DIST" estimate --in "$CYPHER_BRAIN_HOME/recipient.txt" --backend "$JSON_BACKEND" --json \
     > "$TMP/est-$JSON_BACKEND.json" 2>/dev/null \
     || { echo "[FAIL] estimate --backend $JSON_BACKEND --json exited non-zero"; exit 1; }
   MISSING=$(node -e '
@@ -251,7 +251,7 @@ echo "[PASS] dist estimate --json: all seven documented keys present for file/rc
 # (l) --json on the ERROR path (#270): stdout carries {error, code, exit_code} instead
 # of nothing, so a JSON caller never has to scrape prose off stderr. `code` is the
 # CB-E0xx identifier when the failure matches a known pattern.
-node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend nosuchbackend --json \
+node "$DIST" estimate --in "$CYPHER_BRAIN_HOME/recipient.txt" --backend nosuchbackend --json \
   > "$TMP/err.json" 2> "$TMP/err.txt"
 ERR_RC=$?
 [ "$ERR_RC" != "0" ] || { echo "[FAIL] estimate with a bogus backend exited 0"; exit 1; }
@@ -272,7 +272,7 @@ ERR_CODE=$(node -e '
 grep -Fq 'unknown backend' "$TMP/err.txt" \
   || { echo "[FAIL] stderr no longer carries the human-readable error"; cat "$TMP/err.txt"; exit 1; }
 # and WITHOUT --json, stdout on the error path stays empty exactly as before
-node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend nosuchbackend > "$TMP/err-nojson.out" 2>/dev/null
+node "$DIST" estimate --in "$CYPHER_BRAIN_HOME/recipient.txt" --backend nosuchbackend > "$TMP/err-nojson.out" 2>/dev/null
 [ ! -s "$TMP/err-nojson.out" ] \
   || { echo "[FAIL] the error path writes to stdout even without --json"; cat "$TMP/err-nojson.out"; exit 1; }
 echo "[PASS] dist --json error path: {error, code: CB-E013, exit_code} on stdout, stderr unchanged, no stdout without --json"
@@ -282,7 +282,7 @@ echo "[PASS] dist --json error path: {error, code: CB-E013, exit_code} on stdout
 # is the natural mistake. It used to be accepted globally and never read, then answered
 # with a hint from inside restore(); since #277 the dispatcher refuses it before restore()
 # runs, and carries the same "did you mean" suggestion so the reply did not get worse.
-node "$DIST" restore --in "$CIPHER_BRAIN_HOME/recipient.txt" --out "$TMP/nope" > "$TMP/m.out" 2> "$TMP/m.err"
+node "$DIST" restore --in "$CYPHER_BRAIN_HOME/recipient.txt" --out "$TMP/nope" > "$TMP/m.out" 2> "$TMP/m.err"
 M_RC=$?
 [ "$M_RC" != "0" ] || { echo "[FAIL] restore with --out instead of --out-dir exited 0"; exit 1; }
 grep -Fq -- 'did you mean --out-dir?' "$TMP/m.err" \
@@ -320,16 +320,16 @@ echo "[PASS] every command the dispatch switch can reach has a flag-relevance de
 # declares [] still has to accept the flags it does read. `push` is the one probed here
 # BECAUSE its declaration is empty — using a command with a non-empty one would prove
 # nothing about that failure mode (multi-model review finding).
-node "$DIST" push --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file > /dev/null 2>&1
+node "$DIST" push --in "$CYPHER_BRAIN_HOME/recipient.txt" --backend file > /dev/null 2>&1
 PUSH_RC=$?
 [ "$PUSH_RC" != "2" ] || { echo "[FAIL] push --backend was refused by the relevance check — it is over-firing on an empty declaration"; exit 1; }
-node "$DIST" estimate --in "$CIPHER_BRAIN_HOME/recipient.txt" --backend file > /dev/null 2>&1 \
+node "$DIST" estimate --in "$CYPHER_BRAIN_HOME/recipient.txt" --backend file > /dev/null 2>&1 \
   || { echo "[FAIL] estimate --backend was refused — the relevance check is over-firing"; exit 1; }
 echo "[PASS] a declared-empty command still accepts what it reads, and a non-empty one is unaffected"
 [ ! -s "$TMP/m.out" ] || { echo "[FAIL] restore wrote to stdout on the error path"; cat "$TMP/m.out"; exit 1; }
 # and with NEITHER flag the message stays the plain one — the hint must not fire
 # on the unrelated case of simply forgetting a destination
-node "$DIST" restore --in "$CIPHER_BRAIN_HOME/recipient.txt" > /dev/null 2> "$TMP/m2.err"
+node "$DIST" restore --in "$CYPHER_BRAIN_HOME/recipient.txt" > /dev/null 2> "$TMP/m2.err"
 M2_RC=$?
 [ "$M2_RC" != "0" ] || { echo "[FAIL] restore without a destination exited 0"; exit 1; }
 # match the WHOLE line, not a substring: a message that merely contains the old text

@@ -18,14 +18,14 @@
 // #214's discussion for the maintainer's own framing of this distinction.
 //
 // Verified byte-for-byte interoperable with the reference `minisign` binary in BOTH
-// directions (a signature cipher-brain writes verifies with the real binary, AND a
+// directions (a signature cypher-brain writes verifies with the real binary, AND a
 // signature the real binary writes verifies here) — see scripts/selftest-minisign.sh,
 // which runs that round trip for real when `minisign` is on PATH (SKIPs otherwise,
 // same posture as scripts/selftest-interop.sh's `age` binary check).
 //
 // Deliberately does NOT reimplement minisign's own secret-key-at-rest encryption
 // (SeckeyStruct's kdf_alg/kdf_salt/opslimit/memlimit/XOR-keystream dance) — that
-// machinery has no interop requirement (only cipher-brain ever reads its own signing
+// machinery has no interop requirement (only cypher-brain ever reads its own signing
 // identity file) and hand-rolling a KDF + stream cipher box is exactly the kind of new
 // crypto CONTRIBUTING.md warns against. The signing identity instead reuses this
 // project's EXISTING, already-reviewed age-based wrap (wrapIdentity()/unwrapTextFile()
@@ -62,7 +62,7 @@ const PUBKEY_BLOB_BYTES = 2 + KEY_ID_BYTES + PUBLIC_KEY_BYTES; // 42
 const SIG_BLOB_BYTES = 2 + KEY_ID_BYTES + SIGNATURE_BYTES; // 74
 const COMMENT_PREFIX = 'untrusted comment: ';
 const TRUSTED_COMMENT_PREFIX = 'trusted comment: ';
-const DEFAULT_SIG_COMMENT = 'signature from cipher-brain (minisign-compatible, #214)';
+const DEFAULT_SIG_COMMENT = 'signature from cypher-brain (minisign-compatible, #214)';
 
 // ---------- keypair generation ----------
 
@@ -93,7 +93,7 @@ function pubkeyRawBytes(publicKey: KeyObject): Buffer {
 // (big-endian) hex, which is the BYTE-REVERSED hex of the raw bytes. Purely cosmetic:
 // this comment line is untrusted/free text (a verifier never parses it back into the
 // key id — only the base64 blob's embedded 8 bytes are ever compared), but matching it
-// means a cipher-brain-generated pubkey file reads identically to a real minisign one.
+// means a cypher-brain-generated pubkey file reads identically to a real minisign one.
 function keyIdCommentHex(keyId: Buffer): string {
   return Buffer.from(keyId).reverse().toString('hex').toUpperCase();
 }
@@ -235,7 +235,7 @@ function parseMinisigText(text: string): ParsedMinisig {
 // #250) — the unverified 8 bytes in the *.minisig packet, not proof of who signed
 // it. Read out of the sidecar itself rather than off the local signing key, so it
 // describes the ARTIFACT that was (or is about to be) pushed, not whatever key
-// happens to sit in $CIPHER_BRAIN_HOME right now. push --skip-unchanged records it
+// happens to sit in $CYPHER_BRAIN_HOME right now. push --skip-unchanged records it
 // alongside the locator and compares it on the next run, so enabling signing, or
 // rotating the signing key, is a change that forces a re-push even when the
 // plaintext and recipients are identical.
@@ -322,7 +322,7 @@ const KEY_ID_COMMENT_PREFIX = '# key id: ';
 
 function signIdentityFileText(privateKeyPem: string, keyId: Buffer, pubkeyLine: string): string {
   return (
-    `# cipher-brain minisign-compatible Ed25519 signing key (#214)\n` +
+    `# cypher-brain minisign-compatible Ed25519 signing key (#214)\n` +
     `# created: ${new Date().toISOString()}\n` +
     `# public key (minisign wire format): ${pubkeyLine}\n` +
     `${KEY_ID_COMMENT_PREFIX}${keyId.toString('hex')}\n` +
@@ -370,7 +370,7 @@ export async function keygenSignAt(opts: KeygenSignAtOpts): Promise<KeygenSignAt
   let wrapped = false;
   if (opts.passphrase) {
     console.log(
-      'Set a passphrase to protect the signing identity at rest (you will enter it whenever cipher-brain signs a snapshot):',
+      'Set a passphrase to protect the signing identity at rest (you will enter it whenever cypher-brain signs a snapshot):',
     );
     payload = await wrapIdentity(identityText, await askNewPassphrase());
     wrapped = true;
@@ -394,7 +394,7 @@ export async function loadSignIdentity(path: string): Promise<LoadedSignIdentity
   const keyIdLine = text.split('\n').find((l) => l.startsWith(KEY_ID_COMMENT_PREFIX));
   if (!keyIdLine)
     throw new Error(
-      `${path}: missing ${JSON.stringify(KEY_ID_COMMENT_PREFIX)} header — not a cipher-brain signing identity file`,
+      `${path}: missing ${JSON.stringify(KEY_ID_COMMENT_PREFIX)} header — not a cypher-brain signing identity file`,
     );
   const keyIdHex = keyIdLine.slice(KEY_ID_COMMENT_PREFIX.length).trim();
   if (!/^[0-9a-f]{16}$/i.test(keyIdHex))

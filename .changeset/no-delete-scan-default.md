@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 **`--scan-secrets` now defaults to `warn`** when there is a `--dir`/`--profile` source and

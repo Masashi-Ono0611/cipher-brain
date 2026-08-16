@@ -174,13 +174,13 @@ function validateRestoreEntries(entries: RestoreEntry[]): void {
     if (hasDotDotSegment(e.name)) {
       throw new Error(`archive entry "${label}" contains a ".." path segment — refusing to extract (path traversal)`);
     }
-    // No legitimate cipher-brain snapshot ever contains a FIFO/device/socket — snapshot()
+    // No legitimate cypher-brain snapshot ever contains a FIFO/device/socket — snapshot()
     // only ever archives files, directories and symlinks (see snapshot.ts's ScanEntry
     // kind). Refuse outright rather than let tar attempt (and, run as root, succeed at)
     // creating one.
     if (e.type === 'fifo' || e.type === 'device' || e.type === 'socket') {
       throw new Error(
-        `archive entry "${label}" is a ${e.type} entry — refusing to extract (no legitimate use in a cipher-brain snapshot)`,
+        `archive entry "${label}" is a ${e.type} entry — refusing to extract (no legitimate use in a cypher-brain snapshot)`,
       );
     }
     // This IS the allowlist: a type character RESTORE_ENTRY_TYPE_BY_CHAR does not
@@ -233,7 +233,7 @@ const splitEntryLines = (s: string): string[] => s.split('\n').filter((l) => l.l
 // not a multiplier). Generous on purpose: this exists to catch a runaway/corrupted
 // artifact filling a disk unattended, not to second-guess a legitimately large
 // second-brain snapshot (attachments/PDFs/embeddings routinely reach several GB) — not
-// exposed as a CIPHER_BRAIN_* tunable, since #218 asks for a cap, not a configurable one.
+// exposed as a CYPHER_BRAIN_* tunable, since #218 asks for a cap, not a configurable one.
 const MAX_RESTORE_INPUT_BYTES = 20 * 1024 * 1024 * 1024; // 20 GiB
 
 // List an age-encrypted restore archive's tar entries WITHOUT writing a single byte to
@@ -546,7 +546,7 @@ async function expandComponents(outDir: string): Promise<void> {
     // same no-clobber posture the expanded component directories themselves keep.
     if (!(await exists(readmePath))) {
       const readmeLines = [
-        '# cipher-brain restore: expanded components',
+        '# cypher-brain restore: expanded components',
         '',
         'Each row maps a directory under expanded/ back to the ABSOLUTE path it was',
         'captured from. Nothing was written back to that original path — restore never',
@@ -607,13 +607,13 @@ async function restoreImpl(o: CliOptions): Promise<void> {
   }
   // pg_restore --clean --if-exists below DROPS and replaces objects in the target
   // database — an irreversible operation. Same consent gate as push's paid-backend
-  // guard (pushpull.ts): require --yes or CIPHER_BRAIN_YES=1 up front, before any
+  // guard (pushpull.ts): require --yes or CYPHER_BRAIN_YES=1 up front, before any
   // decrypt/extract work happens, mirroring the "fail before out_dir is even created"
   // discipline the identity check below already follows.
   if (o.pg && !(o.yes || CIPHER_YES)) {
     throw new Error(
       `--pg ${redactPgConn(o.pg)}: pg_restore --clean --if-exists will DROP and replace objects in that database — ` +
-        `re-run restore with --yes or set CIPHER_BRAIN_YES=1 to confirm`,
+        `re-run restore with --yes or set CYPHER_BRAIN_YES=1 to confirm`,
     );
   }
   // #267: deliberately AFTER the consent gate above, not before it — a missing --in
@@ -1064,7 +1064,7 @@ export async function verify(o: CliOptions): Promise<void> {
     // await could otherwise fire the handler while this scratch dir is still untracked,
     // leaking it (multi-model review finding on PR #332 — the ORIGINAL bug this whole
     // function needed to close, not just drill's later decrypt+extract step).
-    scratchRoot = mkdtempSync(join(tmpdir(), 'cipher-brain-verify-'));
+    scratchRoot = mkdtempSync(join(tmpdir(), 'cypher-brain-verify-'));
     setActiveVerifyScratchDir(scratchRoot);
     const target = join(scratchRoot, 'pulled.age');
     // A fresh CliOptions object, not a spread of `o`: pull() only needs to know WHERE to

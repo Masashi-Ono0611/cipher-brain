@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 Mascot redesign: "deep visor". The ASCII mascot trades the round-cheeked hood

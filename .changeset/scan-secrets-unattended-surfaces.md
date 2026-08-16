@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 The `--scan-secrets` gitleaks gate is now reachable from the surfaces that run unattended.

@@ -1,5 +1,5 @@
 ---
-"cipher-brain": minor
+"cypher-brain": minor
 ---
 
 New `cipher-brain recovery-kit` subcommand (#364): regenerate the printable

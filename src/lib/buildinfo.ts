@@ -1,7 +1,7 @@
 // buildinfo — WHEN was the code that is actually running built, and from what (#348).
 //
 // Motivation, measured: a hand-copied dist/cli.mjs ran the real snapshot host for 5+
-// weeks while silently missing documented features (.cipherbrainignore, --dry-run, the
+// weeks while silently missing documented features (.cypherbrainignore, --dry-run, the
 // turbo backend) — and, being pre-#277, silently IGNORING unknown flags, so a
 // `snapshot --dry-run` against it performed a real 442 MB write. Nothing surfaced the
 // build's age; it was discovered only when a documented feature visibly failed to
@@ -10,14 +10,14 @@
 // The provenance is the COMMIT hash and COMMIT date (not wall-clock build time, so
 // rebuilding the same commit yields identical bytes), stamped into dist by
 // scripts/build.ts via `define` — the same mechanism the restore runbook uses
-// (src/lib/runbook.ts). A dev run (bin/cipher-brain.mjs executing src/ directly) has no
+// (src/lib/runbook.ts). A dev run (bin/cypher-brain.mjs executing src/ directly) has no
 // stamp and derives the same facts live from git; a stampless, gitless run answers
 // null, which doctor reports as "unknown" — never as "fresh".
 import { execFileSync } from 'node:child_process';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-declare const __CIPHER_BRAIN_BUILD_INFO__: string | undefined; // injected by scripts/build.ts (#348)
+declare const __CYPHER_BRAIN_BUILD_INFO__: string | undefined; // injected by scripts/build.ts (#348)
 
 export interface BuildInfo {
   commit: string;
@@ -40,9 +40,9 @@ function fromGit(): BuildInfo | null {
 }
 
 export function buildInfo(): BuildInfo | null {
-  if (typeof __CIPHER_BRAIN_BUILD_INFO__ === 'string') {
+  if (typeof __CYPHER_BRAIN_BUILD_INFO__ === 'string') {
     try {
-      const parsed = JSON.parse(__CIPHER_BRAIN_BUILD_INFO__) as unknown;
+      const parsed = JSON.parse(__CYPHER_BRAIN_BUILD_INFO__) as unknown;
       // A git-less BUILD stamps the literal null — and it STAYS null (reported as
       // "unknown"): a stamped-null bundle later run inside some checkout must not
       // pretend that checkout's HEAD built it. A malformed stamp is null too, checked

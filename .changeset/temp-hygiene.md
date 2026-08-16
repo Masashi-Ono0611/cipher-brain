@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 Internal: two selftests left their temp directory behind on every run, so `npm run verify`

@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 `keygen` now prints its identity/recipient paths in aligned columns. Two labels

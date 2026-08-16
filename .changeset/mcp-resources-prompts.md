@@ -1,5 +1,5 @@
 ---
-"cipher-brain": minor
+"cypher-brain": minor
 ---
 
 The MCP server now exposes a resource and a prompt, not just tools.

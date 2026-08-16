@@ -173,14 +173,14 @@ export function fmtBytes(n: number): string {
 // Shape check for a bare wallet address of any chain Turbo accepts (Arweave base64url,
 // Ethereum 0x-hex, Solana base58). Deliberately a SHAPE check, not a per-chain validator:
 // the point is to reject input that would break out of the context it is interpolated
-// into (an HTTP header for CIPHER_BRAIN_AR_PAID_BY, a query string for `wallet balance`)
+// into (an HTTP header for CYPHER_BRAIN_AR_PAID_BY, a query string for `wallet balance`)
 // before it gets there. A well-formed address that simply does not exist is the payment
 // service's answer to give, not ours.
 export const isWalletAddress = (s: string): boolean => /^[A-Za-z0-9_-]{30,64}$/.test(s);
 
 // Do two address strings name the SAME account? Not a plain === : an Ethereum address is
 // written both EIP-55-checksummed (0x1b2c2Fda…) and all-lowercase for one account, so a
-// byte comparison reports a false mismatch between a user's CIPHER_BRAIN_AR_PAID_BY and
+// byte comparison reports a false mismatch between a user's CYPHER_BRAIN_AR_PAID_BY and
 // the payer the payment service echoes back. Case is NOT folded globally, though —
 // Arweave (base64url) and Solana (base58) addresses are case-SENSITIVE, so folding there
 // would invent a match between two genuinely different accounts. Only the 0x-hex form,

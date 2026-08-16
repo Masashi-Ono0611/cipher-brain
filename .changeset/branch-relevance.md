@@ -1,5 +1,5 @@
 ---
-'cipher-brain': patch
+'cypher-brain': patch
 ---
 
 The MCP server refuses a declared argument the chosen branch will never read, instead of

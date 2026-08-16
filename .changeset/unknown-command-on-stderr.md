@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 An unknown command now goes to stderr with the list of valid commands and exit

@@ -1,5 +1,5 @@
 ---
-'cipher-brain': patch
+'cypher-brain': patch
 ---
 
 `push --backend turbo` now reports what THIS upload can actually draw on, not just the

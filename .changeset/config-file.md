@@ -1,5 +1,5 @@
 ---
-"cipher-brain": minor
+"cypher-brain": minor
 ---
 
 Settings can now live in a file. `$CIPHER_BRAIN_HOME/config.env` (`KEY=value` per

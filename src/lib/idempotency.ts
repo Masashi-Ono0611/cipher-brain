@@ -1,4 +1,4 @@
-// Idempotency-key bookkeeping for cipher-brain-mcp's paid tools (issue #220): an AI
+// Idempotency-key bookkeeping for cypher-brain-mcp's paid tools (issue #220): an AI
 // agent's own retry logic — a network blip after snapshot_now already pushed to
 // arweave/turbo, say — must never be able to spend twice for what the agent believes is
 // one call. Stripe's Idempotency-Key pattern is the model (docs/prior-art.md): the caller
@@ -6,13 +6,13 @@
 // instead of doing the paid work again.
 //
 // Storage follows the same shape push --skip-unchanged already uses (src/lib/pushpull.ts):
-// a small file under CIPHER_BRAIN_HOME, read before the paid work and written after it
+// a small file under CYPHER_BRAIN_HOME, read before the paid work and written after it
 // succeeds — no new persistence mechanism, no database, no lock server, no new runtime
 // dependency. Unlike the save-locator file (one line, always overwritten with the latest
 // push), this is a JSONL log because more than one DISTINCT key can be live at once — an
 // agent may have several snapshot_now calls in flight (or recently completed) under
 // different keys, and each needs its own remembered result. There is no consumer of this
-// file OUTSIDE cipher-brain-mcp itself (no operator hand-edits or greps it the way they do
+// file OUTSIDE cypher-brain-mcp itself (no operator hand-edits or greps it the way they do
 // a save-locator), so there is no positional-TSV backward-compatibility surface to
 // preserve, and JSON-per-line is simpler to extend than a growing positional format would
 // be.

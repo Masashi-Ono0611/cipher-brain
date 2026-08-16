@@ -1,5 +1,5 @@
 ---
-'cipher-brain': patch
+'cypher-brain': patch
 ---
 
 MCP: a value outside a tool argument's declared `enum` is now refused instead of

@@ -1,5 +1,5 @@
 {
-  "name": "cipher-brain",
+  "name": "cypher-brain",
   "version": "0.0.1",
   "type": "module",
   "description": "Encrypt a gbrain snapshot so only the key holder can read it (age X25519). Produces one backend-agnostic ciphertext for censorship-resistant storage.",
@@ -17,17 +17,19 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Masashi-Ono0611/cipher-brain.git"
+    "url": "git+https://github.com/Masashi-Ono0611/cypher-brain.git"
   },
-  "homepage": "https://github.com/Masashi-Ono0611/cipher-brain#readme",
+  "homepage": "https://github.com/Masashi-Ono0611/cypher-brain#readme",
   "bugs": {
-    "url": "https://github.com/Masashi-Ono0611/cipher-brain/issues"
+    "url": "https://github.com/Masashi-Ono0611/cypher-brain/issues"
   },
   "author": "Masashi Ono (https://github.com/Masashi-Ono0611)",
   "files": [
     "dist"
   ],
   "bin": {
+    "cypher-brain": "dist/cli.mjs",
+    "cypher-brain-mcp": "dist/mcp.mjs",
     "cipher-brain": "dist/cli.mjs",
     "cipher-brain-mcp": "dist/mcp.mjs"
   },
@@ -49,7 +51,7 @@
     "verify": "node scripts/verify.mjs",
     "selftest": "bash scripts/selftest.sh",
     "selftest:profiles": "bash scripts/selftest-profiles.sh",
-    "selftest:cipherbrainignore": "bash scripts/selftest-cipherbrainignore.sh",
+    "selftest:cypherbrainignore": "bash scripts/selftest-cypherbrainignore.sh",
     "selftest:interop": "bash scripts/selftest-interop.sh",
     "selftest:storage": "bash scripts/selftest-storage.sh",
     "selftest:rclone": "bash scripts/selftest-rclone.sh",
@@ -79,7 +81,7 @@
     "selftest:properties": "node --experimental-strip-types --import ./scripts/dev-cli-loader.mjs scripts/selftest-properties.mjs",
     "selftest:cctv-age": "node scripts/selftest-cctv-age.mjs",
     "mutation-test": "stryker run",
-    "verify:suite": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cipherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:recovery-kit && npm run selftest:restore-security && npm run selftest:pq && npm run selftest:minisign && npm run selftest:push-partial-failure && npm run selftest:idempotency-lib && npm run selftest:verify-levels && npm run selftest:schedule && npm run selftest:config-file && npm run selftest:init && npm run selftest:gbrain-pglite && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && npm run selftest:wallet-balance && npm run selftest:sdk-advice && npm run selftest:turbo-dep && npm run selftest:error-codes && npm run selftest:progress && npm run selftest:push-balance-report && npm run selftest:doctor && npm run selftest:properties && npm run selftest:cctv-age && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs"
+    "verify:suite": "npm run build && npm run typecheck && npm run lint && npm run check:help-docs && npm run selftest && npm run selftest:profiles && npm run selftest:cypherbrainignore && npm run selftest:interop && npm run selftest:storage && npm run selftest:rclone && npm run selftest:recovery && npm run selftest:recovery-kit && npm run selftest:restore-security && npm run selftest:pq && npm run selftest:minisign && npm run selftest:push-partial-failure && npm run selftest:idempotency-lib && npm run selftest:verify-levels && npm run selftest:schedule && npm run selftest:config-file && npm run selftest:init && npm run selftest:gbrain-pglite && npm run selftest:help-docs && npm run selftest:arweave && npm run selftest:arweave-nodeps && npm run selftest:usd-rate && npm run selftest:wallet-balance && npm run selftest:sdk-advice && npm run selftest:turbo-dep && npm run selftest:error-codes && npm run selftest:progress && npm run selftest:push-balance-report && npm run selftest:doctor && npm run selftest:properties && npm run selftest:cctv-age && bash scripts/cli-smoke.sh && node scripts/mcp-smoke.mjs"
   },
   "engines": {
     "node": ">=22.6.0"

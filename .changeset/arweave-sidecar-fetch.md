@@ -1,5 +1,5 @@
 ---
-'cipher-brain': patch
+'cypher-brain': patch
 ---
 
 `push --sign`'s `.minisig` sidecar can now be pulled back from `arweave`/`turbo`. The

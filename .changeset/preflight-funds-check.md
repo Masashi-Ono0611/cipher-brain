@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 A `turbo` push now runs a funds check BEFORE signing: when the estimated cost exceeds

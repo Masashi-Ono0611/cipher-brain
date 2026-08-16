@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proof for #220's multi-model review (P1 finding 1): push()'s two AFTERMATH failure
 # shapes in src/lib/pushpull.ts — a ciphertext upload that already succeeded before a
-# LATER stage then fails. This is exactly the "partial success" scenario cipher-brain-mcp's
+# LATER stage then fails. This is exactly the "partial success" scenario cypher-brain-mcp's
 # idempotency_key feature (#220) exists to make retry-safe (see scripts/mcp-smoke.mjs's own
 # idempotency partial-failure block for the MCP-level half of this coverage, which reuses
 # the SAME error classes this proves) — but is exercised here at the CLI level because it
@@ -22,12 +22,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
+BIN="$ROOT/bin/cypher-brain.mjs"
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_FILE_DIR="$TMP/store"
-cb() { CIPHER_BRAIN_HOME="$HOME_DIR" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+export CYPHER_BRAIN_FILE_DIR="$TMP/store"
+cb() { CYPHER_BRAIN_HOME="$HOME_DIR" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 
 HOME_DIR="$TMP/keys"
 cb keygen >/dev/null

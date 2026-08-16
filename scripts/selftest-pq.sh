@@ -4,20 +4,20 @@
 # instead of plain X25519 — this asserts the WHOLE pipeline (keygen -> snapshot ->
 # push (file) -> pull -> verify -> restore) works with a hybrid key exactly like it
 # does with a plain X25519 one, that a hybrid recipient survives
-# CIPHER_BRAIN_PIN_RECIPIENTS parsing (the AGE_PUBKEY_RE fix this issue needed), and
+# CYPHER_BRAIN_PIN_RECIPIENTS parsing (the AGE_PUBKEY_RE fix this issue needed), and
 # that a hybrid primary + X25519 backup recipient (the existing multi-recipient
 # mechanism, #57/#99) mix freely — neither is special-cased for the other.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_FILE_DIR="$TMP/store"
-cb() { CIPHER_BRAIN_HOME="$1" node "${BIN_DEV_ARGS[@]}" "$BIN" "${@:2}"; }
+export CYPHER_BRAIN_FILE_DIR="$TMP/store"
+cb() { CYPHER_BRAIN_HOME="$1" node "${BIN_DEV_ARGS[@]}" "$BIN" "${@:2}"; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
 PQ="$TMP/keys-pq"
@@ -47,7 +47,7 @@ echo "[PASS] --wrap-in-place --pq is refused"
 echo "== keygen --pq --passphrase: the passphrase-wrap path is agnostic to identity type =="
 cb "$X25519" keygen >/dev/null # plain X25519, used as the backup key below
 PQWRAP="$TMP/keys-pq-wrapped"
-CIPHER_BRAIN_HOME="$PQWRAP" CIPHER_BRAIN_PASSPHRASE="pq-selftest-pass-1234" \
+CYPHER_BRAIN_HOME="$PQWRAP" CYPHER_BRAIN_PASSPHRASE="pq-selftest-pass-1234" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" keygen --pq --passphrase >/dev/null
 # a passphrase-wrapped identity file is age ciphertext, not the raw AGE-SECRET-KEY-PQ-1…
 # text — confirm it no longer starts with that plaintext prefix (it's now wrapped).
@@ -60,10 +60,10 @@ MARKER="pq-secret-thought-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
 printf '%s\n' "$MARKER" > "$SRC/note.txt"
 
 # Prove the wrapped hybrid identity actually decrypts (not just "the file exists"):
-# snapshot to it, then restore with CIPHER_BRAIN_PASSPHRASE supplying the passphrase
+# snapshot to it, then restore with CYPHER_BRAIN_PASSPHRASE supplying the passphrase
 # non-interactively (same mechanism selftest.sh's own passphrase coverage uses).
 cb "$PQWRAP" snapshot --dir "$SRC" --out "$TMP/wrapped-snap.age" >/dev/null
-CIPHER_BRAIN_HOME="$PQWRAP" CIPHER_BRAIN_PASSPHRASE="pq-selftest-pass-1234" \
+CYPHER_BRAIN_HOME="$PQWRAP" CYPHER_BRAIN_PASSPHRASE="pq-selftest-pass-1234" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" restore --in "$TMP/wrapped-snap.age" --out-dir "$TMP/wrapped-restored" >/dev/null
 tar -xzf "$TMP/wrapped-restored/brain-src.tar.gz" -C "$TMP/wrapped-restored"
 diff -r "$SRC" "$TMP/wrapped-restored/brain-src" \
@@ -103,12 +103,12 @@ tar -xzf "$TMP/r-x25519/brain-src.tar.gz" -C "$TMP/r-x25519"
 diff -r "$SRC" "$TMP/r-x25519/brain-src" || { echo "[FAIL] X25519 backup identity did not restore the mixed-recipient snapshot"; exit 1; }
 echo "[PASS] X25519 backup identity ALSO restores the same mixed-recipient snapshot"
 
-echo "== CIPHER_BRAIN_PIN_RECIPIENTS accepts a hybrid recipient (AGE_PUBKEY_RE fix) =="
-CIPHER_BRAIN_HOME="$PQ" CIPHER_BRAIN_PIN_RECIPIENTS="$PQ/recipient.txt" \
+echo "== CYPHER_BRAIN_PIN_RECIPIENTS accepts a hybrid recipient (AGE_PUBKEY_RE fix) =="
+CYPHER_BRAIN_HOME="$PQ" CYPHER_BRAIN_PIN_RECIPIENTS="$PQ/recipient.txt" \
   node "${BIN_DEV_ARGS[@]}" "$BIN" snapshot --dir "$SRC" --recipient "$PQ/recipient.txt" --out "$TMP/pinned.age" \
   2>"$TMP/pinned.err" >/dev/null
 grep -q "recipient pin OK" "$TMP/pinned.err" \
-  && echo "[PASS] CIPHER_BRAIN_PIN_RECIPIENTS allowlists a hybrid recipient" \
+  && echo "[PASS] CYPHER_BRAIN_PIN_RECIPIENTS allowlists a hybrid recipient" \
   || { echo "[FAIL] pin check did not confirm the hybrid recipient"; cat "$TMP/pinned.err"; exit 1; }
 
 echo

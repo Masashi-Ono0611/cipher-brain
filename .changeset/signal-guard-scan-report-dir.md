@@ -1,5 +1,5 @@
 ---
-'cipher-brain': patch
+'cypher-brain': patch
 ---
 
 A snapshot interrupted mid-secret-scan no longer leaves the gitleaks report directory

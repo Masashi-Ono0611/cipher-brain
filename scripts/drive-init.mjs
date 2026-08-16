@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // drive-init.mjs — a tiny, purpose-built driver for scripts/selftest-init.sh: spawns
-// an interactive child process (`cipher-brain init`) and feeds it a SCRIPTED sequence
+// an interactive child process (`cypher-brain init`) and feeds it a SCRIPTED sequence
 // of answers, each one sent only once the child's own combined stdout+stderr contains
 // the corresponding expected prompt substring.
 //

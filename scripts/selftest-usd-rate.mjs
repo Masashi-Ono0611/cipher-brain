@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Proof for #170: arUsdRate() (src/lib/estimate.ts) — the USD/AR rate behind
-// `estimate`'s optional USD line — fetches CIPHER_BRAIN_AR_USD_RATE_URL directly via
+// `estimate`'s optional USD line — fetches CYPHER_BRAIN_AR_USD_RATE_URL directly via
 // plain HTTP, NOT via @ardrive/turbo-sdk. Run against a COPY of the bundled
 // dist/cli.mjs in a directory with NO node_modules (so `import('@ardrive/turbo-sdk')`
 // is genuinely unresolvable there — the same isolation trick as
@@ -92,10 +92,10 @@ const runEstimate = (usdRateUrl) =>
     const child = spawn('node', [isoBin, 'estimate', '--in', sizedFile, '--backend', 'arweave'], {
       env: {
         ...process.env,
-        CIPHER_BRAIN_AR_HOST: '127.0.0.1',
-        CIPHER_BRAIN_AR_PORT: String(priceServer.address().port),
-        CIPHER_BRAIN_AR_PROTOCOL: 'http',
-        CIPHER_BRAIN_AR_USD_RATE_URL: usdRateUrl,
+        CYPHER_BRAIN_AR_HOST: '127.0.0.1',
+        CYPHER_BRAIN_AR_PORT: String(priceServer.address().port),
+        CYPHER_BRAIN_AR_PROTOCOL: 'http',
+        CYPHER_BRAIN_AR_USD_RATE_URL: usdRateUrl,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

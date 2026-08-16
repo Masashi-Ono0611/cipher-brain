@@ -20,13 +20,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
+BIN="$ROOT/bin/cypher-brain.mjs"
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 HOME_DIR="$TMP/home"; BACKUP="$TMP/keys-backup"
 PASS="kit-selftest-passphrase"
-cb() { CIPHER_BRAIN_HOME="$HOME_DIR" CIPHER_BRAIN_FILE_DIR="$TMP/store" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
-cbh() { CIPHER_BRAIN_HOME="$1" CIPHER_BRAIN_FILE_DIR="$TMP/store" node "${BIN_DEV_ARGS[@]}" "$BIN" "${@:2}"; }
+cb() { CYPHER_BRAIN_HOME="$HOME_DIR" CYPHER_BRAIN_FILE_DIR="$TMP/store" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+cbh() { CYPHER_BRAIN_HOME="$1" CYPHER_BRAIN_FILE_DIR="$TMP/store" node "${BIN_DEV_ARGS[@]}" "$BIN" "${@:2}"; }
 
 # Extract the lines between a kit's BEGIN/END markers (exclusive) into a file.
 extract_block() { # $1=kit file, $2=BEGIN marker prefix, $3=out file
@@ -48,7 +48,7 @@ echo "== kit to stdout carries the exact save-locator line and unknown markers =
 KIT="$TMP/kit-stdout.txt"
 cb recovery-kit --from-locator-file "$LOCF" > "$KIT"
 grep -qF "$LOCLINE" "$KIT" || { echo "[FAIL] kit does not carry the save-locator line verbatim"; exit 1; }
-grep -q 'CIPHER-BRAIN RECOVERY KIT' "$KIT" || { echo "[FAIL] kit header missing"; exit 1; }
+grep -q 'CYPHER-BRAIN RECOVERY KIT' "$KIT" || { echo "[FAIL] kit header missing"; exit 1; }
 grep -q 'not recorded — kit regenerated' "$KIT" || { echo "[FAIL] regenerated kit must mark profile unknown"; exit 1; }
 grep -q 'Postgres dump: unknown' "$KIT" || { echo "[FAIL] regenerated kit must mark the pg column unknown"; exit 1; }
 grep -q 'LOCATOR IS LOCAL-ONLY' "$KIT" || { echo "[FAIL] file-backend kit must carry the local-only warning"; exit 1; }
@@ -79,7 +79,7 @@ echo "[PASS] unwrapped primary is refused for --inline-identity"
 
 echo "== --inline-identity: a REAL binary wrap is re-armored, and the block restores =="
 WRAPPED_HOME="$TMP/home-wrapped"
-CIPHER_BRAIN_PASSPHRASE="$PASS" cbh "$WRAPPED_HOME" keygen --passphrase >/dev/null
+CYPHER_BRAIN_PASSPHRASE="$PASS" cbh "$WRAPPED_HOME" keygen --passphrase >/dev/null
 # encrypt a snapshot to THIS identity so the extracted block can prove itself
 cbh "$WRAPPED_HOME" snapshot --dir "$SRC" --out "$TMP/snap-wrapped.age" >/dev/null
 WLOCF="$TMP/loc-wrapped.tsv"
@@ -89,7 +89,7 @@ cbh "$WRAPPED_HOME" recovery-kit --from-locator-file "$WLOCF" --inline-identity 
 grep -q 'BEGIN PRIMARY IDENTITY FILE' "$WKIT" || { echo "[FAIL] wrapped identity was not inlined"; exit 1; }
 grep -q -- '-----BEGIN AGE ENCRYPTED FILE-----' "$WKIT" || { echo "[FAIL] binary wrap must be re-armored into printable form"; exit 1; }
 extract_block "$WKIT" 'BEGIN PRIMARY IDENTITY FILE' "$TMP/extracted-primary.age"
-CIPHER_BRAIN_PASSPHRASE="$PASS" cbh "$WRAPPED_HOME" restore --in "$TMP/snap-wrapped.age" \
+CYPHER_BRAIN_PASSPHRASE="$PASS" cbh "$WRAPPED_HOME" restore --in "$TMP/snap-wrapped.age" \
   --out-dir "$TMP/r-inline" --identity "$TMP/extracted-primary.age" >/dev/null
 tar -xzf "$TMP/r-inline/brain.tar.gz" -C "$TMP/r-inline"
 diff -r "$SRC" "$TMP/r-inline/brain" >/dev/null || { echo "[FAIL] kit-extracted primary did not restore the snapshot"; exit 1; }
@@ -109,7 +109,7 @@ echo "[PASS] unwrapped backup: loud warning, derived recipient, extracted block 
 
 echo "== --backup-identity: a REAL wrapped backup needs --backup-recipient, then restores =="
 WB_HOME="$TMP/home-wb"
-CIPHER_BRAIN_PASSPHRASE="$PASS" cbh "$WB_HOME" keygen --passphrase >/dev/null
+CYPHER_BRAIN_PASSPHRASE="$PASS" cbh "$WB_HOME" keygen --passphrase >/dev/null
 if cb recovery-kit --from-locator-file "$LOCF" --backup-identity "$WB_HOME/identity.age" >/dev/null 2>"$TMP/wb.err"; then
   echo "[FAIL] wrapped backup without --backup-recipient must be refused"; exit 1
 fi
@@ -121,7 +121,7 @@ cb recovery-kit --from-locator-file "$LOCF" --backup-identity "$WB_HOME/identity
   --backup-recipient "$WB_HOME/recipient.txt" > "$WBKIT"
 grep -q -- '-----BEGIN AGE ENCRYPTED FILE-----' "$WBKIT" || { echo "[FAIL] wrapped binary backup must be re-armored"; exit 1; }
 extract_block "$WBKIT" 'BEGIN BACKUP IDENTITY FILE' "$TMP/extracted-wb.age"
-CIPHER_BRAIN_PASSPHRASE="$PASS" cb restore --in "$TMP/snap-wb.age" \
+CYPHER_BRAIN_PASSPHRASE="$PASS" cb restore --in "$TMP/snap-wb.age" \
   --out-dir "$TMP/r-wb" --identity "$TMP/extracted-wb.age" >/dev/null
 tar -xzf "$TMP/r-wb/brain.tar.gz" -C "$TMP/r-wb"
 diff -r "$SRC" "$TMP/r-wb/brain" >/dev/null || { echo "[FAIL] kit-extracted wrapped backup did not restore"; exit 1; }

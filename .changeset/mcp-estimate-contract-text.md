@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 The `estimate_cost` MCP tool now describes the result shape it actually returns.

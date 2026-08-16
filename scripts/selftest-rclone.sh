@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Storage round-trip proof for the RCLONE backend (issue #204): cipher-brain never
+# Storage round-trip proof for the RCLONE backend (issue #204): cypher-brain never
 # implements a cloud storage API itself — it shells out to `rclone copyto`, the same
 # "delegate to rclone" pattern restic/kopia use, and the locator IS the "<remote>:
 # <path>" string itself. Exercised here against rclone's built-in, config-less
@@ -19,20 +19,20 @@ if ! command -v rclone >/dev/null 2>&1; then
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_HOME="$TMP/keys"
+export CYPHER_BRAIN_HOME="$TMP/keys"
 cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
 # rclone's built-in `:local:` connection-string syntax addresses the local
 # filesystem AS a real rclone remote/backend — no rclone.conf entry needed — so this
 # proof never touches actual cloud storage while still driving the real `rclone`
-# binary through its normal remote-resolution path (not a cipher-brain-side stub).
+# binary through its normal remote-resolution path (not a cypher-brain-side stub).
 STORE="$TMP/rclone-store"; mkdir -p "$STORE"
 REMOTE=":local:$STORE/snap.age"
 
@@ -97,11 +97,11 @@ grep -q -- "--remote" "$TMP/noremote.err" || { echo "[FAIL] missing-remote error
 echo "[PASS] push --backend rclone without --remote is rejected"
 
 echo "== a missing rclone binary produces an actionable error (not a bare ENOENT) =="
-if CIPHER_BRAIN_RCLONE_BIN="$TMP/no-such-rclone-binary" cb push --in "$TMP/got.age" --backend rclone --remote "$REMOTE" 2>"$TMP/missingbin.err"; then
+if CYPHER_BRAIN_RCLONE_BIN="$TMP/no-such-rclone-binary" cb push --in "$TMP/got.age" --backend rclone --remote "$REMOTE" 2>"$TMP/missingbin.err"; then
   echo "[FAIL] push succeeded with a nonexistent rclone binary"; exit 1
 fi
 grep -qi "not found on PATH" "$TMP/missingbin.err" || { echo "[FAIL] missing-binary error is not actionable"; cat "$TMP/missingbin.err"; exit 1; }
-echo "[PASS] a missing rclone binary (CIPHER_BRAIN_RCLONE_BIN override) produces an actionable error"
+echo "[PASS] a missing rclone binary (CYPHER_BRAIN_RCLONE_BIN override) produces an actionable error"
 
 echo "== --remote containing a tab is rejected (would corrupt the tab-delimited save-locator file) =="
 BAD_REMOTE="$(printf ':local:%s\tevil' "$STORE")"

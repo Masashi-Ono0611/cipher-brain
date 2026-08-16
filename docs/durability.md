@@ -13,7 +13,7 @@ replication across the network — no ongoing proofs to run, no single seeder to
 no GC. For a "impossible to delete" brain backup this is a categorically stronger
 durability story: it is the archive that survives neglect.
 
-cipher-brain reaches that network two ways — pick by **size**:
+cypher-brain reaches that network two ways — pick by **size**:
 
 - **`--backend turbo`** — the path for real, brain-sized snapshots. It *streams* the
   ciphertext and uploads an ANS-104 *bundled* data item via a bundler (ArDrive Turbo),
@@ -23,7 +23,7 @@ cipher-brain reaches that network two ways — pick by **size**:
   inline in **one L1 transaction**, which gateways cap at ~12 MiB, so it suits small
   artifacts only. To avoid a brain-sized upload buffering the lot and then failing with
   a bare `HTTP 400`, `put()` now refuses anything over ~10 MiB up front and tells you to
-  switch to `turbo` (override with `CIPHER_BRAIN_AR_L1_MAX` for a deliberate large L1 post).
+  switch to `turbo` (override with `CYPHER_BRAIN_AR_L1_MAX` for a deliberate large L1 post).
 
 Both produce an Arweave tx / data-item id. You pay up front (per-byte, one time), and
 retrieval is via a gateway. Reads need no wallet AND no npm dependency — the gateway

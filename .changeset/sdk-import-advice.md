@@ -1,5 +1,5 @@
 ---
-'cipher-brain': patch
+'cypher-brain': patch
 ---
 
 A failed lazy SDK import now gives advice matched to WHY it failed. "run: npm install

@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 A missing `--in` / `--dir` path is now reported the same way by every command:

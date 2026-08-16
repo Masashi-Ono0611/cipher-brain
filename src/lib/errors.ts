@@ -1,4 +1,4 @@
-// Stable, ngrok-style ("CB-E###") error codes for cipher-brain's own most-common
+// Stable, ngrok-style ("CB-E###") error codes for cypher-brain's own most-common
 // failure messages (issue #212). ngrok's own docs (https://ngrok.com/docs/errors) are
 // the model: a short stable code + a doc link next to the human-readable message, so a
 // person mid-incident (or an AI agent wrapping the CLI/MCP tools) can look up cause +
@@ -63,7 +63,7 @@ export interface ErrorCodeEntry {
    *                can reword it, and no check of ours would see that either way. Not
    *                asserted — but now visibly unasserted rather than silently so.
    * - 'mixed'    — the pattern deliberately spans both. CB-E006 is the case that forced
-   *                this third value: "exceeds CIPHER_BRAIN_MAX_SPEND" is ours,
+   *                this third value: "exceeds CYPHER_BRAIN_MAX_SPEND" is ours,
    *                "insufficient balance/funds" is the SDKs'. Such an entry must ALSO
    *                list the alternatives we write in `assertLiterals`, and the selftest
    *                requires every one of those to be present. Merely requiring "one of
@@ -119,23 +119,23 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
   },
   {
     code: 'CB-E005',
-    title: 'recipient rejected by the CIPHER_BRAIN_PIN_RECIPIENTS allowlist',
-    pattern: /is NOT in CIPHER_BRAIN_PIN_RECIPIENTS/,
+    title: 'recipient rejected by the CYPHER_BRAIN_PIN_RECIPIENTS allowlist',
+    pattern: /is NOT in CYPHER_BRAIN_PIN_RECIPIENTS/,
     origin: 'ours',
-    source: 'src/lib/snapshot.ts (snapshot, "… is NOT in CIPHER_BRAIN_PIN_RECIPIENTS")',
+    source: 'src/lib/snapshot.ts (snapshot, "… is NOT in CYPHER_BRAIN_PIN_RECIPIENTS")',
   },
   {
     code: 'CB-E006',
     title: 'spend cap exceeded, or wallet balance insufficient (paid backend)',
-    pattern: /exceeds CIPHER_BRAIN_MAX_SPEND|insufficient (?:balance|funds)/i,
+    pattern: /exceeds CYPHER_BRAIN_MAX_SPEND|insufficient (?:balance|funds)/i,
     origin: 'mixed',
     // The half WE write, named explicitly so the selftest checks it. "any one
     // alternative is present" would be too weak: the upstream wording could start
     // appearing under src/ for an unrelated reason and hold the check up while this
     // one rotted away.
-    assertLiterals: ['exceeds CIPHER_BRAIN_MAX_SPEND'],
+    assertLiterals: ['exceeds CYPHER_BRAIN_MAX_SPEND'],
     source:
-      'src/lib/backends/arweave.ts + src/lib/backends/turbo.ts ("… exceeds CIPHER_BRAIN_MAX_SPEND=…"); ' +
+      'src/lib/backends/arweave.ts + src/lib/backends/turbo.ts ("… exceeds CYPHER_BRAIN_MAX_SPEND=…"); ' +
       '"insufficient balance/funds" also matches the arweave/turbo-sdk packages’ own thrown wording',
   },
   {
@@ -171,10 +171,10 @@ export const ERROR_CODES: readonly ErrorCodeEntry[] = [
   {
     code: 'CB-E011',
     title: 'Arweave JWK wallet missing or unreadable',
-    pattern: /needs CIPHER_BRAIN_AR_WALLET|cannot read JWK wallet at/,
+    pattern: /needs CYPHER_BRAIN_AR_WALLET|cannot read JWK wallet at/,
     origin: 'ours',
     source:
-      'src/lib/backends/arweave.ts + src/lib/backends/turbo.ts ("… needs CIPHER_BRAIN_AR_WALLET …" / "cannot read JWK wallet at …")',
+      'src/lib/backends/arweave.ts + src/lib/backends/turbo.ts ("… needs CYPHER_BRAIN_AR_WALLET …" / "cannot read JWK wallet at …")',
   },
   // CB-E012's wording is generated once in sdkImportAdvice() (#344) with the package
   // name interpolated, so the pattern anchors on the generated invariant rather than

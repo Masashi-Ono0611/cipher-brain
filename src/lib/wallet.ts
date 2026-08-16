@@ -1,9 +1,9 @@
-// wallet — generate/inspect the Arweave JWK signer CIPHER_BRAIN_AR_WALLET points at
+// wallet — generate/inspect the Arweave JWK signer CYPHER_BRAIN_AR_WALLET points at
 // (issue #158). A JWK is the only credential the arweave/turbo backends need to spend
 // (L1 AR or Turbo Credits) from an address; until this subcommand existed, getting one
 // meant reaching for an external tool (arweave-js, a browser wallet, …) with no
-// guarantee the result matched what CIPHER_BRAIN_AR_WALLET expects, and no bridge from
-// "here is the JWK cipher-brain will use" to "here is the address to fund" —
+// guarantee the result matched what CYPHER_BRAIN_AR_WALLET expects, and no bridge from
+// "here is the JWK cypher-brain will use" to "here is the address to fund" —
 // docs/arweave-upload-runbook.md funds via a DIFFERENT, browser-based wallet
 // (app.ardrive.io) with nothing tying the two together.
 //
@@ -88,7 +88,7 @@ async function walletCreate(o: CliOptions): Promise<void> {
   // pre-existing dir is left at whatever mode it already had. On the DEFAULT path
   // (HOME, the same directory keygenAt() owns for key material) fail closed the same
   // way keygenAt() does for #119: re-chmod even if it pre-existed with a looser mode.
-  // A user-chosen --out directory is NOT assumed to be cipher-brain-owned (it could be
+  // A user-chosen --out directory is NOT assumed to be cypher-brain-owned (it could be
   // a shared dir holding unrelated files), so this re-chmod is scoped to the default
   // path only — --out still gets a freshly-created dir at 0700, just not a forced
   // re-chmod of a pre-existing one.
@@ -97,13 +97,13 @@ async function walletCreate(o: CliOptions): Promise<void> {
   console.log(`wallet (PRIVATE, keep offline): ${outPath}`);
   console.log(`address (PUBLIC, safe to share — fund THIS address): ${address}`);
   console.log(
-    `\n⚠  Back up the wallet file now. Fund the address above (app.ardrive.io / turbo.ar.io — crypto or a card), then set CIPHER_BRAIN_AR_WALLET=${outPath}.`,
+    `\n⚠  Back up the wallet file now. Fund the address above (app.ardrive.io / turbo.ar.io — crypto or a card), then set CYPHER_BRAIN_AR_WALLET=${outPath}.`,
   );
 }
 
 // Shared "is there a usable wallet?" check — reused by wizard.ts's paid-backend
 // pre-check (issue #161) so it can steer a user away from the "spends real funds"
-// consent prompt BEFORE CIPHER_BRAIN_AR_WALLET is even set, rather than letting the
+// consent prompt BEFORE CYPHER_BRAIN_AR_WALLET is even set, rather than letting the
 // wizard discover the same problem deep inside push() and roll everything back
 // (issue #161's motivation). Mirrors exactly what backends/arweave.ts's/turbo.ts's own
 // put() already require (set AND present on disk) — this does not read/parse the file
@@ -120,7 +120,7 @@ export async function walletConfigured(walletPath: string = AR_WALLET): Promise<
 // more useful when it says which command wanted it.
 async function addressFromWallet(o: CliOptions, what: string): Promise<string> {
   // Falls back to the same default `wallet create` writes to when neither --wallet nor
-  // CIPHER_BRAIN_AR_WALLET is set, so `wallet create` (no --out) followed by `wallet
+  // CYPHER_BRAIN_AR_WALLET is set, so `wallet create` (no --out) followed by `wallet
   // address` (no --wallet) just works (#164) instead of erroring out. If nothing exists
   // there, readFile below still fails closed with a clear "cannot read" error.
   const walletPath = o.wallet || AR_WALLET || WALLET_DEFAULT_PATH;
@@ -213,7 +213,7 @@ async function walletBalance(o: CliOptions): Promise<void> {
     (a) => `to ${a.recipient}`,
   );
   // The gap #341 is about: an approval is only reachable at push time when
-  // CIPHER_BRAIN_AR_PAID_BY names its payer, so a balance that LOOKS spendable here can
+  // CYPHER_BRAIN_AR_PAID_BY names its payer, so a balance that LOOKS spendable here can
   // still fail an upload. Say so at the one moment the operator is looking at both.
   // "Usable" means a push could actually draw on it: a known, unexpired deadline AND winc
   // left. An exhausted or unevaluatable approval is the trap this whole command exists to
@@ -224,11 +224,11 @@ async function walletBalance(o: CliOptions): Promise<void> {
   if (usable.length > 0 && !AR_PAID_BY) {
     warn(
       `${usable.length} received approval(s) above are NOT reachable by a push yet: set ` +
-        `CIPHER_BRAIN_AR_PAID_BY=<payer address> so the upload draws from one (see docs/arweave-upload-runbook.md).`,
+        `CYPHER_BRAIN_AR_PAID_BY=<payer address> so the upload draws from one (see docs/arweave-upload-runbook.md).`,
     );
   } else if (AR_PAID_BY && !usable.some((a) => sameWalletAddress(a.payer, AR_PAID_BY))) {
     warn(
-      `CIPHER_BRAIN_AR_PAID_BY=${AR_PAID_BY} matches no live approval to this address — ` +
+      `CYPHER_BRAIN_AR_PAID_BY=${AR_PAID_BY} matches no live approval to this address — ` +
         `a push using it will fall back to the own balance above.`,
     );
   }

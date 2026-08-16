@@ -127,7 +127,7 @@ async function chatgptExportPaths(o: CliOptions): Promise<string[]> {
 // single-file, never re-derived" shape chatgpt-export's official export already is, which
 // is why this profile follows that one almost verbatim. Upstream does NOT fix a filename or
 // extension for --out (its own CLI test suite writes bundles named "bank.json"/"b.json"),
-// so the ".json" check below is cipher-brain's OWN convention (mirroring chatgpt-export's
+// so the ".json" check below is cypher-brain's OWN convention (mirroring chatgpt-export's
 // ".zip" check), not something o2b itself requires — point bank-export's --out at a
 // "*.json" path for this profile to accept it. Never parsed or expanded: restore hands the
 // bundle back byte-identical, the same "carried, not reconstructed" honesty bank-import

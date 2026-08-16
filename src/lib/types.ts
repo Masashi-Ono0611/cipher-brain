@@ -3,7 +3,7 @@
 // src/lib/backends/*.ts implements. Kept in one place so cli.ts, mcp.ts and every
 // lib/*.ts consumer import the SAME type instead of each hand-rolling its own.
 
-// The flags every "cipher-brain <cmd>" (and its schedule-runner-generating twin)
+// The flags every "cypher-brain <cmd>" (and its schedule-runner-generating twin)
 // can see. `parseArgs` (src/cli.ts) turns `--foo-bar val` into `foo_bar: val` for
 // any flag not in BOOL_FLAGS (which get `true`) — genuinely dynamic (any command
 // only reads the handful of fields it cares about), so every field beyond the
@@ -26,7 +26,7 @@ export interface CliOptions {
   skip_unchanged?: boolean;
   no_load?: boolean;
   no_expand_components?: boolean;
-  dry_run?: boolean; // snapshot --dry-run: preview .cipherbrainignore include/exclude without writing anything (#216)
+  dry_run?: boolean; // snapshot --dry-run: preview .cypherbrainignore include/exclude without writing anything (#216)
   json?: boolean; // verify/estimate/schedule status: machine-readable JSON on stdout instead of the human-readable report (issue #211)
   level?: string; // verify --level quick|remote|drill (issue #209) — validated in restore.ts (parseArgs can't know the enum), default 'quick' when absent
   sign?: boolean; // keygen --sign: generate a minisign-compatible Ed25519 signing keypair instead of an age identity (#214)
@@ -55,14 +55,14 @@ export interface CliOptions {
   inline_identity?: boolean; // recovery-kit: inline the (wrapped+armored ONLY) primary identity into the kit (#364)
   backup_identity?: string; // recovery-kit: path to a backup identity to inline, wizard-style (#364)
   backup_recipient?: string; // recovery-kit: the backup identity's public recipient (age1… literal or a file path) — required when the backup identity is wrapped (#364)
-  sign_identity?: string; // keygen/snapshot: signing PRIVATE key path override (default $CIPHER_BRAIN_HOME/sign-identity.key, #214)
-  sign_recipient?: string; // snapshot/restore/verify: signing PUBLIC key path override (default $CIPHER_BRAIN_HOME/sign-recipient.pub, #214)
+  sign_identity?: string; // keygen/snapshot: signing PRIVATE key path override (default $CYPHER_BRAIN_HOME/sign-identity.key, #214)
+  sign_recipient?: string; // snapshot/restore/verify: signing PUBLIC key path override (default $CYPHER_BRAIN_HOME/sign-recipient.pub, #214)
   sig_locator?: string; // pull: explicit locator for the <out>.minisig sidecar (mirrors --locator; usually read from --from-locator-file's 6th field instead, #214)
   wait?: string;
   at?: string;
   max_spend?: string;
   index_file?: string;
-  wallet?: string; // wallet address/balance --wallet <path> (defaults to CIPHER_BRAIN_AR_WALLET)
+  wallet?: string; // wallet address/balance --wallet <path> (defaults to CYPHER_BRAIN_AR_WALLET)
   address?: string; // wallet balance --address <addr>: query any address, no JWK needed (#345)
   ping_url?: string; // schedule install: dead man's switch success ping (healthchecks.io-style)
   ping_url_fail?: string; // schedule install: failure ping override (defaults to `${ping_url}/fail`)

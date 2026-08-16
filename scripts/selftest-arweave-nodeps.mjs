@@ -15,7 +15,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { DEV_ARGS } from './dev-node-flags.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BIN = join(HERE, '..', 'bin', 'cipher-brain.mjs');
+const BIN = join(HERE, '..', 'bin', 'cypher-brain.mjs');
 const tmp = await mkdtemp(join(tmpdir(), 'cb-nodeps-'));
 let failed = false;
 const pass = (m) => console.log(`[PASS] ${m}`);
@@ -28,14 +28,14 @@ let server;
 try {
   // 1) make a small age artifact — keygen + snapshot are SDK-free
   const home = join(tmp, 'keys');
-  // BIN (bin/cipher-brain.mjs) imports src/cli.ts directly (no build step); plain node
+  // BIN (bin/cypher-brain.mjs) imports src/cli.ts directly (no build step); plain node
   // needs help resolving its internal `.js`-specifier imports back to sibling .ts files
   // (#63) — see scripts/dev-ts-resolve-hook.mjs. isoBin below is dist/cli.mjs (bundled,
   // pure JS) and needs none of this. DEV_ARGS (scripts/dev-node-flags.mjs) is passed as
   // literal argv elements — never via env.NODE_OPTIONS, which is whitespace-split by
   // node and would break under a checkout path containing a space.
   const cb = (...a) =>
-    spawnSync('node', [...DEV_ARGS, BIN, ...a], { env: { ...process.env, CIPHER_BRAIN_HOME: home }, encoding: 'utf8' });
+    spawnSync('node', [...DEV_ARGS, BIN, ...a], { env: { ...process.env, CYPHER_BRAIN_HOME: home }, encoding: 'utf8' });
   if (cb('keygen').status !== 0) throw new Error('keygen failed');
   const src = join(tmp, 'brain');
   await mkdir(src, { recursive: true });
@@ -103,7 +103,7 @@ try {
   const loc = 'A'.repeat(43);
   const out = join(tmp, 'got.age');
   const r = spawnSync('node', [isoBin, 'pull', '--backend', 'arweave', '--locator', loc, '--out', out], {
-    env: { ...process.env, CIPHER_BRAIN_AR_PORT: '1', CIPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${PORT}` },
+    env: { ...process.env, CYPHER_BRAIN_AR_PORT: '1', CYPHER_BRAIN_AR_GATEWAYS: `http://127.0.0.1:${PORT}` },
     encoding: 'utf8',
     timeout: 15000,
   });

@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 A flag another command accepts is now refused by the command that never reads it, instead of

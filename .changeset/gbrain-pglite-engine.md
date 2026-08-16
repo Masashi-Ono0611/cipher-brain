@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 gbrain support no longer assumes Postgres (#367). PGLite — Postgres compiled to WASM,

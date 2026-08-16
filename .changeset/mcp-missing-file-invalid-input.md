@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 The MCP `verify_restore`, `restore_now` and `estimate_cost` tools now agree on how

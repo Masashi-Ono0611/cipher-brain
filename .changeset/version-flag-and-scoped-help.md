@@ -1,5 +1,5 @@
 ---
-"cipher-brain": minor
+"cypher-brain": minor
 ---
 
 Added `cipher-brain --version`, and `cipher-brain <command> --help` now prints

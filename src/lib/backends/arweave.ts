@@ -36,12 +36,12 @@ import { progressReporter } from '../progress.js';
 import type { StorageBackend, PutOpts, FetchShape } from '../types.js';
 
 // The public gateways to try (in order) for the HTTP read, before the L1 chunk
-// fallback (#21). Override the whole list with CIPHER_BRAIN_AR_GATEWAYS (comma-
-// separated), or pin a single one with CIPHER_BRAIN_AR_GATEWAY; otherwise the derived
-// host (CIPHER_BRAIN_AR_HOST/PORT/PROTOCOL — arweave.net, or arlocal in tests) is tried
+// fallback (#21). Override the whole list with CYPHER_BRAIN_AR_GATEWAYS (comma-
+// separated), or pin a single one with CYPHER_BRAIN_AR_GATEWAY; otherwise the derived
+// host (CYPHER_BRAIN_AR_HOST/PORT/PROTOCOL — arweave.net, or arlocal in tests) is tried
 // first, then the extra public mirrors.
 function arGateways(): string[] {
-  const listed = readEnv('CIPHER_BRAIN_AR_GATEWAYS');
+  const listed = readEnv('CYPHER_BRAIN_AR_GATEWAYS');
   if (listed) {
     const list = listed
       .split(',')
@@ -49,10 +49,10 @@ function arGateways(): string[] {
       .filter(Boolean);
     if (list.length) return list; // ignore an all-blank override → fall through to the default
   }
-  const pinned = readEnv('CIPHER_BRAIN_AR_GATEWAY');
+  const pinned = readEnv('CYPHER_BRAIN_AR_GATEWAY');
   if (pinned) return [pinned];
   // the derived host first, plus the public mirrors ONLY when the host is the default
-  // arweave.net — a custom CIPHER_BRAIN_AR_HOST must not silently egress to them.
+  // arweave.net — a custom CYPHER_BRAIN_AR_HOST must not silently egress to them.
   const derived = `${AR_PROTOCOL}://${AR_HOST}:${AR_PORT}`;
   return [derived, ...(AR_HOST === 'arweave.net' ? AR_DEFAULT_EXTRA_GATEWAYS : [])];
 }
@@ -141,7 +141,7 @@ function gatewayGet(url: string, signal: AbortSignal, pin: ScreenedTarget | null
     const opts: http.RequestOptions & { autoSelectFamily?: boolean } = {
       signal,
       autoSelectFamily: true,
-      headers: { 'user-agent': 'cipher-brain', accept: '*/*' },
+      headers: { 'user-agent': 'cypher-brain', accept: '*/*' },
     };
     if (pin) {
       // node:http's `lookup` option accepts either the `(err, address, family)` or
@@ -412,7 +412,7 @@ export async function arweaveBackend(): Promise<StorageBackend> {
     return _ar;
   };
   const loadWallet = async (): Promise<unknown> => {
-    if (!AR_WALLET) throw new Error('arweave put needs CIPHER_BRAIN_AR_WALLET (path to a JWK key file)');
+    if (!AR_WALLET) throw new Error('arweave put needs CYPHER_BRAIN_AR_WALLET (path to a JWK key file)');
     await warnIfLooseKeyPerms(AR_WALLET, 'arweave JWK wallet');
     try {
       return JSON.parse(await readFile(AR_WALLET, 'utf8'));
@@ -429,7 +429,7 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       const { size: l1Size } = await stat(resolve(file));
       if (l1Size > AR_L1_MAX_BYTES) {
         throw new Error(
-          `arweave: ${l1Size} bytes exceeds the ~${(AR_L1_MAX_BYTES / 1048576).toFixed(0)} MiB single-tx limit of the raw arweave backend — use --backend turbo (it streams + bundles large uploads). Override the limit with CIPHER_BRAIN_AR_L1_MAX if you really mean to post one large L1 tx.`,
+          `arweave: ${l1Size} bytes exceeds the ~${(AR_L1_MAX_BYTES / 1048576).toFixed(0)} MiB single-tx limit of the raw arweave backend — use --backend turbo (it streams + bundles large uploads). Override the limit with CYPHER_BRAIN_AR_L1_MAX if you really mean to post one large L1 tx.`,
         );
       }
       const ar = await getAr(); // uploads genuinely need the SDK (createTransaction/sign/post)
@@ -441,9 +441,9 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       // Cost estimate + cap BEFORE signing (mirrors turbo.ts): `ar.transactions.getPrice()`
       // is the SAME call ar.createTransaction() makes internally when `reward` is omitted
       // (see arweave-js common.js createTransaction), so pre-flighting it here is not an
-      // EXTRA round-trip — we just make it early enough to enforce CIPHER_BRAIN_MAX_SPEND,
+      // EXTRA round-trip — we just make it early enough to enforce CYPHER_BRAIN_MAX_SPEND,
       // then hand the already-fetched reward back to createTransaction so it doesn't fetch
-      // it again. A schedule-installed runner bakes CIPHER_BRAIN_YES=1 for unattended paid
+      // it again. A schedule-installed runner bakes CYPHER_BRAIN_YES=1 for unattended paid
       // pushes, so this cap is the ONLY thing standing between an install-time --max-spend
       // and an uncapped nightly L1 spend — it must actually gate the upload, not just log.
       let reward: bigint | undefined;
@@ -453,7 +453,7 @@ export async function arweaveBackend(): Promise<StorageBackend> {
         // Human-readable USD approximation next to the native estimate, the same way
         // turbo.ts's put() already does (#159 — the CLI push path for arweave used to
         // show winston only). arUsdRate never throws (null on any failure), so a dead
-        // pricing endpoint can neither block the push nor skip the CIPHER_BRAIN_MAX_SPEND
+        // pricing endpoint can neither block the push nor skip the CYPHER_BRAIN_MAX_SPEND
         // cap check below.
         const rate = await arUsdRate();
         if (rate !== null) {
@@ -464,18 +464,18 @@ export async function arweaveBackend(): Promise<StorageBackend> {
       } catch (e) {
         if (AR_MAX_SPEND > 0n) {
           throw new Error(
-            `arweave: could not verify CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} (price estimate failed: ${errMsg(e)}) — aborting to protect your wallet`,
+            `arweave: could not verify CYPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} (price estimate failed: ${errMsg(e)}) — aborting to protect your wallet`,
           );
         }
         process.stderr.write(`arweave: could not estimate L1 cost (${errMsg(e)}); proceeding\n`);
       }
       if (reward !== undefined && AR_MAX_SPEND > 0n && reward > AR_MAX_SPEND) {
         throw new Error(
-          `arweave: L1 upload cost ${reward} winston exceeds CIPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`,
+          `arweave: L1 upload cost ${reward} winston exceeds CYPHER_BRAIN_MAX_SPEND=${AR_MAX_SPEND} — aborting to protect your wallet`,
         );
       }
       const tx = await ar.createTransaction(reward !== undefined ? { data, reward: String(reward) } : { data }, jwk);
-      tx.addTag('App-Name', 'cipher-brain');
+      tx.addTag('App-Name', 'cypher-brain');
       tx.addTag('Content-Type', 'application/octet-stream');
       await ar.transactions.sign(tx, jwk);
       const res = await ar.transactions.post(tx);

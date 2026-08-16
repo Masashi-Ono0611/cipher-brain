@@ -1,5 +1,5 @@
 ---
-'cipher-brain': patch
+'cypher-brain': patch
 ---
 
 The mascot got a sharper hood. Same face, same semantics — the lens pair still

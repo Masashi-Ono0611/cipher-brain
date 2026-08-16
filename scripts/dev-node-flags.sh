@@ -1,4 +1,4 @@
-# Shared dev-mode Node flags for running bin/cipher-brain.mjs straight against
+# Shared dev-mode Node flags for running bin/cypher-brain.mjs straight against
 # src/*.ts (no build step) under plain node — see scripts/dev-ts-resolve-hook.mjs
 # for why both flags are required (#63).
 #

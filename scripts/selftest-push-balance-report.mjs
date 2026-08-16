@@ -203,11 +203,11 @@ const REAL_BODY = {
   check('funds: the refusal names the exact shortfall', refusal?.includes('short 1 winc'), refusal);
   check(
     'funds: the refusal answers "what do I do" — both funding paths, the verify command, the runbook',
-    refusal?.includes("'cipher-brain wallet address'") &&
+    refusal?.includes("'cypher-brain wallet address'") &&
       refusal.includes('Share Credits') &&
-      refusal.includes("'cipher-brain wallet balance'") &&
+      refusal.includes("'cypher-brain wallet balance'") &&
       refusal.includes('docs/arweave-upload-runbook.md') &&
-      refusal.includes('CIPHER_BRAIN_SKIP_FUNDS_CHECK=1'),
+      refusal.includes('CYPHER_BRAIN_SKIP_FUNDS_CHECK=1'),
     refusal,
   );
   check('funds: it happens BEFORE signing, and says so', refusal?.includes('BEFORE signing'), refusal);
@@ -221,8 +221,8 @@ const REAL_BODY = {
   const refusalUnset = insufficientFundsError(reachable, bal, '');
   check(
     'funds: with PAID_BY unset, existing approvals are named as the likely fix',
-    refusalUnset?.includes('no CIPHER_BRAIN_AR_PAID_BY is set') &&
-      refusalUnset.includes('set CIPHER_BRAIN_AR_PAID_BY=<its payer address>'),
+    refusalUnset?.includes('no CYPHER_BRAIN_AR_PAID_BY is set') &&
+      refusalUnset.includes('set CYPHER_BRAIN_AR_PAID_BY=<its payer address>'),
     refusalUnset,
   );
 
@@ -260,7 +260,7 @@ const REAL_BODY = {
 }
 
 // --- the bypass switch parses STRICTLY (#342, Codex review) ------------------------
-// CIPHER_BRAIN_SKIP_FUNDS_CHECK disables a protection, so any spelling other than
+// CYPHER_BRAIN_SKIP_FUNDS_CHECK disables a protection, so any spelling other than
 // exactly '1' — including '0', 'false', or a typo — must leave the check ON. Loose
 // truthiness would turn the value that obviously means "off" into "on". Spawned per
 // value because the flag is read at config-module import.
@@ -276,7 +276,7 @@ const REAL_BODY = {
         '-e',
         "import('./src/lib/config.ts').then(c => console.log(c.SKIP_FUNDS_CHECK))",
       ],
-      { env: { ...process.env, CIPHER_BRAIN_SKIP_FUNDS_CHECK: value }, encoding: 'utf8' },
+      { env: { ...process.env, CYPHER_BRAIN_SKIP_FUNDS_CHECK: value }, encoding: 'utf8' },
     ).stdout.trim();
   check("skip: '1' enables the bypass", probe('1') === 'true', probe('1'));
   for (const v of ['0', 'false', 'yes', 'true']) {

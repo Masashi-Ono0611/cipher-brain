@@ -1,5 +1,5 @@
 // recovery-kit — the printable recovery kit, as ONE canonical builder plus the
-// standalone `cipher-brain recovery-kit` command (#364).
+// standalone `cypher-brain recovery-kit` command (#364).
 //
 // The builder (buildRecoveryKit) moved here from wizard.ts VERBATIM in spirit:
 // `init` renders its end-of-wizard kit through this exact function, and the
@@ -79,9 +79,9 @@ export interface KitInputs {
 export function buildRecoveryKit(k: KitInputs): string {
   const lines: string[] = [];
   lines.push('='.repeat(72));
-  lines.push('CIPHER-BRAIN RECOVERY KIT — KEEP THIS OFFLINE / PHYSICALLY SECURE');
+  lines.push('CYPHER-BRAIN RECOVERY KIT — KEEP THIS OFFLINE / PHYSICALLY SECURE');
   lines.push('This file contains SECRET key material. Anyone holding it can decrypt');
-  lines.push('every cipher-brain snapshot encrypted to the key(s) below. Print it,');
+  lines.push('every cypher-brain snapshot encrypted to the key(s) below. Print it,');
   lines.push('store it somewhere physically secure (a safe, a password manager secure');
   lines.push('note, a trusted person) AWAY from this machine, then treat it like cash.');
   lines.push('='.repeat(72));
@@ -129,7 +129,7 @@ export function buildRecoveryKit(k: KitInputs): string {
     lines.push('--- BACKUP IDENTITY ---');
     lines.push('None was generated during init. The PRIMARY identity above is the only key');
     lines.push('that can restore — losing it loses the brain. MANAGEMENT.md "Key recovery #1"');
-    lines.push('recommends adding an offline backup key: CIPHER_BRAIN_HOME=<path> cipher-brain keygen');
+    lines.push('recommends adding an offline backup key: CYPHER_BRAIN_HOME=<path> cypher-brain keygen');
     lines.push('');
   }
   if (k.signing) {
@@ -151,7 +151,7 @@ export function buildRecoveryKit(k: KitInputs): string {
     lines.push('--- SIGNING PUBLIC KEY (authenticity, #214) ---');
     lines.push('None was generated during init. Snapshots restore exactly as before (age confidentiality +');
     lines.push('tamper detection), just without the extra authenticity check. Add one later at any time:');
-    lines.push('cipher-brain keygen --sign');
+    lines.push('cypher-brain keygen --sign');
     lines.push('');
   }
   lines.push('--- LATEST SAVE-LOCATOR (back this up off-box, next to the backup identity) ---');
@@ -160,11 +160,11 @@ export function buildRecoveryKit(k: KitInputs): string {
   lines.push('END SAVE-LOCATOR LINE');
   lines.push('');
   // The kit is a sheet of paper someone acts on later, possibly on a different machine —
-  // so it names the config file the way README/MANAGEMENT.md do ($CIPHER_BRAIN_HOME-
+  // so it names the config file the way README/MANAGEMENT.md do ($CYPHER_BRAIN_HOME-
   // relative), not this machine's resolved path, which would not be the right one there.
-  lines.push('--- CIPHER_BRAIN_PIN_RECIPIENTS (add to $CIPHER_BRAIN_HOME/config.env; shell rc: prefix "export ") ---');
+  lines.push('--- CYPHER_BRAIN_PIN_RECIPIENTS (add to $CYPHER_BRAIN_HOME/config.env; shell rc: prefix "export ") ---');
   lines.push(
-    k.pinRecipientsLine ?? '(skipped during init — see MANAGEMENT.md / "cipher-brain help" for what this does)',
+    k.pinRecipientsLine ?? '(skipped during init — see MANAGEMENT.md / "cypher-brain help" for what this does)',
   );
   lines.push('');
   lines.push('--- RECOVERY STEPS (run these on ANY machine with Node >=22.6 and this npm package installed) ---');
@@ -177,7 +177,7 @@ export function buildRecoveryKit(k: KitInputs): string {
   // encouraging a single dangerous copy-paste command (Fugu review finding).
   if (k.backend === 'file') {
     lines.push('!!! LOCATOR IS LOCAL-ONLY: this backup used the "file" backend, so the save-locator line above');
-    lines.push('    points at a path inside a local object store (CIPHER_BRAIN_FILE_DIR) on THIS machine — it');
+    lines.push('    points at a path inside a local object store (CYPHER_BRAIN_FILE_DIR) on THIS machine — it');
     lines.push('    is NOT reachable from a different machine unless that whole store directory is also copied');
     lines.push('    there. Step 4 below (pull --from-locator-file) will fail on another machine as written. For');
     lines.push('    genuine cross-machine recovery, re-run push with a network backend (arweave/turbo), or');
@@ -188,13 +188,13 @@ export function buildRecoveryKit(k: KitInputs): string {
     const which = k.backup ? 'BACKUP' : 'PRIMARY';
     lines.push('An operator with ZERO prior knowledge of this repo can follow these verbatim. The two marker');
     lines.push('blocks above (each a single BEGIN/END pair, unique in this file) are the two things you copy:');
-    lines.push('  1) npm install -g cipher-brain          (or: npx cipher-brain@latest <command>)');
+    lines.push('  1) npm install -g cypher-brain          (or: npx cypher-brain@latest <command>)');
     lines.push(`  2) Copy the ${which} IDENTITY block above (the lines between its BEGIN and END markers,`);
     lines.push('     not including the marker lines themselves) into its own file, e.g.: ~/restore-identity.age');
     lines.push('  3) Copy the SAVE-LOCATOR line above (between its BEGIN and END markers) into its own');
     lines.push('     file, e.g.: ~/restore-locator.tsv');
-    lines.push('  4) cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
-    lines.push('  5) cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ~/restore-identity.age');
+    lines.push('  4) cypher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
+    lines.push('  5) cypher-brain restore --in ~/restored.age --out-dir ~/restored --identity ~/restore-identity.age');
     lines.push('     (if the identity above is passphrase-wrapped, this step prompts for that passphrase)');
   } else {
     lines.push('!!! NO BACKUP IDENTITY IS IN THIS KIT: true kit-only recovery — restoring on a fresh machine');
@@ -209,17 +209,17 @@ export function buildRecoveryKit(k: KitInputs): string {
     lines.push(`    a copy of it you separately made outside of this kit): ${k.primaryIdentityPath}`);
     lines.push('    (possibly passphrase-protected, per step 3 of the wizard — restore then prompts for it).');
     lines.push('    Copy the SAVE-LOCATOR line above into its own file, e.g. ~/restore-locator.tsv, then:');
-    lines.push('      cipher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
+    lines.push('      cypher-brain pull --from-locator-file ~/restore-locator.tsv --out ~/restored.age');
     lines.push(
-      `      cipher-brain restore --in ~/restored.age --out-dir ~/restored --identity ${k.primaryIdentityPath}`,
+      `      cypher-brain restore --in ~/restored.age --out-dir ~/restored --identity ${k.primaryIdentityPath}`,
     );
     lines.push('  * For real kit-based portable recovery (any machine, zero prior knowledge), a backup');
     lines.push('    identity has to exist and be inlined in the kit. To get there: generate one —');
-    lines.push('    "CIPHER_BRAIN_HOME=<path> cipher-brain keygen" — then re-snapshot encrypting to BOTH the');
+    lines.push('    "CYPHER_BRAIN_HOME=<path> cypher-brain keygen" — then re-snapshot encrypting to BOTH the');
     lines.push('    primary recipient.txt (next to the primary identity above) and the new backup');
     lines.push('    recipient.txt (see MANAGEMENT.md "Key recovery #1"), then generate a fresh kit so it');
     lines.push('    inlines the new backup identity.');
-    lines.push('  * The SAVE-LOCATOR and CIPHER_BRAIN_PIN_RECIPIENTS sections above are still valid, useful');
+    lines.push('  * The SAVE-LOCATOR and CYPHER_BRAIN_PIN_RECIPIENTS sections above are still valid, useful');
     lines.push('    information regardless of the above — only "restore using just this kit alone" carries');
     lines.push('    this caveat.');
   }
@@ -243,7 +243,7 @@ export function buildRecoveryKit(k: KitInputs): string {
   lines.push('');
   lines.push('--- WHAT TO DO WITH THIS FILE ---');
   lines.push('Print this page and store it securely, physically away from this machine. Once it');
-  lines.push('is secured, you MAY delete this file from disk — that is a manual step; cipher-brain');
+  lines.push('is secured, you MAY delete this file from disk — that is a manual step; cypher-brain');
   lines.push('does not delete it for you.');
   lines.push('');
   return lines.join('\n');
@@ -277,7 +277,7 @@ export async function writeRecoveryKitFile(path: string, text: string, opts: { c
   }
 }
 
-/** `cipher-brain recovery-kit` (#364) — regenerate the kit for the CURRENT latest
+/** `cypher-brain recovery-kit` (#364) — regenerate the kit for the CURRENT latest
  *  push, from a save-locator file + on-disk key material. CLI-only (see file header). */
 export async function recoveryKit(o: CliOptions): Promise<void> {
   if (!o.from_locator_file) {
@@ -311,16 +311,16 @@ export async function recoveryKit(o: CliOptions): Promise<void> {
       .find((l) => l && !l.startsWith('#')) ?? '';
 
   // Deliberately the standard layout only — no per-file --identity override: the kit
-  // pairs the identity with $CIPHER_BRAIN_HOME/recipient.txt, and letting one half be
+  // pairs the identity with $CYPHER_BRAIN_HOME/recipient.txt, and letting one half be
   // swapped per-flag lets the kit claim a recipient the embedded/referenced private
-  // key cannot satisfy (Codex review). Relocation is CIPHER_BRAIN_HOME's job, which
+  // key cannot satisfy (Codex review). Relocation is CYPHER_BRAIN_HOME's job, which
   // moves both halves coherently.
   if (!(await exists(IDENTITY))) {
-    throw new Error(`no identity at ${IDENTITY} — run "cipher-brain keygen" first (relocate with CIPHER_BRAIN_HOME)`);
+    throw new Error(`no identity at ${IDENTITY} — run "cypher-brain keygen" first (relocate with CYPHER_BRAIN_HOME)`);
   }
   if (!(await exists(RECIPIENT))) {
     throw new Error(
-      `no recipient at ${RECIPIENT} — the kit records the public recipient; run "cipher-brain keygen" (or put ` +
+      `no recipient at ${RECIPIENT} — the kit records the public recipient; run "cypher-brain keygen" (or put ` +
         'recipient.txt back) first',
     );
   }
@@ -340,7 +340,7 @@ export async function recoveryKit(o: CliOptions): Promise<void> {
     if (at.kind === 'plaintext') {
       throw new Error(
         `${IDENTITY} is NOT passphrase-wrapped — refusing to inline a bare private key into a printable ` +
-          'document. Wrap it first ("cipher-brain keygen --wrap-in-place", or age -p -a), then rerun.',
+          'document. Wrap it first ("cypher-brain keygen --wrap-in-place", or age -p -a), then rerun.',
       );
     }
     if (at.kind !== 'wrapped') {
@@ -420,9 +420,9 @@ export async function recoveryKit(o: CliOptions): Promise<void> {
     primaryRecipient,
     backup,
     signing,
-    pinRecipientsLine: PIN_RECIPIENTS !== undefined ? `CIPHER_BRAIN_PIN_RECIPIENTS=${PIN_RECIPIENTS}` : null,
+    pinRecipientsLine: PIN_RECIPIENTS !== undefined ? `CYPHER_BRAIN_PIN_RECIPIENTS=${PIN_RECIPIENTS}` : null,
     savedLocatorLine,
-    profile: '(not recorded — kit regenerated by "cipher-brain recovery-kit")',
+    profile: '(not recorded — kit regenerated by "cypher-brain recovery-kit")',
     backend: saved.backend,
     pg: 'unknown',
     generatedAt: new Date().toISOString(),

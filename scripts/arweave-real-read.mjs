@@ -20,11 +20,11 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
-const HOST = process.env.CIPHER_BRAIN_AR_HOST || 'arweave.net';
-const PORT = process.env.CIPHER_BRAIN_AR_PORT || '443';
-const PROTOCOL = process.env.CIPHER_BRAIN_AR_PROTOCOL || 'https';
+const HOST = process.env.CYPHER_BRAIN_AR_HOST || 'arweave.net';
+const PORT = process.env.CYPHER_BRAIN_AR_PORT || '443';
+const PROTOCOL = process.env.CYPHER_BRAIN_AR_PROTOCOL || 'https';
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BIN = join(HERE, '..', 'bin', 'cipher-brain.mjs');
+const BIN = join(HERE, '..', 'bin', 'cypher-brain.mjs');
 
 const FIXTURES = [
   // bundled item: the old getData() chunk read returns nothing for this; the new
@@ -56,9 +56,9 @@ try {
     const out = join(tmp, `${f.id}.bin`);
     const env = {
       ...process.env,
-      CIPHER_BRAIN_AR_HOST: HOST,
-      CIPHER_BRAIN_AR_PORT: PORT,
-      CIPHER_BRAIN_AR_PROTOCOL: PROTOCOL,
+      CYPHER_BRAIN_AR_HOST: HOST,
+      CYPHER_BRAIN_AR_PORT: PORT,
+      CYPHER_BRAIN_AR_PROTOCOL: PROTOCOL,
     };
     const r = spawnSync('node', [BIN, 'pull', '--locator', f.id, '--backend', 'arweave', '--out', out], {
       encoding: 'utf8',

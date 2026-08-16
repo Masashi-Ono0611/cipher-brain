@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 `snapshot --dry-run` now reports the largest contributors to each `--dir`/`--profile`

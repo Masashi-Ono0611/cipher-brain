@@ -1,6 +1,6 @@
 # Security Policy
 
-`cipher-brain` is a cryptographic tool: it encrypts second-brain snapshots
+`cypher-brain` is a cryptographic tool: it encrypts second-brain snapshots
 client-side with [age](https://age-encryption.org) (X25519 + ChaCha20-Poly1305,
 via the bundled [typage](https://github.com/FiloSottile/typage) implementation)
 and parks the ciphertext on pluggable storage backends (Arweave/Turbo, local
@@ -14,7 +14,7 @@ This is a young, fast-moving, single-maintainer project without long-term
 support branches. Only the **latest published version** receives security
 fixes. The CLI has no `--version` flag yet — check the `version` field in
 [`package.json`](package.json), the version pinned in your lockfile, or
-`npm view cipher-brain version` for what's current on the registry.
+`npm view cypher-brain version` for what's current on the registry.
 
 | Version | Security fixes |
 |---|---|
@@ -26,7 +26,7 @@ fixes. The CLI has no `--version` flag yet — check the `version` field in
 **Do not file a public GitHub issue for security problems.**
 
 Use GitHub's private vulnerability reporting: open the
-[Security tab](https://github.com/Masashi-Ono0611/cipher-brain/security) on
+[Security tab](https://github.com/Masashi-Ono0611/cypher-brain/security) on
 this repo and click **"Report a vulnerability"** to start a private security
 advisory. Include:
 
@@ -51,7 +51,7 @@ In scope:
 - Anything that could let an attacker who does *not* control the identity
   file decrypt a snapshot.
 - Silent re-keying of future snapshots to an attacker-controlled recipient
-  (bypassing `CIPHER_BRAIN_PIN_RECIPIENTS`) or other ways `verify` could
+  (bypassing `CYPHER_BRAIN_PIN_RECIPIENTS`) or other ways `verify` could
   report `PASS` when a snapshot is not actually restorable.
 - Vulnerabilities in the age/typage integration, key file handling
   (permissions, atomic writes, symlink handling), or the storage-backend
@@ -62,7 +62,7 @@ In scope:
 Out of scope (already acknowledged as caveats in the README's threat model):
 
 - Compromise of the always-on box itself (its live Postgres / `~/.gbrain`
-  plaintext, or local root/shell access) — `cipher-brain` protects the
+  plaintext, or local root/shell access) — `cypher-brain` protects the
   snapshots shipped off-box, not the source machine. Keep that machine
   full-disk-encrypted; that's outside this tool's control.
 - The fact that age's X25519 recipient scheme is not post-quantum secure, and

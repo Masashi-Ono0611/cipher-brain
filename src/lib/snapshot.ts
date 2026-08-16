@@ -151,7 +151,7 @@ async function contentDigestOfPath(abs: string): Promise<string> {
   return hexOf(`${lines.join('\n')}\n`);
 }
 
-// #216: ".cipherbrainignore" (gitignore-compatible syntax) at the ROOT of a --dir (or a
+// #216: ".cypherbrainignore" (gitignore-compatible syntax) at the ROOT of a --dir (or a
 // --profile-resolved directory) filters what gets archived from THAT directory —
 // node_modules/, caches, credential files etc no longer have to be tar'd, encrypted and
 // (on a paid backend) permanently stored just because they happened to live under a
@@ -159,7 +159,10 @@ async function contentDigestOfPath(abs: string): Promise<string> {
 // gitignore-semantics implementation widely used by eslint/gitbook/etc) rather than a
 // hand-rolled glob — no wheel reinvented, and the syntax an operator already knows from
 // .gitignore works here unchanged.
-const IGNORE_FILE_NAME = '.cipherbrainignore';
+const IGNORE_FILE_NAME = '.cypherbrainignore';
+// The pre-rename name, still honoured when the current one is absent so an existing tree
+// keeps filtering exactly as before the cipher-brain -> cypher-brain rename.
+const LEGACY_IGNORE_FILE_NAME = '.cipherbrainignore';
 
 // Read a --dir root's own ignore file. Returns null when absent — the ONLY
 // behavior-preserving path: every call site below falls back to the exact pre-#216 tar
@@ -167,11 +170,14 @@ const IGNORE_FILE_NAME = '.cipherbrainignore';
 // as it always was. Root-only lookup (not a cascading per-subdirectory .gitignore
 // stack): the issue asks for one ignore file per --dir/--profile root, and reimplementing
 // git's full nested-.gitignore precedence rules is unneeded complexity this tool never
-// asked for.
-async function loadIgnoreFile(dirAbs: string): Promise<Ignore | null> {
-  const p = join(dirAbs, IGNORE_FILE_NAME);
-  if (!(await exists(p))) return null;
-  return ignore().add(await readFile(p, 'utf8'));
+// asked for. The current name wins; the legacy name is only read when it is absent (never
+// merged, so which file is in effect is always unambiguous).
+async function loadIgnoreFile(dirAbs: string): Promise<{ ig: Ignore; name: string } | null> {
+  for (const name of [IGNORE_FILE_NAME, LEGACY_IGNORE_FILE_NAME]) {
+    const p = join(dirAbs, name);
+    if (await exists(p)) return { ig: ignore().add(await readFile(p, 'utf8')), name };
+  }
+  return null;
 }
 
 // One LEAF (file/symlink/special) entry a --dir scan classified as included or excluded.
@@ -286,20 +292,20 @@ interface ManifestComponent {
   tables?: string[] | 'all';
   // --pg-filter / --pg-exclude-table-data (issue #235): recorded verbatim, purely for
   // manifest transparency (same spirit as `tables` above) — never read back by
-  // cipher-brain itself; a restore-time pg_restore doesn't need to know how the dump
+  // cypher-brain itself; a restore-time pg_restore doesn't need to know how the dump
   // was filtered.
   filter?: string;
   exclude_table_data?: string[];
   content_digest: string;
   captured_at: string;
-  // #216: present (true) only when a .cipherbrainignore at this component's root
+  // #216: present (true) only when a .cypherbrainignore at this component's root
   // filtered what got archived; excluded_count is the number of top-level excluded
   // paths (individually-excluded files + pruned ignored subtrees, each subtree counted
   // once regardless of how many files it contained). Absent entirely (not `false`)
   // when no ignore file applied, so old manifests and new unfiltered ones look
   // identical — this is purely additive provenance, never a behavior signal restore
   // reads.
-  cipherbrainignore?: boolean;
+  cypherbrainignore?: boolean;
   excluded_count?: number;
   // Present only when --scan-secrets was passed (#215): gitleaks rule-ID + count for
   // this component, NEVER the matched secret/file path/line (see secrets-scan.ts).
@@ -323,7 +329,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // "ENOENT: no such file or directory, lstat '<path>'". requirePath (not exists())
   // so a dangling top-level symlink, which snapshot archives on purpose, still passes.
   for (const d of o.dirs) await requirePath(resolve(d), 'snapshot source');
-  // #216: --dry-run previews --dir/--profile .cipherbrainignore filtering WITHOUT
+  // #216: --dry-run previews --dir/--profile .cypherbrainignore filtering WITHOUT
   // staging, encrypting or writing anything — checked HERE, before the --out
   // requirement below, since a preview has no output file (no --out needed).
   //
@@ -338,7 +344,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
       throw new Error(
         `--scan-secrets cannot be combined with --dry-run: a dry run stages no plaintext, so there is nothing for ` +
           `gitleaks to scan and the preview would exit 0 having checked nothing. Drop --dry-run to run the gate for ` +
-          `real, or drop --scan-secrets to preview the .cipherbrainignore filtering.`,
+          `real, or drop --scan-secrets to preview the .cypherbrainignore filtering.`,
       );
     return dryRun(o);
   }
@@ -380,7 +386,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
       await assertGitleaksAvailable();
     }
   } else if (o.dirs.length > 0 && (await gitleaksAvailable())) {
-    // #301: the scan is no longer opt-in. cipher-brain's primary backends are un-deletable,
+    // #301: the scan is no longer opt-in. cypher-brain's primary backends are un-deletable,
     // and the project's answer to "forget this one snapshot" is that there isn't one — so
     // the one PREVENTIVE measure it has cannot stay switched off by default.
     //
@@ -439,7 +445,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
   const entriesByRec = new Map<string, string[]>(); // recipient arg -> its effective age1… entries
   for (const r of recs) {
     if (!r.startsWith('age1') && !(await exists(r))) {
-      throw new Error(`no recipient at ${r} — run "cipher-brain keygen" first, or pass an age1... pubkey`);
+      throw new Error(`no recipient at ${r} — run "cypher-brain keygen" first, or pass an age1... pubkey`);
     }
     entriesByRec.set(r, await recipientEntries(r));
   }
@@ -462,23 +468,23 @@ export async function snapshot(o: CliOptions): Promise<void> {
   //
   // PIN_RECIPIENTS is `string | undefined`, not just a falsy check: `undefined` means
   // the var is genuinely unset (no pin configured, check skipped). An explicitly empty
-  // string (CIPHER_BRAIN_PIN_RECIPIENTS="") is a misconfiguration — most likely a
+  // string (CYPHER_BRAIN_PIN_RECIPIENTS="") is a misconfiguration — most likely a
   // broken template in an unattended cron/systemd unit — and must fail CLOSED, not be
   // silently treated as "no pin" (which would defeat the whole point of the pin).
   if (PIN_RECIPIENTS !== undefined) {
     if (PIN_RECIPIENTS === '') {
       throw new Error(
-        'CIPHER_BRAIN_PIN_RECIPIENTS is set but empty — refusing to snapshot (an explicitly empty pin looks like a misconfiguration; unset the variable entirely to run without an allowlist)',
+        'CYPHER_BRAIN_PIN_RECIPIENTS is set but empty — refusing to snapshot (an explicitly empty pin looks like a misconfiguration; unset the variable entirely to run without an allowlist)',
       );
     }
     const allowed = await resolvePinnedRecipients(PIN_RECIPIENTS);
     if (allowed.size === 0)
-      throw new Error('CIPHER_BRAIN_PIN_RECIPIENTS is set but lists no age1… pubkeys — refusing to snapshot');
+      throw new Error('CYPHER_BRAIN_PIN_RECIPIENTS is set but lists no age1… pubkeys — refusing to snapshot');
     for (const r of recs) {
       const entries = entriesByRec.get(r) ?? [];
       if (entries.length === 0)
         throw new Error(
-          `recipient "${r}" has no recipients to check against CIPHER_BRAIN_PIN_RECIPIENTS (refusing to snapshot)`,
+          `recipient "${r}" has no recipients to check against CYPHER_BRAIN_PIN_RECIPIENTS (refusing to snapshot)`,
         );
       for (const e of entries) {
         // Fail-closed: every entry must be an allowlisted age1… key. A non-age1
@@ -486,7 +492,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
         // age1-only allowlist, so it is rejected — which is the point.
         if (!allowed.has(e))
           throw new Error(
-            `recipient "${e}" (via "${r}") is NOT in CIPHER_BRAIN_PIN_RECIPIENTS — refusing to snapshot (an unexpected recipient could decrypt your brain)`,
+            `recipient "${e}" (via "${r}") is NOT in CYPHER_BRAIN_PIN_RECIPIENTS — refusing to snapshot (an unexpected recipient could decrypt your brain)`,
           );
       }
     }
@@ -528,7 +534,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
   // happen in one tick with no event-loop yield between them — otherwise a signal that
   // lands during the await could fire the handler while ACTIVE_STAGE is still null and
   // leave the just-created stage dir behind.
-  const stage = mkdtempSync(join(tmpdir(), 'cipher-brain-'));
+  const stage = mkdtempSync(join(tmpdir(), 'cypher-brain-'));
   setActiveStage(stage); // a signal now erases this staged plaintext (see installStageSignalGuard)
   const createdAt = new Date().toISOString(); // when this snapshot run began (top-level)
   try {
@@ -537,7 +543,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
       const dumpPath = join(stage, 'db.dump');
       const tableArgs = o.tables.flatMap((t) => ['-t', t]);
       // --pg-filter / --pg-exclude-table-data (issue #235): a LITERAL pass-through to
-      // pg_dump's own standard flags — no cipher-brain-side SQL parsing/filtering. This is
+      // pg_dump's own standard flags — no cypher-brain-side SQL parsing/filtering. This is
       // what lets a "minimal recovery profile" run (raw conversation logs / embedding
       // caches / tool-run logs excluded) sit alongside a normal full snapshot, using
       // nothing but pg_dump's documented filtering surface:
@@ -594,12 +600,12 @@ export async function snapshot(o: CliOptions): Promise<void> {
       const topStat = await lstat(abs);
       const kind = topStat.isSymbolicLink() ? 'symlink' : topStat.isDirectory() ? 'dir' : 'file';
       const archivePath = join(stage, name);
-      // #216: a directory --dir source may carry its OWN ".cipherbrainignore" at its
+      // #216: a directory --dir source may carry its OWN ".cypherbrainignore" at its
       // root — a single-file/symlink source (kind !== 'dir') has no tree to filter, so
       // this is null there and the plain tar call below is unchanged. null also when a
       // directory source simply has no such file: the ONLY behavior-preserving path,
       // so every pre-#216 --dir (no ignore file yet) archives byte-for-byte as before.
-      const ig = kind === 'dir' ? await loadIgnoreFile(abs) : null;
+      const ig = kind === 'dir' ? ((await loadIgnoreFile(abs))?.ig ?? null) : null;
       let excludedCount: number | undefined;
       // #367: the COMPLETE relative-path listing of this source, when a walk of it
       // already happened for filtering — BOTH halves, what tar will archive and what the
@@ -753,7 +759,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
         source: abs,
         content_digest: contentDigest,
         captured_at: new Date().toISOString(),
-        ...(ig ? { cipherbrainignore: true, excluded_count: excludedCount } : {}),
+        ...(ig ? { cypherbrainignore: true, excluded_count: excludedCount } : {}),
         // An empty array means "scanned, found nothing". A scan that could not RUN must
         // never produce it — the durable artifact would then claim a clean component that
         // was never inspected, which is the same lie the console was careful to avoid
@@ -785,7 +791,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
     const manifestPath = join(stage, 'manifest.json');
     const manifestJson = JSON.stringify(
       {
-        tool: 'cipher-brain',
+        tool: 'cypher-brain',
         schema: 1,
         host: hostname(),
         created_at: createdAt,
@@ -850,7 +856,7 @@ export async function snapshot(o: CliOptions): Promise<void> {
     // secret) can forge ciphertext that decrypts cleanly, claiming to be a real
     // snapshot. Signing the ciphertext bytes we just wrote closes that gap; restore/
     // verify check this BEFORE decrypting (src/lib/restore.ts). Automatic whenever a
-    // signing identity is present (default $CIPHER_BRAIN_HOME/sign-identity.key, or
+    // signing identity is present (default $CYPHER_BRAIN_HOME/sign-identity.key, or
     // --sign-identity) — no separate opt-in flag, mirroring how snapshot already just
     // encrypts whenever a recipient is present — so running `keygen --sign` once is
     // the entire "turn signing on" step. --no-sign opts out even when a key is
@@ -962,13 +968,13 @@ function printContributors(entries: ScanEntry[], totalBytes: number): void {
   }
 }
 
-// #216: `snapshot --dry-run` — preview --dir/--profile .cipherbrainignore filtering
+// #216: `snapshot --dry-run` — preview --dir/--profile .cypherbrainignore filtering
 // WITHOUT staging, encrypting or writing anything (no --out, no temp stage dir, no
 // recipient resolution: none of that machinery is exercised here, on purpose — this is
 // a read-only report). Uses the SAME scanDir() the real snapshot() call above feeds
 // tar with, so the preview can never diverge from what an actual run would archive.
 async function dryRun(o: CliOptions): Promise<void> {
-  console.log('DRY RUN — previewing .cipherbrainignore filtering; nothing will be staged, encrypted, or written.');
+  console.log('DRY RUN — previewing .cypherbrainignore filtering; nothing will be staged, encrypted, or written.');
   if (o.pg) {
     // pg_dump is never executed for a preview (it would mutate nothing, but it can
     // take real time against a live DB, and its size is unknowable before it runs) —
@@ -982,16 +988,17 @@ async function dryRun(o: CliOptions): Promise<void> {
     const top = await lstat(abs);
     console.log(`\n-- ${abs} --`);
     if (top.isSymbolicLink()) {
-      console.log('  symlink source — archived as-is (not filterable by .cipherbrainignore)');
+      console.log('  symlink source — archived as-is (not filterable by .cypherbrainignore)');
       continue;
     }
     if (!top.isDirectory()) {
       const sz = (await stat(abs)).size;
-      console.log(`  file source, ${fmtBytes(sz)} (single file — not filterable by .cipherbrainignore)`);
+      console.log(`  file source, ${fmtBytes(sz)} (single file — not filterable by .cypherbrainignore)`);
       totalIncluded += sz;
       continue;
     }
-    const ig = await loadIgnoreFile(abs);
+    const loaded = await loadIgnoreFile(abs);
+    const ig = loaded?.ig ?? null;
     const { included, excluded } = await scanDir(abs, ig);
     const incBytes = included.reduce((s, e) => s + e.size, 0);
     const excBytes = excluded.reduce((s, e) => s + e.size, 0);
@@ -1006,11 +1013,13 @@ async function dryRun(o: CliOptions): Promise<void> {
       printContributors(included, incBytes);
       continue;
     }
+    // loaded is set whenever ig is (same object) — name it so the report says which file
+    // (current or legacy spelling) actually filtered this source.
     console.log(
-      `  ${IGNORE_FILE_NAME} found — ${included.length} file(s) included (${fmtBytes(incBytes)}), ${excluded.length} path(s) excluded (${fmtBytes(excBytes)})`,
+      `  ${loaded?.name ?? IGNORE_FILE_NAME} found — ${included.length} file(s) included (${fmtBytes(incBytes)}), ${excluded.length} path(s) excluded (${fmtBytes(excBytes)})`,
     );
     // #368: breakdown of what SURVIVED filtering — a dominant contributor still hiding
-    // behind an already-present .cipherbrainignore is exactly as worth surfacing as one
+    // behind an already-present .cypherbrainignore is exactly as worth surfacing as one
     // hiding behind no ignore file at all.
     printContributors(included, incBytes);
     console.log('  include:');

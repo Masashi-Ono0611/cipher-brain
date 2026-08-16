@@ -21,7 +21,7 @@
 //     dist/cli.mjs so the shipped CLI runs with zero runtime deps (#64).
 //   - `@modelcontextprotocol/sdk` is inlined so dist/mcp.mjs runs on a fresh
 //     machine with no node_modules at all (#65).
-//   - `ignore` (the .cipherbrainignore matcher, #216) is a small, dependency-free,
+//   - `ignore` (the .cypherbrainignore matcher, #216) is a small, dependency-free,
 //     always-needed part of `snapshot`'s normal path (not a lazily-imported optional
 //     backend like arweave/turbo below) — it must land inside dist/cli.mjs for the
 //     same #64 reason age-encryption does, or the shipped CLI would need node_modules
@@ -112,8 +112,8 @@ const result = await Bun.build({
   naming: '[dir]/[name].mjs', // force the OUTPUT extension to .mjs (Bun defaults .ts sources to .js too)
   banner: '#!/usr/bin/env node',
   define: {
-    __CIPHER_BRAIN_RESTORE_RUNBOOK__: JSON.stringify(runbook),
-    __CIPHER_BRAIN_BUILD_INFO__: JSON.stringify(JSON.stringify(buildInfo)),
+    __CYPHER_BRAIN_RESTORE_RUNBOOK__: JSON.stringify(runbook),
+    __CYPHER_BRAIN_BUILD_INFO__: JSON.stringify(JSON.stringify(buildInfo)),
   },
 });
 if (!result.success) {

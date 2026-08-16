@@ -1,4 +1,4 @@
-// Shared re-exec helper for bin/cipher-brain.mjs and bin/cipher-brain-mcp.mjs. Both
+// Shared re-exec helper for bin/cypher-brain.mjs and bin/cypher-brain-mcp.mjs. Both
 // shims try a plain `import` of their real entrypoint first and only fall back to this
 // when that import fails with the tell-tale ERR_MODULE_NOT_FOUND (see those files for
 // the full "why" — running straight from src/*.ts with no build step).
@@ -9,7 +9,7 @@
 //  1. Space-in-path corruption. NODE_OPTIONS is parsed by splitting on whitespace, so
 //     interpolating an absolute filesystem path straight into a NODE_OPTIONS string
 //     (`--import ${loader}`) breaks if the repo checkout lives under a directory
-//     containing a space (e.g. "My Projects/cipher-brain") — the path silently splits
+//     containing a space (e.g. "My Projects/cypher-brain") — the path silently splits
 //     into two bogus tokens and the loader fails to register. Fix: never put the loader
 //     path into a NODE_OPTIONS string. Pass `--experimental-strip-types` and `--import
 //     <loader>` as literal argv elements to the child `node` invocation instead — argv
@@ -37,7 +37,7 @@ export async function reexecUnderDevLoader(callerUrl, extraArgv) {
 
   const child = spawn(process.execPath, nodeArgv, {
     stdio: 'inherit',
-    env: { ...process.env, CIPHER_BRAIN_DEV_SHIM_REEXEC: '1' },
+    env: { ...process.env, CYPHER_BRAIN_DEV_SHIM_REEXEC: '1' },
   });
 
   const forwardedSignals = ['SIGINT', 'SIGTERM', 'SIGHUP'];

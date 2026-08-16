@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 New `wallet balance` reports what an address can actually spend on `turbo`: its own Turbo

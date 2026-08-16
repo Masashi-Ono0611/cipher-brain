@@ -8,14 +8,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 PRIMARY="$TMP/keys-primary"; BACKUP="$TMP/keys-backup"; THIRD="$TMP/keys-third"
-cb() { CIPHER_BRAIN_HOME="$1" node "${BIN_DEV_ARGS[@]}" "$BIN" "${@:2}"; }
+cb() { CYPHER_BRAIN_HOME="$1" node "${BIN_DEV_ARGS[@]}" "$BIN" "${@:2}"; }
 
 echo "== three independent keypairs =="
 cb "$PRIMARY" keygen >/dev/null
@@ -69,7 +69,7 @@ LATESTMARK=$(cat "$SRC/note.txt")
 cb "$PRIMARY" snapshot --dir "$SRC" \
   --recipient "$PRIMARY/recipient.txt" --recipient "$BACKUP/recipient.txt" --out "$TMP/latest.age"
 STORE="$TMP/store"; LOCFILE="$TMP/offbox/latest-locator.tsv"
-CIPHER_BRAIN_FILE_DIR="$STORE" cb "$PRIMARY" push --in "$TMP/latest.age" --backend file \
+CYPHER_BRAIN_FILE_DIR="$STORE" cb "$PRIMARY" push --in "$TMP/latest.age" --backend file \
   --save-locator "$LOCFILE" >/dev/null
 test -f "$LOCFILE" || { echo "[FAIL] --save-locator wrote no file"; exit 1; }
 # the saved file must carry the backend AND an integrity pin (sha256) so pull needs no
@@ -80,7 +80,7 @@ SAVED_BACKEND=$(cut -f2 "$LOCFILE"); SAVED_SHA=$(cut -f3 "$LOCFILE")
   || { echo "[FAIL] locator file sha256 column does not match the ciphertext"; cat "$LOCFILE"; exit 1; }
 echo "[PASS] push --save-locator wrote <locator>\\t<backend>\\t<sha256>"
 # fresh machine: BACKUP identity present, index.tsv absent, only the locator file + store
-CIPHER_BRAIN_FILE_DIR="$STORE" cb "$BACKUP" pull --from-locator-file "$LOCFILE" --out "$TMP/recovered.age" >/dev/null
+CYPHER_BRAIN_FILE_DIR="$STORE" cb "$BACKUP" pull --from-locator-file "$LOCFILE" --out "$TMP/recovered.age" >/dev/null
 cmp -s "$TMP/latest.age" "$TMP/recovered.age" || { echo "[FAIL] --from-locator-file fetched different bytes"; exit 1; }
 cb "$BACKUP" restore --in "$TMP/recovered.age" --out-dir "$TMP/r-loc" >/dev/null
 tar -xzf "$TMP/r-loc/brain.tar.gz" -C "$TMP/r-loc"
@@ -92,7 +92,7 @@ grep -q "$LATESTMARK" "$TMP/r-loc/brain/note.txt" \
 STORED_OBJ=$(cut -f1 "$LOCFILE")
 cp "$STORED_OBJ" "$TMP/obj.bak"
 printf 'TAMPERED' >> "$STORED_OBJ"   # same locator (path), different bytes
-if CIPHER_BRAIN_FILE_DIR="$STORE" cb "$BACKUP" pull --from-locator-file "$LOCFILE" --out "$TMP/tampered.age" 2>/dev/null; then
+if CYPHER_BRAIN_FILE_DIR="$STORE" cb "$BACKUP" pull --from-locator-file "$LOCFILE" --out "$TMP/tampered.age" 2>/dev/null; then
   echo "[FAIL] recovery accepted a tampered ciphertext (integrity pin did not fire)"; exit 1
 fi
 test ! -f "$TMP/tampered.age" || { echo "[FAIL] tampered --out was left behind (not fail-closed)"; exit 1; }
@@ -102,7 +102,7 @@ echo "[PASS] saved sha256 fail-closes recovery against a substituted ciphertext"
 # generic "--backend required" message.
 printf 'just-a-locator-no-tab\n' > "$TMP/bad-locator.tsv"
 set +e
-BADOUT=$(CIPHER_BRAIN_FILE_DIR="$STORE" cb "$BACKUP" pull --from-locator-file "$TMP/bad-locator.tsv" --out "$TMP/x.age" 2>&1); BADRC=$?
+BADOUT=$(CYPHER_BRAIN_FILE_DIR="$STORE" cb "$BACKUP" pull --from-locator-file "$TMP/bad-locator.tsv" --out "$TMP/x.age" 2>&1); BADRC=$?
 set -e
 [ "$BADRC" != "0" ] || { echo "[FAIL] malformed locator file did not error"; exit 1; }
 printf '%s' "$BADOUT" | grep -q "must contain" || { echo "[FAIL] malformed locator file error is not specific"; echo "$BADOUT"; exit 1; }
@@ -110,7 +110,7 @@ echo "[PASS] malformed locator file (missing backend) errors clearly"
 # --save-locator must be overwrite-only (always the LATEST), not appended
 printf 'brain-v3-%s\n' "$(od -An -N4 -tx1 /dev/urandom | tr -d ' ')" > "$SRC/note.txt"
 cb "$PRIMARY" snapshot --dir "$SRC" --recipient "$PRIMARY/recipient.txt" --out "$TMP/v3.age"
-CIPHER_BRAIN_FILE_DIR="$STORE" cb "$PRIMARY" push --in "$TMP/v3.age" --backend file \
+CYPHER_BRAIN_FILE_DIR="$STORE" cb "$PRIMARY" push --in "$TMP/v3.age" --backend file \
   --save-locator "$LOCFILE" >/dev/null
 [ "$(grep -c . "$LOCFILE")" = "1" ] || { echo "[FAIL] locator file has >1 line (should hold only the latest)"; cat "$LOCFILE"; exit 1; }
 echo "[PASS] --save-locator holds only the latest locator (overwrite, not append)"

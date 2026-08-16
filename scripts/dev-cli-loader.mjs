@@ -1,4 +1,4 @@
-// Bootstrap for running bin/cipher-brain{,-mcp}.mjs straight from src/*.ts with plain
+// Bootstrap for running bin/cypher-brain{,-mcp}.mjs straight from src/*.ts with plain
 // `node` — preloaded via NODE_OPTIONS="--experimental-strip-types --import
 // <this file>" (set once, near the top, by every selftest*.sh / cli-smoke.sh /
 // large-file-test.sh script — see scripts/dev-ts-resolve-hook.mjs for the why).

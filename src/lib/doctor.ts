@@ -2,9 +2,9 @@
 //
 // Several past issues were each a report of ONE way this tool's setup can silently be
 // unsafe: #91 (loadIdentities() never checked identity permissions), #119 (a chmod
-// failure on $CIPHER_BRAIN_HOME was swallowed instead of failing closed), #35 (the
+// failure on $CYPHER_BRAIN_HOME was swallowed instead of failing closed), #35 (the
 // Arweave JWK wallet got weaker permission hygiene than the age identity), #101
-// (CIPHER_BRAIN_PIN_RECIPIENTS="" used to fail OPEN, disabling the allowlist), #99 (the
+// (CYPHER_BRAIN_PIN_RECIPIENTS="" used to fail OPEN, disabling the allowlist), #99 (the
 // offline backup keypair's suggested default path sits on the SAME disk as the primary
 // identity). Every one of those is fixed now (loadIdentities/keygenAt/wallet.ts all
 // warn or fail closed on loose permissions today; snapshot.ts fail-closes on an empty
@@ -31,8 +31,8 @@
 //      the problem.
 //
 // "Known vs new" needs a memory of the LAST run, so doctor keeps a small bookkeeping
-// file at $CIPHER_BRAIN_HOME/doctor-state.json — check ids and timestamps only, never
-// key material. It is written best-effort and ONLY when CIPHER_BRAIN_HOME already
+// file at $CYPHER_BRAIN_HOME/doctor-state.json — check ids and timestamps only, never
+// key material. It is written best-effort and ONLY when CYPHER_BRAIN_HOME already
 // exists: doctor's whole premise is inspecting an EXISTING setup, so it must never
 // create that directory just to leave its own bookkeeping file on a machine that has
 // nothing set up yet (that would also stop being a purely read-only diagnostic).
@@ -135,7 +135,7 @@ async function checkHomeDirPerms(): Promise<DoctorCheck> {
     return {
       id,
       status: 'fail',
-      message: `could not check CIPHER_BRAIN_HOME (${HOME}): ${errMsg(e)}`,
+      message: `could not check CYPHER_BRAIN_HOME (${HOME}): ${errMsg(e)}`,
       remediation: `check that every path component of ${HOME} is accessible — a permission-denied parent directory or a symlink loop prevents this check from seeing its real permissions`,
     };
   }
@@ -143,18 +143,18 @@ async function checkHomeDirPerms(): Promise<DoctorCheck> {
     return {
       id,
       status: 'skip',
-      message: `no CIPHER_BRAIN_HOME directory yet at ${HOME} — run 'cipher-brain keygen' or 'cipher-brain init' to create one`,
+      message: `no CYPHER_BRAIN_HOME directory yet at ${HOME} — run 'cypher-brain keygen' or 'cypher-brain init' to create one`,
     };
   }
   if (loosePerms(st.mode)) {
     return {
       id,
       status: 'fail',
-      message: `CIPHER_BRAIN_HOME (${HOME}) is group/other-accessible (mode ${octal(st.mode)}) — it holds the private identity`,
+      message: `CYPHER_BRAIN_HOME (${HOME}) is group/other-accessible (mode ${octal(st.mode)}) — it holds the private identity`,
       remediation: `chmod 700 ${HOME}`,
     };
   }
-  return { id, status: 'pass', message: `CIPHER_BRAIN_HOME permissions are 0700 (${HOME})` };
+  return { id, status: 'pass', message: `CYPHER_BRAIN_HOME permissions are 0700 (${HOME})` };
 }
 
 // Shared by identity.age, sign-identity.key and the wallet JWK — all three are secret
@@ -164,7 +164,7 @@ async function checkHomeDirPerms(): Promise<DoctorCheck> {
 //
 // explicitPath: true for the ONE case where a missing file is itself a misconfiguration
 // rather than "not set up yet" — the Arweave wallet's path can be EXPLICITLY set via
-// CIPHER_BRAIN_AR_WALLET instead of falling back to WALLET_DEFAULT_PATH, and a user who
+// CYPHER_BRAIN_AR_WALLET instead of falling back to WALLET_DEFAULT_PATH, and a user who
 // set it clearly intends to use a wallet there; nothing at that exact path should FAIL,
 // not SKIP with the same wording an unconfigured-and-that-is-fine wallet gets (Codex
 // review, #333).
@@ -185,8 +185,8 @@ async function checkKeyPerms(id: string, path: string, label: string, explicitPa
       return {
         id,
         status: 'fail',
-        message: `CIPHER_BRAIN_AR_WALLET is set to ${path}, but nothing is there`,
-        remediation: `create the wallet ('cipher-brain wallet create --out ${path}'), fix the CIPHER_BRAIN_AR_WALLET path, or unset it`,
+        message: `CYPHER_BRAIN_AR_WALLET is set to ${path}, but nothing is there`,
+        remediation: `create the wallet ('cypher-brain wallet create --out ${path}'), fix the CYPHER_BRAIN_AR_WALLET path, or unset it`,
       };
     }
     return { id, status: 'skip', message: `no ${label} at ${path} — nothing to check` };
@@ -216,7 +216,7 @@ async function checkKeyPerms(id: string, path: string, label: string, explicitPa
 // backup. Skipped (not failed) when the identity is passphrase-wrapped: unwrapping it
 // needs a passphrase prompt, which a routine diagnostic should not spring on someone
 // running it non-interactively (e.g. from a script) — the check that DOES prove
-// end-to-end restorability, `cipher-brain verify`, already prompts for exactly that
+// end-to-end restorability, `cypher-brain verify`, already prompts for exactly that
 // when it needs to.
 async function checkIdentityRecipientPairing(): Promise<DoctorCheck> {
   const id = 'identity-recipient-pairing';
@@ -250,7 +250,7 @@ async function checkIdentityRecipientPairing(): Promise<DoctorCheck> {
     return {
       id,
       status: 'skip',
-      message: `${IDENTITY} is passphrase-wrapped — skipped rather than prompting during a routine diagnostic (run 'cipher-brain verify --in <a snapshot>' to prove restorability instead)`,
+      message: `${IDENTITY} is passphrase-wrapped — skipped rather than prompting during a routine diagnostic (run 'cypher-brain verify --in <a snapshot>' to prove restorability instead)`,
     };
   }
   const idLines = rawText
@@ -262,7 +262,7 @@ async function checkIdentityRecipientPairing(): Promise<DoctorCheck> {
       id,
       status: 'fail',
       message: `${IDENTITY} has no identity lines`,
-      remediation: 'cipher-brain keygen --force',
+      remediation: 'cypher-brain keygen --force',
     };
   }
   let derived: string[];
@@ -279,7 +279,7 @@ async function checkIdentityRecipientPairing(): Promise<DoctorCheck> {
       id,
       status: 'fail',
       message: `${IDENTITY} does not parse as a valid age identity — it may be corrupt or truncated`,
-      remediation: `restore ${IDENTITY} from a backup, or run 'cipher-brain keygen --force' to regenerate a fresh identity (only if you accept losing access to anything encrypted solely under the old one)`,
+      remediation: `restore ${IDENTITY} from a backup, or run 'cypher-brain keygen --force' to regenerate a fresh identity (only if you accept losing access to anything encrypted solely under the old one)`,
     };
   }
   const derivedSet = new Set(derived);
@@ -290,11 +290,11 @@ async function checkIdentityRecipientPairing(): Promise<DoctorCheck> {
       id,
       status: 'fail',
       message: `${IDENTITY} does not match ${RECIPIENT} — deriving its public key gives a different value than what recipient.txt records; one of the two files was likely replaced independently`,
-      remediation: `restore the correct pairing from a backup, or run 'cipher-brain keygen --force' to regenerate a fresh, MATCHING pair (only if you accept that any snapshot already encrypted under the old key stays recoverable solely by the old identity)`,
+      remediation: `restore the correct pairing from a backup, or run 'cypher-brain keygen --force' to regenerate a fresh, MATCHING pair (only if you accept that any snapshot already encrypted under the old key stays recoverable solely by the old identity)`,
     };
   }
   // The identity's own key IS somewhere in recipient.txt — but is anything ELSE also in
-  // there? A plain `cipher-brain snapshot` (no --recipient override) encrypts to EVERY
+  // there? A plain `cypher-brain snapshot` (no --recipient override) encrypts to EVERY
   // entry recipient.txt lists, so an extra one here is not inert: it gets a real
   // stanza on every future snapshot, same as if it had been passed as a deliberate
   // second --recipient (README's Threat model: "a box that can rewrite recipient.txt
@@ -310,7 +310,7 @@ async function checkIdentityRecipientPairing(): Promise<DoctorCheck> {
     return {
       id,
       status: 'fail',
-      message: `${RECIPIENT} lists ${unexpected.length} recipient(s) that do not derive from ${IDENTITY} (${unexpected.join(', ')}) — an unexpected recipient here silently re-keys EVERY future plain "cipher-brain snapshot" to whoever holds its identity too`,
+      message: `${RECIPIENT} lists ${unexpected.length} recipient(s) that do not derive from ${IDENTITY} (${unexpected.join(', ')}) — an unexpected recipient here silently re-keys EVERY future plain "cypher-brain snapshot" to whoever holds its identity too`,
       remediation: `if this is a deliberate multi-recipient/backup setup, keep the additional recipient in its OWN file and pass it as a separate --recipient at snapshot time instead of adding it to ${RECIPIENT}; otherwise remove the unexpected line(s) from ${RECIPIENT}`,
     };
   }
@@ -329,7 +329,7 @@ async function checkPinRecipients(): Promise<DoctorCheck[]> {
       {
         id: configId,
         status: 'skip',
-        message: 'CIPHER_BRAIN_PIN_RECIPIENTS is not set — no recipient allowlist configured (optional)',
+        message: 'CYPHER_BRAIN_PIN_RECIPIENTS is not set — no recipient allowlist configured (optional)',
       },
     ];
   }
@@ -339,8 +339,8 @@ async function checkPinRecipients(): Promise<DoctorCheck[]> {
         id: configId,
         status: 'fail',
         message:
-          'CIPHER_BRAIN_PIN_RECIPIENTS is set but EMPTY — every "cipher-brain snapshot" now refuses to run until this is fixed (fail-closed behavior, #101)',
-        remediation: `unset CIPHER_BRAIN_PIN_RECIPIENTS (remove it from the environment, or from ${CONFIG_FILE_PATH}) to run without an allowlist, or set it to the age1… recipient(s) you intend to pin`,
+          'CYPHER_BRAIN_PIN_RECIPIENTS is set but EMPTY — every "cypher-brain snapshot" now refuses to run until this is fixed (fail-closed behavior, #101)',
+        remediation: `unset CYPHER_BRAIN_PIN_RECIPIENTS (remove it from the environment, or from ${CONFIG_FILE_PATH}) to run without an allowlist, or set it to the age1… recipient(s) you intend to pin`,
       },
     ];
   }
@@ -348,7 +348,7 @@ async function checkPinRecipients(): Promise<DoctorCheck[]> {
   try {
     allowed = await resolvePinnedRecipients(PIN_RECIPIENTS);
   } catch (e) {
-    return [{ id: configId, status: 'fail', message: `could not resolve CIPHER_BRAIN_PIN_RECIPIENTS: ${errMsg(e)}` }];
+    return [{ id: configId, status: 'fail', message: `could not resolve CYPHER_BRAIN_PIN_RECIPIENTS: ${errMsg(e)}` }];
   }
   if (allowed.size === 0) {
     return [
@@ -356,13 +356,13 @@ async function checkPinRecipients(): Promise<DoctorCheck[]> {
         id: configId,
         status: 'fail',
         message:
-          'CIPHER_BRAIN_PIN_RECIPIENTS is set but names no recognizable age1… recipient (a typo, or every entry is commented out)',
-        remediation: 'fix the value/file, or unset CIPHER_BRAIN_PIN_RECIPIENTS to run without an allowlist',
+          'CYPHER_BRAIN_PIN_RECIPIENTS is set but names no recognizable age1… recipient (a typo, or every entry is commented out)',
+        remediation: 'fix the value/file, or unset CYPHER_BRAIN_PIN_RECIPIENTS to run without an allowlist',
       },
     ];
   }
   const results: DoctorCheck[] = [
-    { id: configId, status: 'pass', message: `CIPHER_BRAIN_PIN_RECIPIENTS resolves to ${allowed.size} recipient(s)` },
+    { id: configId, status: 'pass', message: `CYPHER_BRAIN_PIN_RECIPIENTS resolves to ${allowed.size} recipient(s)` },
   ];
   const includedId = 'pin-recipients-primary-included';
   if (!(await exists(RECIPIENT))) {
@@ -385,7 +385,7 @@ async function checkPinRecipients(): Promise<DoctorCheck[]> {
     results.push({
       id: includedId,
       status: 'warn',
-      message: `${notAllowed.length} of ${primary.length} recipient(s) in ${RECIPIENT} are NOT in the CIPHER_BRAIN_PIN_RECIPIENTS allowlist (${notAllowed.join(', ')}) — snapshot() requires EVERY effective recipient to be allowlisted, so a plain "cipher-brain snapshot" with no --recipient override will be refused`,
+      message: `${notAllowed.length} of ${primary.length} recipient(s) in ${RECIPIENT} are NOT in the CYPHER_BRAIN_PIN_RECIPIENTS allowlist (${notAllowed.join(', ')}) — snapshot() requires EVERY effective recipient to be allowlisted, so a plain "cypher-brain snapshot" with no --recipient override will be refused`,
       remediation:
         'add the missing recipient(s) to the allowlist, remove them from recipient.txt, or always pass --recipient with a pinned key',
     });
@@ -393,7 +393,7 @@ async function checkPinRecipients(): Promise<DoctorCheck[]> {
     results.push({
       id: includedId,
       status: 'pass',
-      message: 'every recipient in the primary recipient.txt is included in the CIPHER_BRAIN_PIN_RECIPIENTS allowlist',
+      message: 'every recipient in the primary recipient.txt is included in the CYPHER_BRAIN_PIN_RECIPIENTS allowlist',
     });
   }
   return results;
@@ -492,7 +492,7 @@ function checkBuildProvenance(): DoctorCheck {
 }
 
 // Reuses schedule.ts's OWN status computation (scheduleStatusReport) rather than
-// re-parsing logs itself, so this can never disagree with `cipher-brain schedule
+// re-parsing logs itself, so this can never disagree with `cypher-brain schedule
 // status` about what the last run did.
 async function checkSchedule(): Promise<DoctorCheck[]> {
   let report: Awaited<ReturnType<typeof scheduleStatusReport>>;
@@ -505,7 +505,7 @@ async function checkSchedule(): Promise<DoctorCheck[]> {
           id: 'schedule-last-run',
           status: 'skip',
           message:
-            'no schedule installed (optional) — run "cipher-brain schedule install" to automate nightly snapshots',
+            'no schedule installed (optional) — run "cypher-brain schedule install" to automate nightly snapshots',
         },
       ];
     }
@@ -519,7 +519,7 @@ async function checkSchedule(): Promise<DoctorCheck[]> {
         status: 'fail',
         message: `could not read the installed schedule's status: ${errMsg(e)}`,
         remediation:
-          'run "cipher-brain schedule status" directly for more detail, or "cipher-brain schedule install" again if the config looks corrupt',
+          'run "cypher-brain schedule status" directly for more detail, or "cypher-brain schedule install" again if the config looks corrupt',
       },
     ];
   }
@@ -557,7 +557,7 @@ async function checkSchedule(): Promise<DoctorCheck[]> {
       id: 'schedule-trigger-loaded',
       status: 'warn',
       message: `the ${report.trigger.type} trigger is written but not currently loaded/registered — scheduled runs will not happen`,
-      remediation: 'cipher-brain schedule install (re-run with the same flags to re-register)',
+      remediation: 'cypher-brain schedule install (re-run with the same flags to re-register)',
     });
   } else if (report.trigger.loaded === 'unknown') {
     // Distinct from BOTH 'yes' and 'no': the loaded-check itself failed (e.g. crontab
@@ -568,7 +568,7 @@ async function checkSchedule(): Promise<DoctorCheck[]> {
       id: 'schedule-trigger-loaded',
       status: 'warn',
       message: `could not determine whether the ${report.trigger.type} trigger is currently loaded/registered (the check itself failed) — scheduled runs may or may not be happening`,
-      remediation: 'cipher-brain schedule status for more detail, or re-run "cipher-brain schedule install" to be sure',
+      remediation: 'cypher-brain schedule status for more detail, or re-run "cypher-brain schedule install" to be sure',
     });
   } else {
     results.push({
@@ -618,7 +618,7 @@ async function saveDoctorState(
   // doctor-state.json path. writeFile() truncates and writes THROUGH an existing
   // symlink; rename() instead atomically replaces the directory ENTRY at statePath,
   // whatever it was, so a symlink planted there (e.g. by another user able to write
-  // into a group/world-writable CIPHER_BRAIN_HOME — exactly what home-dir-perms exists
+  // into a group/world-writable CYPHER_BRAIN_HOME — exactly what home-dir-perms exists
   // to catch) cannot redirect this write into overwriting an arbitrary file (Codex
   // review, #333).
   const tmp = `${statePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
@@ -628,7 +628,7 @@ async function saveDoctorState(
     return true;
   } catch {
     await rm(tmp, { force: true }).catch(() => {});
-    return false; // best-effort: a read-only CIPHER_BRAIN_HOME still gets a full report
+    return false; // best-effort: a read-only CYPHER_BRAIN_HOME still gets a full report
   }
 }
 
@@ -637,7 +637,7 @@ async function saveDoctorState(
 const STATUS_TAG: Record<CheckStatus, string> = { pass: 'PASS', warn: 'WARN', fail: 'FAIL', skip: 'SKIP' };
 
 function printDoctorReport(report: DoctorReport): void {
-  console.log('cipher-brain doctor — environment health check\n');
+  console.log('cypher-brain doctor — environment health check\n');
   for (const c of report.checks) {
     const marker =
       c.marker === 'new'

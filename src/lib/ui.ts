@@ -1,4 +1,4 @@
-// Tiny pure-ASCII mascot for cipher-brain's human-facing TTY output (README
+// Tiny pure-ASCII mascot for cypher-brain's human-facing TTY output (README
 // banner, `--help`, and the `verify` VERDICT line) — see issue #147.
 //
 // This ASCII-fies the repo's OWN existing mascot brand rather than inventing a
@@ -45,7 +45,7 @@ const FACES: Record<Mood, { lensL: string; lensR: string; mouth: string; deco: s
 
 /**
  * The floppy-eared, sunglassed dog mascot, faced for `mood`. Used by the
- * README banner (neutral), `cipher-brain --help` (neutral), and `verify`'s
+ * README banner (neutral), `cypher-brain --help` (neutral), and `verify`'s
  * VERDICT line (mood mapped from PASS/FAIL/PARTIAL via `moodForVerdict`).
  */
 export function mascot(mood: Mood = 'neutral'): string[] {

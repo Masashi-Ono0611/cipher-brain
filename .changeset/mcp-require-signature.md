@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 The MCP `verify_restore` and `restore_now` tools accept `require_signature`, the CLI's

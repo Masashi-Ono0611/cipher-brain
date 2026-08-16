@@ -1,6 +1,6 @@
-# Contributing to cipher-brain
+# Contributing to cypher-brain
 
-Thanks for taking the time to contribute. `cipher-brain` is a cryptographic
+Thanks for taking the time to contribute. `cypher-brain` is a cryptographic
 tool — it encrypts second-brain snapshots client-side and parks the
 ciphertext on pluggable storage backends — so contributions here get a
 higher review bar than a typical CLI project, especially anything touching
@@ -27,7 +27,7 @@ counterpart of that.)
 - **Anything larger** (new flags, new backends, behaviour changes): open an
   issue first describing what you want to do and why. This avoids spending
   time on a PR that doesn't fit the project's direction — see "What
-  cipher-brain isn't" in [`README.md`](README.md) for scope boundaries the
+  cypher-brain isn't" in [`README.md`](README.md) for scope boundaries the
   project intentionally does not expand.
 - Check open issues and PRs first so you're not duplicating in-flight work.
 - If your idea comes from how another project does something, check
@@ -57,7 +57,7 @@ dependency is attack surface. Runtime dependencies are kept deliberately few and
 are weighed against the supply-chain cost, which is why paid-upload SDKs are
 `peerDependencies` rather than hard requirements. "Prefer the dependency" means
 prefer it over *reinventing* — not over *not needing the feature at all*. The
-first question is still whether the feature belongs here (see "What cipher-brain
+first question is still whether the feature belongs here (see "What cypher-brain
 isn't" in [`README.md`](README.md)).
 
 ## Credit what you borrowed
@@ -106,7 +106,7 @@ Because of what this tool does, PRs touching any of the following get a
 slower, more careful review than a typical docs or CLI-ergonomics change:
 
 - Identity/recipient generation, storage, or file permissions
-  (`~/.cipher-brain/*`).
+  (`~/.cypher-brain/*`).
 - The age/typage encryption or decryption call paths.
 - Any storage backend (`file`, `arweave`/`turbo`, `rclone`) — anything that
   could let ciphertext-only guarantees slip, or that touches wallet/JWK

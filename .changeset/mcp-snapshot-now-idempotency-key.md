@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 The MCP `snapshot_now` tool (the only tool that can spend money) accepts an optional

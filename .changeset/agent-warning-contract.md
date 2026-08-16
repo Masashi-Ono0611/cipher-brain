@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 Warnings now survive being run by an agent (#347). A real monthly push driven

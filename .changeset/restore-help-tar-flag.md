@@ -1,5 +1,5 @@
 ---
-'cipher-brain': patch
+'cypher-brain': patch
 ---
 
 `restore --help` no longer advertises `--keep-old-files` as if it were a flag you can pass.

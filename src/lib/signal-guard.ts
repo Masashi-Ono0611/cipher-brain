@@ -202,7 +202,7 @@ export function installStageSignalGuard(): void {
           // flush before that happens).
           try {
             writeFileSync(
-              join(ACTIVE_RESTORE_OUT_DIR, '.cipher-brain-restore-INCOMPLETE'),
+              join(ACTIVE_RESTORE_OUT_DIR, '.cypher-brain-restore-INCOMPLETE'),
               `restore interrupted by ${sig} at ${new Date().toISOString()} — this directory may hold a partially-extracted tree; discard it before trusting the contents\n`,
             );
           } catch {}

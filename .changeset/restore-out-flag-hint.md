@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 `restore` now tells you when it ignored a `--out` you passed. `--out` names the

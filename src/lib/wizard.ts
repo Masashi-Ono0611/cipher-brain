@@ -1,4 +1,4 @@
-// wizard — `cipher-brain init`: an interactive, end-to-end setup wizard for a FRESH
+// wizard — `cypher-brain init`: an interactive, end-to-end setup wizard for a FRESH
 // machine (issue #68). It walks keygen -> backup-key guidance -> passphrase wrap ->
 // recipient pin -> profile selection -> first snapshot+push -> a printable recovery
 // kit, in one sitting.
@@ -66,7 +66,7 @@ import type { CliOptions } from './types.js';
 class InitCancelledError extends Error {
   constructor() {
     super(
-      'cipher-brain init: cancelled — anything this run already created is being rolled back (or, if a snapshot was already pushed, preserved and reported), same as any other error mid-wizard.',
+      'cypher-brain init: cancelled — anything this run already created is being rolled back (or, if a snapshot was already pushed, preserved and reported), same as any other error mid-wizard.',
     );
     this.name = 'InitCancelledError';
   }
@@ -77,17 +77,17 @@ class InitCancelledError extends Error {
 // hang forever on the first prompt (readline's question() never resolves on a stream
 // that reaches EOF without a line — proven while building this: `init < /dev/null`
 // hangs, it does not error). This mirrors promptHidden's own TTY posture (crypt.ts),
-// but — same shape as that module's OWN escape hatch, where CIPHER_BRAIN_PASSPHRASE
+// but — same shape as that module's OWN escape hatch, where CYPHER_BRAIN_PASSPHRASE
 // lets automation skip the hidden prompt entirely rather than needing a real TTY —
 // deliberate automation (this repo's own scripts/selftest-init.sh) opts in with
-// CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 instead of needing a genuine pseudo-tty.
+// CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1 instead of needing a genuine pseudo-tty.
 // A real terminal never needs to set this; it exists solely so the wizard's own
 // scripted end-to-end selftest can drive it deterministically.
 function requireTTY(): void {
   if (process.stdin.isTTY) return;
-  if (readEnv('CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE') === '1') return;
+  if (readEnv('CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE') === '1') return;
   throw new Error(
-    'cipher-brain init is an interactive wizard and requires stdin to be a TTY — run it directly in a ' +
+    'cypher-brain init is an interactive wizard and requires stdin to be a TTY — run it directly in a ' +
       'terminal, not via a pipe, a redirected file, or in CI (same posture keygen --passphrase already has ' +
       'for its passphrase prompt). For a non-interactive/scripted setup, drive the individual commands it ' +
       'wraps (keygen, snapshot, push, schedule) by hand instead; see MANAGEMENT.md.',
@@ -148,7 +148,7 @@ async function askYesNo(question: string, def: boolean): Promise<boolean> {
 
 // BackupKey/SigningKey/KitInputs and buildRecoveryKit() moved to
 // src/lib/recoverykit.ts (#364) so `init` and the standalone
-// `cipher-brain recovery-kit` command render ONE canonical kit that cannot
+// `cypher-brain recovery-kit` command render ONE canonical kit that cannot
 // drift. The wizard-era design notes (1Password Emergency Kit lineage,
 // plain-text-over-PDF, primary-not-duplicated) live there now.
 
@@ -156,15 +156,15 @@ export async function init(_o: CliOptions): Promise<void> {
   requireTTY();
   if (await exists(IDENTITY)) {
     throw new Error(
-      `an identity already exists at ${IDENTITY} — "cipher-brain init" is for a FRESH setup, not overwriting ` +
-        `one. To redo it deliberately, run "cipher-brain keygen --force" (overwrites the identity — you lose ` +
+      `an identity already exists at ${IDENTITY} — "cypher-brain init" is for a FRESH setup, not overwriting ` +
+        `one. To redo it deliberately, run "cypher-brain keygen --force" (overwrites the identity — you lose ` +
         `access to anything only that identity could decrypt) or drive keygen/snapshot/push/schedule by hand; ` +
         `see MANAGEMENT.md.`,
     );
   }
 
   console.log(
-    'cipher-brain init — interactive setup: keygen, key recovery, authenticity signing, first snapshot + push, recovery kit.\n',
+    'cypher-brain init — interactive setup: keygen, key recovery, authenticity signing, first snapshot + push, recovery kit.\n',
   );
 
   try {
@@ -180,7 +180,7 @@ export async function init(_o: CliOptions): Promise<void> {
     // (deliberately — everything inside that try is retry-safe via the catch further
     // down), so without this its own try/catch a partial keygen here would leave an
     // orphaned identity.age that nothing ever cleans up: every future `init` on this
-    // CIPHER_BRAIN_HOME hits the "identity already exists" refusal forever, with no
+    // CYPHER_BRAIN_HOME hits the "identity already exists" refusal forever, with no
     // rollback path to escape it (unlike every failure inside the try below).
     // IDENTITY itself is provably absent here — the exists() refusal above already
     // guarantees that, unconditionally, before this try even starts. RECIPIENT is not
@@ -239,7 +239,7 @@ export async function init(_o: CliOptions): Promise<void> {
       // ---------- 2. backup key guidance (MANAGEMENT.md Key recovery #1) ----------
       console.log('\n== 2/7: offline backup key (recommended) ==');
       console.log(
-        'cipher-brain gives you two independent defenses against losing the primary identity; the first is a\n' +
+        'cypher-brain gives you two independent defenses against losing the primary identity; the first is a\n' +
           'second, OFFLINE backup keypair. If you encrypt every snapshot to BOTH the primary and the backup\n' +
           'public key, either identity alone can restore — see MANAGEMENT.md "Key recovery #1".',
       );
@@ -298,7 +298,7 @@ export async function init(_o: CliOptions): Promise<void> {
         console.log(`backup identity written to: ${identityPath}`);
       } else {
         console.log(
-          'Skipping the backup key. You can add one later at any time: CIPHER_BRAIN_HOME=<path> cipher-brain keygen',
+          'Skipping the backup key. You can add one later at any time: CYPHER_BRAIN_HOME=<path> cypher-brain keygen',
         );
       }
 
@@ -349,7 +349,7 @@ export async function init(_o: CliOptions): Promise<void> {
         signing = { identityPath: SIGN_IDENTITY, recipientPath: SIGN_RECIPIENT, pubkeyText };
         console.log(`signing public key written to: ${SIGN_RECIPIENT}`);
       } else {
-        console.log('Skipping authenticity signing. You can add it later at any time: cipher-brain keygen --sign');
+        console.log('Skipping authenticity signing. You can add it later at any time: cypher-brain keygen --sign');
       }
 
       // ---------- 4. passphrase wrap the primary identity (MANAGEMENT.md Key recovery #2) ----------
@@ -386,13 +386,13 @@ export async function init(_o: CliOptions): Promise<void> {
         // making every snapshot already encrypted to it unrecoverable (#110). The
         // non-destructive option is --wrap-in-place, which reuses this exact same
         // keypair and only changes its on-disk encoding.
-        console.log('Skipping the passphrase wrap. You can wrap it later by re-running "cipher-brain keygen');
+        console.log('Skipping the passphrase wrap. You can wrap it later by re-running "cypher-brain keygen');
         console.log('--wrap-in-place" (keeps this same key — do NOT use --force, which generates a NEW key and');
         console.log('makes every snapshot already encrypted to this one unrecoverable), or by full-disk-encrypting');
         console.log('the machine that holds the identity (MANAGEMENT.md recommends both).');
       }
 
-      // ---------- 5. recipient pin suggestion (CIPHER_BRAIN_PIN_RECIPIENTS) ----------
+      // ---------- 5. recipient pin suggestion (CYPHER_BRAIN_PIN_RECIPIENTS) ----------
       // The config file (#286) — not a shell rc — is what this step points at. init still
       // does not WRITE it (that is a separate consent question: this wizard has never
       // persisted a setting on the user's behalf, and a file that may hold secrets is not
@@ -402,7 +402,7 @@ export async function init(_o: CliOptions): Promise<void> {
       // about the filename, or the user creates a file nothing ever reads, silently.
       console.log('\n== 5/7: recipient pin (optional, recommended) ==');
       console.log(
-        'CIPHER_BRAIN_PIN_RECIPIENTS is a setting snapshot reads at run time: when set, it refuses to encrypt\n' +
+        'CYPHER_BRAIN_PIN_RECIPIENTS is a setting snapshot reads at run time: when set, it refuses to encrypt\n' +
           'to any recipient NOT on the list — so a tampered recipient.txt, or an injected extra --recipient, can\n' +
           'never silently re-key your snapshots to an attacker. init does not write the setting for you, but it\n' +
           'can suggest the exact line. The place to put it is the config file, which the CLI and the MCP server\n' +
@@ -414,16 +414,16 @@ export async function init(_o: CliOptions): Promise<void> {
           'run from a shell that had sourced it. (Added it after "schedule install"? Re-run install to pick it up.)',
       );
       let pinRecipientsLine: string | null = null;
-      if (await askYesNo('Show a suggested CIPHER_BRAIN_PIN_RECIPIENTS line for the config file?', true)) {
+      if (await askYesNo('Show a suggested CYPHER_BRAIN_PIN_RECIPIENTS line for the config file?', true)) {
         const primaryPub = (await readFile(RECIPIENT, 'utf8')).trim();
-        const defaultLine = `CIPHER_BRAIN_PIN_RECIPIENTS="${[primaryPub, backup?.recipient].filter(Boolean).join(' ')}"`;
+        const defaultLine = `CYPHER_BRAIN_PIN_RECIPIENTS="${[primaryPub, backup?.recipient].filter(Boolean).join(' ')}"`;
         console.log(`Suggested line (edit or press Enter to accept):\n${defaultLine}`);
-        pinRecipientsLine = await askLine('CIPHER_BRAIN_PIN_RECIPIENTS line', defaultLine);
+        pinRecipientsLine = await askLine('CYPHER_BRAIN_PIN_RECIPIENTS line', defaultLine);
         console.log(
           `\nAdd this line to ${CONFIG_FILE_PATH} (create the file if it does not exist yet, then chmod 600 it):\n` +
             `${pinRecipientsLine}\n` +
             'For a shell rc instead, prefix it with "export " and open a new shell — but see the note above about\n' +
-            'the unattended nightly run. Either way it applies from the NEXT cipher-brain run onward: this\n' +
+            'the unattended nightly run. Either way it applies from the NEXT cypher-brain run onward: this\n' +
             'wizard read its configuration at startup, so the first snapshot it is about to take (step 7/7,\n' +
             'encrypting to the key(s) it just generated) is not itself checked against this list.',
         );
@@ -445,7 +445,7 @@ export async function init(_o: CliOptions): Promise<void> {
           .filter(Boolean);
         if (dirs.length === 0)
           throw new Error(
-            'no directory given — "cipher-brain init" cannot produce an empty snapshot; re-run and pass at least one path, or pick a profile',
+            'no directory given — "cypher-brain init" cannot produce an empty snapshot; re-run and pass at least one path, or pick a profile',
           );
         snapshotOpts.dirs = dirs;
       } else if (PROFILE_NAMES.includes(profileChoice)) {
@@ -501,7 +501,7 @@ export async function init(_o: CliOptions): Promise<void> {
             } else {
               console.log('NONE of the paths you gave above covers it — as answered, this backup would NOT contain');
               console.log('the database. Re-run init with that path included, or add it as another --dir when you');
-              console.log('drive "cipher-brain snapshot" by hand.');
+              console.log('drive "cypher-brain snapshot" by hand.');
             }
           } else if (gbrain.relativeDataPath) {
             console.log(`\nIts config records the store as a RELATIVE path:\n  ${gbrain.relativeDataPath}`);
@@ -552,9 +552,9 @@ export async function init(_o: CliOptions): Promise<void> {
       const paid = backend === 'arweave' || backend === 'turbo';
       // #161: check a wallet FILE is present BEFORE the "spends real funds" consent
       // prompt below, not after. Without this, a user who picks
-      // arweave/turbo with no CIPHER_BRAIN_AR_WALLET set sails past that consent
+      // arweave/turbo with no CYPHER_BRAIN_AR_WALLET set sails past that consent
       // prompt, then fails deep inside push() ("arweave put needs
-      // CIPHER_BRAIN_AR_WALLET ...") — pushSucceeded stays false, and the catch
+      // CYPHER_BRAIN_AR_WALLET ...") — pushSucceeded stays false, and the catch
       // block below rolls back the identity/backup key/recipient pin this same run
       // just spent five steps setting up: the worst possible first-run experience.
       // walletConfigured() only checks presence (set + file on disk) — an actual
@@ -562,11 +562,11 @@ export async function init(_o: CliOptions): Promise<void> {
       // push's own estimate/consent job (issue #160), unchanged here.
       if (paid && !(await walletConfigured())) {
         console.log(
-          `\n${backend} needs a funded wallet to push, and CIPHER_BRAIN_AR_WALLET is not set to an existing wallet file.`,
+          `\n${backend} needs a funded wallet to push, and CYPHER_BRAIN_AR_WALLET is not set to an existing wallet file.`,
         );
         console.log('Set one up first:');
-        console.log('  cipher-brain wallet create           # writes a JWK wallet (0600, no-clobber)');
-        console.log('  cipher-brain wallet address           # prints the address to fund (crypto or a card —');
+        console.log('  cypher-brain wallet create           # writes a JWK wallet (0600, no-clobber)');
+        console.log('  cypher-brain wallet address           # prints the address to fund (crypto or a card —');
         console.log('                                         see docs/arweave-upload-runbook.md)');
         console.log(
           `\nEverything this run already set up — primary identity (${IDENTITY})` +
@@ -574,7 +574,7 @@ export async function init(_o: CliOptions): Promise<void> {
             ' untouched; nothing has been rolled back. Fund the wallet, then drive snapshot + push by hand',
         );
         console.log(
-          `(see MANAGEMENT.md) — "cipher-brain init" cannot be re-run, since it refuses whenever an identity` +
+          `(see MANAGEMENT.md) — "cypher-brain init" cannot be re-run, since it refuses whenever an identity` +
             ` already exists at ${IDENTITY}.`,
         );
         return;
@@ -612,7 +612,7 @@ export async function init(_o: CliOptions): Promise<void> {
           // pushSucceeded/snapshotOutPath contract above) removes the snapshot this
           // step just wrote — correct, since consent was withheld.
           throw new Error(
-            `aborted before spending — re-run "cipher-brain init" and choose "file" (free) instead, or run keygen/snapshot/push by hand once you are ready to pay; see MANAGEMENT.md.`,
+            `aborted before spending — re-run "cypher-brain init" and choose "file" (free) instead, or run keygen/snapshot/push by hand once you are ready to pay; see MANAGEMENT.md.`,
           );
         }
       } else if (backend === 'file') {
@@ -622,7 +622,7 @@ export async function init(_o: CliOptions): Promise<void> {
         // opened the printed kit. Surface it here, interactively, before the push
         // happens, and again in the completion summary below.
         console.log(
-          '\n⚠  "file" stores the pushed ciphertext ONLY on this machine (CIPHER_BRAIN_FILE_DIR) — it is NOT\n' +
+          '\n⚠  "file" stores the pushed ciphertext ONLY on this machine (CYPHER_BRAIN_FILE_DIR) — it is NOT\n' +
             '   reachable from any other machine. If this machine is lost, this backup cannot be recovered\n' +
             '   elsewhere. For real offsite recovery, re-run and choose arweave or turbo (paid) instead; see\n' +
             '   MANAGEMENT.md "Key recovery #3".',
@@ -701,7 +701,7 @@ export async function init(_o: CliOptions): Promise<void> {
       // with the standalone command in recoverykit.ts (one write path, #364).
       await writeRecoveryKitFile(kitPath, kitText, { clobber: true });
 
-      console.log('\n=== cipher-brain init: complete ===');
+      console.log('\n=== cypher-brain init: complete ===');
       console.log(`primary identity:  ${IDENTITY}`);
       if (backup) console.log(`backup identity:   ${backup.identityPath}  (move this OFF this machine)`);
       if (signing) console.log(`signing public key: ${signing.recipientPath}`);
@@ -717,7 +717,7 @@ export async function init(_o: CliOptions): Promise<void> {
       if (backup) console.log('Also move the backup identity directory off this machine (encrypted USB, a second');
       if (backup) console.log(`location, a trusted person): ${backup.identityPath.replace(/identity\.age$/, '')}`);
       console.log(
-        'Once the kit is secured, you may delete it from disk yourself — cipher-brain does not do this for you.',
+        'Once the kit is secured, you may delete it from disk yourself — cypher-brain does not do this for you.',
       );
       // The happy mood mascot (issue #194) is printed by cli.ts's `init` dispatch
       // case, right after this function returns (immediately followed by the
@@ -754,11 +754,11 @@ export async function init(_o: CliOptions): Promise<void> {
           ? `locator saved: ${pushedLocatorPath}`
           : 'NOT SAVED — see error below for the value to record by hand';
         throw new Error(
-          `cipher-brain init: the snapshot was already created and pushed to "${pushedBackend}" successfully ` +
+          `cypher-brain init: the snapshot was already created and pushed to "${pushedBackend}" successfully ` +
             `(${locatorNote}).${permanentNote} A LATER step then failed: ` +
             `${errMsg(err)}\nNothing was rolled back — these files are PRESERVED and must NOT be deleted: ${preserved}. ` +
             `Fix the cause above, then either construct the recovery kit by hand from those paths (see ` +
-            `MANAGEMENT.md), or re-run "cipher-brain init" once you have moved/backed up the above yourself — it ` +
+            `MANAGEMENT.md), or re-run "cypher-brain init" once you have moved/backed up the above yourself — it ` +
             `will refuse immediately because an identity already exists at ${IDENTITY}; that refusal is expected ` +
             `and correct here, since your snapshot+push already succeeded and these keys must stay exactly where ` +
             `they are.`,
@@ -768,7 +768,7 @@ export async function init(_o: CliOptions): Promise<void> {
       // invocation just generated in step 1, plus the backup identity/recipient if step
       // 2 generated one, plus the snapshot output + its sidecars if step 6's snapshot()
       // call itself succeeded before a LATER step (push, the recovery-kit write) failed
-      // — so a subsequent `cipher-brain init` retry finds nothing at IDENTITY (starts
+      // — so a subsequent `cypher-brain init` retry finds nothing at IDENTITY (starts
       // genuinely clean instead of hitting the pre-existing-identity refusal above) AND
       // finds no leftover --out at the same dated path (starts genuinely clean instead
       // of hitting snapshot()'s own no-clobber refusal at this step). This branch only
@@ -812,7 +812,7 @@ export async function init(_o: CliOptions): Promise<void> {
     // exactly the property the old rl.close() gave us for free.
     //
     // Guard the call itself: unref()/ref() are net.Socket/tty.ReadStream methods, not
-    // something every possible stdin implements. CIPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1
+    // something every possible stdin implements. CYPHER_BRAIN_INIT_ALLOW_NONINTERACTIVE=1
     // (this wizard's own scripted-automation escape hatch, requireTTY above) combined
     // with stdin coming from a HEREDOC or a plain `< file` redirection (rather than a
     // pipe) makes process.stdin a bare fs.ReadStream, which has neither method — calling

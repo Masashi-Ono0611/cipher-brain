@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Proof for #345: `wallet balance` reports what an address can actually SPEND — its own
 // Turbo Credit balance plus the Credit Share Approvals delegated to it — by querying
-// CIPHER_BRAIN_AR_BALANCE_URL over plain HTTP, with NO @ardrive/turbo-sdk involved.
+// CYPHER_BRAIN_AR_BALANCE_URL over plain HTTP, with NO @ardrive/turbo-sdk involved.
 //
 // Same isolation trick as selftest-usd-rate.mjs (#170) and selftest-arweave-nodeps.mjs
 // (#31): run a COPY of the bundled dist/cli.mjs from a directory with no node_modules,
@@ -15,7 +15,7 @@
 // refused BEFORE any request goes out (asserted by counting requests the mock received),
 // a hard failure (non-200, malformed winc) must FAIL rather than silently read as "no
 // funds" — the opposite of arUsdRate()'s deliberate degrade-to-null — and the
-// CIPHER_BRAIN_AR_PAID_BY warning must stay quiet when the approval IS reachable.
+// CYPHER_BRAIN_AR_PAID_BY warning must stay quiet when the approval IS reachable.
 //
 // Spawned ASYNC (spawn, not spawnSync) so this script's in-process http mocks keep
 // answering while the CLI runs — spawnSync would block the event loop and starve them.
@@ -125,11 +125,11 @@ try {
       const child = spawn('node', [isoBin, 'wallet', 'balance', ...args], {
         env: {
           ...process.env,
-          CIPHER_BRAIN_AR_BALANCE_URL: urlOf(balServer),
-          CIPHER_BRAIN_AR_USD_RATE_URL: urlOf(rateServer),
-          CIPHER_BRAIN_AR_TURBO_RATES_URL: urlOf(turboRatesServer),
+          CYPHER_BRAIN_AR_BALANCE_URL: urlOf(balServer),
+          CYPHER_BRAIN_AR_USD_RATE_URL: urlOf(rateServer),
+          CYPHER_BRAIN_AR_TURBO_RATES_URL: urlOf(turboRatesServer),
           // Inherited values would otherwise leak into the PAID_BY assertions below.
-          CIPHER_BRAIN_AR_PAID_BY: '',
+          CYPHER_BRAIN_AR_PAID_BY: '',
           ...extraEnv,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -219,7 +219,7 @@ try {
           ],
           {
             cwd: ROOT,
-            env: { ...process.env, CIPHER_BRAIN_AR_TURBO_RATES_URL: envUrl },
+            env: { ...process.env, CYPHER_BRAIN_AR_TURBO_RATES_URL: envUrl },
             stdio: ['ignore', 'pipe', 'pipe'],
           },
         );
@@ -258,8 +258,8 @@ try {
   }
 
   // 2. the reachability warning — an approval a push cannot draw on because
-  // CIPHER_BRAIN_AR_PAID_BY does not name its payer.
-  if (!r.stderr.includes('CIPHER_BRAIN_AR_PAID_BY=<payer address>'))
+  // CYPHER_BRAIN_AR_PAID_BY does not name its payer.
+  if (!r.stderr.includes('CYPHER_BRAIN_AR_PAID_BY=<payer address>'))
     fail(`no warning when PAID_BY is unset despite a live approval: ${r.stdout}\n${r.stderr}`);
   else if (!r.stderr.includes('run summary — 1 warning(s)'))
     fail(`the end-of-run warning summary block (#347) is missing: ${r.stderr}`);
@@ -267,7 +267,7 @@ try {
 
   // 2b. NEGATIVE control for the same warning: correctly configured must stay quiet.
   // Without this, a warning hard-coded to always fire would pass the check above.
-  r = await run(['--address', ADDR], { CIPHER_BRAIN_AR_PAID_BY: PAYER });
+  r = await run(['--address', ADDR], { CYPHER_BRAIN_AR_PAID_BY: PAYER });
   if (r.code !== 0) fail(`PAID_BY-set run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
   else if (r.stdout.includes('⚠') || r.stderr.includes('⚠'))
     fail(`warned even though PAID_BY names the payer: ${r.stdout}\n${r.stderr}`);
@@ -277,7 +277,7 @@ try {
 
   // 2c. PAID_BY set to an address that shared nothing — a push would silently fall back
   // to the (empty) own balance, so this must be called out.
-  r = await run(['--address', ADDR], { CIPHER_BRAIN_AR_PAID_BY: ADDR });
+  r = await run(['--address', ADDR], { CYPHER_BRAIN_AR_PAID_BY: ADDR });
   if (r.code !== 0) fail(`PAID_BY-mismatch run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
   else if (!r.stderr.includes('matches no live approval'))
     fail(`no warning for a PAID_BY that shared nothing: ${r.stdout}\n${r.stderr}`);
@@ -295,7 +295,7 @@ try {
   else if (!r.stdout.includes('EXPIRED')) fail(`an expired approval was not flagged: ${r.stdout}`);
   else if (!r.stdout.includes('spendable balance : 0 winc'))
     fail(`expired credit was still reported as spendable: ${r.stdout}`);
-  else if (r.stdout.includes('CIPHER_BRAIN_AR_PAID_BY=<payer address>'))
+  else if (r.stdout.includes('CYPHER_BRAIN_AR_PAID_BY=<payer address>'))
     fail(`nagged to set PAID_BY for an approval that has already expired: ${r.stdout}`);
   else pass('wallet balance: an expired approval is labelled EXPIRED, not counted as spendable, and skips the nudge');
 
@@ -309,13 +309,13 @@ try {
   r = await run(['--address', ADDR]);
   if (r.code !== 0) fail(`exhausted-approval run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
   else if (!r.stdout.includes('remaining 0 winc')) fail(`exhausted approval not shown as drained: ${r.stdout}`);
-  else if (r.stdout.includes('CIPHER_BRAIN_AR_PAID_BY=<payer address>'))
+  else if (r.stdout.includes('CYPHER_BRAIN_AR_PAID_BY=<payer address>'))
     fail(`nudged to set PAID_BY for a fully consumed approval: ${r.stdout}`);
   else pass('wallet balance: a fully consumed approval is not advertised as reachable credit');
 
   // 3c. ...and it must not silence the mismatch warning either: PAID_BY naming a drained
   // approval still means the push falls back to the own balance.
-  r = await run(['--address', ADDR], { CIPHER_BRAIN_AR_PAID_BY: PAYER });
+  r = await run(['--address', ADDR], { CYPHER_BRAIN_AR_PAID_BY: PAYER });
   if (r.code !== 0) fail(`drained-approval mismatch run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
   else if (!r.stderr.includes('matches no live approval'))
     fail(`a drained approval silenced the PAID_BY mismatch warning: ${r.stdout}\n${r.stderr}`);
@@ -328,14 +328,14 @@ try {
   r = await run(['--address', ADDR]);
   if (r.code !== 0) fail(`unreadable-expiry run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
   else if (!r.stdout.includes('expiry UNKNOWN')) fail(`an unreadable expiry was not surfaced: ${r.stdout}`);
-  else if (r.stdout.includes('CIPHER_BRAIN_AR_PAID_BY=<payer address>'))
+  else if (r.stdout.includes('CYPHER_BRAIN_AR_PAID_BY=<payer address>'))
     fail(`recommended an approval whose expiry could not be read: ${r.stdout}`);
   else pass('wallet balance: an unreadable expiry is shown as UNKNOWN and never recommended');
 
   // 3e. an ETH payer written in the other case is the SAME account — warning here would
   // be actively misleading, since the push would in fact work (Codex review round 2).
   body = funded();
-  r = await run(['--address', ADDR], { CIPHER_BRAIN_AR_PAID_BY: PAYER.toLowerCase() });
+  r = await run(['--address', ADDR], { CYPHER_BRAIN_AR_PAID_BY: PAYER.toLowerCase() });
   if (r.code !== 0) fail(`lowercase-payer run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
   else if (r.stdout.includes('matches no live approval'))
     fail(`a lowercase ETH payer was treated as a different account: ${r.stdout}`);
@@ -345,7 +345,7 @@ try {
   // it would invent a match between two genuinely different Arweave accounts.
   const arCaseVariant = `${ADDR.slice(0, -1)}${ADDR.slice(-1) === 'O' ? 'o' : 'O'}`;
   body = funded({ receivedApprovals: [approval({ payingAddress: arCaseVariant })] });
-  r = await run(['--address', ADDR], { CIPHER_BRAIN_AR_PAID_BY: ADDR });
+  r = await run(['--address', ADDR], { CYPHER_BRAIN_AR_PAID_BY: ADDR });
   if (r.code !== 0) fail(`arweave case-variant run exited ${r.code}: ${r.stderr.slice(0, 200)}`);
   else if (!r.stderr.includes('matches no live approval'))
     fail(`two Arweave addresses differing only in case were treated as the same account: ${r.stdout}\n${r.stderr}`);
@@ -432,12 +432,12 @@ try {
 
   // 6b. ...but a DIFFERENT 404 must not. The live service answers a mistyped/moved
   // endpoint with a bare 404 "Not Found" — the same status as above. Reading that as zero
-  // would turn a wrong CIPHER_BRAIN_AR_BALANCE_URL into a confident "you have no funds"
+  // would turn a wrong CYPHER_BRAIN_AR_BALANCE_URL into a confident "you have no funds"
   // on a spend-adjacent path, so only the recognized body gets the zero reading.
   body = 'Not Found';
   r = await run(['--address', ADDR]);
   if (r.code === 0) fail('a bare 404 (wrong endpoint) exited 0 — a missing endpoint must not read as a zero balance');
-  else if (!r.stderr.includes('CIPHER_BRAIN_AR_BALANCE_URL'))
+  else if (!r.stderr.includes('CYPHER_BRAIN_AR_BALANCE_URL'))
     fail(`the wrong-endpoint 404 did not point at the URL setting: ${r.stderr}`);
   else pass('wallet balance: a bare 404 (wrong endpoint) fails and names the URL setting, unlike "User Not Found"');
 
@@ -478,7 +478,7 @@ try {
   // string concatenation would have produced a second "?" and a broken request.
   body = funded();
   const withQuery = `${urlOf(balServer)}/v1/balance?tenant=x`;
-  r = await run(['--address', ADDR], { CIPHER_BRAIN_AR_BALANCE_URL: withQuery });
+  r = await run(['--address', ADDR], { CYPHER_BRAIN_AR_BALANCE_URL: withQuery });
   if (r.code !== 0) fail(`a BALANCE_URL with an existing query exited ${r.code}: ${r.stderr.slice(0, 200)}`);
   else if (lastQuery?.get('tenant') !== 'x' || lastQuery?.get('address') !== ADDR)
     fail(`query params were mangled: tenant=${lastQuery?.get('tenant')} address=${lastQuery?.get('address')}`);

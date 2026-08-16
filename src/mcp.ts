@@ -1,4 +1,4 @@
-// cipher-brain-mcp — MCP server so an AI agent can snapshot/verify/restore its own brain.
+// cypher-brain-mcp — MCP server so an AI agent can snapshot/verify/restore its own brain.
 //
 // Second entry point next to src/cli.ts (a CLI + MCP two-face design). Every
 // tool is a thin wrapper over the SAME src/lib functions the CLI dispatches
@@ -16,7 +16,7 @@
 //
 // Spend safety: snapshot_now is the ONLY tool that can spend money (push to
 // arweave/turbo — paid, permanent). It requires an explicit confirm_paid=true
-// for those backends, checked BEFORE any work happens; the CIPHER_BRAIN_YES
+// for those backends, checked BEFORE any work happens; the CYPHER_BRAIN_YES
 // env escape hatch the CLI honors is deliberately NOT honored here, so an
 // agent can never spend without saying so in the call itself.
 
@@ -73,7 +73,7 @@ import { installStageSignalGuard, addActiveMcpFetchDir, removeActiveMcpFetchDir 
 import { didYouMean, nearestName } from './lib/suggest.js';
 import type { CliOptions } from './lib/types.js';
 
-const SERVER_NAME = 'cipher-brain-mcp';
+const SERVER_NAME = 'cypher-brain-mcp';
 const SERVER_VERSION = '0.0.1'; // keep in sync with package.json "version"
 
 const BACKENDS = ['file', 'arweave', 'turbo']; // rclone (#204) is CLI/verify-only — not exposed as an MCP tool backend
@@ -231,7 +231,7 @@ async function requireCallerFile(file: string): Promise<void> {
 // existed for the whole fetch.
 function makeFetchDir(): string {
   installStageSignalGuard();
-  const dir = mkdtempSync(join(tmpdir(), 'cipher-brain-mcp-'));
+  const dir = mkdtempSync(join(tmpdir(), 'cypher-brain-mcp-'));
   addActiveMcpFetchDir(dir);
   return dir;
 }
@@ -284,14 +284,14 @@ function isBool(v: unknown): v is boolean {
 // `wallet create --out --force`, but MCP's threat model is different: a shell-less
 // caller (an AI agent acting on tool descriptions, possibly steered by adversarial
 // input) has no OTHER path to an arbitrary-file-overwrite primitive the way a human
-// with a shell already does. Scope `out` to CIPHER_BRAIN_HOME so this tool can only
-// ever clobber cipher-brain's own key material, never an arbitrary server-writable
+// with a shell already does. Scope `out` to CYPHER_BRAIN_HOME so this tool can only
+// ever clobber cypher-brain's own key material, never an arbitrary server-writable
 // file (multi-model review finding, PR #180 / issue #174).
 function assertWithinHome(p: string): void {
   const resolved = resolve(p);
   const homeResolved = resolve(HOME);
   if (resolved !== homeResolved && !resolved.startsWith(homeResolved + sep)) {
-    throw new ToolError('ERR_INVALID_INPUT', `out must be inside CIPHER_BRAIN_HOME (${HOME}), got: ${p}`);
+    throw new ToolError('ERR_INVALID_INPUT', `out must be inside CYPHER_BRAIN_HOME (${HOME}), got: ${p}`);
   }
 }
 
@@ -326,7 +326,7 @@ const SNAPSHOT_NOW_TOOL: Tool = {
     'directories and/or a Postgres database, and optionally push the ciphertext to a storage ' +
     'backend. Backend "file" is free; "arweave" and "turbo" are PAID, PERMANENT ' +
     'stores — pushing to them REQUIRES confirm_paid=true (the MCP equivalent of the CLI --yes ' +
-    'guard; the CIPHER_BRAIN_YES env escape hatch is NOT honored here, so nothing can be spent ' +
+    'guard; the CYPHER_BRAIN_YES env escape hatch is NOT honored here, so nothing can be spent ' +
     'without an explicit confirm_paid in the call). Snapshotting itself needs only the PUBLIC ' +
     'recipient key(s); storage only ever sees ciphertext. Pass idempotency_key to make a RETRY ' +
     'safe (issue #220, the Stripe idempotency-key pattern): a repeat call with the SAME key ' +
@@ -335,7 +335,7 @@ const SNAPSHOT_NOW_TOOL: Tool = {
     "say) double-spending on arweave/turbo. The key is scoped to THIS call's dirs/pg/recipients/" +
     'out/backend/scan_secrets: reusing it for a call that differs in any of those is refused ' +
     'rather than silently answered with the wrong result. Cached results expire after ' +
-    'CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS (default 24h) — a repeat past that is a fresh call.',
+    'CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS (default 24h) — a repeat past that is a fresh call.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -383,7 +383,7 @@ const SNAPSHOT_NOW_TOOL: Tool = {
           'call with the SAME key AND the same dirs/pg/recipients/out/backend/scan_secrets returns the ' +
           "FIRST call's result — no new snapshot, no new spend — instead of re-executing. The same key " +
           'with DIFFERENT values in any of those fields is refused rather than answered with the wrong ' +
-          'result. Cached results expire after CIPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS (default 24h).',
+          'result. Cached results expire after CYPHER_BRAIN_IDEMPOTENCY_TTL_SECONDS (default 24h).',
       },
     },
     required: ['recipients', 'out'],
@@ -412,13 +412,13 @@ const LAST_SNAPSHOT_STATUS_TOOL: Tool = {
     'locator_file — "<locator>\\t<backend>\\t<sha256>[\\t<content_digest>[\\t<recipients_fingerprint>[\\t<sig_locator>[\\t<sign_key_id>]]]]", ' +
     'legacy 3/4/5/6-field lines accepted, timestamped by file mtime) and/or an ' +
     'append-only index.tsv ("<timestamp>\\t<locator>\\t<sha256>" per line, newest last). With no ' +
-    'arguments it tries the default save-locator path $CIPHER_BRAIN_HOME/latest-locator.tsv.',
+    'arguments it tries the default save-locator path $CYPHER_BRAIN_HOME/latest-locator.tsv.',
   inputSchema: {
     type: 'object',
     properties: {
       locator_file: {
         type: 'string',
-        description: 'Path to a push --save-locator file. Default: <CIPHER_BRAIN_HOME>/latest-locator.tsv',
+        description: 'Path to a push --save-locator file. Default: <CYPHER_BRAIN_HOME>/latest-locator.tsv',
       },
       index_file: {
         type: 'string',
@@ -480,7 +480,7 @@ const VERIFY_RESTORE_TOOL: Tool = {
       },
       identity: {
         type: 'string',
-        description: 'Private identity file for the decrypt proof. Default: <CIPHER_BRAIN_HOME>/identity.age',
+        description: 'Private identity file for the decrypt proof. Default: <CYPHER_BRAIN_HOME>/identity.age',
       },
       require_signature: {
         type: 'boolean',
@@ -516,7 +516,7 @@ const RESTORE_NOW_TOOL: Tool = {
     'REQUIRES confirm_write=true before ANY work happens (pull/decrypt/extract): confirms writing decrypted ' +
     'files into out_dir, and — when pg is given — that pg_restore --clean --if-exists will ALSO DROP and ' +
     'replace objects in that database, an irreversible operation (the MCP equivalent of the CLI --yes/' +
-    'CIPHER_BRAIN_YES guard on restore --pg; the CIPHER_BRAIN_YES env escape hatch is NOT honored here, so ' +
+    'CYPHER_BRAIN_YES guard on restore --pg; the CYPHER_BRAIN_YES env escape hatch is NOT honored here, so ' +
     'nothing can be restored/clobbered without an explicit confirm_write in the call).',
   inputSchema: {
     type: 'object',
@@ -552,7 +552,7 @@ const RESTORE_NOW_TOOL: Tool = {
       },
       identity: {
         type: 'string',
-        description: 'Private identity file to decrypt with. Default: <CIPHER_BRAIN_HOME>/identity.age',
+        description: 'Private identity file to decrypt with. Default: <CYPHER_BRAIN_HOME>/identity.age',
       },
       require_signature: {
         type: 'boolean',
@@ -567,7 +567,7 @@ const RESTORE_NOW_TOOL: Tool = {
         description:
           "Postgres connection string to pg_restore the snapshot's db.dump into. pg_restore --clean --if-exists " +
           'DROPS and replaces objects in that database — irreversible — so this ALSO requires confirm_write=true ' +
-          '(the MCP equivalent of the CLI --yes/CIPHER_BRAIN_YES guard on restore --pg).',
+          '(the MCP equivalent of the CLI --yes/CYPHER_BRAIN_YES guard on restore --pg).',
       },
       confirm_write: {
         type: 'boolean',
@@ -636,14 +636,14 @@ const SCHEDULE_INSTALL_TOOL: Tool = {
     '⚠ WRITES a REAL, PERSISTENT system file (a launchd plist under ~/Library/LaunchAgents on ' +
     'macOS, or a crontab entry on Linux) and, unless no_load is set, REGISTERS it so the nightly ' +
     'snapshot+push runs unattended from now on (issue #174 follow-up — the MCP equivalent of the ' +
-    "CLI's `schedule install`). A PAID backend (arweave/turbo) gets CIPHER_BRAIN_YES=1 baked into " +
+    "CLI's `schedule install`). A PAID backend (arweave/turbo) gets CYPHER_BRAIN_YES=1 baked into " +
     'the generated runner for unattended consent, so it ALSO REQUIRES max_spend (a positive integer ' +
     'cap in native units — winston for arweave, winc for turbo): an uncapped unattended spender is ' +
     'refused, same as the CLI. Requires confirm_install=true before ANY work happens — the MCP ' +
     'equivalent of consenting to both the real-system-file write and (for a paid backend) the ' +
     'ongoing capped spend risk every future unattended run carries; there is no environment escape ' +
     'hatch honored here. Only ONE schedule can be installed at a time; re-calling replaces the prior ' +
-    'configuration (same as re-running the CLI command). Uses `cipher-brain schedule status` to ' +
+    'configuration (same as re-running the CLI command). Uses `cypher-brain schedule status` to ' +
     'read this back, and `schedule uninstall` — not exposed as a tool — to remove it by hand.',
   inputSchema: {
     type: 'object',
@@ -700,7 +700,7 @@ const SCHEDULE_INSTALL_TOOL: Tool = {
           '"warn" logs findings and proceeds, "deny" refuses the whole snapshot on a finding. Omitted = the ' +
           'nightly does not scan (same default as the CLI). Requires at least one dirs entry — the scan covers ' +
           'staged directory plaintext, not the pg dump. Install RESOLVES gitleaks now and PINS the absolute ' +
-          'path into the runner as CIPHER_BRAIN_GITLEAKS_BIN (launchd/cron do not inherit a useful PATH, and a ' +
+          'path into the runner as CYPHER_BRAIN_GITLEAKS_BIN (launchd/cron do not inherit a useful PATH, and a ' +
           'different gitleaks on theirs must not take its place), and FAILS if it cannot be resolved, rather ' +
           'than installing a schedule that cannot scan.',
       },
@@ -715,7 +715,7 @@ const SCHEDULE_INSTALL_TOOL: Tool = {
     additionalProperties: false,
   },
   annotations: {
-    // Writes a real system file (plist/crontab) OUTSIDE CIPHER_BRAIN_HOME and,
+    // Writes a real system file (plist/crontab) OUTSIDE CYPHER_BRAIN_HOME and,
     // unless no_load, registers it with launchd/cron — genuinely destructive in
     // the sense that re-installing replaces the prior configuration, and for a
     // paid backend it commits to an ongoing (capped) unattended spend. Not
@@ -733,9 +733,9 @@ const SCHEDULE_STATUS_TOOL: Tool = {
   name: 'schedule_status',
   description:
     'Read-only, spends nothing, mutates nothing. Report the state of the nightly schedule set up ' +
-    'by `cipher-brain schedule install`: the configured time + backend, whether the launchd/cron ' +
+    'by `cypher-brain schedule install`: the configured time + backend, whether the launchd/cron ' +
     'trigger is actually registered, the last run\'s log filename and its final "OK rc=0"/"FAILED ' +
-    'rc=N" line, and the next scheduled run — the SAME report `cipher-brain schedule status` prints ' +
+    'rc=N" line, and the next scheduled run — the SAME report `cypher-brain schedule status` prints ' +
     'on the CLI, verbatim (one string per line). No arguments. Fails with ERR_INTERNAL if no ' +
     'schedule is installed yet — call schedule_install first.',
   inputSchema: {
@@ -760,10 +760,10 @@ const KEYGEN_TOOL: Tool = {
     'cannot do (issue #174): snapshot_now/verify_restore need this keypair to already exist, and there ' +
     'was no MCP tool that could create one. Spends no money, but is destructive the same way a ' +
     'money-gated call is: it refuses if an identity/recipient already exists at ' +
-    '<CIPHER_BRAIN_HOME>/{identity.age,recipient.txt} UNLESS force=true, and force=true DISCARDS the old ' +
+    '<CYPHER_BRAIN_HOME>/{identity.age,recipient.txt} UNLESS force=true, and force=true DISCARDS the old ' +
     'keypair — every snapshot already encrypted to it becomes permanently unrecoverable. ' +
     'passphrase=true additionally wraps the new identity at rest; since MCP has no interactive TTY this ' +
-    'REQUIRES CIPHER_BRAIN_PASSPHRASE to be set in the server environment (fails closed with a clear ' +
+    'REQUIRES CYPHER_BRAIN_PASSPHRASE to be set in the server environment (fails closed with a clear ' +
     'error otherwise — never prompts blindly).',
   inputSchema: {
     type: 'object',
@@ -777,7 +777,7 @@ const KEYGEN_TOOL: Tool = {
       passphrase: {
         type: 'boolean',
         description:
-          'Wrap the new identity with a passphrase (scrypt). Requires CIPHER_BRAIN_PASSPHRASE set in ' +
+          'Wrap the new identity with a passphrase (scrypt). Requires CYPHER_BRAIN_PASSPHRASE set in ' +
           'the server environment (no TTY is available over MCP to prompt for one).',
       },
       pq: {
@@ -807,19 +807,19 @@ const WALLET_CREATE_TOOL: Tool = {
   name: 'wallet_create',
   description:
     '⚠ WRITES a new Arweave JWK wallet — the funding half of first-run setup (issue #174): ' +
-    'arweave/turbo pushes need CIPHER_BRAIN_AR_WALLET to point at a JWK file, and there was no MCP tool ' +
+    'arweave/turbo pushes need CYPHER_BRAIN_AR_WALLET to point at a JWK file, and there was no MCP tool ' +
     'that could create one. Spends no money by itself, but is destructive the same way keygen is: it ' +
     'refuses if a wallet already exists at the target path UNLESS force=true, and force=true DISCARDS ' +
     'the old JWK — the only credential able to spend any AR/Turbo Credits already sent to its address. ' +
-    'Writes to <CIPHER_BRAIN_HOME>/wallet.json by default (out overrides the path).',
+    'Writes to <CYPHER_BRAIN_HOME>/wallet.json by default (out overrides the path).',
   inputSchema: {
     type: 'object',
     properties: {
       out: {
         type: 'string',
         description:
-          'Output path for the wallet JWK file — must be inside CIPHER_BRAIN_HOME. Default: ' +
-          '<CIPHER_BRAIN_HOME>/wallet.json',
+          'Output path for the wallet JWK file — must be inside CYPHER_BRAIN_HOME. Default: ' +
+          '<CYPHER_BRAIN_HOME>/wallet.json',
       },
       force: {
         type: 'boolean',
@@ -848,7 +848,7 @@ const WALLET_ADDRESS_TOOL: Tool = {
   description:
     'Read-only, spends nothing — derives and shows the Arweave address for a JWK wallet file (the ' +
     'address to FUND, e.g. via app.ardrive.io / turbo.ar.io, before pushing to arweave/turbo). Defaults ' +
-    'to $CIPHER_BRAIN_AR_WALLET, then <CIPHER_BRAIN_HOME>/wallet.json (the same default wallet_create ' +
+    'to $CYPHER_BRAIN_AR_WALLET, then <CYPHER_BRAIN_HOME>/wallet.json (the same default wallet_create ' +
     'writes to) when wallet is omitted.',
   inputSchema: {
     type: 'object',
@@ -856,7 +856,7 @@ const WALLET_ADDRESS_TOOL: Tool = {
       wallet: {
         type: 'string',
         description:
-          'Path to the JWK wallet file. Default: $CIPHER_BRAIN_AR_WALLET, then <CIPHER_BRAIN_HOME>/wallet.json',
+          'Path to the JWK wallet file. Default: $CYPHER_BRAIN_AR_WALLET, then <CYPHER_BRAIN_HOME>/wallet.json',
       },
     },
     additionalProperties: false,
@@ -1274,14 +1274,14 @@ async function handleSnapshotNow(args: ToolArgs): Promise<CallToolResult> {
   try {
     // Spend gate FIRST — before any snapshot work — so a refused paid push does no
     // work and leaves no artifact behind. Never silently spend: the CLI accepts
-    // CIPHER_BRAIN_YES=1 for unattended cadence loops, but via MCP the consent
+    // CYPHER_BRAIN_YES=1 for unattended cadence loops, but via MCP the consent
     // must be in the call itself.
     if (backend && PAID_BACKENDS.has(backend) && confirmPaid !== true) {
       throw new ToolError(
         'ERR_CONFIRM_REQUIRED',
         `backend "${backend}" is a PAID, PERMANENT Arweave store — pushing spends real funds ` +
           `irreversibly. Re-call snapshot_now with confirm_paid=true to consent (the MCP equivalent ` +
-          `of the CLI --yes guard). The CIPHER_BRAIN_YES environment escape hatch is not honored ` +
+          `of the CLI --yes guard). The CYPHER_BRAIN_YES environment escape hatch is not honored ` +
           `over MCP, so no call can spend without this flag.`,
       );
     }
@@ -1717,7 +1717,7 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
   // same "check before work" discipline as snapshot_now's confirm_paid gate above.
   // Restoring writes decrypted files into out_dir, and when pg is given ALSO runs
   // pg_restore --clean --if-exists (DROPS and replaces objects in that database).
-  // The CLI accepts CIPHER_BRAIN_YES=1 for unattended runs, but via MCP the consent
+  // The CLI accepts CYPHER_BRAIN_YES=1 for unattended runs, but via MCP the consent
   // must be in the call itself — the env escape hatch is deliberately NOT honored here.
   if (confirmWrite !== true) {
     throw new ToolError(
@@ -1727,7 +1727,7 @@ async function handleRestoreNow(args: ToolArgs): Promise<CallToolResult> {
           ? ', and pg is given so pg_restore --clean --if-exists will DROP and replace objects in that database'
           : '') +
         ' — re-call restore_now with confirm_write=true to consent (the MCP equivalent of the CLI --yes guard). ' +
-        'The CIPHER_BRAIN_YES environment escape hatch is not honored over MCP, so no call can restore/clobber ' +
+        'The CYPHER_BRAIN_YES environment escape hatch is not honored over MCP, so no call can restore/clobber ' +
         'without this flag.',
     );
   }
@@ -1973,7 +1973,7 @@ async function handleScheduleInstall(args: ToolArgs): Promise<CallToolResult> {
 }
 
 // scheduleStatusReport() (src/lib/schedule.ts) is the SAME function the CLI's
-// `schedule status --json` prints and the cipher-brain://schedule/status resource
+// `schedule status --json` prints and the cypher-brain://schedule/status resource
 // serves (#285). This used to capture schedule()'s console output and return it as
 // `{ report: [lines] }`, because that function had no return value — so the tool
 // handed back prose an agent had to parse. One object now, three surfaces, no
@@ -1989,7 +1989,7 @@ async function handleScheduleStatus(): Promise<CallToolResult> {
   return structuredOk(await scheduleStatusReport());
 }
 
-// keygenAt() (src/lib/keys.ts) is the SAME generation logic `cipher-brain keygen`
+// keygenAt() (src/lib/keys.ts) is the SAME generation logic `cypher-brain keygen`
 // calls (keygen() is a thin wrapper over it for the module's global HOME/IDENTITY/
 // RECIPIENT paths) — used directly here (rather than keygen()) because it RETURNS
 // { recipient, wrapped } instead of only printing them, so this handler returns
@@ -2091,7 +2091,7 @@ const server = new Server(
 // bug class this repo has spent the week removing (#276, #280, #290, #293). The two are
 // not byte-identical — this side is pretty-printed JSON text, and next_run is derived
 // from the clock at call time — but neither can describe the state differently.
-const SCHEDULE_STATUS_URI = 'cipher-brain://schedule/status';
+const SCHEDULE_STATUS_URI = 'cypher-brain://schedule/status';
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => ({
   resources: [
@@ -2128,7 +2128,7 @@ server.setRequestHandler(ListPromptsRequestSchema, async () => ({
   prompts: [
     {
       name: RESTORE_PROMPT,
-      title: 'Restore a cipher-brain snapshot',
+      title: 'Restore a cypher-brain snapshot',
       description:
         'The documented procedure for getting a snapshot back on a machine that holds an identity: ' +
         'pull the ciphertext, verify it before trusting it, then decrypt into a SCRATCH target. ' +
@@ -2142,7 +2142,7 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
   const { name } = request.params;
   if (name !== RESTORE_PROMPT) throw new ToolError('ERR_INVALID_INPUT', `no such prompt: ${name}`);
   return {
-    description: 'cipher-brain restore runbook (from MANAGEMENT.md)',
+    description: 'cypher-brain restore runbook (from MANAGEMENT.md)',
     messages: [{ role: 'user' as const, content: { type: 'text' as const, text: restoreRunbook() } }],
   };
 });
@@ -2235,6 +2235,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  process.stderr.write(`cipher-brain-mcp: fatal startup error: ${errMsg(err)}\n`);
+  process.stderr.write(`cypher-brain-mcp: fatal startup error: ${errMsg(err)}\n`);
   process.exit(1);
 });

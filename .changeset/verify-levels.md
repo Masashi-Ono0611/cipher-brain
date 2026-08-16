@@ -1,5 +1,5 @@
 ---
-'cipher-brain': minor
+'cypher-brain': minor
 ---
 
 `verify` gains `--level quick|remote|drill` (issue #209), restic/kopia-style staged

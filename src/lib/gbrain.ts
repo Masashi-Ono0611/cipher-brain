@@ -2,7 +2,7 @@
 //
 // gbrain ships TWO storage engines behind one contract, and PGLite (Postgres 17
 // compiled to WASM, whose whole database is a DIRECTORY on disk) is the zero-config
-// DEFAULT — not Postgres. cipher-brain had assumed a Postgres server unconditionally
+// DEFAULT — not Postgres. cypher-brain had assumed a Postgres server unconditionally
 // wherever it touched gbrain, so a default-configuration gbrain user was told their
 // real data lives somewhere it does not, and had a live single-writer store copied
 // out from under them with no consistency guard. Both consumers (the init wizard and
@@ -81,7 +81,7 @@ export interface GbrainEngineInfo {
  * and gbrain's own runtime resolution must not be imported here to "fix" that. gbrain
  * lets such an env var win outright and force Postgres (it even clears `database_path`
  * in its merged config), which is right for the question IT is asking — "which engine
- * will this process connect to right now?". cipher-brain is asking a different one:
+ * will this process connect to right now?". cypher-brain is asking a different one:
  * "what is on this disk, and does copying it need a warning?". An exported
  * DATABASE_URL does not make an existing PGLite directory stop existing, stop holding
  * data, or stop tearing when copied mid-write. Upstream hit exactly this as a P1 in a
@@ -235,7 +235,7 @@ export interface PgDataDirFinding {
   /** POSIX path relative to the scanned root; `''` means the root itself is the store. */
   rel: string;
   /**
-   * How many paths inside this store a `.cipherbrainignore` rule keeps OUT of the
+   * How many paths inside this store a `.cypherbrainignore` rule keeps OUT of the
    * archive. 0 = the whole store is archived (the ordinary case).
    */
   excludedInside: number;
@@ -390,7 +390,7 @@ export const pgDataDirTruncatedWarning = (sourceLabel: string, finding: PgDataDi
   const { rel, excludedInside, excludedFatal, excludedPartial, touchedComponents } = finding;
   const head =
     `"${storeLabel(sourceLabel, rel)}" is a PostgreSQL data directory (gbrain's PGLite store is one) and a ` +
-    `.cipherbrainignore rule keeps ${excludedInside} path(s) INSIDE it out of this snapshot`;
+    `.cypherbrainignore rule keeps ${excludedInside} path(s) INSIDE it out of this snapshot`;
   const tail = `Remove the ignore rule that matches inside this directory, or point --dir somewhere that does not contain it.`;
   if (excludedFatal > 0) {
     return (

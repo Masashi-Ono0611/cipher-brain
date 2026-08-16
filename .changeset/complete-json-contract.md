@@ -1,5 +1,5 @@
 ---
-"cipher-brain": minor
+"cypher-brain": minor
 ---
 
 `--json` output is now a complete, stable object. `estimate --json` always emits

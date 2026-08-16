@@ -6,14 +6,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_HOME="$TMP/keys"
-export CIPHER_BRAIN_FILE_DIR="$TMP/store"
+export CYPHER_BRAIN_HOME="$TMP/keys"
+export CYPHER_BRAIN_FILE_DIR="$TMP/store"
 cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
@@ -30,7 +30,7 @@ ORIG=$(sha "$TMP/snap.age")
 echo "== push (file backend) =="
 LOC=$(cb push --in "$TMP/snap.age" --backend file)
 [ "$LOC" != "$TMP/snap.age" ] && echo "[PASS] locator != source path" || { echo "[FAIL] locator == source"; exit 1; }
-case "$LOC" in "$CIPHER_BRAIN_FILE_DIR"/*) echo "[PASS] object lives in the store";; *) echo "[FAIL] not in store: $LOC"; exit 1;; esac
+case "$LOC" in "$CYPHER_BRAIN_FILE_DIR"/*) echo "[PASS] object lives in the store";; *) echo "[FAIL] not in store: $LOC"; exit 1;; esac
 [ "$(sha "$LOC")" = "$ORIG" ] && echo "[PASS] stored bytes == source" || { echo "[FAIL] store byte mismatch"; exit 1; }
 
 echo "== pull (after deleting the original, so it MUST come from the store) =="
@@ -94,7 +94,7 @@ fi
 echo "[PASS] no stray pull .part temp files left behind"
 
 echo "== negative control: an absent locator must fail =="
-if cb pull --locator "$CIPHER_BRAIN_FILE_DIR/deadbeef.age" --backend file --out "$TMP/no.age" 2>/dev/null; then
+if cb pull --locator "$CYPHER_BRAIN_FILE_DIR/deadbeef.age" --backend file --out "$TMP/no.age" 2>/dev/null; then
   echo "[FAIL] absent locator returned bytes"; exit 1
 fi
 echo "[PASS] absent locator errors"
@@ -110,15 +110,15 @@ echo "[PASS] locator outside FILE_DIR is rejected"
 printf '%s' "$TRAVERSAL_ERR" | grep -q '\[CB-E010\]' || { echo "[FAIL] path-traversal error lacks the CB-E010 code"; echo "$TRAVERSAL_ERR"; exit 1; }
 echo "[PASS] path-traversal error carries [CB-E010]"
 
-if cb pull --locator "$CIPHER_BRAIN_FILE_DIR/../outside.age" --backend file --out "$TMP/leak2.age" 2>/dev/null; then
+if cb pull --locator "$CYPHER_BRAIN_FILE_DIR/../outside.age" --backend file --out "$TMP/leak2.age" 2>/dev/null; then
   echo "[FAIL] relative traversal out of FILE_DIR was read"; exit 1
 fi
 test ! -f "$TMP/leak2.age"
 echo "[PASS] relative traversal (../) out of FILE_DIR is rejected"
 
 echo "== issue #93: a locator inside FILE_DIR with the wrong shape (not <sha256>.age) must be rejected =="
-cp "$TMP/outside.age" "$CIPHER_BRAIN_FILE_DIR/notasha.age"
-if cb pull --locator "$CIPHER_BRAIN_FILE_DIR/notasha.age" --backend file --out "$TMP/leak3.age" 2>/dev/null; then
+cp "$TMP/outside.age" "$CYPHER_BRAIN_FILE_DIR/notasha.age"
+if cb pull --locator "$CYPHER_BRAIN_FILE_DIR/notasha.age" --backend file --out "$TMP/leak3.age" 2>/dev/null; then
   echo "[FAIL] wrong-shape locator inside FILE_DIR was read"; exit 1
 fi
 test ! -f "$TMP/leak3.age"
@@ -232,7 +232,7 @@ echo "== #70 review round 2, issue 1: adding a --recipient must NOT let --skip-u
 # A second, independent identity (the "offline recovery key" MANAGEMENT.md's
 # single-recipient warning tells operators to add) -- its recipient.txt is a valid
 # --recipient FILE argument, same as any recipients file.
-CIPHER_BRAIN_HOME="$TMP/keys2" cb keygen >/dev/null
+CYPHER_BRAIN_HOME="$TMP/keys2" cb keygen >/dev/null
 RECIP2="$TMP/keys2/recipient.txt"
 DEFAULT_RECIP="$TMP/keys/recipient.txt"
 
@@ -375,18 +375,18 @@ NF=$(awk -F'\t' 'NR==1{print NF}' "$LOCFILE")
 echo "[PASS] save-locator line has 5 fields; 4th == content digest, 5th == recipients fingerprint"
 
 echo "== push #2 (unchanged content) --skip-unchanged: SKIPs, previous locator, exit 0, no new object =="
-COUNT_BEFORE=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
+COUNT_BEFORE=$(ls "$CYPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
 OUT2=$(cb push --in "$TMP/s2.age" --backend file --save-locator "$LOCFILE" --skip-unchanged 2>"$TMP/skip.err")
 grep -q "SKIPPED" "$TMP/skip.err" || { echo "[FAIL] no SKIPPED line on stderr"; cat "$TMP/skip.err"; exit 1; }
 [ "$OUT2" = "$LOC1" ] || { echo "[FAIL] skip did not print the previous locator: $OUT2"; exit 1; }
-COUNT_AFTER=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
+COUNT_AFTER=$(ls "$CYPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
 [ "$COUNT_BEFORE" = "$COUNT_AFTER" ] || { echo "[FAIL] the store gained an object on a skipped push"; exit 1; }
 echo "[PASS] unchanged push skipped: SKIPPED line, previous locator on stdout, store untouched"
 
 echo "== --force pushes anyway =="
 LOC_F=$(cb push --in "$TMP/s2.age" --backend file --save-locator "$LOCFILE" --skip-unchanged --force)
 [ "$LOC_F" != "$LOC1" ] || { echo "[FAIL] --force returned the old locator"; exit 1; }
-COUNT_FORCE=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
+COUNT_FORCE=$(ls "$CYPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
 [ "$COUNT_FORCE" = "$((COUNT_AFTER + 1))" ] || { echo "[FAIL] --force did not add a store object"; exit 1; }
 echo "[PASS] --force uploaded despite an identical content digest"
 
@@ -403,10 +403,10 @@ NF_LEGACY=$(awk -F'\t' 'NR==1{print NF}' "$LEGACY")
 echo "[PASS] legacy 3-field line: push proceeded (no skip) and rewrote a 5-field line"
 
 echo "== changed content with --skip-unchanged: proceeds and rewrites the save-locator line =="
-COUNT_E=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
+COUNT_E=$(ls "$CYPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
 cb push --in "$TMP/s3.age" --backend file --save-locator "$LOCFILE" --skip-unchanged >"$TMP/e.out" 2>"$TMP/e.err"
 if grep -q "SKIPPED" "$TMP/e.err"; then echo "[FAIL] changed content was skipped"; exit 1; fi
-COUNT_E2=$(ls "$CIPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
+COUNT_E2=$(ls "$CYPHER_BRAIN_FILE_DIR" | wc -l | tr -d ' ')
 [ "$COUNT_E2" = "$((COUNT_E + 1))" ] || { echo "[FAIL] changed-content push added no store object"; exit 1; }
 [ "$(cut -f4 "$LOCFILE")" = "$D3" ] || { echo "[FAIL] save-locator 4th field was not rewritten to the new digest"; exit 1; }
 echo "[PASS] changed content pushed; save-locator now carries the new digest"

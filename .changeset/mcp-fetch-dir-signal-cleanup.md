@@ -1,5 +1,5 @@
 ---
-'cipher-brain': patch
+'cypher-brain': patch
 ---
 
 Stopping the MCP server no longer leaves its temp directories behind. `verify_restore` and

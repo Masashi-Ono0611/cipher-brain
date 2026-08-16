@@ -17,7 +17,7 @@
 # on request), wrapped into age ciphertext with the REAL age binary
 # (`age -r <recipient> -o out.age in.tar`, the same technique scripts/selftest-interop.sh
 # already uses to prove typage<->binary interop) addressed to a keypair this script
-# controls, and then handed to `cipher-brain restore`.
+# controls, and then handed to `cypher-brain restore`.
 #
 # Auto-SKIPs (exit 0) when the `age` binary is absent — same posture as
 # selftest-interop.sh, which needs it for the identical reason (constructing ciphertext
@@ -34,18 +34,18 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_HOME="$TMP/keys"
+export CYPHER_BRAIN_HOME="$TMP/keys"
 cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 
 cb keygen >/dev/null
-RECIPIENT="$(cat "$CIPHER_BRAIN_HOME/recipient.txt")"
+RECIPIENT="$(cat "$CYPHER_BRAIN_HOME/recipient.txt")"
 
 # Build a raw tar of shape $2 (a CB_TAR_SHAPE the python helper switches on) at $1, then
 # wrap it into age ciphertext at $3.

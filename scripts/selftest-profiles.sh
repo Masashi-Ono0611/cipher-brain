@@ -8,14 +8,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/bin/cipher-brain.mjs"
-# BIN_DEV_ARGS: literal argv flags to run bin/cipher-brain.mjs against src/*.ts (no
+BIN="$ROOT/bin/cypher-brain.mjs"
+# BIN_DEV_ARGS: literal argv flags to run bin/cypher-brain.mjs against src/*.ts (no
 # build step) under plain node — see scripts/dev-node-flags.sh (never an exported
 # NODE_OPTIONS string — whitespace-split, breaks under a checkout path with a space).
 source "$ROOT/scripts/dev-node-flags.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-export CIPHER_BRAIN_HOME="$TMP/keys"
+export CYPHER_BRAIN_HOME="$TMP/keys"
 cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
 
 echo "== keygen =="
@@ -129,7 +129,7 @@ printf '%s' "$ERR2" | grep -q "does not end in .zip" || { echo "[FAIL] non-zip e
 echo "[PASS] chatgpt-export refuses a missing or non-.zip input"
 
 echo "== profile o2b: the bank-export bundle round-trips byte-identical (never extracted) =="
-# a synthetic stand-in for "o2b brain bank-export --out <path>.json" — cipher-brain
+# a synthetic stand-in for "o2b brain bank-export --out <path>.json" — cypher-brain
 # archives it as one opaque file, so its internal shape does not matter here, only
 # that it is a real, distinct JSON document (issue #206).
 BUNDLE="$TMP/bank-export.json"

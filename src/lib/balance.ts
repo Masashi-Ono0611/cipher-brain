@@ -1,7 +1,7 @@
 // balance.ts — read an address's Turbo Credit state from the payment service (#345).
 //
 // Motivation: a paid push draws from the SIGNER's own balance OR from a Credit Share
-// Approval another wallet delegated to it (CIPHER_BRAIN_AR_PAID_BY — the flow
+// Approval another wallet delegated to it (CYPHER_BRAIN_AR_PAID_BY — the flow
 // docs/arweave-upload-runbook.md documents for credits bought on a browser wallet that
 // cannot sign here). Until this module existed there was no way to ask "what can this
 // address actually spend?" without hand-writing a @ardrive/turbo-sdk script, which is
@@ -197,7 +197,7 @@ export function summarizeBalance(body: unknown, pricing: UsdPricing | null = nul
  *
  * Deliberately NOT `effectiveBalance`. That figure is the service's answer to "what could
  * this ADDRESS spend", summing approvals from every payer — but an upload draws on an
- * approval only when `CIPHER_BRAIN_AR_PAID_BY` names its payer (turbo.ts passes exactly
+ * approval only when `CYPHER_BRAIN_AR_PAID_BY` names its payer (turbo.ts passes exactly
  * one `paidBy`). So with two payers it overstates, and with `paidBy` unset it overstates
  * by every approval there is: none of them are reachable at all. Presenting it as
  * "spendable" before a paid upload would be the same false green light `wallet balance`
@@ -268,23 +268,23 @@ export function insufficientFundsError(
     (stranded > 0n
       ? `NOTE: the service reports ${stranded} winc more on this signer that THIS upload cannot draw on` +
         (paidBy
-          ? ` (approvals CIPHER_BRAIN_AR_PAID_BY=${paidBy} does not select, or expired/exhausted ones) — check 'cipher-brain wallet balance'.\n`
-          : ` — it sits on credit share approvals, and no CIPHER_BRAIN_AR_PAID_BY is set to draw on any of them. ` +
-            `If one of those approvals is yours, set CIPHER_BRAIN_AR_PAID_BY=<its payer address> and retry.\n`)
+          ? ` (approvals CYPHER_BRAIN_AR_PAID_BY=${paidBy} does not select, or expired/exhausted ones) — check 'cypher-brain wallet balance'.\n`
+          : ` — it sits on credit share approvals, and no CYPHER_BRAIN_AR_PAID_BY is set to draw on any of them. ` +
+            `If one of those approvals is yours, set CYPHER_BRAIN_AR_PAID_BY=<its payer address> and retry.\n`)
       : '') +
     `To fund it (details: docs/arweave-upload-runbook.md):\n` +
-    `  A) fund the signer directly: 'cipher-brain wallet address' prints the address; buy Turbo Credits ` +
-    `for it at turbo.ar.io, then confirm with 'cipher-brain wallet balance'.\n` +
+    `  A) fund the signer directly: 'cypher-brain wallet address' prints the address; buy Turbo Credits ` +
+    `for it at turbo.ar.io, then confirm with 'cypher-brain wallet balance'.\n` +
     `  B) buy on a wallet you already have (e.g. MetaMask at turbo.ar.io), use its Share Credits to ` +
-    `delegate to the signer's address, set CIPHER_BRAIN_AR_PAID_BY=<that wallet's address>, and confirm ` +
-    `with 'cipher-brain wallet balance' (the approval must be listed AND reachable).\n` +
+    `delegate to the signer's address, set CYPHER_BRAIN_AR_PAID_BY=<that wallet's address>, and confirm ` +
+    `with 'cypher-brain wallet balance' (the approval must be listed AND reachable).\n` +
     // The closing advice differs by mode, and must (Codex review round 3): "re-run" is
     // the right move after an abort, but in warn mode the upload is ALREADY proceeding —
     // telling an unattended log to re-run invites a duplicate PERMANENT spend if this
     // run in fact succeeds, and there is nothing left to skip.
     (mode === 'abort'
       ? `If you topped up seconds ago the balance read may be stale — re-run, or set ` +
-        `CIPHER_BRAIN_SKIP_FUNDS_CHECK=1 to bypass this check for one run.`
+        `CYPHER_BRAIN_SKIP_FUNDS_CHECK=1 to bypass this check for one run.`
       : `If this read was stale, this warning is spurious and the upload will simply succeed — ` +
         `do NOT re-push without checking 'verify' / the locator first (a duplicate push is a second ` +
         `permanent spend). If it was accurate, the upload will have failed: fund via A/B above before the next run.`)
@@ -299,7 +299,7 @@ export function insufficientFundsError(
  * exercised without a funded wallet and actual spend, so the part that CAN be tested
  * honestly is separated from the part that cannot.
  *
- * `paidBy` is CIPHER_BRAIN_AR_PAID_BY.
+ * `paidBy` is CYPHER_BRAIN_AR_PAID_BY.
  */
 export function balanceLines(bal: BalanceSummary, paidBy: string): string[] {
   const fmt = (w: bigint | string) => `${w} winc (~${(Number(w) / 1e12).toFixed(8)} AR)`;
@@ -329,8 +329,8 @@ export function balanceLines(bal: BalanceSummary, paidBy: string): string[] {
       `turbo: note: the service reports ${bal.effective} winc effective for this signer, but ${stranded} winc of it ` +
         `sits on credit this upload cannot draw on ` +
         (paidBy
-          ? `(approvals CIPHER_BRAIN_AR_PAID_BY=${paidBy} does not select, or ones that are expired/exhausted)`
-          : `(no CIPHER_BRAIN_AR_PAID_BY is set, so no credit share approval is reachable at all)`),
+          ? `(approvals CYPHER_BRAIN_AR_PAID_BY=${paidBy} does not select, or ones that are expired/exhausted)`
+          : `(no CYPHER_BRAIN_AR_PAID_BY is set, so no credit share approval is reachable at all)`),
     );
   return lines;
 }
@@ -349,13 +349,13 @@ export async function fetchBalance(address: string, pricing: UsdPricing | null =
   if (!isWalletAddress(address))
     throw new Error(`balance: not a wallet address (Arweave/Ethereum/Solana): ${JSON.stringify(address)}`);
   // Built through URL/searchParams rather than string concatenation so an override that
-  // already carries a query or fragment (CIPHER_BRAIN_AR_BALANCE_URL=".../balance?x=1")
+  // already carries a query or fragment (CYPHER_BRAIN_AR_BALANCE_URL=".../balance?x=1")
   // gets a well-formed URL instead of a second "?" (Codex review).
   let url: URL;
   try {
     url = new URL(AR_BALANCE_URL);
   } catch {
-    throw new Error(`balance: CIPHER_BRAIN_AR_BALANCE_URL is not a valid URL: ${JSON.stringify(AR_BALANCE_URL)}`);
+    throw new Error(`balance: CYPHER_BRAIN_AR_BALANCE_URL is not a valid URL: ${JSON.stringify(AR_BALANCE_URL)}`);
   }
   url.searchParams.set('address', address);
   let body: unknown;
@@ -364,7 +364,7 @@ export async function fetchBalance(address: string, pricing: UsdPricing | null =
     // 404 is ambiguous on this service and must NOT be blanket-treated as "zero" — a
     // measured fact, not a guess: an address it has never seen answers 404 "User Not
     // Found", while a mistyped/moved endpoint answers 404 "Not Found". Reading both as a
-    // zero balance would turn a wrong CIPHER_BRAIN_AR_BALANCE_URL into a confident "you
+    // zero balance would turn a wrong CYPHER_BRAIN_AR_BALANCE_URL into a confident "you
     // have no funds" on a spend-adjacent path (Codex review). So the "never funded"
     // reading is granted ONLY to the body that actually says so; any other 404 falls
     // through to the error below, which names both possibilities.
@@ -384,7 +384,7 @@ export async function fetchBalance(address: string, pricing: UsdPricing | null =
         };
       throw new Error(
         `HTTP 404 (${JSON.stringify(text.slice(0, 80))}) — this is NOT the service's "address never funded" reply, ` +
-          `so the endpoint itself is likely wrong; check CIPHER_BRAIN_AR_BALANCE_URL`,
+          `so the endpoint itself is likely wrong; check CYPHER_BRAIN_AR_BALANCE_URL`,
       );
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 The MCP server now refuses a tool argument the tool does not declare, instead of

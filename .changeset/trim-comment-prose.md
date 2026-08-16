@@ -1,5 +1,5 @@
 ---
-"cipher-brain": patch
+"cypher-brain": patch
 ---
 
 Internal: comment prose trimmed, and one comment in `progress.ts` corrected — it still said

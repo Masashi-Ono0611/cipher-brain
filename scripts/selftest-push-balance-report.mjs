@@ -32,6 +32,14 @@ const SIGNER = 'h1h8Z2iwzUAjydHhYaJAD3KgS2K1qshFIZmXtPIK830';
 
 // Verbatim from the live service immediately after the 2026-08 push: the signer holds
 // nothing, yet 626476237410 winc remain reachable through the payer's approval.
+//
+// The approval's expiry is the ONE field not kept verbatim. summarizeBalance() judges
+// `expired` against the real clock (the property under test is "an expired approval is
+// not reachable"), so the recorded 2026-08-11 expiry silently turned every reachable
+// assertion below into a failure the day it lapsed — a suite that had been green for a
+// week went red with no change to the code. Kept live instead: the same 7-day span the
+// service granted, measured from now, so the fixture stays "current" on every run.
+const EXPIRES = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 const REAL_BODY = {
   winc: '0',
   balance: '0',
@@ -46,7 +54,7 @@ const REAL_BODY = {
       creationDate: '2026-08-04T14:05:07.463Z',
       payingAddress: PAYER,
       usedWincAmount: '4717823762590',
-      expirationDate: '2026-08-11T14:05:07.465Z',
+      expirationDate: EXPIRES,
     },
   ],
 };
@@ -69,8 +77,7 @@ const REAL_BODY = {
   );
   check(
     'report: the drawn-on approval is named, with what is left and when it lapses',
-    lines.includes(`via approval from ${PAYER}: 626476237410 winc left`) &&
-      lines.includes('expires 2026-08-11T14:05:07.465Z'),
+    lines.includes(`via approval from ${PAYER}: 626476237410 winc left`) && lines.includes(`expires ${EXPIRES}`),
     lines,
   );
   // The exact shape of the pre-fix failure: a report whose ONLY balance figure is 0 while

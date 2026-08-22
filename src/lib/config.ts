@@ -52,6 +52,7 @@ const ENV_NAMES = [
   'CYPHER_BRAIN_TON_HTTP_TIMEOUT',
   'CYPHER_BRAIN_TON_NO_FALLBACK',
   'CYPHER_BRAIN_TON_NETWORK_CONFIG',
+  'CYPHER_BRAIN_TON_TONAPI_URL',
   'CYPHER_BRAIN_YES',
   'CYPHER_BRAIN_MAX_SPEND',
   'CYPHER_BRAIN_SKIP_FUNDS_CHECK', // #342: one-run bypass of the turbo pre-upload funds check (stale balance reads)
@@ -395,6 +396,11 @@ if (TON_HTTP_TIMEOUT_RAW !== undefined && TON_HTTP_TIMEOUT_MS !== tonHttpTimeout
 // so a stray `=0` must keep the default behaviour.
 export const TON_NO_FALLBACK = readEnv('CYPHER_BRAIN_TON_NO_FALLBACK') === '1';
 export const TON_NETWORK_CONFIG = readEnv('CYPHER_BRAIN_TON_NETWORK_CONFIG') || ''; // path to a TON global config (testnet); '' = daemon default (mainnet)
+// `publish-latest` (src/lib/ton-dns.ts) only — resolves a .ton domain's NFT item address
+// and polls its DNS resolution, both via tonapi.io's public REST API. Overridable so
+// scripts/selftest-ton-dns.sh can point it at a local mock HTTP server instead of the
+// real service (no real-network calls in CI).
+export const TON_TONAPI_URL = readEnv('CYPHER_BRAIN_TON_TONAPI_URL') || 'https://tonapi.io';
 export const AR_HOST = readEnv('CYPHER_BRAIN_AR_HOST') || 'arweave.net';
 export const AR_PORT = Number(readEnv('CYPHER_BRAIN_AR_PORT') || 443);
 export const AR_PROTOCOL = readEnv('CYPHER_BRAIN_AR_PROTOCOL') || 'https';

@@ -73,6 +73,16 @@ Honest operational notes, so nothing here silently over-promises:
   on-chain proofs) but was measured dormant in practice (providers listed, none
   accepting contracts) as of mid-2026 — which is exactly why this backend seeds
   from your OWN box instead of depending on that market.
+- **`publish-latest` is discovery, not integrity — and it is public.** The opt-in
+  `cypher-brain publish-latest` command points a `.ton` domain's DNS `storage` record
+  at the latest bag id so a fresh machine can find it by a memorable name instead of
+  needing `--from-locator-file`'s bytes. DNS is only ever a POINTER: the integrity
+  check on pull is still the sha256 pin recorded in the locator file (or an explicit
+  `--sha256`), never anything read from DNS. And unlike a locator file kept off-box,
+  publishing is public — anyone can resolve the domain and see your current bag id and,
+  by watching it change, your snapshot cadence. It is never run automatically (no
+  `schedule install` wiring); an operator opts in per publish, deliberately, and the
+  CLI itself never signs the on-chain update.
 
 ## Recommended model: Arweave is the mainline
 

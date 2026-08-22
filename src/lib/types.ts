@@ -66,6 +66,7 @@ export interface CliOptions {
   address?: string; // wallet balance --address <addr>: query any address, no JWK needed (#345)
   ping_url?: string; // schedule install: dead man's switch success ping (healthchecks.io-style)
   ping_url_fail?: string; // schedule install: failure ping override (defaults to `${ping_url}/fail`)
+  domain?: string; // publish-latest --domain <name>.ton: the operator's .ton domain to point at the latest ton bag
 }
 
 /**

@@ -32,6 +32,7 @@ import { keygen } from './lib/keys.js';
 import { snapshot } from './lib/snapshot.js';
 import { restore, verify } from './lib/restore.js';
 import { push, pull } from './lib/pushpull.js';
+import { publishLatest } from './lib/ton-dns.js';
 import { schedule } from './lib/schedule.js';
 import { wallet } from './lib/wallet.js';
 import { estimate } from './lib/estimate.js';
@@ -102,6 +103,7 @@ const VALUE_FLAGS = new Set([
   'address',
   'ping_url',
   'ping_url_fail',
+  'domain',
 ]);
 
 function parseArgs(argv: string[]): CliOptions {
@@ -567,6 +569,43 @@ const HELP = `cypher-brain — encrypt a gbrain snapshot so only you can read it
       missing sidecar as a warning, not a failure). Omit it and pull behaves exactly as
       before #214 (ciphertext only).
 
+  cypher-brain publish-latest --domain <name>.ton --from-locator-file <path> [--yes] [--wait <seconds>]
+      Opt-in: point your OWN .ton DNS domain's "storage" record at the ton backend's
+      LATEST bag id (read from --from-locator-file, a file push --save-locator wrote —
+      the same recovery pointer pull reads), so a fresh machine can discover the newest
+      encrypted-backup bag from a human-memorable name instead of needing that file
+      itself. NEVER run automatically by 'schedule install' — a deliberate,
+      operator-invoked action, because it also makes your snapshot cadence and current
+      bag id PUBLIC (docs/durability.md: DNS is a discovery pointer, never the integrity
+      source — the sha256 pin still lives in the locator file, and a pull should still
+      verify it).
+      --domain must be a lowercase .ton domain (dot-separated [a-z0-9-] labels ending in
+      ".ton", e.g. "myname.ton") — anything else is refused up front rather than
+      travelling all the way to a confusing tonapi 404.
+      Refuses a locator file whose backend is not "ton", or whose locator does not match
+      "ton:v1:<64-hex-bag-id>".
+      Availability gate (required, before anything is printed): spins an ephemeral local
+      TON Storage daemon and probes the bag id on the real P2P network (metadata found
+      via DHT AND at least one byte served — a PROBE, not a full download; the whole
+      probe, daemon startup included, shares one ~180s budget — under 4 minutes worst
+      case). A bag that is not reachable right now is refused with "DNS must never point
+      at an unavailable bag", rather than publishing a domain that resolves to nothing.
+      Resolves --domain's NFT item address via tonapi (CYPHER_BRAIN_TON_TONAPI_URL,
+      default https://tonapi.io) and builds the on-chain change_dns_record message body
+      (a dns_storage_address record over the bag id) — but cypher-brain NEVER signs it.
+      tonapi is the ONLY source for that NFT address (there is no independent on-chain
+      domain -> NFT-address resolver to cross-check against), so the resolved address is
+      printed alongside a tonviewer.com link and a warning: confirm the recipient
+      Tonkeeper shows equals the printed address before approving anything.
+      Prints the domain, the resolved NFT address, the bag id, and (gated behind --yes /
+      CYPHER_BRAIN_YES, since acting on it spends ~0.02 TON gas from your wallet) a
+      Tonkeeper transfer deeplink (https://app.tonkeeper.com/transfer/...) to stdout:
+      open it yourself, review the transaction in your own wallet, and approve it there —
+      this command only prepares the link.
+      --wait <seconds> (default 0, max 86400/24h, a non-negative whole number — anything
+      else is refused): after printing, poll tonapi's DNS resolution until the domain's
+      storage record equals the published bag id, then report CONFIRMED or NOT-YET.
+
   cypher-brain recovery-kit --from-locator-file <path> [--out <file>] [--force]
                             [--inline-identity] [--backup-identity <path>] [--backup-recipient <age1…|file>]
       Regenerate the printable recovery kit "init" prints once — pointed at the CURRENT
@@ -685,7 +724,7 @@ Storage: CYPHER_BRAIN_FILE_DIR (file);
          CYPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT,USD_RATE_URL,TURBO_RATES_URL,BALANCE_URL} (arweave; CYPHER_BRAIN_AR_WALLET is a path to a JWK key file — 'cypher-brain wallet create' generates one, 'wallet address' shows what to fund; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none; the approximate-USD lines price each backend in its own truthful unit: the raw arweave L1 backend at AR SPOT (CYPHER_BRAIN_AR_USD_RATE_URL — the spend is real AR at market value), the turbo backend and 'wallet balance' at Turbo's own credit rate, fees included (CYPHER_BRAIN_AR_TURBO_RATES_URL — a turbo upload spends credits, and credits sell at Turbo's price, not AR spot; pricing them at spot understated a real push's cost by ~35%), falling back to labeled AR spot only when that price sheet is unavailable or unusable; a dead rate endpoint just omits the USD line, it never blocks a push; CYPHER_BRAIN_AR_BALANCE_URL overrides the payment-service account endpoint 'wallet balance' queries as '<url>?address=<addr>');
          turbo: CYPHER_BRAIN_AR_WALLET (JWK signer) + optional CYPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
          rclone: CYPHER_BRAIN_RCLONE_BIN (path to the rclone binary; default 'rclone' on PATH) — the remote itself is whatever --remote <name>:<path> names in your own 'rclone config'.
-         ton: CYPHER_BRAIN_TON_SSH_HOST (user@host of your seeder box running tonutils-storage — required to PUSH; also the pull fallback), CYPHER_BRAIN_TON_SSH_KEY (optional ssh -i identity file), CYPHER_BRAIN_TON_REMOTE_DIR (seeder-side layout root; default 'cypher-brain-ton' in the SSH user's home — plain relative or absolute path, a literal ~ is refused), CYPHER_BRAIN_TON_REMOTE_API (the seeder daemon's API address as seen FROM the seeder itself; default '127.0.0.1:9955' — it stays loopback-bound there, reached via ssh, never exposed), CYPHER_BRAIN_TON_BIN (local tonutils-storage binary for the P2P pull; default 'tonutils-storage' on PATH), CYPHER_BRAIN_TON_HTTP_TIMEOUT (ms; default 30000), CYPHER_BRAIN_TON_NO_FALLBACK=1 (strictly '1': forbid the seeder fallback on pull, so a success PROVES P2P availability — use for verify --level remote when you want that proof), CYPHER_BRAIN_TON_NETWORK_CONFIG (path to a TON global config JSON for testnet; default mainnet).
+         ton: CYPHER_BRAIN_TON_SSH_HOST (user@host of your seeder box running tonutils-storage — required to PUSH; also the pull fallback), CYPHER_BRAIN_TON_SSH_KEY (optional ssh -i identity file), CYPHER_BRAIN_TON_REMOTE_DIR (seeder-side layout root; default 'cypher-brain-ton' in the SSH user's home — plain relative or absolute path, a literal ~ is refused), CYPHER_BRAIN_TON_REMOTE_API (the seeder daemon's API address as seen FROM the seeder itself; default '127.0.0.1:9955' — it stays loopback-bound there, reached via ssh, never exposed), CYPHER_BRAIN_TON_BIN (local tonutils-storage binary for the P2P pull; default 'tonutils-storage' on PATH), CYPHER_BRAIN_TON_HTTP_TIMEOUT (ms; default 30000), CYPHER_BRAIN_TON_NO_FALLBACK=1 (strictly '1': forbid the seeder fallback on pull, so a success PROVES P2P availability — use for verify --level remote when you want that proof), CYPHER_BRAIN_TON_NETWORK_CONFIG (path to a TON global config JSON for testnet; default mainnet), CYPHER_BRAIN_TON_TONAPI_URL (tonapi.io base URL 'publish-latest' resolves a .ton domain's NFT address and polls its DNS record against; default 'https://tonapi.io').
 Spend: arweave/turbo PUSH needs --yes or CYPHER_BRAIN_YES=1 (paid, permanent); CYPHER_BRAIN_MAX_SPEND caps the arweave/turbo cost estimate (winston/winc). A turbo push also runs a funds check BEFORE signing: when the estimated cost exceeds even the reachable credit (the signer's own balance + the live approvals CYPHER_BRAIN_AR_PAID_BY selects), the spend is headed for a payment-service refusal that would otherwise arrive only after minutes of signing. On a TTY (a human watching) it aborts with the funding steps spelled out, after confirming the shortfall on a second balance read so a top-up landing that same moment is not blocked; without a TTY (a nightly runner, an MCP host) it only WARNS and proceeds — a balance read has no freshness guarantee, and it must never be what blocks an unattended backup. Skipped entirely when the balance cannot be read at all; CYPHER_BRAIN_SKIP_FUNDS_CHECK=1 (strictly '1') bypasses it for one run.
 Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes or CYPHER_BRAIN_YES=1.
 Permanence: there is NO delete, at any granularity (#301). cypher-brain has no forget/prune/delete
@@ -847,6 +886,36 @@ const FLAG_IRRELEVANT: Record<string, FlagIrrelevance[]> = {
   // command accepts and they silently ignore.
   push: [],
   pull: [],
+  // ton-dns.ts's publishLatest() reads only o.domain/o.from_locator_file/o.yes/o.wait —
+  // it never pushes/pulls ciphertext or writes a local file, so the flags a user reaching
+  // for push/pull's shape would naturally try are named here rather than silently kept.
+  'publish-latest': [
+    {
+      flag: 'backend',
+      because:
+        'publish-latest only ever targets the ton backend — its locator file already encodes that; there is nothing to select',
+    },
+    {
+      flag: 'in',
+      because: 'publish-latest reads the bag id from --from-locator-file, not from an --in ciphertext path',
+    },
+    {
+      flag: 'out',
+      because:
+        'publish-latest writes nothing to disk — it only prints a domain, NFT address, bag id and a signing deeplink',
+    },
+    {
+      flag: 'locator',
+      because: 'publish-latest reads the locator from --from-locator-file, not a standalone --locator',
+      instead: '--from-locator-file',
+    },
+    { flag: 'save_locator', because: 'publish-latest does not push anything — there is no new locator to save' },
+    { flag: 'sha256', because: 'publish-latest does not fetch ciphertext — there is nothing to pin a hash against' },
+    {
+      flag: 'force',
+      because: 'publish-latest never overwrites a local file — it only prints information and a deeplink',
+    },
+  ],
   'recovery-kit': [
     {
       flag: 'identity',
@@ -973,6 +1042,8 @@ async function main(): Promise<void> {
     }
     case 'pull':
       return pull(o);
+    case 'publish-latest':
+      return publishLatest(o);
     case 'recovery-kit':
       return recoveryKit(o);
     case 'estimate':

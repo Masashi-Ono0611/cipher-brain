@@ -13,7 +13,7 @@ of everything before that point.
 
 ## [Unreleased]
 
-`cipher-brain` has not yet cut a tagged npm release (`package.json` is still
+`cypher-brain` has not yet cut a tagged npm release (`package.json` is still
 at `0.0.1`); the OIDC trusted-publishing pipeline (`.github/workflows/publish.yml`)
 is wired and ready for the first `vX.Y.Z` tag push. This entry summarizes the
 project's major milestones so far, from the initial proof-of-concept to today.

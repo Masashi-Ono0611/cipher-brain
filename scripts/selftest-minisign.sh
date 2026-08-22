@@ -375,7 +375,7 @@ else
   cb2() { CYPHER_BRAIN_HOME="$REAL_HOME" node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
   cb2 snapshot --dir "$SRC" --out "$TMP/real-snap.age" --no-sign >/dev/null
   # Reuse the real binary's OWN signature bytes against a *different* file is invalid
-  # (would rightly fail authenticity) — instead, sign the SAME ciphertext bytes cipher-
+  # (would rightly fail authenticity) — instead, sign the SAME ciphertext bytes cypher-
   # brain just produced, using the real binary + its own throwaway key, so the
   # resulting .minisig is a genuine, freshly-made signature OVER that exact artifact.
   minisign -S -s "$TMP/real.key" -m "$TMP/real-snap.age" </dev/null >/dev/null 2>&1

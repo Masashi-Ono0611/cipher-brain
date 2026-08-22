@@ -62,7 +62,13 @@ Honest operational notes, so nothing here silently over-promises:
   Storage P2P network, sha256-matched, then verified and restored; a normal
   (non-strict) pull was also served via P2P. Latency will differ for brain-sized
   bags (piece-hashing dominates the push); what this run pins down is that the
-  whole path — DHT discovery included — actually works today. Paying third-party storage
+  whole path — DHT discovery included — actually works today.
+- **Brain-sized, too** (2026-08-22, same seeder): a real 481 MB encrypted brain
+  snapshot pushed through `push --backend ton` (upload + seeder-side piece hashing
+  completed inside the create-call budget) and pulled back over strict P2P
+  (`CYPHER_BRAIN_TON_NO_FALLBACK=1`) in **95 s (~5 MB/s)**, sha256 matching the
+  save-locator pin — that bag is now the live self-hosted replica of the real
+  brain, replacing the earlier hand-managed one. Paying third-party storage
   providers for retention exists as a protocol (per-day storage contracts with
   on-chain proofs) but was measured dormant in practice (providers listed, none
   accepting contracts) as of mid-2026 — which is exactly why this backend seeds

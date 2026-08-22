@@ -49,6 +49,9 @@ stderr is load-bearing, not decoration. If you run cypher-brain on a human's beh
   your OWN always-on box over SSH; pull is a credential-less P2P download by
   bag id, with a loud fallback to the seeder — free per upload, but NOT
   permanent: retrievable only while a reachable seeder retains the bag).
+  `publish-latest` is a separate, opt-in command that points a .ton DNS domain's
+  storage record at the latest ton bag (never run automatically) — the CLI
+  never signs; it only prints a Tonkeeper deeplink for the operator to approve.
 - **recovery kit** — the printable artifact `init` produces: the backup identity
   (raw, not passphrase-wrapped — keep the kit itself physically secure), the
   latest locator, and restore steps. Kit-only recovery on a fresh machine needs

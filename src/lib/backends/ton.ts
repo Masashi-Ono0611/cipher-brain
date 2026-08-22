@@ -50,7 +50,11 @@ import type { StorageBackend, PutOpts, FetchShape } from '../types.js';
 const LOCATOR_RE = /^ton:v1:([0-9a-f]{64})$/;
 export const tonLocator = (bagId: string): string => `ton:v1:${bagId.toLowerCase()}`;
 
-function bagIdFrom(locator: string): string {
+// Exported for src/lib/ton-dns.ts (the `publish-latest` command): the SAME locator
+// shape guard used to gate push/pull, so a non-ton or malformed locator in a
+// --from-locator-file is refused with one identical, already-tested message instead
+// of a second, possibly-diverging regex.
+export function bagIdFrom(locator: string): string {
   const m = LOCATOR_RE.exec(locator);
   if (!m) throw new Error(`ton backend: locator does not match the expected ton:v1:<64-hex-bag-id> shape: ${locator}`);
   return m[1];

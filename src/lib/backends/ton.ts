@@ -61,8 +61,12 @@ function bagIdFrom(locator: string): string {
 // this is the entire injection surface. The values are operator-set config, i.e.
 // already trusted like RCLONE_BIN, but "trusted" configs still get typos; a strict
 // character set turns a would-be quoting bug into a loud refusal.
-const HOST_RE = /^[A-Za-z0-9._-]+(?:@[A-Za-z0-9._-]+)?$|^[A-Za-z0-9._-]+$/;
-const REMOTE_PATH_RE = /^(?:~\/)?[A-Za-z0-9._/-]+$/;
+const HOST_RE = /^[A-Za-z0-9._-]+(?:@[A-Za-z0-9._-]+)?$/;
+// No `~` anywhere (review W3): a quoted '~/x' in an ssh command line is a LITERAL
+// tilde directory while scp may expand the same spelling remotely — the two paths
+// silently diverge. Home-relative is spelled as a plain relative path (the ssh
+// command and scp both resolve it against the SSH user's home), absolute as /...
+const REMOTE_PATH_RE = /^[A-Za-z0-9._/-]+$/;
 
 function assertRemoteSafe(value: string, what: string, re: RegExp): string {
   if (!re.test(value) || value.startsWith('-')) {
@@ -117,12 +121,15 @@ async function scpFromSeeder(remotePath: string, localFile: string): Promise<voi
 // The seeder daemon's API, reached as `curl` ON the seeder against loopback — the API
 // stays bound to 127.0.0.1 there (its auth story is "loopback only"), and this keeps it
 // that way instead of asking operators to tunnel or expose it.
-async function seederApi<T>(pathAndQuery: string, postBody?: string): Promise<T> {
+async function seederApi<T>(pathAndQuery: string, postBody?: string, timeoutS = 60): Promise<T> {
   const api = assertRemoteSafe(TON_REMOTE_API, 'CYPHER_BRAIN_TON_REMOTE_API', /^[A-Za-z0-9.:-]+$/);
   // pathAndQuery/postBody are built ONLY from validated hex ids and allowlisted paths
   // by the callers below — never from free-form input.
   const post = postBody === undefined ? '' : ` -X POST -H 'Content-Type: application/json' --data '${postBody}'`;
-  const out = await sshRun(`curl -sS -m 60${post} 'http://${api}${pathAndQuery}'`);
+  const out = await sshRun(
+    `curl -sS -m ${Math.trunc(timeoutS)}${post} 'http://${api}${pathAndQuery}'`,
+    (Math.trunc(timeoutS) + 30) * 1000,
+  );
   let parsed: T & { error?: unknown };
   try {
     parsed = JSON.parse(out) as T & { error?: unknown };
@@ -205,10 +212,25 @@ async function seederDetails(bagId: string): Promise<TonBagDetails> {
   return seederApi<TonBagDetails>(`/api/v1/details?bag_id=${bagId}`);
 }
 
-// How long put() waits for the seeder to finish hashing the new bag. Local disk work
-// on the seeder (piece hashing of a file already on its disk) — minutes would mean
-// something is wrong.
-const CREATE_READY_TIMEOUT_MS = 120_000;
+// Recovery oracle for a create whose RESPONSE was lost (remote curl timeout on a huge
+// bag, an interrupted earlier push that died between create and the inventory write, a
+// daemon that refuses a re-create of a dir it already holds): the bag directory is
+// named by the ciphertext sha, and the daemon reports each bag's dir_name — so the
+// bag id can be re-derived from the daemon's own list without ever guessing.
+async function findSeederBagByDirName(dirName: string): Promise<string | null> {
+  const r = await seederApi<{ bags?: Array<{ bag_id?: string; dir_name?: string }> | null }>('/api/v1/list');
+  const hit = (r.bags ?? []).find((b) => b.dir_name === dirName);
+  const id = hit?.bag_id?.toLowerCase?.();
+  return id && /^[0-9a-f]{64}$/.test(id) ? id : null;
+}
+
+// How long put() waits for the seeder to finish hashing the new bag, and how long the
+// create CALL itself may run: /api/v1/create can block while the daemon piece-hashes
+// the file, which for a multi-GB brain is real work — 60s (the default API timeout)
+// would cut the response off mid-create and lose the bag id. The recovery oracle
+// above exists for exactly that loss, but not needing it is better.
+const CREATE_READY_TIMEOUT_MS = 600_000;
+const CREATE_CALL_TIMEOUT_S = 600;
 
 // get()'s P2P phase gives up early in two situations that both read as "nobody
 // reachable is seeding this bag": the bag's metadata (torrent info) never arrives, or
@@ -219,7 +241,19 @@ const P2P_INFO_TIMEOUT_MS = 180_000;
 const P2P_STALL_TIMEOUT_MS = 300_000;
 
 async function p2pFetch(bagId: string, expect: FetchShape, out: string): Promise<void> {
+  // The WHOLE body sits inside the tmpRoot try/finally — a daemon that fails to start
+  // must not leak the temp tree it was about to use (review W2). What is downloaded
+  // here is ciphertext, so the leak class is disk garbage, not secrets — but garbage
+  // that accumulates one directory per failed pull is still a leak.
   const tmpRoot = await mkdtemp(join(tmpdir(), 'cypher-brain-ton-'));
+  try {
+    await p2pFetchInto(tmpRoot, bagId, expect, out);
+  } finally {
+    await rmrf(tmpRoot).catch(() => undefined);
+  }
+}
+
+async function p2pFetchInto(tmpRoot: string, bagId: string, expect: FetchShape, out: string): Promise<void> {
   const dbDir = join(tmpRoot, 'db');
   const dlDir = join(tmpRoot, 'dl');
   await mkdir(dbDir, { recursive: true });
@@ -274,8 +308,9 @@ async function p2pFetch(bagId: string, expect: FetchShape, out: string): Promise
     await mkdir(dirname(resolve(out)), { recursive: true });
     await copyFile(found, out);
   } finally {
-    daemon.kill();
-    await rmrf(tmpRoot).catch(() => undefined);
+    // Await the exit before the caller removes tmpRoot — a still-dying daemon writing
+    // into a directory mid-removal is a race (review W1).
+    await daemon.stop();
   }
 }
 
@@ -337,8 +372,20 @@ export function tonBackend(): StorageBackend {
       // Integrity of the transfer, checked before anything durable happens: scp already
       // checksums per-packet, but "the file scp wrote is the file we hashed locally" is
       // cheap to prove and ends any doubt a partial/interrupted earlier upload left.
-      const remoteSha = (await sshRun(`sha256sum -- '${p.staging}'`, PIPE_TIMEOUT_MS)).trim().split(/\s+/)[0];
+      // sha256sum on Linux seeders, shasum -a 256 on macOS ones — same output shape.
+      const remoteSha = (
+        await sshRun(
+          `if command -v sha256sum >/dev/null 2>&1; then sha256sum -- '${p.staging}'; else shasum -a 256 -- '${p.staging}'; fi`,
+          PIPE_TIMEOUT_MS,
+        )
+      )
+        .trim()
+        .split(/\s+/)[0];
       if (remoteSha !== sha) {
+        // Remove the bad staging copy before failing (review W4) — a deterministic
+        // name means the next attempt overwrites it anyway, but a known-corrupt file
+        // has no business surviving on the seeder.
+        await sshRun(`rm -f -- '${p.staging}'`).catch(() => undefined);
         throw new Error(`ton backend: transfer corrupted — local sha256 ${sha}, seeder-side ${remoteSha}`);
       }
       await sshRun(`mv -f -- '${p.staging}' '${p.bagDir}/${entry}'`);
@@ -347,13 +394,26 @@ export function tonBackend(): StorageBackend {
       // home-relative) bag dir there rather than guessing at $HOME from here.
       const absBagDir = (await sshRun(`cd -- '${p.bagDir}' && pwd`)).trim();
       assertRemoteSafe(absBagDir, 'resolved seeder bag directory', REMOTE_PATH_RE);
-      const created = await seederApi<TonBagDetails>(
-        '/api/v1/create',
-        JSON.stringify({ path: absBagDir, description: `cypher-brain ${sha.slice(0, 12)}` }),
-      );
-      const bagId = created.bag_id?.toLowerCase?.();
-      if (!bagId || !/^[0-9a-f]{64}$/.test(bagId)) {
-        throw new Error(`ton backend: seeder returned an invalid bag id: ${JSON.stringify(created.bag_id)}`);
+      let bagId: string | null = null;
+      try {
+        const created = await seederApi<TonBagDetails>(
+          '/api/v1/create',
+          JSON.stringify({ path: absBagDir, description: `cypher-brain ${sha.slice(0, 12)}` }),
+          CREATE_CALL_TIMEOUT_S,
+        );
+        const id = created.bag_id?.toLowerCase?.();
+        if (id && /^[0-9a-f]{64}$/.test(id)) bagId = id;
+      } catch (createErr) {
+        // The create RESPONSE is lost, not necessarily the create: a timeout on a huge
+        // bag, or a daemon refusing a dir it already holds (an interrupted earlier push
+        // that died before recording its inventory line). The bag dir is named by the
+        // sha, so ask the daemon what it holds before declaring failure.
+        bagId = await findSeederBagByDirName(sha).catch(() => null);
+        if (bagId === null) throw createErr;
+        console.error(`ton: create response lost (${errMsg(createErr)}) — recovered bag id from the seeder bag list`);
+      }
+      if (bagId === null) {
+        throw new Error('ton backend: seeder returned an invalid bag id from /api/v1/create');
       }
 
       // "Created" is not "seeding": wait until the seeder reports the bag complete and

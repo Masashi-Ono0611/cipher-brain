@@ -91,7 +91,27 @@ const freeUdpPort = (): Promise<number> =>
 
 export interface LocalTonDaemon {
   apiUrl: string;
-  kill: () => void;
+  /** SIGKILL the daemon and WAIT for it to actually exit — callers delete its db dir next, and a still-dying process writing into a directory being removed is a race (multi-model review W1). */
+  stop: () => Promise<void>;
+}
+
+// SIGKILL + await the close event (bounded): kill() only QUEUES the signal — reading
+// or rewriting files the child owns before it has actually exited is a race.
+function killAndWait(child: ReturnType<typeof spawn>): Promise<void> {
+  return new Promise((res) => {
+    if (child.exitCode !== null || child.signalCode !== null) return res();
+    const t = setTimeout(res, 5_000); // a child SIGKILL cannot reap (wedged in the kernel) must not hang us
+    child.once('close', () => {
+      clearTimeout(t);
+      res();
+    });
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      clearTimeout(t);
+      res();
+    }
+  });
 }
 
 // How long the two startup phases may take before this is reported as a daemon problem
@@ -155,11 +175,9 @@ export async function startLocalTonDaemon(
         await sleep(200);
       }
     } finally {
-      try {
-        genChild.kill('SIGKILL');
-      } catch {
-        /* already gone */
-      }
+      // Await the exit, not just the signal: the config file is read and rewritten
+      // right below, and a generator still mid-write would race that (review W1).
+      await killAndWait(genChild);
     }
     // Rewrite ListenAddr to a free UDP port. Parsed-and-reserialized rather than
     // regex-patched so a malformed config fails loudly here instead of confusing the
@@ -174,18 +192,12 @@ export async function startLocalTonDaemon(
   const child = spawnDaemon(bin, ['--api', `127.0.0.1:${apiPort}`, '--db', dbDir, ...netArgs]);
   let spawnErr: unknown = null;
   child.on('error', (e) => (spawnErr = e));
-  const kill = (): void => {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      /* already gone */
-    }
-  };
+  const stop = (): Promise<void> => killAndWait(child);
 
   const deadline = Date.now() + READY_TIMEOUT_MS;
   for (;;) {
     if (spawnErr !== null) {
-      kill();
+      await stop();
       throw enoent(spawnErr) ? new Error(`ton backend: ${installAdvice(bin)}`) : (spawnErr as Error);
     }
     // Early-exit on a daemon that already died (lost the UDP-port race and panicked, a
@@ -197,12 +209,12 @@ export async function startLocalTonDaemon(
       // A bare per-probe timeout, shorter than TON_HTTP_TIMEOUT_MS: the daemon is on
       // loopback, so a slow answer here just means "not listening yet".
       const r = await fetch(`${apiUrl}/api/v1/list`, { signal: AbortSignal.timeout(1500) });
-      if (r.ok) return { apiUrl, kill };
+      if (r.ok) return { apiUrl, stop };
     } catch {
       /* not ready yet */
     }
     if (Date.now() > deadline) {
-      kill();
+      await stop();
       throw new Error(`ton backend: tonutils-storage did not accept HTTP on ${apiUrl} within ${READY_TIMEOUT_MS}ms`);
     }
     await sleep(300);

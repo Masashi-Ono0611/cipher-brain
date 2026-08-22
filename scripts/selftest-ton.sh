@@ -149,4 +149,20 @@ grep -q 'forbids the seeder fallback' "$TMP/strict.err" || { echo "[FAIL] wrong 
 [ ! -f "$TMP/strict.age" ] || { echo "[FAIL] no-fallback pull still wrote an output file"; exit 1; }
 echo "[PASS] no-fallback mode fail-closed"
 
+echo "== positive control: hostile remote-dir values are REFUSED before any remote command =="
+if CYPHER_BRAIN_TON_REMOTE_DIR='dir with space; rm x' cb push --in "$TMP/got.age" --backend ton 2>"$TMP/hostile.err"; then
+  echo "[FAIL] hostile remote dir was accepted"; exit 1
+fi
+grep -q 'refuses to place in a remote command' "$TMP/hostile.err" || { echo "[FAIL] wrong hostile-dir message"; exit 1; }
+if CYPHER_BRAIN_TON_REMOTE_DIR='~/tilde-root' cb push --in "$TMP/got.age" --backend ton 2>"$TMP/tilde.err"; then
+  echo "[FAIL] tilde remote dir was accepted (ssh-quoting vs scp-expansion divergence)"; exit 1
+fi
+grep -q 'refuses to place in a remote command' "$TMP/tilde.err" || { echo "[FAIL] wrong tilde-dir message"; exit 1; }
+echo "[PASS] remote-dir allowlist guard fired (space/metachars and tilde)"
+
+echo "== positive control: invalid CYPHER_BRAIN_TON_HTTP_TIMEOUT warns and falls back to the default =="
+CYPHER_BRAIN_TON_HTTP_TIMEOUT='not-a-number' cb estimate --in "$TMP/got.age" --backend ton >/dev/null 2>"$TMP/timeout.err"
+grep -q 'CYPHER_BRAIN_TON_HTTP_TIMEOUT must be a positive integer' "$TMP/timeout.err" || { echo "[FAIL] invalid timeout did not warn"; exit 1; }
+echo "[PASS] invalid timeout value warned instead of silently degrading pulls"
+
 echo "== ton selftest: ALL PASS =="

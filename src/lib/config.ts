@@ -370,10 +370,26 @@ export const GITLEAKS_BIN = readEnv('CYPHER_BRAIN_GITLEAKS_BIN') || 'gitleaks';
 // rather than a URL.
 export const TON_SSH_HOST = readEnv('CYPHER_BRAIN_TON_SSH_HOST') || ''; // user@host of the seeder; required to push
 export const TON_SSH_KEY = readEnv('CYPHER_BRAIN_TON_SSH_KEY') || ''; // optional -i identity file for ssh/scp
-export const TON_REMOTE_DIR = readEnv('CYPHER_BRAIN_TON_REMOTE_DIR') || 'cypher-brain-ton'; // seeder-side layout root (home-relative unless absolute)
+export const TON_REMOTE_DIR = readEnv('CYPHER_BRAIN_TON_REMOTE_DIR') || 'cypher-brain-ton'; // seeder-side layout root: plain relative (lands in the SSH user's home) or absolute — a literal `~` is refused (ssh quoting vs scp expansion diverge, backends/ton.ts)
 export const TON_REMOTE_API = readEnv('CYPHER_BRAIN_TON_REMOTE_API') || '127.0.0.1:9955'; // tonutils-storage API addr AS SEEN FROM the seeder itself
 export const TON_BIN = readEnv('CYPHER_BRAIN_TON_BIN') || 'tonutils-storage'; // local binary for the ephemeral P2P download daemon
-export const TON_HTTP_TIMEOUT_MS = Number(readEnv('CYPHER_BRAIN_TON_HTTP_TIMEOUT') || 30_000);
+// Validated, unlike the older Number() timeouts above (multi-model review W5): an
+// invalid value here would make EVERY local daemon API call throw (AbortSignal.timeout
+// rejects NaN/negative), which get() would read as "P2P failed" and silently steer
+// every pull into the less-verifiable seeder fallback — a config typo must not be able
+// to change what a successful pull proves. Invalid -> warn + default, never throw
+// (this runs at import time; the CONFIG_FILE_ERROR pattern above explains why).
+const TON_HTTP_TIMEOUT_RAW = readEnv('CYPHER_BRAIN_TON_HTTP_TIMEOUT');
+const tonHttpTimeoutParsed = Number(TON_HTTP_TIMEOUT_RAW || 30_000);
+export const TON_HTTP_TIMEOUT_MS =
+  Number.isFinite(tonHttpTimeoutParsed) && Number.isInteger(tonHttpTimeoutParsed) && tonHttpTimeoutParsed > 0
+    ? tonHttpTimeoutParsed
+    : 30_000;
+if (TON_HTTP_TIMEOUT_RAW !== undefined && TON_HTTP_TIMEOUT_MS !== tonHttpTimeoutParsed) {
+  warn(
+    `CYPHER_BRAIN_TON_HTTP_TIMEOUT must be a positive integer (ms) — got ${JSON.stringify(TON_HTTP_TIMEOUT_RAW)}; using the 30000ms default`,
+  );
+}
 // STRICTLY '1', same reasoning as SKIP_FUNDS_CHECK below: this switch changes what a
 // successful pull PROVES (P2P availability vs. merely "the seeder still had a copy"),
 // so a stray `=0` must keep the default behaviour.

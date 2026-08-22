@@ -751,7 +751,7 @@ cypher-brain — encrypt a gbrain snapshot so only you can read it
       without pushing anything via "cypher-brain estimate".
       --backend rclone --remote <rclone-remote-name>:<path> shells out to the
       rclone binary (rclone copyto <in> <remote>), delegating auth/protocol for
-      any of rclone's 70+ supported providers to your own rclone config — cipher-
+      any of rclone's 70+ supported providers to your own rclone config — cypher-
       brain implements none of them itself. Free (like file); needs rclone on
       PATH and a remote already set up via 'rclone config' (or a config-less
       on-the-fly remote, e.g. --remote ":local:/path"). --remote is required.
@@ -806,7 +806,7 @@ cypher-brain — encrypt a gbrain snapshot so only you can read it
       uploading anything. turbo/arweave show the native unit (winc/winston) plus
       an approximate USD line when a USD/AR rate is fetchable; file, rclone and ton
       are always reported as free (rclone's actual transfer/storage cost, if any, is
-      whatever the operator's own cloud contract for that remote charges — cipher-
+      whatever the operator's own cloud contract for that remote charges — cypher-
       brain cannot query it; ton's is the operator's own seeder box). Sizes --in the same way push does (a real byte count
       off disk). The SAME computation backs the MCP estimate_cost tool, so the two
       never disagree.

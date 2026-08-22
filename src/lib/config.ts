@@ -44,6 +44,14 @@ const ENV_NAMES = [
   'CYPHER_BRAIN_AR_TURBO_RATES_URL', // #343: Turbo's credit price sheet (fiat per GiB) — turbo-backend USD lines price with this, not AR spot
   'CYPHER_BRAIN_AR_BALANCE_URL',
   'CYPHER_BRAIN_AR_L1_MAX',
+  'CYPHER_BRAIN_TON_SSH_HOST',
+  'CYPHER_BRAIN_TON_SSH_KEY',
+  'CYPHER_BRAIN_TON_REMOTE_DIR',
+  'CYPHER_BRAIN_TON_REMOTE_API',
+  'CYPHER_BRAIN_TON_BIN',
+  'CYPHER_BRAIN_TON_HTTP_TIMEOUT',
+  'CYPHER_BRAIN_TON_NO_FALLBACK',
+  'CYPHER_BRAIN_TON_NETWORK_CONFIG',
   'CYPHER_BRAIN_YES',
   'CYPHER_BRAIN_MAX_SPEND',
   'CYPHER_BRAIN_SKIP_FUNDS_CHECK', // #342: one-run bypass of the turbo pre-upload funds check (stale balance reads)
@@ -340,7 +348,11 @@ export const AGE_PUBKEY_RE = /age1pq1[0-9a-z]{1900,2000}|age1[0-9a-z]{50,63}/g;
 // restore.ts, #209) and the MCP verify_restore tool (src/mcp.ts) to warn when a pull ran
 // with no sha256 pin: without one, for arweave/turbo/rclone, a gateway/remote that
 // rolled back or substituted the object served at that same locator would not be caught.
-export const NON_CONTENT_ADDRESSED_BACKENDS = new Set(['arweave', 'turbo', 'rclone']);
+// `ton` is here despite its bag id BEING a content address (a merkle root the P2P
+// download path verifies every piece against): its get() may serve a pull via the SSH
+// seeder fallback, which verifies nothing, and the caller cannot tell which path
+// answered — so the pin warning must stay on (src/lib/backends/ton.ts header).
+export const NON_CONTENT_ADDRESSED_BACKENDS = new Set(['arweave', 'turbo', 'rclone', 'ton']);
 export const FILE_DIR = readEnv('CYPHER_BRAIN_FILE_DIR') || join(HOME, 'store'); // file backend object store
 // rclone backend (#204): the `rclone` binary name/path, same PATH-or-override
 // pattern as PG_BIN above — most machines just need `rclone` on PATH; override
@@ -351,6 +363,22 @@ export const RCLONE_BIN = readEnv('CYPHER_BRAIN_RCLONE_BIN') || 'rclone';
 // unattended run executes the scanner the operator was shown at install time rather than
 // whatever a bare launchd/cron PATH resolves that name to (#307, multi-model review).
 export const GITLEAKS_BIN = readEnv('CYPHER_BRAIN_GITLEAKS_BIN') || 'gitleaks';
+// ton backend (src/lib/backends/ton.ts): the seeder box (an operator-run always-on
+// machine with tonutils-storage) and the local binary for P2P pulls. The seeder's
+// HTTP API stays bound to loopback ON that box — it is reached via ssh + curl, never
+// exposed to the network — which is why there is a host and a loopback address here
+// rather than a URL.
+export const TON_SSH_HOST = readEnv('CYPHER_BRAIN_TON_SSH_HOST') || ''; // user@host of the seeder; required to push
+export const TON_SSH_KEY = readEnv('CYPHER_BRAIN_TON_SSH_KEY') || ''; // optional -i identity file for ssh/scp
+export const TON_REMOTE_DIR = readEnv('CYPHER_BRAIN_TON_REMOTE_DIR') || 'cypher-brain-ton'; // seeder-side layout root (home-relative unless absolute)
+export const TON_REMOTE_API = readEnv('CYPHER_BRAIN_TON_REMOTE_API') || '127.0.0.1:9955'; // tonutils-storage API addr AS SEEN FROM the seeder itself
+export const TON_BIN = readEnv('CYPHER_BRAIN_TON_BIN') || 'tonutils-storage'; // local binary for the ephemeral P2P download daemon
+export const TON_HTTP_TIMEOUT_MS = Number(readEnv('CYPHER_BRAIN_TON_HTTP_TIMEOUT') || 30_000);
+// STRICTLY '1', same reasoning as SKIP_FUNDS_CHECK below: this switch changes what a
+// successful pull PROVES (P2P availability vs. merely "the seeder still had a copy"),
+// so a stray `=0` must keep the default behaviour.
+export const TON_NO_FALLBACK = readEnv('CYPHER_BRAIN_TON_NO_FALLBACK') === '1';
+export const TON_NETWORK_CONFIG = readEnv('CYPHER_BRAIN_TON_NETWORK_CONFIG') || ''; // path to a TON global config (testnet); '' = daemon default (mainnet)
 export const AR_HOST = readEnv('CYPHER_BRAIN_AR_HOST') || 'arweave.net';
 export const AR_PORT = Number(readEnv('CYPHER_BRAIN_AR_PORT') || 443);
 export const AR_PROTOCOL = readEnv('CYPHER_BRAIN_AR_PROTOCOL') || 'https';

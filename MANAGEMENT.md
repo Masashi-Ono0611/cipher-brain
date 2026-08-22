@@ -98,7 +98,9 @@ cypher-brain push --in brain-$(date +%F).age --backend turbo --yes \
 ```
 
 > **Use a network backend here.** For `--backend file` the locator is a *local* store
-> path, useless on a fresh machine — only `turbo`/`arweave` locators are portable.
+> path, useless on a fresh machine — `turbo`/`arweave`/`ton` locators are portable
+> (a `ton` pull additionally needs the bag to still be seeded somewhere — see
+> docs/durability.md).
 
 Back this file up **off-box, next to the backup identity** (same encrypted USB / secure
 note). Recovery on a fresh machine then needs only those two things — no `index.tsv`. The
@@ -516,7 +518,7 @@ failure); the plain message is still the full story either way. Over MCP,
 | CB-E010 | A `file`-backend locator resolves outside `CYPHER_BRAIN_FILE_DIR`, or doesn't match the `<sha256>.age` shape `push` itself produces — refused as a possible path-traversal/arbitrary-file-read attempt via a tampered locator. | Only pass locators exactly as `push` printed them (or as saved in a `--save-locator`/index file from a trusted, off-box copy); don't hand-construct one. |
 | CB-E011 | The `arweave`/`turbo` backend needs `CYPHER_BRAIN_AR_WALLET` (a JWK signer) and it's unset, or the path isn't readable. | Run `cypher-brain wallet create` to generate one, then set `CYPHER_BRAIN_AR_WALLET` to its path (`wallet address` shows what to fund). |
 | CB-E012 | The optional package the backend needs isn't installed — `arweave` (an optional peer) or `@ardrive/turbo-sdk` (an `optionalDependency` a normal install carries, but which can be absent after `--omit=optional` or a tolerated optional-install failure). | Run the `npm install …` command the error itself prints. |
-| CB-E013 | `--backend` was given a value other than `file`, `arweave`, `turbo`, or `rclone`. | Correct the typo — only those four are valid. |
+| CB-E013 | `--backend` was given a value other than `file`, `arweave`, `turbo`, `rclone`, or `ton`. | Correct the typo — only those five are valid. |
 | CB-E014 | `schedule status`/`uninstall` ran before `schedule install`, or writing the crontab entry failed. | Run `cypher-brain schedule install` first; a crontab-write failure usually means missing cron permissions/availability in this environment. |
 | CB-E015 | `restore`/`verify` can't find the private identity file it needs to decrypt (default or `--identity` path). | Run `cypher-brain keygen` if you haven't yet, or point `--identity` at the correct file. |
 | CB-E016 | `restore`/`verify` found a `*.minisig` signature next to the ciphertext, and a configured signing public key, but the signature did NOT verify — the artifact may be tampered or forged. | Do not trust the artifact. Confirm you're checking against the correct `sign-recipient.pub` (or `--sign-recipient`); if it matches and the failure persists, treat the ciphertext as compromised and re-fetch from a trusted copy. |
@@ -531,6 +533,7 @@ failure); the plain message is still the full story either way. Over MCP,
 | `arweave` backend round-trip | **proven** — `selftest:arweave` (CI, against arlocal); real-network gateway pull confirmed operator-run |
 | `turbo` backend (ETH/USDC bundler upload) | **proven** — operator-run real round-trip (#20) |
 | `rclone` backend (delegates to the `rclone` binary and its own configured remote) | **proven** — `selftest:rclone` (CI) |
+| `ton` backend orchestration (seeder-side bag creation over ssh/scp, idempotent re-push, P2P-path pull, loud fallback + `CYPHER_BRAIN_TON_NO_FALLBACK` fail-close — against a mock daemon + PATH-shimmed ssh/scp; the REAL TON network is deliberately out of CI scope) | **proven** — `selftest:ton` (CI); real-network round-trip is operator-run |
 | Identity at rest (passphrase-wrap via `keygen --passphrase`; FDE on the identity host) | **available / recommended** — `--passphrase` ships; FDE is operator config, not enforced by code |
 | Post-quantum hybrid keypair (`keygen --pq`, ML-KEM-768 + X25519 — mitigates harvest-now-decrypt-later, see README Threat model) | **available** — `selftest:pq` (CI); combines with a plain-X25519 backup key and `CYPHER_BRAIN_PIN_RECIPIENTS`, but the recipient/ciphertext are much bigger than plain X25519 |
 | Authenticity signing (`keygen --sign`, a minisign-compatible Ed25519 detached signature over each `*.age` — mitigates age's lack of authenticity, see README Threat model #214) | **available** — `selftest:minisign` (CI, in-process round trip always; real `minisign` binary interop when it's on PATH); optional and additive — an unsigned artifact restores exactly as before |

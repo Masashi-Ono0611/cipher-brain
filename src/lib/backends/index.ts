@@ -7,6 +7,7 @@ import { fileBackend } from './file.js';
 import { arweaveBackend } from './arweave.js';
 import { turboBackend } from './turbo.js';
 import { rcloneBackend } from './rclone.js';
+import { tonBackend } from './ton.js';
 import type { StorageBackend } from '../types.js';
 
 // The `init` wizard's interactive backend choices — NOT the complete/canonical list
@@ -16,7 +17,11 @@ import type { StorageBackend } from '../types.js';
 // wizard prompt reads its OFFERED choices from one place instead of hand-rolling a
 // second copy that could drift.
 //
-// `rclone` (#204) is deliberately excluded from this wizard-choices list: unlike
+// `rclone` (#204) and `ton` are deliberately excluded from this wizard-choices list —
+// `ton` because it needs a configured seeder box (CYPHER_BRAIN_TON_SSH_HOST etc.,
+// src/lib/backends/ton.ts) that the wizard neither collects nor can verify, so
+// offering it would produce the same fail-deep-inside-push() bad UX as rclone's
+// missing --remote below. `rclone`'s own reasoning: unlike
 // file/arweave/turbo it needs an extra --remote value the interactive wizard never
 // collects, so offering it in that prompt would let an operator pick it, sail past
 // the wizard's own paid-backend checks, and only then fail deep inside push() with a
@@ -31,5 +36,6 @@ export async function backendFor(name: string | undefined): Promise<StorageBacke
   if (name === 'arweave') return arweaveBackend();
   if (name === 'turbo') return turboBackend();
   if (name === 'rclone') return rcloneBackend();
-  throw new Error(`unknown backend: ${name || '(none)'} — use --backend file|arweave|turbo|rclone`);
+  if (name === 'ton') return tonBackend();
+  throw new Error(`unknown backend: ${name || '(none)'} — use --backend file|arweave|turbo|rclone|ton`);
 }

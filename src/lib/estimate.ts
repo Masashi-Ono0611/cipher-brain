@@ -104,7 +104,7 @@ export async function turboUsdRate(): Promise<{ ratePer1e12Winc: number; usdPerG
 }
 
 // Estimate what pushing `sizeBytes` to `backend` would cost, WITHOUT uploading
-// anything (price queries only). `backend` must be one of file|arweave|turbo|rclone —
+// anything (price queries only). `backend` must be one of file|arweave|turbo|rclone|ton —
 // any other value is a caller bug (mcp.ts validates via requireBackend before calling
 // this; the CLI estimate() below validates too), so it is rejected explicitly
 // rather than silently falling through to the arweave branch.
@@ -143,6 +143,18 @@ async function estimateCostFor(backend: string, sizeBytes: number): Promise<Part
         'rclone backend delegates the transfer to the rclone binary and the configured remote (#204) — ' +
         'cypher-brain has no visibility into that remote pricing, so unlike arweave/turbo this is not a ' +
         'real cost query. Any transfer/storage cost is whatever the cloud contract for that remote charges.',
+    };
+  }
+
+  if (backend === 'ton') {
+    return {
+      backend,
+      size_bytes: sizeBytes,
+      cost: '0',
+      note:
+        'ton backend seeds the bag from your OWN tonutils-storage box (src/lib/backends/ton.ts) — no per-upload ' +
+        "charge, only that box's own running cost. NOT permanent storage: the bag is retrievable only while at " +
+        'least one reachable seeder retains it (see docs/durability.md).',
     };
   }
 
@@ -251,7 +263,7 @@ async function estimateCostFor(backend: string, sizeBytes: number): Promise<Part
     }
   }
 
-  throw new Error(`unknown backend: ${backend} — use file|arweave|turbo|rclone`);
+  throw new Error(`unknown backend: ${backend} — use file|arweave|turbo|rclone|ton`);
 }
 
 // Render a CostEstimate as human-readable lines — SHARED by the CLI `estimate` command
@@ -291,7 +303,7 @@ export function formatEstimate(e: CostEstimate): string[] {
 // or the MCP estimate_cost tool.
 export async function estimate(o: CliOptions): Promise<void> {
   if (!o.in) throw new Error('--in <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone> required');
+  if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone|ton> required');
   await requireFile(o.in); // #267: one shared check/wording across every command
   const st = await stat(o.in);
   if (!st.isFile())

@@ -1,0 +1,128 @@
+#!/usr/bin/env node
+// A mock tonutils-storage for scripts/selftest-ton.sh — stands in for BOTH daemons the
+// ton backend talks to (the seeder's and the ephemeral local one), speaking just the
+// four /api/v1 endpoints src/lib/backends/ton-client.ts documents. Same testing idea as
+// arweave-roundtrip.mjs's arlocal: exercise the REAL backend code end-to-end with no
+// real network — except here the protocol peer is this stub, not a protocol
+// implementation, so what the selftest proves is cypher-brain's own orchestration
+// (transfer, create, poll, locate, fallback), never TON Storage itself (that is
+// scripts/ton-dogfood.mjs's job, operator-run).
+//
+// "The network" is a shared registry file (MOCK_TON_STORE env): create() records
+// bag_id -> source path there; add() on another instance "downloads" by copying from
+// that path. Delete a registry entry and the bag is "gone from the network" — which is
+// how the selftest forces the P2P path to fail and proves the fallback fires.
+//
+// Argv contract mirrored from the real binary (cli/main.go): --daemon (ignored),
+// --api <addr>, --db <dir>, --network-config <path> (ignored). First run with no
+// existing <db>/config.json writes one and idles — that is the real binary's
+// generate-then-get-killed startup dance ton-client.ts drives.
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, statSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { join, basename } from 'node:path';
+
+const args = process.argv.slice(2);
+const opt = (name) => {
+  const i = args.indexOf(name);
+  return i >= 0 ? args[i + 1] : undefined;
+};
+const apiAddr = opt('--api');
+const dbDir = opt('--db');
+if (!dbDir) {
+  console.error('mock-tonutils: --db required');
+  process.exit(2);
+}
+const store = process.env.MOCK_TON_STORE;
+if (!store) {
+  console.error('mock-tonutils: MOCK_TON_STORE env required');
+  process.exit(2);
+}
+const registryPath = join(store, 'registry.json');
+const readRegistry = () => (existsSync(registryPath) ? JSON.parse(readFileSync(registryPath, 'utf8')) : {});
+const writeRegistry = (r) => writeFileSync(registryPath, JSON.stringify(r, null, 2));
+
+mkdirSync(dbDir, { recursive: true });
+const configPath = join(dbDir, 'config.json');
+if (!existsSync(configPath)) {
+  writeFileSync(configPath, JSON.stringify({ ListenAddr: '0.0.0.0:17555', Key: 'mock' }, null, 2));
+}
+// No --api: this is the config-generation run; idle until killed, like the real binary.
+if (!apiAddr) {
+  setInterval(() => {}, 1_000_000);
+} else {
+  const [host, port] = apiAddr.split(':');
+  // Bags this instance holds (created here, or "downloaded" via add).
+  const local = new Map(); // bag_id -> {path, entry, size}
+
+  const details = (id) => {
+    const b = local.get(id);
+    if (!b) return null;
+    return {
+      bag_id: id,
+      description: b.description ?? 'mock',
+      downloaded: b.size,
+      size: b.size,
+      files_count: 1,
+      dir_name: basename(b.path),
+      completed: true,
+      header_loaded: true,
+      info_loaded: true,
+      active: true,
+      seeding: true,
+      path: b.path,
+      files: [{ index: 0, name: b.entry, size: b.size }],
+    };
+  };
+
+  const srv = createServer((req, res) => {
+    const url = new URL(req.url, `http://${apiAddr}`);
+    const reply = (code, obj) => {
+      res.writeHead(code, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(obj));
+    };
+    let body = '';
+    req.on('data', (d) => {
+      body += d;
+    });
+    req.on('end', () => {
+      try {
+        if (url.pathname === '/api/v1/list') return reply(200, { bags: [...local.keys()].map((id) => details(id)) });
+        if (url.pathname === '/api/v1/details') {
+          const d = details(url.searchParams.get('bag_id')?.toLowerCase());
+          return d ? reply(200, d) : reply(500, { error: 'bag not found' });
+        }
+        if (url.pathname === '/api/v1/create') {
+          const { path, description } = JSON.parse(body);
+          // One entry per cypher-brain bag by construction; find it.
+          const entries = ['snapshot.age', 'snapshot.minisig'].filter((n) => existsSync(join(path, n)));
+          if (entries.length !== 1)
+            return reply(500, { error: `mock: expected exactly one snapshot entry in ${path}` });
+          const entry = entries[0];
+          const file = join(path, entry);
+          const id = createHash('sha256').update(readFileSync(file)).digest('hex');
+          const reg = readRegistry();
+          reg[id] = { source: file, entry };
+          writeRegistry(reg);
+          local.set(id, { path, entry, size: statSync(file).size, description });
+          return reply(200, details(id));
+        }
+        if (url.pathname === '/api/v1/add') {
+          const { bag_id, path } = JSON.parse(body);
+          const id = String(bag_id).toLowerCase();
+          const reg = readRegistry();
+          if (!reg[id]) return reply(500, { error: 'mock: bag not on the network' });
+          const dir = join(path, id, 'bag');
+          mkdirSync(dir, { recursive: true });
+          copyFileSync(reg[id].source, join(dir, reg[id].entry));
+          local.set(id, { path: dir, entry: reg[id].entry, size: statSync(reg[id].source).size });
+          return reply(200, { ok: true });
+        }
+        return reply(404, { error: `mock: no such endpoint ${url.pathname}` });
+      } catch (e) {
+        return reply(500, { error: `mock: ${e?.message ?? e}` });
+      }
+    });
+  });
+  srv.listen(Number(port), host);
+}

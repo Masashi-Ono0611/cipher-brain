@@ -170,7 +170,7 @@ export async function readSavedLocatorLine(path: string): Promise<SavedLocator |
 // be treated as "an upload succeeded".
 export async function push(o: CliOptions): Promise<boolean> {
   if (!o.in) throw new Error('--in <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone> required'); // no silent default
+  if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone|ton> required'); // no silent default
   await requireFile(o.in); // #267: one shared check/wording across every command
   // storage must only ever see ciphertext — refuse to push a non-age artifact
   // (e.g. an accidental plaintext path), which would be the last gate before a
@@ -505,7 +505,7 @@ export async function pull(o: CliOptions): Promise<void> {
   if (o.backend === 'rclone' && !o.locator && o.remote) o.locator = o.remote;
   if (!o.locator) throw new Error('--locator <id> required (or --from-locator-file <path>, or --remote for rclone)');
   if (!o.out) throw new Error('--out <file.age> required');
-  if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone> required');
+  if (!o.backend) throw new Error('--backend <file|arweave|turbo|rclone|ton> required');
   // No-clobber (#107): refuse to overwrite an existing --out by default. wizard.ts's
   // printed recovery command reuses a FIXED path ("~/restored.age"), so a second pull
   // (a different backup, or a re-run of the recovery steps) would otherwise destroy

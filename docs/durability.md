@@ -55,7 +55,14 @@ Honest operational notes, so nothing here silently over-promises:
   and `CYPHER_BRAIN_TON_NO_FALLBACK=1` turns a pull into a strict P2P availability
   check (success then *proves* a reachable seeder served the bag over the real
   network).
-- **The wider TON Storage provider market is thin.** Paying third-party storage
+- **Measured, not just designed** (2026-08-22, `npm run dogfood:ton` against a real
+  DigitalOcean seeder, ~20 KB ciphertext): push (scp + seeder-side bag creation)
+  34.0 s; idempotent re-push 7.0 s; **strict P2P pull 6.9 s** — with
+  `CYPHER_BRAIN_TON_NO_FALLBACK=1`, so the bytes provably came over the real TON
+  Storage P2P network, sha256-matched, then verified and restored; a normal
+  (non-strict) pull was also served via P2P. Latency will differ for brain-sized
+  bags (piece-hashing dominates the push); what this run pins down is that the
+  whole path — DHT discovery included — actually works today. Paying third-party storage
   providers for retention exists as a protocol (per-day storage contracts with
   on-chain proofs) but was measured dormant in practice (providers listed, none
   accepting contracts) as of mid-2026 — which is exactly why this backend seeds

@@ -56,6 +56,7 @@
     "selftest:storage": "bash scripts/selftest-storage.sh",
     "selftest:rclone": "bash scripts/selftest-rclone.sh",
     "selftest:ton": "bash scripts/selftest-ton.sh",
+    "dogfood:ton": "node scripts/ton-dogfood.mjs",
     "selftest:recovery": "bash scripts/selftest-recovery.sh",
     "selftest:recovery-kit": "bash scripts/selftest-recovery-kit.sh",
     "selftest:restore-security": "bash scripts/selftest-restore-security.sh",

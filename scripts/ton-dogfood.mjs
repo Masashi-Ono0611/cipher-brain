@@ -179,11 +179,40 @@ function cleanupRemoteBag(sha, bagId) {
   const safeSha = assertSafe(sha, 'ciphertext sha256', HEX64_RE);
   const safeBag = assertSafe(bagId, 'bag id', HEX64_RE);
 
+  // C1: never arm deletion off the bagId argument alone — read the seeder's OWN
+  // inventory record for this sha and confirm it names this exact bag. Only then is
+  // the daemon-side removal provably scoped to the bag THIS run's ciphertext created.
+  const recorded = sshRun(`cat -- '${base}/inventory/${safeSha}.locator' 2>/dev/null || true`).trim();
+  const expected = `ton:v1:${safeBag}`;
+  if (recorded !== expected) {
+    throw new Error(
+      `refusing to delete — seeder inventory for sha ${safeSha} does not match this run's bag: ` +
+        `recorded=${JSON.stringify(recorded)} expected=${JSON.stringify(expected)}`,
+    );
+  }
+
+  // --fail (W1): a 4xx/5xx from the daemon must surface as a non-zero ssh/curl exit,
+  // not a silent "removed" (curl without --fail prints the error body but still exits 0).
   const body = JSON.stringify({ bag_id: safeBag, with_files: true });
   sshRun(
-    `curl -sS -m 30 -X POST -H 'Content-Type: application/json' --data '${body}' 'http://${api}/api/v1/remove' >/dev/null`,
+    `curl -sS --fail -m 30 -X POST -H 'Content-Type: application/json' --data '${body}' 'http://${api}/api/v1/remove' >/dev/null`,
     60_000,
   );
+
+  // Positive confirmation the daemon actually forgot it, not just that the call
+  // returned 2xx: re-list and assert the bag id no longer appears anywhere in it.
+  const stillListedCount = sshRun(
+    `curl -sS --fail -m 30 'http://${api}/api/v1/list' | grep -c -- '${safeBag}' || true`,
+    60_000,
+  ).trim();
+  if (stillListedCount !== '0') {
+    console.log(
+      `[WARN] cleanup: bag ${safeBag} still appears in the seeder's /api/v1/list after /api/v1/remove ` +
+        `(match count=${stillListedCount}) — it may still be finishing removal; check manually on ` +
+        `${process.env.CYPHER_BRAIN_TON_SSH_HOST} if it persists.`,
+    );
+  }
+
   sshRun(`rm -rf -- '${base}/bags/${safeSha}' '${base}/inventory/${safeSha}.locator'`);
 }
 
@@ -225,6 +254,33 @@ function main() {
   let locator = null;
   let bagId = null;
   let requiredOk = true;
+
+  // W2: SIGINT (Ctrl-C) must still try to remove a bag this run already created —
+  // the handler is a closure over the same bagId/origSha/keep the normal cleanup path
+  // uses, so it always sees the current values. Kept deliberately minimal: it attempts
+  // cleanup exactly once then exits; a SIGKILL (no JS runs at all) or a second Ctrl-C
+  // (something is already stuck) both skip it and leave the bag on the seeder — re-run
+  // with --keep to inspect it, or remove it by hand (see cleanupRemoteBag above).
+  let sigintHandled = false;
+  process.on('SIGINT', () => {
+    if (sigintHandled) {
+      console.log('\n[WARN] second interrupt — exiting immediately without further cleanup.');
+      process.exit(130);
+    }
+    sigintHandled = true;
+    console.log('\n[WARN] interrupted (SIGINT) — attempting cleanup once before exiting.');
+    if (!keep && bagId && origSha) {
+      try {
+        cleanupRemoteBag(origSha, bagId);
+        console.log('[INFO] cleanup: removed the test bag from the seeder');
+      } catch (e) {
+        console.log(
+          `[WARN] cleanup failed — remove manually on the seeder (bag ${bagId}, sha ${origSha}): ${e.message}`,
+        );
+      }
+    }
+    process.exit(130);
+  });
 
   const REQUIRED_PHASES = ['setup', 'push', 'idempotent', 'p2p_pull', 'verify', 'restore'];
 
@@ -309,44 +365,58 @@ function main() {
     });
 
     // Optional, informational: does a normal pull actually go P2P, or quietly fall
-    // back? Never fails the run — see the flag's own --help description.
+    // back? Never fails the run — see the flag's own --help description. BLOCKED is
+    // reserved for "could not run at all" (no locator); an executed-but-failed probe,
+    // or one whose stderr doesn't say which path served it, is WARN (W3) — a probe
+    // that ran and told us something ambiguous is not the same as one that never ran.
     if (probeFallback) {
       const t0 = Date.now();
-      try {
-        if (!locator) throw new Error('no locator to probe (push phase never succeeded)');
-        const probeOut = join(tmpRoot, 'got-probe.age');
-        const env = { ...process.env };
-        delete env.CYPHER_BRAIN_TON_NO_FALLBACK;
-        const r = spawnSync(
-          process.execPath,
-          [...DEV_ARGS, BIN, 'pull', '--backend', 'ton', '--locator', locator, '--out', probeOut, '--force'],
-          {
-            cwd: ROOT,
-            env,
-            encoding: 'utf8',
-            timeout: CB_TIMEOUT_MS,
-            maxBuffer: 64 * 1024 * 1024,
-          },
-        );
-        const stderrText = r.stderr || '';
-        const path = stderrText.includes('over the TON Storage P2P network')
-          ? 'p2p'
-          : stderrText.includes('falling back to a direct copy from the seeder')
-            ? 'seeder-fallback'
-            : 'unknown';
-        if (r.status !== 0) throw new Error(`probe pull failed: ${stderrText.trim().slice(-2000)}`);
-        phases.fallback_probe = 'PASS';
-        console.log(`[PASS] fallback_probe: served via ${path}`);
-      } catch (e) {
+      if (!locator) {
         phases.fallback_probe = 'BLOCKED';
-        console.log(`[BLOCKED] fallback_probe: ${e.message}`);
-      } finally {
-        timings.fallback_probe = Date.now() - t0;
+        timings.fallback_probe = 0;
+        console.log('[BLOCKED] fallback_probe: no locator to probe (push phase never succeeded)');
+      } else {
+        try {
+          const probeOut = join(tmpRoot, 'got-probe.age');
+          // S1: reuse cb() (surfaces r.error/timeout/signal) instead of a raw spawnSync.
+          // The backend only ever treats the literal string '1' as "no fallback", so an
+          // EMPTY override disables strict mode without needing to delete the var.
+          const r = cb(['pull', '--backend', 'ton', '--locator', locator, '--out', probeOut, '--force'], {
+            CYPHER_BRAIN_TON_NO_FALLBACK: '',
+          });
+          const stderrText = r.stderr || '';
+          const path = stderrText.includes('over the TON Storage P2P network')
+            ? 'p2p'
+            : stderrText.includes('falling back to a direct copy from the seeder')
+              ? 'seeder-fallback'
+              : 'unknown';
+          if (r.status !== 0) {
+            phases.fallback_probe = 'WARN';
+            console.log(`[WARN] fallback_probe: probe pull exited ${r.status}: ${stderrText.trim().slice(-2000)}`);
+          } else if (path === 'unknown') {
+            phases.fallback_probe = 'WARN';
+            console.log(
+              `[WARN] fallback_probe: pull succeeded but stderr did not say which path served it — cannot ` +
+                `confirm p2p vs seeder-fallback. stderr tail: ${stderrText.trim().slice(-2000)}`,
+            );
+          } else {
+            phases.fallback_probe = 'PASS';
+            console.log(`[PASS] fallback_probe: served via ${path}`);
+          }
+        } catch (e) {
+          phases.fallback_probe = 'WARN';
+          console.log(`[WARN] fallback_probe: ${e.message}`);
+        } finally {
+          timings.fallback_probe = Date.now() - t0;
+        }
       }
     } else {
       phases.fallback_probe = 'SKIP';
     }
-
+  } finally {
+    // W2: cleanup runs here — in the outer finally — so it still fires even if
+    // something above throws an exception runPhase() did not catch (runPhase itself
+    // never rethrows, so this is a belt-and-suspenders backstop, not the primary path).
     if (!keep && bagId && origSha) {
       try {
         cleanupRemoteBag(origSha, bagId);
@@ -356,10 +426,9 @@ function main() {
           `[WARN] cleanup failed — remove manually on the seeder (bag ${bagId}, sha ${origSha}): ${e.message}`,
         );
       }
-    } else if (keep) {
-      console.log(`[INFO] --keep: leaving bag ${bagId ?? '(none created)'} on the seeder`);
+    } else if (keep && bagId) {
+      console.log(`[INFO] --keep: leaving bag ${bagId} on the seeder`);
     }
-  } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
 

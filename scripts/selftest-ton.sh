@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# Storage round-trip proof for the TON backend (src/lib/backends/ton.ts) — CI-safe:
+# no real TON network, no real seeder box. The seeder is a local directory reached
+# through PATH-shimmed `ssh`/`scp` (so the REAL backend code runs its REAL remote
+# command lines), and both tonutils-storage daemons are scripts/mock-tonutils.mjs
+# (so the REAL HTTP client, ephemeral-daemon startup dance and poll loops all run).
+# What this cannot prove is TON Storage itself — that is scripts/ton-dogfood.mjs,
+# operator-run against the real network.
+#
+# Positive controls are the point of half of this file: the fallback warning, the
+# no-fallback refusal and the locator-shape rejection are each DRIVEN TO FIRE here,
+# not assumed — a guard nobody has seen fire is not yet a guard.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/bin/cypher-brain.mjs"
+source "$ROOT/scripts/dev-node-flags.sh"
+
+TMP="$(mktemp -d)"
+SEEDER_PID=""
+cleanup() {
+  [ -n "$SEEDER_PID" ] && kill "$SEEDER_PID" 2>/dev/null
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
+
+export CYPHER_BRAIN_HOME="$TMP/keys"
+SEEDER_HOME="$TMP/seeder-home"
+export MOCK_TON_STORE="$TMP/store"
+mkdir -p "$SEEDER_HOME" "$MOCK_TON_STORE"
+
+cb() { node "${BIN_DEV_ARGS[@]}" "$BIN" "$@"; }
+sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
+
+# ---- the "seeder": a mock daemon on loopback + a home directory ----
+MOCK_PORT=$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
+node "$ROOT/scripts/mock-tonutils.mjs" --daemon --api "127.0.0.1:$MOCK_PORT" --db "$TMP/seeder-db" &
+SEEDER_PID=$!
+READY=0
+for _ in $(seq 1 50); do
+  if curl -s "http://127.0.0.1:$MOCK_PORT/api/v1/list" >/dev/null 2>&1; then READY=1; break; fi
+  sleep 0.2
+done
+[ "$READY" = 1 ] || { echo "[FAIL] mock seeder daemon did not come up on port $MOCK_PORT"; exit 1; }
+
+# ---- PATH shims: ssh/scp against the local "seeder", tonutils-storage -> mock ----
+SHIM="$TMP/bin"
+mkdir -p "$SHIM"
+cat > "$SHIM/ssh" <<EOF
+#!/usr/bin/env bash
+# selftest shim: run the remote command line in the fake seeder home.
+while [ \$# -gt 0 ] && [ "\$1" != "--" ]; do
+  case "\$1" in -o|-i) shift 2;; *) shift;; esac
+done
+[ "\${1:-}" = "--" ] && shift
+shift # host
+cd "$SEEDER_HOME"
+exec bash -c "\$*"
+EOF
+cat > "$SHIM/scp" <<EOF
+#!/usr/bin/env bash
+# selftest shim: host:path means a path under the fake seeder home.
+while [ \$# -gt 0 ] && [ "\$1" != "--" ]; do
+  case "\$1" in -o|-i) shift 2;; *) shift;; esac
+done
+[ "\${1:-}" = "--" ] && shift
+resolve() {
+  case "\$1" in
+    *:/*) printf '%s' "\${1#*:}";;
+    *:*)  printf '%s/%s' "$SEEDER_HOME" "\${1#*:}";;
+    *)    printf '%s' "\$1";;
+  esac
+}
+cp "\$(resolve "\$1")" "\$(resolve "\$2")"
+EOF
+cat > "$SHIM/tonutils-storage" <<EOF
+#!/usr/bin/env bash
+exec node "$ROOT/scripts/mock-tonutils.mjs" "\$@"
+EOF
+chmod +x "$SHIM/ssh" "$SHIM/scp" "$SHIM/tonutils-storage"
+export PATH="$SHIM:$PATH"
+export CYPHER_BRAIN_TON_SSH_HOST="mock-seeder"
+export CYPHER_BRAIN_TON_REMOTE_API="127.0.0.1:$MOCK_PORT"
+
+MARKER="ton-marker-$(od -An -N6 -tx1 /dev/urandom | tr -d ' ')"
+SRC="$TMP/brain-src"
+mkdir -p "$SRC"
+printf '%s\n' "$MARKER" > "$SRC/note.txt"
+
+echo "== snapshot =="
+cb keygen >/dev/null
+cb snapshot --dir "$SRC" --out "$TMP/snap.age"
+ORIG=$(sha "$TMP/snap.age")
+
+echo "== push --backend ton (bag born on the seeder; locator = ton:v1:<bag-id>) =="
+LOC=$(cb push --in "$TMP/snap.age" --backend ton --save-locator "$TMP/loc.tsv")
+printf '%s' "$LOC" | grep -Eq '^ton:v1:[0-9a-f]{64}$' || { echo "[FAIL] locator shape: $LOC"; exit 1; }
+echo "[PASS] locator matches ton:v1:<64-hex>"
+BAG_FILE=$(ls "$SEEDER_HOME"/cypher-brain-ton/bags/*/snapshot.age 2>/dev/null | head -1)
+[ -n "$BAG_FILE" ] || { echo "[FAIL] no snapshot.age landed under the seeder bags dir"; exit 1; }
+[ "$(sha "$BAG_FILE")" = "$ORIG" ] || { echo "[FAIL] seeder-side bytes differ from source"; exit 1; }
+echo "[PASS] seeder holds the exact pushed bytes"
+grep -qs -- "$LOC" "$SEEDER_HOME"/cypher-brain-ton/inventory/*.locator || { echo "[FAIL] inventory does not record the locator"; exit 1; }
+echo "[PASS] seeder inventory records the locator"
+
+echo "== idempotent re-push (same ciphertext -> same locator, no second bag) =="
+LOC2=$(cb push --in "$TMP/snap.age" --backend ton 2>"$TMP/repush.err")
+[ "$LOC2" = "$LOC" ] || { echo "[FAIL] re-push returned a different locator: $LOC2"; exit 1; }
+grep -q 'idempotent re-push' "$TMP/repush.err" || { echo "[FAIL] re-push did not report the idempotent path"; exit 1; }
+[ "$(ls "$SEEDER_HOME"/cypher-brain-ton/bags | wc -l | tr -d ' ')" = "1" ] || { echo "[FAIL] re-push created a second bag dir"; exit 1; }
+echo "[PASS] re-push is idempotent"
+
+echo "== pull over the (mock) P2P path — the primary read path, no ssh involved =="
+rm -f "$TMP/snap.age"
+cb pull --backend ton --locator "$LOC" --out "$TMP/got.age" 2>"$TMP/pull.err"
+[ "$(sha "$TMP/got.age")" = "$ORIG" ] || { echo "[FAIL] pulled bytes differ"; exit 1; }
+grep -q 'over the TON Storage P2P network' "$TMP/pull.err" || { echo "[FAIL] pull did not report the P2P path (did it silently fall back?)"; exit 1; }
+echo "[PASS] P2P pull round-trip"
+cb verify --in "$TMP/got.age" >/dev/null
+echo "[PASS] pulled ciphertext verifies"
+
+echo "== positive control: malformed locator is REJECTED (shape guard fires) =="
+if cb pull --backend ton --locator "ton:v1:not-a-bag-id" --out "$TMP/never.age" 2>"$TMP/bad-loc.err"; then
+  echo "[FAIL] malformed locator was accepted"; exit 1
+fi
+grep -q 'does not match the expected ton:v1' "$TMP/bad-loc.err" || { echo "[FAIL] wrong rejection message"; exit 1; }
+echo "[PASS] locator shape guard fired"
+
+echo "== positive control: wrong --sha256 pin FAILS the pull =="
+WRONG_SHA=$(printf 'x%.0s' $(seq 1 64) | tr 'x' '0')
+if cb pull --backend ton --locator "$LOC" --out "$TMP/pinned.age" --sha256 "$WRONG_SHA" 2>"$TMP/pin.err"; then
+  echo "[FAIL] wrong sha256 pin was accepted"; exit 1
+fi
+echo "[PASS] sha256 pin guard fired"
+
+echo "== positive control: bag gone from the network -> LOUD seeder fallback fires =="
+node -e 'require("fs").writeFileSync(process.argv[1], "{}")' "$MOCK_TON_STORE/registry.json"
+cb pull --backend ton --locator "$LOC" --out "$TMP/fallback.age" 2>"$TMP/fallback.err"
+[ "$(sha "$TMP/fallback.age")" = "$ORIG" ] || { echo "[FAIL] fallback bytes differ"; exit 1; }
+grep -q 'falling back to a direct copy from the seeder' "$TMP/fallback.err" || { echo "[FAIL] fallback did not announce itself"; exit 1; }
+grep -q 'NOT proven' "$TMP/fallback.err" || { echo "[FAIL] fallback did not disclaim P2P availability"; exit 1; }
+echo "[PASS] fallback fired, loudly"
+
+echo "== positive control: CYPHER_BRAIN_TON_NO_FALLBACK=1 fail-closes instead =="
+if CYPHER_BRAIN_TON_NO_FALLBACK=1 cb pull --backend ton --locator "$LOC" --out "$TMP/strict.age" 2>"$TMP/strict.err"; then
+  echo "[FAIL] no-fallback pull unexpectedly succeeded"; exit 1
+fi
+grep -q 'forbids the seeder fallback' "$TMP/strict.err" || { echo "[FAIL] wrong no-fallback message"; exit 1; }
+[ ! -f "$TMP/strict.age" ] || { echo "[FAIL] no-fallback pull still wrote an output file"; exit 1; }
+echo "[PASS] no-fallback mode fail-closed"
+
+echo "== positive control: hostile remote-dir values are REFUSED before any remote command =="
+if CYPHER_BRAIN_TON_REMOTE_DIR='dir with space; rm x' cb push --in "$TMP/got.age" --backend ton 2>"$TMP/hostile.err"; then
+  echo "[FAIL] hostile remote dir was accepted"; exit 1
+fi
+grep -q 'refuses to place in a remote command' "$TMP/hostile.err" || { echo "[FAIL] wrong hostile-dir message"; exit 1; }
+if CYPHER_BRAIN_TON_REMOTE_DIR='~/tilde-root' cb push --in "$TMP/got.age" --backend ton 2>"$TMP/tilde.err"; then
+  echo "[FAIL] tilde remote dir was accepted (ssh-quoting vs scp-expansion divergence)"; exit 1
+fi
+grep -q 'refuses to place in a remote command' "$TMP/tilde.err" || { echo "[FAIL] wrong tilde-dir message"; exit 1; }
+echo "[PASS] remote-dir allowlist guard fired (space/metachars and tilde)"
+
+echo "== positive control: invalid CYPHER_BRAIN_TON_HTTP_TIMEOUT warns and falls back to the default =="
+CYPHER_BRAIN_TON_HTTP_TIMEOUT='not-a-number' cb estimate --in "$TMP/got.age" --backend ton >/dev/null 2>"$TMP/timeout.err"
+grep -q 'CYPHER_BRAIN_TON_HTTP_TIMEOUT must be a positive integer' "$TMP/timeout.err" || { echo "[FAIL] invalid timeout did not warn"; exit 1; }
+echo "[PASS] invalid timeout value warned instead of silently degrading pulls"
+
+echo "== ton selftest: ALL PASS =="

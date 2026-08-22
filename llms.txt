@@ -45,12 +45,15 @@ stderr is load-bearing, not decoration. If you run cypher-brain on a human's beh
   `arweave` (raw L1, small artifacts only), `rclone` (delegates to the `rclone`
   binary and its own configured remote — 70+ providers; cypher-brain's own
   part is free like `file`, the remote's real transfer/storage cost is
-  whatever your own cloud contract charges).
+  whatever your own cloud contract charges), `ton` (TON Storage seeded from
+  your OWN always-on box over SSH; pull is a credential-less P2P download by
+  bag id, with a loud fallback to the seeder — free per upload, but NOT
+  permanent: retrievable only while a reachable seeder retains the bag).
 - **recovery kit** — the printable artifact `init` produces: the backup identity
   (raw, not passphrase-wrapped — keep the kit itself physically secure), the
   latest locator, and restore steps. Kit-only recovery on a fresh machine needs
   both the backup key (`init` defaults to generating one, but it can be
-  declined) and a portable backend (`turbo`/`arweave` — `file` locators are
+  declined) and a portable backend (`turbo`/`arweave`/`ton` — `file` locators are
   machine-local). After later pushes, the CLI-only `cypher-brain recovery-kit`
   regenerates it against the current locator (no MCP tool on purpose: the kit
   can embed private key blocks, which must never enter agent context).

@@ -732,10 +732,10 @@ cypher-brain — encrypt a gbrain snapshot so only you can read it
       has to fall back to scraping stderr; "code" is the CB-E0xx identifier when the failure
       matches a known one (MANAGEMENT.md#error-codes), null otherwise.
 
-  cypher-brain push --in <file.age> --backend <file|arweave|turbo|rclone> [--remote <name>:<path>] [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
+  cypher-brain push --in <file.age> --backend <file|arweave|turbo|rclone|ton> [--remote <name>:<path>] [--yes] [--save-locator <path>] [--skip-unchanged] [--digest <hex>] [--force]
       Upload ciphertext to storage. Prints ONLY the locator to stdout
       (file: store path; arweave: tx id; turbo: ANS-104 data item id; rclone: the
-      --remote value itself).
+      --remote value itself; ton: "ton:v1:<bag-id>").
       Storage sees ciphertext only.
       Transfer progress (#283) is printed to stderr on the backends that can actually be
       slow: turbo uploads (from the SDK's own progress events), rclone transfers (rclone's
@@ -755,6 +755,16 @@ cypher-brain — encrypt a gbrain snapshot so only you can read it
       brain implements none of them itself. Free (like file); needs rclone on
       PATH and a remote already set up via 'rclone config' (or a config-less
       on-the-fly remote, e.g. --remote ":local:/path"). --remote is required.
+      --backend ton stores the ciphertext as a TON Storage bag SEEDED FROM YOUR OWN
+      always-on box (the "seeder": a machine running tonutils-storage, reached over
+      SSH — CYPHER_BRAIN_TON_SSH_HOST etc., see Settings below). The bag is created
+      ON the seeder (the machine that must retain it), the locator is
+      "ton:v1:<64-hex-bag-id>", and re-pushing unchanged ciphertext is idempotent
+      (same bytes -> the recorded locator, no re-upload). Free per upload (your
+      seeder's running cost is the cost) — but NOT permanent storage: a bag is
+      retrievable only while at least one reachable seeder retains it. Pull's
+      primary path is a real P2P download (no SSH key needed on the restoring
+      machine); the seeder is only a loud, explicit fallback.
       --save-locator writes "<locator>\t<backend>\t<sha256>[\t<content_digest>[\t
       <recipients_fingerprint>[\t<sig_locator>[\t<sign_key_id>]]]]" to a file (rewritten
       atomically each push, so it always holds the LATEST + an integrity pin; legacy
@@ -791,13 +801,13 @@ cypher-brain — encrypt a gbrain snapshot so only you can read it
       when unchanged. (The digest is plaintext-side by necessity: age's ephemeral file
       key makes identical content encrypt to different ciphertext bytes every run.)
 
-  cypher-brain estimate --in <file.age> --backend <file|arweave|turbo|rclone> [--json]
+  cypher-brain estimate --in <file.age> --backend <file|arweave|turbo|rclone|ton> [--json]
       Read-only preview: print what pushing --in to --backend would cost WITHOUT
       uploading anything. turbo/arweave show the native unit (winc/winston) plus
-      an approximate USD line when a USD/AR rate is fetchable; file and rclone are
-      always reported as free (rclone's actual transfer/storage cost, if any, is
+      an approximate USD line when a USD/AR rate is fetchable; file, rclone and ton
+      are always reported as free (rclone's actual transfer/storage cost, if any, is
       whatever the operator's own cloud contract for that remote charges — cipher-
-      brain cannot query it). Sizes --in the same way push does (a real byte count
+      brain cannot query it; ton's is the operator's own seeder box). Sizes --in the same way push does (a real byte count
       off disk). The SAME computation backs the MCP estimate_cost tool, so the two
       never disagree.
       --json prints the same CostEstimate object as one JSON line on stdout
@@ -946,6 +956,7 @@ Storage: CYPHER_BRAIN_FILE_DIR (file);
          CYPHER_BRAIN_AR_{HOST,PORT,PROTOCOL,WALLET,GATEWAY,GATEWAYS,HTTP_TIMEOUT,USD_RATE_URL,TURBO_RATES_URL,BALANCE_URL} (arweave; CYPHER_BRAIN_AR_WALLET is a path to a JWK key file — 'cypher-brain wallet create' generates one, 'wallet address' shows what to fund; the 'arweave' npm package is needed only to PUSH or for the rare L1 chunk fallback — a gateway pull needs none; the approximate-USD lines price each backend in its own truthful unit: the raw arweave L1 backend at AR SPOT (CYPHER_BRAIN_AR_USD_RATE_URL — the spend is real AR at market value), the turbo backend and 'wallet balance' at Turbo's own credit rate, fees included (CYPHER_BRAIN_AR_TURBO_RATES_URL — a turbo upload spends credits, and credits sell at Turbo's price, not AR spot; pricing them at spot understated a real push's cost by ~35%), falling back to labeled AR spot only when that price sheet is unavailable or unusable; a dead rate endpoint just omits the USD line, it never blocks a push; CYPHER_BRAIN_AR_BALANCE_URL overrides the payment-service account endpoint 'wallet balance' queries as '<url>?address=<addr>');
          turbo: CYPHER_BRAIN_AR_WALLET (JWK signer) + optional CYPHER_BRAIN_AR_PAID_BY (an address sharing Turbo Credits to that signer); needs '@ardrive/turbo-sdk' to PUSH (a pull reuses the arweave gateway read, no SDK). Funding/credit-share details: docs/arweave-upload-runbook.md.
          rclone: CYPHER_BRAIN_RCLONE_BIN (path to the rclone binary; default 'rclone' on PATH) — the remote itself is whatever --remote <name>:<path> names in your own 'rclone config'.
+         ton: CYPHER_BRAIN_TON_SSH_HOST (user@host of your seeder box running tonutils-storage — required to PUSH; also the pull fallback), CYPHER_BRAIN_TON_SSH_KEY (optional ssh -i identity file), CYPHER_BRAIN_TON_REMOTE_DIR (seeder-side layout root; default 'cypher-brain-ton' in the SSH user's home — plain relative or absolute path, a literal ~ is refused), CYPHER_BRAIN_TON_REMOTE_API (the seeder daemon's API address as seen FROM the seeder itself; default '127.0.0.1:9955' — it stays loopback-bound there, reached via ssh, never exposed), CYPHER_BRAIN_TON_BIN (local tonutils-storage binary for the P2P pull; default 'tonutils-storage' on PATH), CYPHER_BRAIN_TON_HTTP_TIMEOUT (ms; default 30000), CYPHER_BRAIN_TON_NO_FALLBACK=1 (strictly '1': forbid the seeder fallback on pull, so a success PROVES P2P availability — use for verify --level remote when you want that proof), CYPHER_BRAIN_TON_NETWORK_CONFIG (path to a TON global config JSON for testnet; default mainnet).
 Spend: arweave/turbo PUSH needs --yes or CYPHER_BRAIN_YES=1 (paid, permanent); CYPHER_BRAIN_MAX_SPEND caps the arweave/turbo cost estimate (winston/winc). A turbo push also runs a funds check BEFORE signing: when the estimated cost exceeds even the reachable credit (the signer's own balance + the live approvals CYPHER_BRAIN_AR_PAID_BY selects), the spend is headed for a payment-service refusal that would otherwise arrive only after minutes of signing. On a TTY (a human watching) it aborts with the funding steps spelled out, after confirming the shortfall on a second balance read so a top-up landing that same moment is not blocked; without a TTY (a nightly runner, an MCP host) it only WARNS and proceeds — a balance read has no freshness guarantee, and it must never be what blocks an unattended backup. Skipped entirely when the balance cannot be read at all; CYPHER_BRAIN_SKIP_FUNDS_CHECK=1 (strictly '1') bypasses it for one run.
 Consent: restore --pg (pg_restore --clean --if-exists, irreversible) needs --yes or CYPHER_BRAIN_YES=1.
 Permanence: there is NO delete, at any granularity (#301). cypher-brain has no forget/prune/delete
@@ -995,11 +1006,26 @@ they are not peers:
   string. A cheap way to add an offsite copy (the "1" in 3-2-1 backup) next to
   `turbo`'s permanent store, reusing an rclone config you may already have from
   restic/kopia. Needs the `rclone` binary on PATH.
+- **`ton`** — [TON Storage](https://docs.ton.org/foundations/web3/ton-storage),
+  seeded from **your own always-on box** (the "seeder": any machine running
+  [tonutils-storage](https://github.com/xssnick/tonutils-storage), reached over
+  SSH — `CYPHER_BRAIN_TON_SSH_HOST` etc., see the `--help` Settings section).
+  `push` transfers the ciphertext to the seeder and creates the bag **there** (the
+  machine that must retain it); the locator is `ton:v1:<64-hex-bag-id>` — the
+  bag's merkle root. `pull`'s primary path is a **real P2P download** by bag id
+  through an ephemeral local tonutils-storage — credential-less, so the
+  "identity + locator is all a fresh machine needs" promise holds — with a loud,
+  explicit fallback to a direct copy off the seeder. Free per upload (the
+  seeder's running cost is the cost). **Not permanent storage**: a bag is
+  retrievable only while at least one reachable seeder retains it — see
+  [`docs/durability.md`](docs/durability.md) for the honest comparison with
+  Arweave, and treat `ton` as a redundancy/sovereignty lane next to `turbo`'s
+  permanence, not a replacement for it.
 
 The backend abstraction is what makes the same `snapshot → push … pull → restore`
-pipeline work across all four — locators known before upload (`file`'s content
+pipeline work across all five — locators known before upload (`file`'s content
 hash, `rclone`'s caller-chosen `--remote`) and post-assigned-id ones
-(`arweave`/`turbo`) alike.
+(`arweave`/`turbo`/`ton`) alike.
 
 ## Validation
 
@@ -1037,6 +1063,16 @@ hash, `rclone`'s caller-chosen `--remote`) and post-assigned-id ones
    bundler (Turbo/Irys) produces when you pay with **ETH/USDC/fiat** — via a gateway-HTTP
    read with an L1 chunk-read fallback, proven against *real* arweave.net by
    `node scripts/arweave-real-read.mjs` (operator-run; external, not in CI). ✅
+7. **TON backend orchestration** (`npm run selftest:ton`, gated in CI — no real
+   TON network: `ssh`/`scp` are PATH-shimmed at a local fake seeder and both
+   daemons are `scripts/mock-tonutils.mjs`, so the REAL backend code runs its
+   real remote command lines, HTTP client and ephemeral-daemon startup) —
+   push → bag on the seeder + inventory record, idempotent re-push, P2P-path
+   pull round-trip, and **fired** positive controls: malformed-locator
+   rejection, wrong `--sha256` pin, the loud seeder fallback when the bag is
+   gone from the network, and `CYPHER_BRAIN_TON_NO_FALLBACK=1` fail-closing. ✅
+   What this deliberately does NOT prove is TON Storage itself — that is the
+   operator-run dogfood against the real network.
 
 ## Managing snapshots over time
 

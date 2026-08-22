@@ -96,6 +96,13 @@ const CLOSE_GAS_NANO = toNano('0.05');
 
 const HTTP_TIMEOUT_MS = 10_000;
 const LOCATOR_RE = /^ton:v1:([0-9a-f]{64})$/;
+// Raw TON address form (workchain:hex256) — used to validate an operator-
+// supplied --provider address when it bypasses the tonapi index (see
+// --provider-rate / --provider-span below).
+// Workchains in practice are 0 (base) and -1 (masterchain) — reject anything
+// else instead of validating mere syntax (Codex review S3).
+const RAW_ADDR_RE = /^(?:0|-1):[0-9a-fA-F]{64}$/;
+const UINT32_MAX = 0xffff_ffff;
 
 const HELP = `ton-provider-experiment — operator-run probe of the TON Storage provider market
 
@@ -114,6 +121,18 @@ offer options:
   --allow-unverified-boc   required alongside --sample-boc — see "sample BOC" below.
   --mainnet                opt in to mainnet (REAL FUNDS). Default: testnet.
   --provider <raw-addr>    use this provider instead of auto-selecting cheapest.
+                            By default it must appear in tonapi's provider index
+                            (exit 2 if not — e.g. your own never-deployed provider
+                            is not indexed). Pass --provider-rate AND
+                            --provider-span together to bypass the index lookup
+                            entirely and build the offer straight against this
+                            address with those operator-supplied values.
+  --provider-rate <int>    nanoTON/MB/day for the address named by --provider.
+                            Requires --provider-span too. See --provider above.
+  --provider-span <int>    seconds — that provider's own max_span capacity, used
+                            only to sanity-check --span-days fits under it (the
+                            offered span is still --span-days). Requires
+                            --provider-rate too. See --provider above.
   --max-spend-ton <float>  refuse (exit 2) if the offer would cost more. Default 0.5.
                             Compared as nanoTON (BigInt), never as a float.
   --span-days <int>        contract duration in days. Default 1. Providers whose
@@ -450,7 +469,16 @@ function mainnetWarning(amountLabel) {
 
 async function cmdOffer(args) {
   const flags = parseFlags(args, {
-    valued: new Set(['--locator', '--provider', '--max-spend-ton', '--span-days', '--size-bytes', '--sample-boc']),
+    valued: new Set([
+      '--locator',
+      '--provider',
+      '--provider-rate',
+      '--provider-span',
+      '--max-spend-ton',
+      '--span-days',
+      '--size-bytes',
+      '--sample-boc',
+    ]),
     boolean: new Set(['--mainnet', '--allow-unverified-boc']),
   });
   const testnet = !flags['--mainnet'];
@@ -459,6 +487,78 @@ async function cmdOffer(args) {
   const m = LOCATOR_RE.exec(locator);
   if (!m) throw new Error(`--locator does not match ^ton:v1:[0-9a-f]{64}$: ${JSON.stringify(locator)}`);
   const bagId = m[1];
+
+  // Explicit-provider bypass: --provider named together with BOTH
+  // --provider-rate and --provider-span skips the tonapi index lookup
+  // entirely, so an operator can offer to a provider tonapi has never indexed
+  // (e.g. their own, never-deployed one — see header "chicken-egg", measured
+  // 2026-08-23). Only one of the pair is a mistake, not a fallback signal, so
+  // it is refused rather than silently falling back to the index lookup.
+  // Validated here, offline, before the --sample-boc gate below.
+  const providerRateRaw = flags['--provider-rate'];
+  const providerSpanRaw = flags['--provider-span'];
+  // Codex review W4: these two are meaningless without --provider — accepting
+  // and ignoring them would let a typo'd invocation look like it took effect.
+  if (flags['--provider'] === undefined && (providerRateRaw !== undefined || providerSpanRaw !== undefined)) {
+    throw new Error(
+      '--provider-rate/--provider-span only make sense together with --provider <addr> — refusing to ignore them',
+    );
+  }
+  if (flags['--provider'] !== undefined && (providerRateRaw !== undefined) !== (providerSpanRaw !== undefined)) {
+    throw new Error(
+      `--provider-rate and --provider-span must be given together (or neither) — missing ` +
+        `${providerRateRaw === undefined ? '--provider-rate' : '--provider-span'}`,
+    );
+  }
+  const bypassIndex =
+    flags['--provider'] !== undefined && providerRateRaw !== undefined && providerSpanRaw !== undefined;
+  let bypassSelected;
+  if (bypassIndex) {
+    if (!RAW_ADDR_RE.test(flags['--provider'])) {
+      throw new Error(
+        `--provider must be a raw TON address (workchain 0 or -1) matching ^(0|-1):[0-9a-fA-F]{64}$, got ${JSON.stringify(flags['--provider'])}`,
+      );
+    }
+    if (!/^[0-9]+$/.test(providerRateRaw)) {
+      throw new Error(`--provider-rate must match ^[0-9]+$ (nanoTON/MB/day), got ${JSON.stringify(providerRateRaw)}`);
+    }
+    const providerRate = Number(providerRateRaw);
+    if (
+      !Number.isSafeInteger(providerRate) ||
+      providerRate <= MIN_REASONABLE_RATE_NANO_PER_MB_DAY ||
+      providerRate > MAX_REASONABLE_RATE_NANO_PER_MB_DAY
+    ) {
+      throw new Error(
+        `--provider-rate must be a safe integer in (${MIN_REASONABLE_RATE_NANO_PER_MB_DAY}, ` +
+          `${MAX_REASONABLE_RATE_NANO_PER_MB_DAY}] nanoTON/MB/day, got ${providerRateRaw}`,
+      );
+    }
+    if (!/^[0-9]+$/.test(providerSpanRaw)) {
+      throw new Error(`--provider-span must match ^[0-9]+$ (seconds), got ${JSON.stringify(providerSpanRaw)}`);
+    }
+    const providerSpan = Number(providerSpanRaw);
+    if (
+      !Number.isSafeInteger(providerSpan) ||
+      providerSpan < MIN_REASONABLE_MAX_SPAN_SECONDS ||
+      providerSpan > UINT32_MAX
+    ) {
+      throw new Error(
+        `--provider-span must be a safe integer in [${MIN_REASONABLE_MAX_SPAN_SECONDS}, ${UINT32_MAX}] seconds, ` +
+          `got ${providerSpanRaw}`,
+      );
+    }
+    console.log(
+      '[bypass] --provider-rate/--provider-span given — skipping the tonapi provider index lookup; rates came ' +
+        'from the operator, not the index.',
+    );
+    bypassSelected = {
+      address: flags['--provider'],
+      ratePerMbDay: providerRate,
+      maxSpan: providerSpan,
+      minimalFileSize: 0,
+      maximalFileSize: 0,
+    };
+  }
 
   if (!flags['--sample-boc']) {
     console.error('offer: missing --sample-boc — this experiment cannot derive TorrentInfo/microchunk_hash itself.');
@@ -532,48 +632,59 @@ async function cmdOffer(args) {
   }
   console.log(`bag size: ${sizeBytes} bytes`);
 
-  console.log(`fetching providers (${testnet ? 'testnet' : 'mainnet'}) ...`);
-  const all = await fetchAllProviders(testnet);
-  // S1: eligibility now also requires max_span >= the REQUESTED span, so
-  // cheapest-selection never picks a provider the later span check rejects.
-  const eligible = eligibleProviders(all, sizeBytes, spanSeconds);
-  console.log(
-    `tonapi lists ${all.length} providers total; ${eligible.length} accept new contracts, fit this bag's size, ` +
-      `and support a >= ${spanDays}-day span.`,
-  );
-
-  console.log('');
-  console.log('address                                            rate(nano/MB/day)  max_span(s)  cost-this-bag');
-  for (const p of eligible.slice(0, 10)) {
-    const cost = storageCostNano(sizeBytes, p.ratePerMbDay, spanDays);
-    console.log(
-      `${p.address.padEnd(50)} ${String(p.ratePerMbDay).padStart(17)}  ${String(p.maxSpan).padStart(11)}  ${(Number(cost) / 1e9).toFixed(6)} TON`,
-    );
-  }
-  console.log('');
-
-  if (eligible.length === 0) {
-    // W4: this reflects THIS run's filter result only — not a dormancy verdict.
-    // Whether that means "the market is dormant" is for the operator/report to
-    // judge, with more than one data point.
-    console.log(
-      `no providers currently pass this run's filters (accept_new_contracts, this bag's size range, a ` +
-        `>= ${spanDays}-day max_span) on ${testnet ? 'testnet' : 'mainnet'}, as listed by tonapi right now.`,
-    );
-    process.exit(3);
-  }
-
   let selected;
-  if (flags['--provider']) {
-    selected = all.find((p) => p.address === flags['--provider']);
-    if (!selected) throw new Error(`--provider ${flags['--provider']} was not found in tonapi's provider list at all`);
-    if (!eligible.includes(selected)) {
+  if (bypassIndex) {
+    // Validated above (offline, before the --sample-boc gate); bypassSelected
+    // does not depend on sizeBytes so it was built there.
+    selected = bypassSelected;
+  } else {
+    console.log(`fetching providers (${testnet ? 'testnet' : 'mainnet'}) ...`);
+    const all = await fetchAllProviders(testnet);
+    // S1: eligibility now also requires max_span >= the REQUESTED span, so
+    // cheapest-selection never picks a provider the later span check rejects.
+    const eligible = eligibleProviders(all, sizeBytes, spanSeconds);
+    console.log(
+      `tonapi lists ${all.length} providers total; ${eligible.length} accept new contracts, fit this bag's size, ` +
+        `and support a >= ${spanDays}-day span.`,
+    );
+
+    console.log('');
+    console.log('address                                            rate(nano/MB/day)  max_span(s)  cost-this-bag');
+    for (const p of eligible.slice(0, 10)) {
+      const cost = storageCostNano(sizeBytes, p.ratePerMbDay, spanDays);
       console.log(
-        `[WARN] --provider ${selected.address} is not in the eligible/accepting list above — proceeding anyway, at your own risk.`,
+        `${p.address.padEnd(50)} ${String(p.ratePerMbDay).padStart(17)}  ${String(p.maxSpan).padStart(11)}  ${(Number(cost) / 1e9).toFixed(6)} TON`,
       );
     }
-  } else {
-    selected = selectCheapestProvider(eligible);
+    console.log('');
+
+    if (eligible.length === 0) {
+      // W4: this reflects THIS run's filter result only — not a dormancy verdict.
+      // Whether that means "the market is dormant" is for the operator/report to
+      // judge, with more than one data point.
+      console.log(
+        `no providers currently pass this run's filters (accept_new_contracts, this bag's size range, a ` +
+          `>= ${spanDays}-day max_span) on ${testnet ? 'testnet' : 'mainnet'}, as listed by tonapi right now.`,
+      );
+      process.exit(3);
+    }
+
+    if (flags['--provider']) {
+      selected = all.find((p) => p.address === flags['--provider']);
+      if (!selected) {
+        throw new Error(
+          `--provider ${flags['--provider']} was not found in tonapi's provider list at all — if this is your ` +
+            `own provider (not yet indexed), pass --provider-rate and --provider-span to bypass the index lookup.`,
+        );
+      }
+      if (!eligible.includes(selected)) {
+        console.log(
+          `[WARN] --provider ${selected.address} is not in the eligible/accepting list above — proceeding anyway, at your own risk.`,
+        );
+      }
+    } else {
+      selected = selectCheapestProvider(eligible);
+    }
   }
   console.log(
     `selected provider: ${selected.address} (${selected.ratePerMbDay} nanoTON/MB/day, max_span ${selected.maxSpan}s)`,

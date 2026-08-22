@@ -1071,8 +1071,10 @@ hash, `rclone`'s caller-chosen `--remote`) and post-assigned-id ones
    pull round-trip, and **fired** positive controls: malformed-locator
    rejection, wrong `--sha256` pin, the loud seeder fallback when the bag is
    gone from the network, and `CYPHER_BRAIN_TON_NO_FALLBACK=1` fail-closing. ✅
-   What this deliberately does NOT prove is TON Storage itself — that is the
-   operator-run dogfood against the real network.
+   What this deliberately does NOT prove is TON Storage itself — that is
+   `npm run dogfood:ton` (`scripts/ton-dogfood.mjs`, operator-run against the real
+   network with `CYPHER_BRAIN_TON_NO_FALLBACK=1` on the pull, so a success proves
+   actual P2P retrievability), the real-network counterpart to this selftest.
 
 ## Managing snapshots over time
 
